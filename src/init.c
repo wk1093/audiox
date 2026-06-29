@@ -279,11 +279,10 @@ int main(void) {
 
     int touch_ready = (touch_open(&touch) == 0);
     if (!touch_ready) {
-        printf("[INIT] [WARN] Touch toggle disabled. Audio will continue playing.\n");
+        printf("[INIT] [WARN] Touch control disabled. Audio will continue playing.\n");
     }
 
     int touch_retry_ticks = 0;
-    int touch_debounce_ticks = 0;
 
     while (1) {
         if (!touch_ready) {
@@ -295,28 +294,35 @@ int main(void) {
                 }
             }
         } else {
-            int raw_x = 0;
-            int raw_y = 0;
+            if (fb_ready) {
+                int raw_x[TOUCH_MAX_POINTS];
+                int raw_y[TOUCH_MAX_POINTS];
+                int held[4] = {0, 0, 0, 0};
 
-            if (touch_poll_toggle(&touch, &raw_x, &raw_y) && touch_debounce_ticks == 0) {
-                int sx = 0;
-                int sy = 0;
-
-                if (fb_ready && touch_map_to_screen(&touch, &fb, raw_x, raw_y, &sx, &sy) == 0) {
-                    int button = ui_hit_button(&fb, sx, sy);
-                    if (button >= 0 && button < audio_voice_count()) {
-                        int state = audio_toggle_voice(&audio, button);
-                        voice_enabled[button] = state;
-                        fb_draw_button(&fb, button, state);
+                int points = touch_poll_points(&touch, raw_x, raw_y, TOUCH_MAX_POINTS);
+                if (points > 0) {
+                    for (int i = 0; i < points; ++i) {
+                        int sx = 0;
+                        int sy = 0;
+                        if (touch_map_to_screen(&touch, &fb, raw_x[i], raw_y[i], &sx, &sy) == 0) {
+                            int button = ui_hit_button(&fb, sx, sy);
+                            if (button >= 0 && button < audio_voice_count()) {
+                                held[button] = 1;
+                            }
+                        }
                     }
                 }
 
-                touch_debounce_ticks = 2;
-            }
-        }
+                for (int i = 0; i < audio_voice_count(); ++i) {
+                    if (held[i] == voice_enabled[i]) {
+                        continue;
+                    }
 
-        if (touch_debounce_ticks > 0) {
-            --touch_debounce_ticks;
+                    voice_enabled[i] = held[i];
+                    audio_set_voice(&audio, i, held[i]);
+                    fb_draw_button(&fb, i, held[i]);
+                }
+            }
         }
 
         audio_write_next(&audio);

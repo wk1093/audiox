@@ -12,8 +12,8 @@
 static inline int setup_usb_audio_gadget(void) {
     if (ensure_dir(GADGET_ROOT, 0755) < 0) return -1;
 
-    if (write_sys_node(GADGET_ROOT "/idVendor", "0x1d6b\n") < 0) return -1;
-    if (write_sys_node(GADGET_ROOT "/idProduct", "0x0104\n") < 0) return -1;
+    if (write_sys_node(GADGET_ROOT "/idVendor", "0x1234\n") < 0) return -1;
+    if (write_sys_node(GADGET_ROOT "/idProduct", "0x0169\n") < 0) return -1;
     if (write_sys_node(GADGET_ROOT "/bcdDevice", "0x0100\n") < 0) return -1;
     if (write_sys_node(GADGET_ROOT "/bcdUSB", "0x0200\n") < 0) return -1;
 

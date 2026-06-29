@@ -27,16 +27,20 @@ typedef struct fb_ctx {
 
 typedef struct touch_ctx {
     int fd;
-    int last_x;
-    int last_y;
+    int supports_mt_slots;
+    int max_slots;
+    int current_slot;
+    int slot_active[10];
+    int slot_x[10];
+    int slot_y[10];
     int min_x;
     int max_x;
     int min_y;
     int max_y;
     int has_range;
-    int touch_down;
-    int pending_press;
 } touch_ctx_t;
+
+#define TOUCH_MAX_POINTS 10
 
 static inline int touch_probe_abs_axis(int fd, unsigned long code, int *out_min, int *out_max) {
     struct input_absinfo absinfo;
@@ -219,6 +223,18 @@ static inline int touch_open(touch_ctx_t *touch) {
                        (touch_probe_abs_axis(fd, ABS_MT_POSITION_Y, &touch->min_y, &touch->max_y) == 0);
             touch->has_range = ok_x && ok_y && (touch->max_x > touch->min_x) && (touch->max_y > touch->min_y);
 
+            struct input_absinfo slot_info;
+            if (ioctl(fd, EVIOCGABS(ABS_MT_SLOT), &slot_info) == 0 && slot_info.maximum >= 0) {
+                int slots = slot_info.maximum + 1;
+                if (slots > TOUCH_MAX_POINTS) slots = TOUCH_MAX_POINTS;
+                touch->supports_mt_slots = 1;
+                touch->max_slots = slots;
+            } else {
+                touch->supports_mt_slots = 0;
+                touch->max_slots = 1;
+            }
+            touch->current_slot = 0;
+
             printf("[INIT] Touch input selected: %s (%s)\n", path, name[0] ? name : "unknown");
             closedir(dir);
             return 0;
@@ -244,6 +260,18 @@ static inline int touch_open(touch_ctx_t *touch) {
                    (touch_probe_abs_axis(touch->fd, ABS_MT_POSITION_Y, &touch->min_y, &touch->max_y) == 0);
         touch->has_range = ok_x && ok_y && (touch->max_x > touch->min_x) && (touch->max_y > touch->min_y);
 
+        struct input_absinfo slot_info;
+        if (ioctl(touch->fd, EVIOCGABS(ABS_MT_SLOT), &slot_info) == 0 && slot_info.maximum >= 0) {
+            int slots = slot_info.maximum + 1;
+            if (slots > TOUCH_MAX_POINTS) slots = TOUCH_MAX_POINTS;
+            touch->supports_mt_slots = 1;
+            touch->max_slots = slots;
+        } else {
+            touch->supports_mt_slots = 0;
+            touch->max_slots = 1;
+        }
+        touch->current_slot = 0;
+
         printf("[INIT] Touch input fallback selected: generic /dev/input/event*\n");
         return 0;
     }
@@ -259,66 +287,73 @@ static inline void touch_close(touch_ctx_t *touch) {
     touch->fd = -1;
 }
 
-static inline int touch_poll_toggle(touch_ctx_t *touch, int *x, int *y) {
+static inline int touch_poll_points(touch_ctx_t *touch, int *xs, int *ys, int max_points) {
     if (touch->fd < 0) {
-        return 0;
+        return -1;
     }
 
-    int pressed = 0;
     struct input_event ev;
     ssize_t n;
 
     while ((n = read(touch->fd, &ev, sizeof(ev))) == (ssize_t)sizeof(ev)) {
         if (ev.type == EV_ABS) {
-            if (ev.code == ABS_X || ev.code == ABS_MT_POSITION_X) {
-                touch->last_x = ev.value;
-            } else if (ev.code == ABS_Y || ev.code == ABS_MT_POSITION_Y) {
-                touch->last_y = ev.value;
-            } else if (ev.code == ABS_MT_TRACKING_ID && ev.value >= 0) {
-                if (!touch->touch_down) {
-                    touch->touch_down = 1;
-                    touch->pending_press = 1;
+            if (ev.code == ABS_MT_SLOT && touch->supports_mt_slots) {
+                if (ev.value >= 0 && ev.value < touch->max_slots) {
+                    touch->current_slot = ev.value;
                 }
-            } else if (ev.code == ABS_MT_TRACKING_ID && ev.value < 0) {
-                touch->touch_down = 0;
-            } else if (ev.code == ABS_PRESSURE && ev.value == 0) {
-                touch->touch_down = 0;
-            } else if (ev.code == ABS_PRESSURE && ev.value > 0) {
-                if (!touch->touch_down) {
-                    touch->touch_down = 1;
-                    touch->pending_press = 1;
+            } else if (ev.code == ABS_X) {
+                touch->slot_x[0] = ev.value;
+            } else if (ev.code == ABS_Y) {
+                touch->slot_y[0] = ev.value;
+            } else if (ev.code == ABS_MT_POSITION_X) {
+                touch->slot_x[touch->current_slot] = ev.value;
+            } else if (ev.code == ABS_MT_POSITION_Y) {
+                touch->slot_y[touch->current_slot] = ev.value;
+            } else if (ev.code == ABS_MT_TRACKING_ID) {
+                touch->slot_active[touch->current_slot] = (ev.value >= 0) ? 1 : 0;
+            } else if (ev.code == ABS_PRESSURE && !touch->supports_mt_slots) {
+                touch->slot_active[0] = (ev.value > 0) ? 1 : 0;
+            } else if (ev.code == ABS_MT_PRESSURE && touch->supports_mt_slots) {
+                if (ev.value == 0 && touch->slot_active[touch->current_slot]) {
+                    touch->slot_active[touch->current_slot] = 0;
                 }
             }
         }
 
         if (ev.type == EV_KEY && ev.code == BTN_TOUCH) {
-            if (ev.value == 1) {
-                if (!touch->touch_down) {
-                    touch->touch_down = 1;
-                    touch->pending_press = 1;
+            if (touch->supports_mt_slots) {
+                if (ev.value == 0) {
+                    for (int i = 0; i < touch->max_slots; ++i) {
+                        touch->slot_active[i] = 0;
+                    }
                 }
-            } else if (ev.value == 0) {
-                touch->touch_down = 0;
+            } else {
+                touch->slot_active[0] = (ev.value > 0) ? 1 : 0;
             }
         }
-
-        if (ev.type == EV_SYN && ev.code == SYN_REPORT && touch->pending_press) {
-            pressed = 1;
-            touch->pending_press = 0;
-        }
-    }
-
-    if (pressed) {
-        if (x) *x = touch->last_x;
-        if (y) *y = touch->last_y;
-        return 1;
     }
 
     if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
         printf("[INIT] [WARN] Touch read error: %s\n", strerror(errno));
     }
 
-    return 0;
+    int count = 0;
+    int slots = touch->max_slots;
+    if (slots <= 0 || slots > TOUCH_MAX_POINTS) {
+        slots = TOUCH_MAX_POINTS;
+    }
+
+    for (int i = 0; i < slots && count < max_points; ++i) {
+        if (!touch->slot_active[i]) {
+            continue;
+        }
+
+        if (xs) xs[count] = touch->slot_x[i];
+        if (ys) ys[count] = touch->slot_y[i];
+        ++count;
+    }
+
+    return count;
 }
 
 #endif

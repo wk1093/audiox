@@ -29,7 +29,25 @@ typedef struct touch_ctx {
     int fd;
     int last_x;
     int last_y;
+    int min_x;
+    int max_x;
+    int min_y;
+    int max_y;
+    int has_range;
+    int touch_down;
+    int pending_press;
 } touch_ctx_t;
+
+static inline int touch_probe_abs_axis(int fd, unsigned long code, int *out_min, int *out_max) {
+    struct input_absinfo absinfo;
+    if (ioctl(fd, EVIOCGABS(code), &absinfo) < 0) {
+        return -1;
+    }
+
+    if (out_min) *out_min = absinfo.minimum;
+    if (out_max) *out_max = absinfo.maximum;
+    return 0;
+}
 
 static inline uint32_t fb_pack_color(const fb_ctx_t *fb, uint8_t r, uint8_t g, uint8_t b) {
     if (fb->bpp == 16) {
@@ -194,6 +212,13 @@ static inline int touch_open(touch_ctx_t *touch) {
 
         if (strcasestr(name, "touch") != NULL || strcasestr(name, "ft") != NULL || strcasestr(name, "goodix") != NULL) {
             touch->fd = fd;
+
+            int ok_x = (touch_probe_abs_axis(fd, ABS_X, &touch->min_x, &touch->max_x) == 0) ||
+                       (touch_probe_abs_axis(fd, ABS_MT_POSITION_X, &touch->min_x, &touch->max_x) == 0);
+            int ok_y = (touch_probe_abs_axis(fd, ABS_Y, &touch->min_y, &touch->max_y) == 0) ||
+                       (touch_probe_abs_axis(fd, ABS_MT_POSITION_Y, &touch->min_y, &touch->max_y) == 0);
+            touch->has_range = ok_x && ok_y && (touch->max_x > touch->min_x) && (touch->max_y > touch->min_y);
+
             printf("[INIT] Touch input selected: %s (%s)\n", path, name[0] ? name : "unknown");
             closedir(dir);
             return 0;
@@ -213,6 +238,12 @@ static inline int touch_open(touch_ctx_t *touch) {
 
     if (fallback_fd >= 0) {
         touch->fd = fallback_fd;
+        int ok_x = (touch_probe_abs_axis(touch->fd, ABS_X, &touch->min_x, &touch->max_x) == 0) ||
+                   (touch_probe_abs_axis(touch->fd, ABS_MT_POSITION_X, &touch->min_x, &touch->max_x) == 0);
+        int ok_y = (touch_probe_abs_axis(touch->fd, ABS_Y, &touch->min_y, &touch->max_y) == 0) ||
+                   (touch_probe_abs_axis(touch->fd, ABS_MT_POSITION_Y, &touch->min_y, &touch->max_y) == 0);
+        touch->has_range = ok_x && ok_y && (touch->max_x > touch->min_x) && (touch->max_y > touch->min_y);
+
         printf("[INIT] Touch input fallback selected: generic /dev/input/event*\n");
         return 0;
     }
@@ -233,8 +264,7 @@ static inline int touch_poll_toggle(touch_ctx_t *touch, int *x, int *y) {
         return 0;
     }
 
-    int toggled = 0;
-    int touch_activity = 0;
+    int pressed = 0;
     struct input_event ev;
     ssize_t n;
 
@@ -242,28 +272,43 @@ static inline int touch_poll_toggle(touch_ctx_t *touch, int *x, int *y) {
         if (ev.type == EV_ABS) {
             if (ev.code == ABS_X || ev.code == ABS_MT_POSITION_X) {
                 touch->last_x = ev.value;
-                touch_activity = 1;
             } else if (ev.code == ABS_Y || ev.code == ABS_MT_POSITION_Y) {
                 touch->last_y = ev.value;
-                touch_activity = 1;
             } else if (ev.code == ABS_MT_TRACKING_ID && ev.value >= 0) {
-                touch_activity = 1;
+                if (!touch->touch_down) {
+                    touch->touch_down = 1;
+                    touch->pending_press = 1;
+                }
+            } else if (ev.code == ABS_MT_TRACKING_ID && ev.value < 0) {
+                touch->touch_down = 0;
+            } else if (ev.code == ABS_PRESSURE && ev.value == 0) {
+                touch->touch_down = 0;
             } else if (ev.code == ABS_PRESSURE && ev.value > 0) {
-                touch_activity = 1;
+                if (!touch->touch_down) {
+                    touch->touch_down = 1;
+                    touch->pending_press = 1;
+                }
             }
         }
 
-        if (ev.type == EV_KEY && ev.code == BTN_TOUCH && ev.value == 1) {
-            touch_activity = 1;
+        if (ev.type == EV_KEY && ev.code == BTN_TOUCH) {
+            if (ev.value == 1) {
+                if (!touch->touch_down) {
+                    touch->touch_down = 1;
+                    touch->pending_press = 1;
+                }
+            } else if (ev.value == 0) {
+                touch->touch_down = 0;
+            }
         }
 
-        if (ev.type == EV_SYN && ev.code == SYN_REPORT && touch_activity) {
-            toggled = 1;
-            touch_activity = 0;
+        if (ev.type == EV_SYN && ev.code == SYN_REPORT && touch->pending_press) {
+            pressed = 1;
+            touch->pending_press = 0;
         }
     }
 
-    if (toggled) {
+    if (pressed) {
         if (x) *x = touch->last_x;
         if (y) *y = touch->last_y;
         return 1;

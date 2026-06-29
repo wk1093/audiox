@@ -73,14 +73,6 @@ static int load_modules_from_list(const char *path) {
     return 0;
 }
 
-typedef struct touch_map_ctx {
-    int initialized;
-    int min_x;
-    int max_x;
-    int min_y;
-    int max_y;
-} touch_map_ctx_t;
-
 typedef struct ui_layout {
     uint32_t margin;
     uint32_t gap;
@@ -110,35 +102,26 @@ static void get_ui_layout(const fb_ctx_t *fb, ui_layout_t *layout) {
     }
 }
 
-static int touch_map_to_screen(touch_map_ctx_t *map_ctx, const fb_ctx_t *fb, int raw_x, int raw_y, int *screen_x, int *screen_y) {
+static int touch_map_to_screen(const touch_ctx_t *touch, const fb_ctx_t *fb, int raw_x, int raw_y, int *screen_x, int *screen_y) {
     if (!fb || fb->width == 0 || fb->height == 0 || !screen_x || !screen_y) {
         return -1;
     }
 
-    if (!map_ctx->initialized) {
-        map_ctx->initialized = 1;
-        map_ctx->min_x = raw_x;
-        map_ctx->max_x = raw_x;
-        map_ctx->min_y = raw_y;
-        map_ctx->max_y = raw_y;
+    if (!touch || !touch->has_range) {
+        return -1;
     }
 
-    if (raw_x < map_ctx->min_x) map_ctx->min_x = raw_x;
-    if (raw_x > map_ctx->max_x) map_ctx->max_x = raw_x;
-    if (raw_y < map_ctx->min_y) map_ctx->min_y = raw_y;
-    if (raw_y > map_ctx->max_y) map_ctx->max_y = raw_y;
-
-    int range_x = map_ctx->max_x - map_ctx->min_x;
-    int range_y = map_ctx->max_y - map_ctx->min_y;
+    int range_x = touch->max_x - touch->min_x;
+    int range_y = touch->max_y - touch->min_y;
 
     double norm_x = 0.5;
     double norm_y = 0.5;
 
-    if (range_x > 32) {
-        norm_x = (double)(raw_x - map_ctx->min_x) / (double)range_x;
+    if (range_x > 0) {
+        norm_x = (double)(raw_x - touch->min_x) / (double)range_x;
     }
-    if (range_y > 32) {
-        norm_y = (double)(raw_y - map_ctx->min_y) / (double)range_y;
+    if (range_y > 0) {
+        norm_y = (double)(raw_y - touch->min_y) / (double)range_y;
     }
 
     if (norm_x < 0.0) norm_x = 0.0;
@@ -276,7 +259,6 @@ int main(void) {
 
     int touch_retry_ticks = 0;
     int touch_debounce_ticks = 0;
-    touch_map_ctx_t touch_map = {0};
 
     while (1) {
         if (!touch_ready) {
@@ -295,23 +277,16 @@ int main(void) {
                 int sx = 0;
                 int sy = 0;
 
-                if (fb_ready && touch_map_to_screen(&touch_map, &fb, raw_x, raw_y, &sx, &sy) == 0) {
+                if (fb_ready && touch_map_to_screen(&touch, &fb, raw_x, raw_y, &sx, &sy) == 0) {
                     int button = ui_hit_button(&fb, sx, sy);
                     if (button >= 0 && button < audio_voice_count()) {
                         int state = audio_toggle_voice(&audio, button);
                         voice_enabled[button] = state;
-                        printf("[INIT] Touch at raw=(%d,%d) screen=(%d,%d) -> tone %.1fHz %s\n",
-                               raw_x,
-                               raw_y,
-                               sx,
-                               sy,
-                               audio_voice_frequency(button),
-                               state ? "ON" : "OFF");
                         fb_draw_button_grid(&fb, voice_enabled);
                     }
                 }
 
-                touch_debounce_ticks = 6;
+                touch_debounce_ticks = 2;
             }
         }
 

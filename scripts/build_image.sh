@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-IMG_FILE="${1:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <initramfs> <dsi_overlay>}"
-IMG_SIZE_MB="${2:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <initramfs> <dsi_overlay>}"
-OUT_DIR="${3:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <initramfs> <dsi_overlay>}"
-INITRAMFS="${4:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <initramfs> <dsi_overlay>}"
-DSI_TOUCH_OVERLAY="${5:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <initramfs> <dsi_overlay>}"
+IMG_FILE="${1:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <initramfs> <vc4_overlay> [dsi_overlay>}"
+IMG_SIZE_MB="${2:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <initramfs> <vc4_overlay> [dsi_overlay>}"
+OUT_DIR="${3:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <initramfs> <vc4_overlay> [dsi_overlay>}"
+INITRAMFS="${4:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <initramfs> <vc4_overlay> [dsi_overlay>}"
+VC4_OVERLAY="${5:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <initramfs> <vc4_overlay> [dsi_overlay>}"
+DSI_TOUCH_OVERLAY="${6:-}"
 
 MNT_BOOT="${OUT_DIR}/mnt_boot"
 
@@ -42,8 +43,10 @@ echo "Writing distribution files..."
 sudo cp -r "${OUT_DIR}/bootfiles/." "${MNT_BOOT}/"
 sudo cp "${INITRAMFS}" "${MNT_BOOT}/initramfs.cpio.gz"
 sudo sh -c "echo 'initramfs initramfs.cpio.gz followkernel' > '${MNT_BOOT}/config.txt'"
-sudo sh -c "echo 'dtoverlay=vc4-kms-v3d' >> '${MNT_BOOT}/config.txt'"
-sudo sh -c "echo 'dtoverlay=${DSI_TOUCH_OVERLAY}' >> '${MNT_BOOT}/config.txt'"
+sudo sh -c "echo 'dtoverlay=${VC4_OVERLAY}' >> '${MNT_BOOT}/config.txt'"
+if [[ -n "${DSI_TOUCH_OVERLAY}" ]]; then
+    sudo sh -c "echo 'dtoverlay=${DSI_TOUCH_OVERLAY}' >> '${MNT_BOOT}/config.txt'"
+fi
 sudo sh -c "echo 'dtoverlay=dwc2,dr_mode=peripheral' >> '${MNT_BOOT}/config.txt'"
 sudo sh -c "echo 'console=fbcon console=tty1 quiet loglevel=3 rdinit=/init' > '${MNT_BOOT}/cmdline.txt'"
 

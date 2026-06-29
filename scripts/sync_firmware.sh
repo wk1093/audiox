@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-FIRMWARE_GIT_URL="${1:?usage: sync_firmware.sh <firmware_git_url> <out_dir> <dsi_overlay>}"
-OUT_DIR="${2:?usage: sync_firmware.sh <firmware_git_url> <out_dir> <dsi_overlay>}"
-DSI_TOUCH_OVERLAY="${3:?usage: sync_firmware.sh <firmware_git_url> <out_dir> <dsi_overlay>}"
+FIRMWARE_GIT_URL="${1:?usage: sync_firmware.sh <firmware_git_url> <out_dir> <vc4_overlay> [dsi_overlay]>}"
+OUT_DIR="${2:?usage: sync_firmware.sh <firmware_git_url> <out_dir> <vc4_overlay> [dsi_overlay]>}"
+VC4_OVERLAY="${3:?usage: sync_firmware.sh <firmware_git_url> <out_dir> <vc4_overlay> [dsi_overlay]>}"
+DSI_TOUCH_OVERLAY="${4:-}"
 
 FIRMWARE_DIR="${OUT_DIR}/firmware"
 BOOT_SRC_DIR="${FIRMWARE_DIR}/boot"
@@ -36,7 +37,9 @@ copy_boot_file "bootcode.bin"
 copy_boot_file "fixup.dat"
 copy_boot_file "start.elf"
 copy_boot_file "bcm2711-rpi-4-b.dtb"
-copy_boot_file "overlays/vc4-kms-v3d.dtbo"
-copy_boot_file "overlays/${DSI_TOUCH_OVERLAY}.dtbo"
+copy_boot_file "overlays/${VC4_OVERLAY}.dtbo"
+if [[ -n "${DSI_TOUCH_OVERLAY}" ]]; then
+    copy_boot_file "overlays/${DSI_TOUCH_OVERLAY}.dtbo"
+fi
 
 echo "[sync_firmware] Boot files staged in ${BOOT_DST_DIR}"

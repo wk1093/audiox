@@ -119,7 +119,7 @@ static inline int fb_open(fb_ctx_t *fb) {
     }
 
     printf("[INIT] [WARN] No usable framebuffer found in /dev/fb0..3.\n");
-    printf("[INIT] [WARN] If using full KMS (vc4-kms-v3d), fbdev emulation may be unavailable.\n");
+    printf("[INIT] [WARN] FKMS should expose /dev/fb0 after boot settles.\n");
     return -1;
 }
 
@@ -128,6 +128,7 @@ static inline void fb_close(fb_ctx_t *fb) {
         munmap(fb->map, fb->map_len);
         fb->map = NULL;
     }
+
     if (fb->fd >= 0) {
         close(fb->fd);
     }

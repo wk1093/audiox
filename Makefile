@@ -2,7 +2,8 @@ CC = aarch64-linux-gnu-gcc
 CFLAGS = -static -O3 -Iinclude -Wall -Wextra -Werror
 
 KV ?= 6.18.36-v8+
-DSI_TOUCH_OVERLAY ?= vc4-kms-dsi-7inch
+VC4_OVERLAY ?= vc4-fkms-v3d-pi4
+DSI_TOUCH_OVERLAY ?=
 
 # Paths
 ARCH ?= aarch64
@@ -33,7 +34,7 @@ all: initramfs
 
 # 1. Clone/Sync Firmware Tree and Stage Boot Files
 fetch_deps:
-	@$(SCRIPTS_DIR)/sync_firmware.sh "$(FIRMWARE_GIT_URL)" "$(OUT_DIR)" "$(DSI_TOUCH_OVERLAY)"
+	@$(SCRIPTS_DIR)/sync_firmware.sh "$(FIRMWARE_GIT_URL)" "$(OUT_DIR)" "$(VC4_OVERLAY)" "$(DSI_TOUCH_OVERLAY)"
 
 # 2. Resolve Full Module Dependency Closure from depmod.txt
 fetch_modules: fetch_deps
@@ -93,8 +94,10 @@ export: initramfs
 	cp $(OUT_DIR)/bootfiles/* $(SD_MOUNT_BOOT)/ -r
 	cp $(INITRAMFS) $(SD_MOUNT_BOOT)/initramfs.cpio.gz
 	@echo "initramfs initramfs.cpio.gz followkernel" > $(SD_MOUNT_BOOT)/config.txt
-	@echo "dtoverlay=vc4-kms-v3d" >> $(SD_MOUNT_BOOT)/config.txt
-	@echo "dtoverlay=$(DSI_TOUCH_OVERLAY)" >> $(SD_MOUNT_BOOT)/config.txt
+	@echo "dtoverlay=$(VC4_OVERLAY)" >> $(SD_MOUNT_BOOT)/config.txt
+	@if [ -n "$(DSI_TOUCH_OVERLAY)" ]; then \
+		echo "dtoverlay=$(DSI_TOUCH_OVERLAY)" >> $(SD_MOUNT_BOOT)/config.txt; \
+	fi
 	@echo "dtoverlay=dwc2,dr_mode=peripheral" >> $(SD_MOUNT_BOOT)/config.txt
 	@echo "console=fbcon console=tty1 quiet loglevel=3 rdinit=/init fbcon=map:0" > $(SD_MOUNT_BOOT)/cmdline.txt
 	sync
@@ -102,7 +105,7 @@ export: initramfs
 
 # Generate Standalone Flashable Disk Image File
 image: initramfs
-	@$(SCRIPTS_DIR)/build_image.sh "$(IMG_FILE)" "$(IMG_SIZE_MB)" "$(OUT_DIR)" "$(INITRAMFS)" "$(DSI_TOUCH_OVERLAY)"
+	@$(SCRIPTS_DIR)/build_image.sh "$(IMG_FILE)" "$(IMG_SIZE_MB)" "$(OUT_DIR)" "$(INITRAMFS)" "$(VC4_OVERLAY)" "$(DSI_TOUCH_OVERLAY)"
 
 # Native x86_64 Debug Configurations
 $(DEBUG_ROOTFS)/init: FORCE src/init.c

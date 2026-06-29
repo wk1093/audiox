@@ -73,6 +73,144 @@ static int load_modules_from_list(const char *path) {
     return 0;
 }
 
+typedef struct touch_map_ctx {
+    int initialized;
+    int min_x;
+    int max_x;
+    int min_y;
+    int max_y;
+} touch_map_ctx_t;
+
+typedef struct ui_layout {
+    uint32_t margin;
+    uint32_t gap;
+    uint32_t btn_w;
+    uint32_t btn_h;
+} ui_layout_t;
+
+static void get_ui_layout(const fb_ctx_t *fb, ui_layout_t *layout) {
+    layout->margin = fb->width / 24;
+    if (layout->margin < 8) {
+        layout->margin = 8;
+    }
+
+    layout->gap = layout->margin;
+
+    uint32_t usable_w = fb->width - (layout->margin * 2) - layout->gap;
+    uint32_t usable_h = fb->height - (layout->margin * 2) - layout->gap;
+
+    layout->btn_w = usable_w / 2;
+    layout->btn_h = usable_h / 2;
+
+    if (layout->btn_w < 24) {
+        layout->btn_w = 24;
+    }
+    if (layout->btn_h < 24) {
+        layout->btn_h = 24;
+    }
+}
+
+static int touch_map_to_screen(touch_map_ctx_t *map_ctx, const fb_ctx_t *fb, int raw_x, int raw_y, int *screen_x, int *screen_y) {
+    if (!fb || fb->width == 0 || fb->height == 0 || !screen_x || !screen_y) {
+        return -1;
+    }
+
+    if (!map_ctx->initialized) {
+        map_ctx->initialized = 1;
+        map_ctx->min_x = raw_x;
+        map_ctx->max_x = raw_x;
+        map_ctx->min_y = raw_y;
+        map_ctx->max_y = raw_y;
+    }
+
+    if (raw_x < map_ctx->min_x) map_ctx->min_x = raw_x;
+    if (raw_x > map_ctx->max_x) map_ctx->max_x = raw_x;
+    if (raw_y < map_ctx->min_y) map_ctx->min_y = raw_y;
+    if (raw_y > map_ctx->max_y) map_ctx->max_y = raw_y;
+
+    int range_x = map_ctx->max_x - map_ctx->min_x;
+    int range_y = map_ctx->max_y - map_ctx->min_y;
+
+    double norm_x = 0.5;
+    double norm_y = 0.5;
+
+    if (range_x > 32) {
+        norm_x = (double)(raw_x - map_ctx->min_x) / (double)range_x;
+    }
+    if (range_y > 32) {
+        norm_y = (double)(raw_y - map_ctx->min_y) / (double)range_y;
+    }
+
+    if (norm_x < 0.0) norm_x = 0.0;
+    if (norm_x > 1.0) norm_x = 1.0;
+    if (norm_y < 0.0) norm_y = 0.0;
+    if (norm_y > 1.0) norm_y = 1.0;
+
+    *screen_x = (int)(norm_x * (double)(fb->width - 1));
+    *screen_y = (int)(norm_y * (double)(fb->height - 1));
+    return 0;
+}
+
+static int ui_hit_button(const fb_ctx_t *fb, int x, int y) {
+    if (!fb) {
+        return -1;
+    }
+
+    ui_layout_t layout;
+    get_ui_layout(fb, &layout);
+
+    for (int idx = 0; idx < 4; ++idx) {
+        int col = idx % 2;
+        int row = idx / 2;
+
+        int bx = (int)layout.margin + col * (int)(layout.btn_w + layout.gap);
+        int by = (int)layout.margin + row * (int)(layout.btn_h + layout.gap);
+        int bx_end = bx + (int)layout.btn_w;
+        int by_end = by + (int)layout.btn_h;
+
+        if (x >= bx && x < bx_end && y >= by && y < by_end) {
+            return idx;
+        }
+    }
+
+    return -1;
+}
+
+static void fb_draw_button_grid(const fb_ctx_t *fb, const int *enabled) {
+    if (!fb || !fb->map || !enabled) {
+        return;
+    }
+
+    ui_layout_t layout;
+    get_ui_layout(fb, &layout);
+
+    uint32_t bg = fb_pack_color(fb, 8, 12, 16);
+    uint32_t on_fill[4] = {
+        fb_pack_color(fb, 24, 146, 74),
+        fb_pack_color(fb, 20, 96, 178),
+        fb_pack_color(fb, 176, 96, 24),
+        fb_pack_color(fb, 148, 44, 148)
+    };
+    uint32_t off_fill = fb_pack_color(fb, 42, 46, 52);
+    uint32_t on_border = fb_pack_color(fb, 210, 246, 224);
+    uint32_t off_border = fb_pack_color(fb, 120, 126, 134);
+
+    fb_fill_rect(fb, 0, 0, fb->width, fb->height, bg);
+
+    for (int idx = 0; idx < 4; ++idx) {
+        int col = idx % 2;
+        int row = idx / 2;
+
+        uint32_t bx = layout.margin + (uint32_t)col * (layout.btn_w + layout.gap);
+        uint32_t by = layout.margin + (uint32_t)row * (layout.btn_h + layout.gap);
+        uint32_t fill = enabled[idx] ? on_fill[idx] : off_fill;
+        uint32_t border = enabled[idx] ? on_border : off_border;
+
+        fb_fill_rect(fb, bx, by, layout.btn_w, layout.btn_h, border);
+        fb_fill_rect(fb, bx + 4, by + 4, layout.btn_w - 8, layout.btn_h - 8, fill);
+    }
+}
+
 int main(void) {
     umask(0);
 
@@ -120,8 +258,15 @@ int main(void) {
     }
 
     int fb_ready = (fb_open(&fb) == 0);
+    int voice_enabled[4] = {
+        audio_voice_is_enabled(&audio, 0),
+        audio_voice_is_enabled(&audio, 1),
+        audio_voice_is_enabled(&audio, 2),
+        audio_voice_is_enabled(&audio, 3)
+    };
+
     if (fb_ready) {
-        fb_draw_status(&fb, audio.enabled);
+        fb_draw_button_grid(&fb, voice_enabled);
     }
 
     int touch_ready = (touch_open(&touch) == 0);
@@ -130,6 +275,8 @@ int main(void) {
     }
 
     int touch_retry_ticks = 0;
+    int touch_debounce_ticks = 0;
+    touch_map_ctx_t touch_map = {0};
 
     while (1) {
         if (!touch_ready) {
@@ -141,15 +288,35 @@ int main(void) {
                 }
             }
         } else {
-            int x = 0;
-            int y = 0;
-            if (touch_poll_toggle(&touch, &x, &y)) {
-                audio.enabled = !audio.enabled;
-                printf("[INIT] Touch toggle at x=%d y=%d -> sine %s\n", x, y, audio.enabled ? "ON" : "OFF");
-                if (fb_ready) {
-                    fb_draw_status(&fb, audio.enabled);
+            int raw_x = 0;
+            int raw_y = 0;
+
+            if (touch_poll_toggle(&touch, &raw_x, &raw_y) && touch_debounce_ticks == 0) {
+                int sx = 0;
+                int sy = 0;
+
+                if (fb_ready && touch_map_to_screen(&touch_map, &fb, raw_x, raw_y, &sx, &sy) == 0) {
+                    int button = ui_hit_button(&fb, sx, sy);
+                    if (button >= 0 && button < audio_voice_count()) {
+                        int state = audio_toggle_voice(&audio, button);
+                        voice_enabled[button] = state;
+                        printf("[INIT] Touch at raw=(%d,%d) screen=(%d,%d) -> tone %.1fHz %s\n",
+                               raw_x,
+                               raw_y,
+                               sx,
+                               sy,
+                               audio_voice_frequency(button),
+                               state ? "ON" : "OFF");
+                        fb_draw_button_grid(&fb, voice_enabled);
+                    }
                 }
+
+                touch_debounce_ticks = 6;
             }
+        }
+
+        if (touch_debounce_ticks > 0) {
+            --touch_debounce_ticks;
         }
 
         audio_write_next(&audio);

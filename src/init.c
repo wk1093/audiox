@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -23,6 +24,55 @@ void debug_input_devices(void) {
     close(fd);
 }
 
+static int load_modules_from_list(const char *path) {
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        printf("[INIT] [ERR] Could not open module load list %s\n", path);
+        return -1;
+    }
+
+    char line[768];
+    size_t loaded = 0;
+
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') {
+            ++p;
+        }
+
+        if (*p == '\0' || *p == '\n' || *p == '#') {
+            continue;
+        }
+
+        size_t len = strlen(p);
+        while (len > 0 && (p[len - 1] == '\n' || p[len - 1] == '\r' || p[len - 1] == ' ' || p[len - 1] == '\t')) {
+            p[len - 1] = '\0';
+            --len;
+        }
+
+        if (len == 0) {
+            continue;
+        }
+
+        printf("  -> Loading: %s\n", p);
+        if (load_module(p) < 0) {
+            fclose(fp);
+            return -1;
+        }
+        ++loaded;
+    }
+
+    fclose(fp);
+
+    if (loaded == 0) {
+        printf("[INIT] [ERR] Module list %s was empty.\n", path);
+        return -1;
+    }
+
+    printf("[INIT] Loaded %zu kernel modules from %s\n", loaded, path);
+    return 0;
+}
+
 int main(void) {
     umask(0);
 
@@ -35,12 +85,9 @@ int main(void) {
     printf("==================================================\n");
 
     printf("[INIT] Injecting real-time audio gadget driver stack...\n");
-    for (size_t i = 0; i < MODULE_COUNT; ++i) {
-        printf("  -> Loading: %s\n", MODULE_STACK[i]);
-        if (load_module(MODULE_STACK[i]) < 0) {
-            printf("[INIT] [CRIT] Driver framework injection stalled.\n");
-            goto emergency_halt;
-        }
+    if (load_modules_from_list(MODULE_LOAD_LIST_FILE) < 0) {
+        printf("[INIT] [CRIT] Driver framework injection stalled.\n");
+        goto emergency_halt;
     }
     printf("[INIT] Gadget drivers mounted clean.\n");
 

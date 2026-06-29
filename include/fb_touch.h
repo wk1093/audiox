@@ -22,6 +22,7 @@ typedef struct fb_ctx {
     uint32_t height;
     uint32_t bpp;
     uint32_t line_length;
+    char dev_path[32];
 } fb_ctx_t;
 
 typedef struct touch_ctx {
@@ -72,40 +73,54 @@ static inline void fb_fill_rect(const fb_ctx_t *fb, uint32_t x, uint32_t y, uint
 
 static inline int fb_open(fb_ctx_t *fb) {
     memset(fb, 0, sizeof(*fb));
-    fb->fd = open("/dev/fb0", O_RDWR);
-    if (fb->fd < 0) {
-        printf("[INIT] [WARN] Unable to open /dev/fb0: %s\n", strerror(errno));
-        return -1;
+    fb->fd = -1;
+
+    for (int idx = 0; idx <= 3; ++idx) {
+        char path[32];
+        int path_len = snprintf(path, sizeof(path), "/dev/fb%d", idx);
+        if (path_len < 0 || (size_t)path_len >= sizeof(path)) {
+            continue;
+        }
+
+        int fd = open(path, O_RDWR);
+        if (fd < 0) {
+            continue;
+        }
+
+        struct fb_fix_screeninfo finfo;
+        struct fb_var_screeninfo vinfo;
+        if (ioctl(fd, FBIOGET_FSCREENINFO, &finfo) < 0 || ioctl(fd, FBIOGET_VSCREENINFO, &vinfo) < 0) {
+            close(fd);
+            continue;
+        }
+
+        if (vinfo.xres == 0 || vinfo.yres == 0 || vinfo.bits_per_pixel == 0 || finfo.smem_len == 0) {
+            close(fd);
+            continue;
+        }
+
+        uint8_t *map = (uint8_t *)mmap(NULL, finfo.smem_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (map == MAP_FAILED) {
+            close(fd);
+            continue;
+        }
+
+        fb->fd = fd;
+        fb->map = map;
+        fb->width = vinfo.xres;
+        fb->height = vinfo.yres;
+        fb->bpp = vinfo.bits_per_pixel;
+        fb->line_length = finfo.line_length;
+        fb->map_len = finfo.smem_len;
+        snprintf(fb->dev_path, sizeof(fb->dev_path), "%s", path);
+
+        printf("[INIT] Framebuffer ready on %s: %ux%u @ %ubpp\n", fb->dev_path, fb->width, fb->height, fb->bpp);
+        return 0;
     }
 
-    struct fb_fix_screeninfo finfo;
-    struct fb_var_screeninfo vinfo;
-
-    if (ioctl(fb->fd, FBIOGET_FSCREENINFO, &finfo) < 0 ||
-        ioctl(fb->fd, FBIOGET_VSCREENINFO, &vinfo) < 0) {
-        printf("[INIT] [WARN] Failed to query framebuffer info: %s\n", strerror(errno));
-        close(fb->fd);
-        fb->fd = -1;
-        return -1;
-    }
-
-    fb->width = vinfo.xres;
-    fb->height = vinfo.yres;
-    fb->bpp = vinfo.bits_per_pixel;
-    fb->line_length = finfo.line_length;
-    fb->map_len = finfo.smem_len;
-
-    fb->map = (uint8_t *)mmap(NULL, fb->map_len, PROT_READ | PROT_WRITE, MAP_SHARED, fb->fd, 0);
-    if (fb->map == MAP_FAILED) {
-        printf("[INIT] [WARN] Failed to mmap /dev/fb0: %s\n", strerror(errno));
-        close(fb->fd);
-        fb->fd = -1;
-        fb->map = NULL;
-        return -1;
-    }
-
-    printf("[INIT] Framebuffer ready: %ux%u @ %ubpp\n", fb->width, fb->height, fb->bpp);
-    return 0;
+    printf("[INIT] [WARN] No usable framebuffer found in /dev/fb0..3.\n");
+    printf("[INIT] [WARN] If using full KMS (vc4-kms-v3d), fbdev emulation may be unavailable.\n");
+    return -1;
 }
 
 static inline void fb_close(fb_ctx_t *fb) {

@@ -27,7 +27,7 @@ DEBUG_ROOTFS = $(DEBUG_OUT)/rootfs
 DEBUG_INITRAMFS = $(DEBUG_OUT)/initramfs.cpio.gz
 DEBUG_KERNEL ?= $(firstword $(wildcard /boot/vmlinuz-linux /boot/vmlinuz /boot/vmlinuz-generic))
 
-.PHONY: all clean rootfs initramfs fetch_deps fetch_modules qemu fancyexport export image debug debug_rootfs debug_initramfs FORCE
+.PHONY: all clean rootfs initramfs fetch_deps fetch_modules show_modules qemu fancyexport export image debug debug_rootfs debug_initramfs FORCE
 
 all: initramfs
 
@@ -38,6 +38,9 @@ fetch_deps:
 # 2. Resolve Full Module Dependency Closure from depmod.txt
 fetch_modules: fetch_deps
 	@$(SCRIPTS_DIR)/resolve_modules.sh "$(KV)" "$(OUT_DIR)" "$(DEP_FILE)"
+
+show_modules: fetch_modules
+	@cat $(OUT_DIR)/module-load.summary.txt
 
 $(MODULE_LOAD_LIST): fetch_modules
 	@:

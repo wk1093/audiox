@@ -89,6 +89,7 @@ int main(void) {
         printf("[INIT] [CRIT] Driver framework injection stalled.\n");
         goto emergency_halt;
     }
+    sleep(3); // let graphics initialize before we start writing to the framebuffer
     printf("[INIT] Gadget drivers mounted clean.\n");
 
     printf("[INIT] Synthesizing UAC2 blueprint structures...\n");

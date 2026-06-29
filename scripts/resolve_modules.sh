@@ -11,6 +11,7 @@ SRC_KERNEL_DIR="${MOD_TREE_DIR}/kernel"
 STAGE_BASE_DIR="${OUT_DIR}/modules_staging/${KV}"
 STAGE_KERNEL_DIR="${STAGE_BASE_DIR}/kernel"
 LOAD_LIST_FILE="${OUT_DIR}/module-load.list"
+SUMMARY_FILE="${OUT_DIR}/module-load.summary.txt"
 
 if [[ ! -d "${SRC_KERNEL_DIR}" ]]; then
     echo "[resolve_modules] ERROR: module tree not found: ${SRC_KERNEL_DIR}" >&2
@@ -23,6 +24,23 @@ if [[ ! -f "${DEP_FILE}" ]]; then
     exit 1
 fi
 
+if ! command -v modinfo >/dev/null 2>&1; then
+    echo "[resolve_modules] ERROR: 'modinfo' is required but not found in PATH" >&2
+    exit 1
+fi
+
+if ! command -v xz >/dev/null 2>&1; then
+    echo "[resolve_modules] ERROR: 'xz' is required but not found in PATH" >&2
+    exit 1
+fi
+
+if ! command -v find >/dev/null 2>&1; then
+    echo "[resolve_modules] ERROR: 'find' is required but not found in PATH" >&2
+    exit 1
+fi
+
+mkdir -p "${STAGE_KERNEL_DIR}"
+rm -rf "${STAGE_KERNEL_DIR}"
 mkdir -p "${STAGE_KERNEL_DIR}"
 
 for meta in modules.dep modules.dep.bin modules.alias modules.alias.bin modules.builtin modules.builtin.bin modules.order; do
@@ -33,7 +51,9 @@ done
 
 declare -A NAME_TO_REL=()
 declare -A STATE=()
+declare -A IS_SEED=()
 ORDER=()
+SEEDS=()
 
 normalize_rel() {
     local rel="$1"
@@ -172,7 +192,14 @@ while IFS= read -r raw_line; do
     line="${line%${line##*[![:space:]]}}"
     [[ -z "${line}" ]] && continue
 
-    visit_module "${line}"
+    normalized_seed="$(normalize_rel "${line}")"
+    if [[ -n "${IS_SEED[${normalized_seed}]:-}" ]]; then
+        continue
+    fi
+    IS_SEED["${normalized_seed}"]=1
+    SEEDS+=("${normalized_seed}")
+
+    visit_module "${normalized_seed}"
 done < "${DEP_FILE}"
 
 : > "${LOAD_LIST_FILE}"
@@ -191,5 +218,26 @@ for rel in "${ORDER[@]}"; do
     echo "/lib/modules/${KV}/kernel/${rel}.ko" >> "${LOAD_LIST_FILE}"
 done
 
-echo "[resolve_modules] Staged ${#ORDER[@]} modules"
+{
+    echo "Kernel Version: ${KV}"
+    echo "Seed Count: ${#SEEDS[@]}"
+    echo "Resolved Module Count: ${#ORDER[@]}"
+    echo
+    echo "Seed Modules:"
+    for seed in "${SEEDS[@]}"; do
+        echo "  ${seed}"
+    done
+    echo
+    echo "Resolved Load Order:"
+    for rel in "${ORDER[@]}"; do
+        if [[ -n "${IS_SEED[${rel}]:-}" ]]; then
+            echo "  [seed] ${rel}"
+        else
+            echo "  [dep ] ${rel}"
+        fi
+    done
+} > "${SUMMARY_FILE}"
+
+echo "[resolve_modules] Staged ${#ORDER[@]} modules from ${#SEEDS[@]} seeds"
 echo "[resolve_modules] Module load list: ${LOAD_LIST_FILE}"
+echo "[resolve_modules] Summary report: ${SUMMARY_FILE}"

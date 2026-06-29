@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -71,6 +72,16 @@ static int load_modules_from_list(const char *path) {
 
     printf("[INIT] Loaded %zu kernel modules from %s\n", loaded, path);
     return 0;
+}
+
+static void show_terminal_cursor(void) {
+    printf("\033[?25h");
+    fflush(stdout);
+}
+
+static void hide_terminal_cursor(void) {
+    printf("\033[?25l");
+    fflush(stdout);
 }
 
 typedef struct ui_layout {
@@ -159,15 +170,14 @@ static int ui_hit_button(const fb_ctx_t *fb, int x, int y) {
     return -1;
 }
 
-static void fb_draw_button_grid(const fb_ctx_t *fb, const int *enabled) {
-    if (!fb || !fb->map || !enabled) {
+static void fb_draw_button(const fb_ctx_t *fb, int idx, int enabled) {
+    if (!fb || !fb->map || idx < 0 || idx >= 4) {
         return;
     }
 
     ui_layout_t layout;
     get_ui_layout(fb, &layout);
 
-    uint32_t bg = fb_pack_color(fb, 8, 12, 16);
     uint32_t on_fill[4] = {
         fb_pack_color(fb, 24, 146, 74),
         fb_pack_color(fb, 20, 96, 178),
@@ -178,24 +188,39 @@ static void fb_draw_button_grid(const fb_ctx_t *fb, const int *enabled) {
     uint32_t on_border = fb_pack_color(fb, 210, 246, 224);
     uint32_t off_border = fb_pack_color(fb, 120, 126, 134);
 
+    int col = idx % 2;
+    int row = idx / 2;
+
+    uint32_t bx = layout.margin + (uint32_t)col * (layout.btn_w + layout.gap);
+    uint32_t by = layout.margin + (uint32_t)row * (layout.btn_h + layout.gap);
+    uint32_t fill = enabled ? on_fill[idx] : off_fill;
+    uint32_t border = enabled ? on_border : off_border;
+
+    fb_fill_rect(fb, bx, by, layout.btn_w, layout.btn_h, border);
+    fb_fill_rect(fb, bx + 4, by + 4, layout.btn_w - 8, layout.btn_h - 8, fill);
+}
+
+static void fb_draw_button_grid(const fb_ctx_t *fb, const int *enabled) {
+    if (!fb || !fb->map || !enabled) {
+        return;
+    }
+
+    ui_layout_t layout;
+    get_ui_layout(fb, &layout);
+
+    uint32_t bg = fb_pack_color(fb, 8, 12, 16);
     fb_fill_rect(fb, 0, 0, fb->width, fb->height, bg);
 
     for (int idx = 0; idx < 4; ++idx) {
-        int col = idx % 2;
-        int row = idx / 2;
-
-        uint32_t bx = layout.margin + (uint32_t)col * (layout.btn_w + layout.gap);
-        uint32_t by = layout.margin + (uint32_t)row * (layout.btn_h + layout.gap);
-        uint32_t fill = enabled[idx] ? on_fill[idx] : off_fill;
-        uint32_t border = enabled[idx] ? on_border : off_border;
-
-        fb_fill_rect(fb, bx, by, layout.btn_w, layout.btn_h, border);
-        fb_fill_rect(fb, bx + 4, by + 4, layout.btn_w - 8, layout.btn_h - 8, fill);
+        fb_draw_button(fb, idx, enabled[idx]);
     }
 }
 
 int main(void) {
     umask(0);
+
+    atexit(show_terminal_cursor);
+    hide_terminal_cursor();
 
     if (mount_basic_filesystems() < 0) {
         goto emergency_halt;
@@ -282,7 +307,7 @@ int main(void) {
                     if (button >= 0 && button < audio_voice_count()) {
                         int state = audio_toggle_voice(&audio, button);
                         voice_enabled[button] = state;
-                        fb_draw_button_grid(&fb, voice_enabled);
+                        fb_draw_button(&fb, button, state);
                     }
                 }
 

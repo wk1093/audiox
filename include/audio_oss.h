@@ -19,8 +19,17 @@ typedef struct audio_ctx {
     int enabled;
     uint8_t voice_enabled[4];
     double voice_phase[4];
+    int16_t block_buffer[128 * 2];
+    size_t pending_offset;
+    size_t pending_bytes;
     int warm_up_ticks;
+    int waiting_for_host;
+    uint32_t wait_notice_ticks;
 } audio_ctx_t;
+
+static inline size_t audio_block_bytes(void) {
+    return sizeof(int16_t) * 128 * 2;
+}
 
 static inline int audio_voice_count(void) {
     return 4;
@@ -70,7 +79,7 @@ static inline int audio_toggle_voice(audio_ctx_t *ctx, int voice_index) {
 
 static inline int audio_open(audio_ctx_t *ctx) {
     memset(ctx, 0, sizeof(*ctx));
-    ctx->fd = open("/dev/dsp", O_WRONLY);
+    ctx->fd = open("/dev/dsp", O_WRONLY | O_NONBLOCK);
     if (ctx->fd < 0) {
         perror("[CRITICAL] Could not open /dev/dsp. Is snd-pcm-oss loaded?");
         return -1;
@@ -79,6 +88,9 @@ static inline int audio_open(audio_ctx_t *ctx) {
     int format = AFMT_S16_LE;
     int channels = 2;
     int speed = SAMPLE_RATE;
+    int frag = (4 << 16) | 9; // 4 fragments of 512 bytes each (lower latency)
+
+    (void)ioctl(ctx->fd, SNDCTL_DSP_SETFRAGMENT, &frag);
 
     if (ioctl(ctx->fd, SNDCTL_DSP_SETFMT, &format) < 0) {
         perror("[WARN] Failed to set OSS audio format");
@@ -94,6 +106,8 @@ static inline int audio_open(audio_ctx_t *ctx) {
         ctx->voice_enabled[i] = (i == 0) ? 1 : 0;
         ctx->voice_phase[i] = 0.0;
     }
+    ctx->pending_offset = 0;
+    ctx->pending_bytes = 0;
     audio_refresh_enabled(ctx);
     printf("[INIT] /dev/dsp initialized to 16-bit Stereo @ %dHz.\n", SAMPLE_RATE);
     return 0;
@@ -107,45 +121,74 @@ static inline void audio_close(audio_ctx_t *ctx) {
 }
 
 static inline int audio_write_next(audio_ctx_t *ctx) {
-    int16_t block_buffer[BUFFER_FRAMES * 2];
+    if (ctx->pending_bytes == 0) {
+        for (int i = 0; i < 128; ++i) {
+            int16_t value = 0;
 
-    for (int i = 0; i < BUFFER_FRAMES; ++i) {
-        int16_t value = 0;
+            if (ctx->enabled) {
+                double mixed = 0.0;
 
-        if (ctx->enabled) {
-            double mixed = 0.0;
+                for (int v = 0; v < audio_voice_count(); ++v) {
+                    if (!ctx->voice_enabled[v]) {
+                        continue;
+                    }
 
-            for (int v = 0; v < audio_voice_count(); ++v) {
-                if (!ctx->voice_enabled[v]) {
-                    continue;
+                    mixed += sin(ctx->voice_phase[v]);
+                    ctx->voice_phase[v] += (2.0 * PI * audio_voice_frequency(v)) / SAMPLE_RATE;
+                    if (ctx->voice_phase[v] >= 2.0 * PI) {
+                        ctx->voice_phase[v] -= 2.0 * PI;
+                    }
                 }
 
-                mixed += sin(ctx->voice_phase[v]);
-                ctx->voice_phase[v] += (2.0 * PI * audio_voice_frequency(v)) / SAMPLE_RATE;
-                if (ctx->voice_phase[v] >= 2.0 * PI) {
-                    ctx->voice_phase[v] -= 2.0 * PI;
-                }
+                double sample_value = (AMPLITUDE * 0.35) * mixed;
+                if (sample_value > 32767.0) sample_value = 32767.0;
+                if (sample_value < -32768.0) sample_value = -32768.0;
+                value = (int16_t)sample_value;
             }
 
-            double sample_value = (AMPLITUDE * 0.35) * mixed;
-            if (sample_value > 32767.0) sample_value = 32767.0;
-            if (sample_value < -32768.0) sample_value = -32768.0;
-            value = (int16_t)sample_value;
+            ctx->block_buffer[i * 2] = value;
+            ctx->block_buffer[i * 2 + 1] = value;
         }
 
-        block_buffer[i * 2] = value;
-        block_buffer[i * 2 + 1] = value;
+        ctx->pending_offset = 0;
+        ctx->pending_bytes = audio_block_bytes();
     }
 
-    ssize_t bytes_to_write = (ssize_t)sizeof(block_buffer);
-    ssize_t bytes_written = write(ctx->fd, block_buffer, (size_t)bytes_to_write);
+    uint8_t *write_ptr = ((uint8_t *)ctx->block_buffer) + ctx->pending_offset;
+    ssize_t bytes_written = write(ctx->fd, write_ptr, ctx->pending_bytes);
+
+    if (bytes_written > 0) {
+        ctx->pending_offset += (size_t)bytes_written;
+        ctx->pending_bytes -= (size_t)bytes_written;
+
+        if (ctx->waiting_for_host) {
+            ctx->waiting_for_host = 0;
+            printf("[INIT] /dev/dsp host stream resumed.\n");
+        }
+
+        return 0;
+    }
 
     if (bytes_written < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            // Normal non-blocking backpressure from OSS; do not treat as host-down.
+            usleep(200);
+            return 0;
+        }
+
         if (errno == EIO) {
-            if ((ctx->warm_up_ticks++ % 100) == 0) {
+            if (!ctx->waiting_for_host) {
+                ctx->waiting_for_host = 1;
+                ctx->wait_notice_ticks = 0;
                 printf("[INIT] [WARN] /dev/dsp busy or host stream inactive. Waiting for host...\n");
+            } else if ((++ctx->wait_notice_ticks % 5000) == 0) {
+                printf("[INIT] [WARN] Still waiting on /dev/dsp host stream...\n");
             }
-            usleep(10000);
+
+            // Drop any queued block so old audio is not emitted when host resumes.
+            ctx->pending_offset = 0;
+            ctx->pending_bytes = 0;
+            usleep(1000);
             return 0;
         }
 

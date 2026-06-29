@@ -8,6 +8,21 @@
 #include "init_helpers.h"
 #include "usb_gadget.h"
 
+void debug_input_devices(void) {
+    int fd = open("/proc/bus/input/devices", O_RDONLY);
+    if (fd < 0) {
+        printf("[INIT] Failed to open /proc/bus/input/devices\n");
+        return;
+    }
+    char buf[4096];
+    ssize_t bytes = read(fd, buf, sizeof(buf) - 1);
+    if (bytes > 0) {
+        buf[bytes] = '\0';
+        printf("--- CURRENT INPUT DEVICES ---\n%s-----------------------------\n", buf);
+    }
+    close(fd);
+}
+
 int main(void) {
     umask(0);
 
@@ -29,14 +44,6 @@ int main(void) {
     }
     printf("[INIT] Gadget drivers mounted clean.\n");
 
-    printf("[INIT] Loading optional touch/input modules...\n");
-    for (size_t i = 0; i < TOUCH_MODULE_COUNT; ++i) {
-        printf("  -> Optional: %s\n", TOUCH_MODULE_STACK[i]);
-        if (load_module(TOUCH_MODULE_STACK[i]) < 0) {
-            printf("[INIT] [WARN] Optional touch module unavailable: %s\n", TOUCH_MODULE_STACK[i]);
-        }
-    }
-
     printf("[INIT] Synthesizing UAC2 blueprint structures...\n");
     if (setup_usb_audio_gadget() < 0) {
         printf("[INIT] [CRIT] Structural assembly error tracked during ConfigFS generation.\n");
@@ -54,6 +61,8 @@ int main(void) {
     printf("  SUCCESS: DEVICE OPERATIONAL ENGINES ARE LIVE     \n");
     printf("==================================================\n\n");
 
+    debug_input_devices();
+    
     audio_ctx_t audio;
     fb_ctx_t fb;
     touch_ctx_t touch;

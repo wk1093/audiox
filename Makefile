@@ -15,8 +15,14 @@ REQUIRED_MODULES = \
 	drivers/gpu/drm/drm_panel_orientation_quirks \
 	drivers/gpu/drm/drm \
 	drivers/gpu/drm/panel/panel-raspberrypi-touchscreen \
+	drivers/gpio/gpio-regmap \
 	drivers/base/regmap/regmap-i2c \
 	drivers/regulator/rpi-panel-attiny-regulator \
+	drivers/regulator/rpi-panel-v2-regulator \
+	drivers/i2c/busses/i2c-bcm2835 \
+	drivers/i2c/i2c-dev \
+	drivers/i2c/i2c-mux \
+	drivers/i2c/muxes/i2c-mux-pinctrl \
 	drivers/input/touchscreen/raspberrypi-ts \
 	drivers/hid/hid-multitouch \
 	drivers/input/touchscreen/usbtouchscreen \
@@ -84,7 +90,10 @@ fetch_modules:
 	mkdir -p $$MOD_DIR/kernel/drivers/gpu/drm; \
 	mkdir -p $$MOD_DIR/kernel/drivers/gpu/drm/panel; \
 	mkdir -p $$MOD_DIR/kernel/drivers/base/regmap; \
+	mkdir -p $$MOD_DIR/kernel/drivers/gpio; \
 	mkdir -p $$MOD_DIR/kernel/drivers/regulator; \
+	mkdir -p $$MOD_DIR/kernel/drivers/i2c/busses; \
+	mkdir -p $$MOD_DIR/kernel/drivers/i2c/muxes; \
 	mkdir -p $$MOD_DIR/kernel/drivers/hid/i2c-hid; \
 	mkdir -p $$MOD_DIR/kernel/drivers/hid; \
 	mkdir -p $$MOD_DIR/kernel/sound/core/oss; \

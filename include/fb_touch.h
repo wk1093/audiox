@@ -218,6 +218,7 @@ static inline int touch_poll_toggle(touch_ctx_t *touch, int *x, int *y) {
     }
 
     int toggled = 0;
+    int touch_activity = 0;
     struct input_event ev;
     ssize_t n;
 
@@ -225,15 +226,24 @@ static inline int touch_poll_toggle(touch_ctx_t *touch, int *x, int *y) {
         if (ev.type == EV_ABS) {
             if (ev.code == ABS_X || ev.code == ABS_MT_POSITION_X) {
                 touch->last_x = ev.value;
+                touch_activity = 1;
             } else if (ev.code == ABS_Y || ev.code == ABS_MT_POSITION_Y) {
                 touch->last_y = ev.value;
+                touch_activity = 1;
             } else if (ev.code == ABS_MT_TRACKING_ID && ev.value >= 0) {
-                toggled = 1;
+                touch_activity = 1;
+            } else if (ev.code == ABS_PRESSURE && ev.value > 0) {
+                touch_activity = 1;
             }
         }
 
         if (ev.type == EV_KEY && ev.code == BTN_TOUCH && ev.value == 1) {
+            touch_activity = 1;
+        }
+
+        if (ev.type == EV_SYN && ev.code == SYN_REPORT && touch_activity) {
             toggled = 1;
+            touch_activity = 0;
         }
     }
 

@@ -1,5 +1,6 @@
 CC = aarch64-linux-gnu-gcc
-CFLAGS = -static -O3 -Iinclude -Wall -Wextra -Werror
+CFLAGS = -static -O3 -Iinclude -Wall -Wextra -Werror -pthread
+LIBS = -lm -pthread
 
 KV ?= 6.18.36-v8+
 VC4_OVERLAY ?= vc4-fkms-v3d-pi4
@@ -13,6 +14,7 @@ INITRAMFS = $(OUT_DIR)/initramfs.cpio.gz
 MODULE_LOAD_LIST = $(OUT_DIR)/module-load.list
 SCRIPTS_DIR = $(CURDIR)/scripts
 DEP_FILE = $(CURDIR)/depmod.txt
+WAV_DIR ?= $(CURDIR)/wavs
 FIRMWARE_GIT_URL ?= https://github.com/raspberrypi/firmware.git
 
 SD_MOUNT_BOOT ?= /run/media/$(USER)/bootfs
@@ -22,7 +24,7 @@ IMG_SIZE_MB = 128
 
 # Debug build variables (native x86_64, runs in qemu-system-x86_64)
 DEBUG_CC     = gcc
-DEBUG_CFLAGS = -static -O0 -g -Iinclude -Wall -Wextra -Werror
+DEBUG_CFLAGS = -static -O0 -g -Iinclude -Wall -Wextra -Werror -pthread
 DEBUG_OUT    = $(OUT_DIR)/debug
 DEBUG_ROOTFS = $(DEBUG_OUT)/rootfs
 DEBUG_INITRAMFS = $(DEBUG_OUT)/initramfs.cpio.gz
@@ -49,18 +51,29 @@ $(MODULE_LOAD_LIST): fetch_modules
 $(ROOTFS_DIR)/init: FORCE src/init.c
 	@echo "Compiling system architecture init binary..."
 	mkdir -p $(ROOTFS_DIR)
-	$(CC) $(CFLAGS) -DKERNEL_VERSION='"$(KV)"' -o $(ROOTFS_DIR)/init src/init.c -lm
+	$(CC) $(CFLAGS) -DKERNEL_VERSION='"$(KV)"' -o $(ROOTFS_DIR)/init src/init.c $(LIBS)
 
 # 3. Build the File System Structure and Stage Kernel Modules
 rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST)
 	@echo "Creating rootfs structure..."
 	mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/sbin $(ROOTFS_DIR)/etc
 	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev
+	mkdir -p $(ROOTFS_DIR)/etc/wavs
 	mkdir -p $(ROOTFS_DIR)/lib/modules
 	
 	@echo "Staging kernel objects into target lib tree..."
 	cp -r $(OUT_DIR)/modules_staging/* $(ROOTFS_DIR)/lib/modules/
 	cp $(MODULE_LOAD_LIST) $(ROOTFS_DIR)/etc/module-load.list
+	@if [ -f "$(WAV_DIR)/voice0.wav" ] && [ -f "$(WAV_DIR)/voice1.wav" ] && [ -f "$(WAV_DIR)/voice2.wav" ] && [ -f "$(WAV_DIR)/voice3.wav" ]; then \
+		echo "Staging WAV voices from $(WAV_DIR)..."; \
+		cp "$(WAV_DIR)/voice0.wav" "$(ROOTFS_DIR)/etc/wavs/"; \
+		cp "$(WAV_DIR)/voice1.wav" "$(ROOTFS_DIR)/etc/wavs/"; \
+		cp "$(WAV_DIR)/voice2.wav" "$(ROOTFS_DIR)/etc/wavs/"; \
+		cp "$(WAV_DIR)/voice3.wav" "$(ROOTFS_DIR)/etc/wavs/"; \
+	else \
+		echo "Warning: missing one or more required wav files in $(WAV_DIR) (voice0.wav..voice3.wav)."; \
+		echo "Warning: runtime audio init will fail until all 4 files are present."; \
+	fi
 
 # 4. Pack the Directory into an Initramfs Archive
 initramfs: rootfs
@@ -111,12 +124,23 @@ image: initramfs
 $(DEBUG_ROOTFS)/init: FORCE src/init.c
 	@echo "Compiling debug init binary (x86_64)..."
 	mkdir -p $(DEBUG_ROOTFS)
-	$(DEBUG_CC) $(DEBUG_CFLAGS) -o $(DEBUG_ROOTFS)/init src/init.c -lm
+	$(DEBUG_CC) $(DEBUG_CFLAGS) -o $(DEBUG_ROOTFS)/init src/init.c $(LIBS)
 
 debug_rootfs: $(DEBUG_ROOTFS)/init
 	@echo "Creating debug rootfs structure..."
 	mkdir -p $(DEBUG_ROOTFS)/bin $(DEBUG_ROOTFS)/sbin $(DEBUG_ROOTFS)/etc
 	mkdir -p $(DEBUG_ROOTFS)/proc $(DEBUG_ROOTFS)/sys $(DEBUG_ROOTFS)/dev
+	mkdir -p $(DEBUG_ROOTFS)/etc/wavs
+	@if [ -f "$(WAV_DIR)/voice0.wav" ] && [ -f "$(WAV_DIR)/voice1.wav" ] && [ -f "$(WAV_DIR)/voice2.wav" ] && [ -f "$(WAV_DIR)/voice3.wav" ]; then \
+		echo "Staging WAV voices from $(WAV_DIR) into debug rootfs..."; \
+		cp "$(WAV_DIR)/voice0.wav" "$(DEBUG_ROOTFS)/etc/wavs/"; \
+		cp "$(WAV_DIR)/voice1.wav" "$(DEBUG_ROOTFS)/etc/wavs/"; \
+		cp "$(WAV_DIR)/voice2.wav" "$(DEBUG_ROOTFS)/etc/wavs/"; \
+		cp "$(WAV_DIR)/voice3.wav" "$(DEBUG_ROOTFS)/etc/wavs/"; \
+	else \
+		echo "Warning: missing one or more required wav files in $(WAV_DIR) (voice0.wav..voice3.wav)."; \
+		echo "Warning: debug runtime audio init will fail until all 4 files are present."; \
+	fi
 
 debug_initramfs: debug_rootfs
 	@echo "Packaging debug initramfs..."

@@ -2,7 +2,6 @@
 # Keep this list short: transitive dependencies are resolved automatically.
 
 # Audio / UAC2 gadget
-sound/core/oss/snd-pcm-oss
 sound/soc/snd-soc-core
 drivers/usb/gadget/libcomposite
 drivers/usb/gadget/function/u_audio

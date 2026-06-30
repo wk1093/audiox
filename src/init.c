@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <pthread.h>
+#include <sched.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -23,6 +25,51 @@ void debug_input_devices(void) {
         printf("--- CURRENT INPUT DEVICES ---\n%s-----------------------------\n", buf);
     }
     close(fd);
+}
+
+static int set_current_thread_other(const char *tag) {
+    struct sched_param param;
+    memset(&param, 0, sizeof(param));
+    if (sched_setscheduler(0, SCHED_OTHER, &param) < 0) {
+        printf("[INIT] [WARN] Failed to set %s thread to SCHED_OTHER: %s\n", tag, strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+static int create_fifo_audio_thread(pthread_t *thread, void *(*entry)(void *), void *arg, int priority) {
+    pthread_attr_t attr;
+    if (pthread_attr_init(&attr) != 0) {
+        printf("[INIT] [WARN] pthread_attr_init failed for audio thread.\n");
+        return pthread_create(thread, NULL, entry, arg);
+    }
+
+    int attr_ok = 1;
+    if (pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED) != 0) {
+        attr_ok = 0;
+    }
+    if (attr_ok && pthread_attr_setschedpolicy(&attr, SCHED_FIFO) != 0) {
+        attr_ok = 0;
+    }
+
+    struct sched_param param;
+    memset(&param, 0, sizeof(param));
+    param.sched_priority = priority;
+    if (attr_ok && pthread_attr_setschedparam(&attr, &param) != 0) {
+        attr_ok = 0;
+    }
+
+    int rc = pthread_create(thread, attr_ok ? &attr : NULL, entry, arg);
+    pthread_attr_destroy(&attr);
+    return rc;
+}
+
+static void *audio_thread_main(void *arg) {
+    audio_ctx_t *audio = (audio_ctx_t *)arg;
+    while (1) {
+        audio_write_next(audio);
+    }
+    return NULL;
 }
 
 static int load_modules_from_list(const char *path) {
@@ -265,6 +312,26 @@ int main(void) {
         goto emergency_halt;
     }
 
+    (void)set_current_thread_other("main");
+
+    pthread_t audio_thread;
+    int audio_prio = 60;
+    if (create_fifo_audio_thread(&audio_thread, audio_thread_main, &audio, audio_prio) != 0) {
+        printf("[INIT] [WARN] Failed to create FIFO audio thread, retrying with default scheduling.\n");
+        if (pthread_create(&audio_thread, NULL, audio_thread_main, &audio) != 0) {
+            printf("[INIT] [CRIT] Failed to create audio thread.\n");
+            audio_close(&audio);
+            goto emergency_halt;
+        }
+
+        struct sched_param fallback_param;
+        memset(&fallback_param, 0, sizeof(fallback_param));
+        fallback_param.sched_priority = audio_prio;
+        if (pthread_setschedparam(audio_thread, SCHED_FIFO, &fallback_param) != 0) {
+            printf("[INIT] [WARN] Audio thread could not switch to SCHED_FIFO: %s\n", strerror(errno));
+        }
+    }
+
     int fb_ready = (fb_open(&fb) == 0);
     int voice_enabled[4] = {
         audio_voice_is_enabled(&audio, 0),
@@ -283,6 +350,8 @@ int main(void) {
     }
 
     int touch_retry_ticks = 0;
+    int hold_grace_ticks[4] = {0, 0, 0, 0};
+    const int hold_release_grace = 12;
 
     while (1) {
         if (!touch_ready) {
@@ -297,7 +366,7 @@ int main(void) {
             if (fb_ready) {
                 int raw_x[TOUCH_MAX_POINTS];
                 int raw_y[TOUCH_MAX_POINTS];
-                int held[4] = {0, 0, 0, 0};
+                int touched_now[4] = {0, 0, 0, 0};
 
                 int points = touch_poll_points(&touch, raw_x, raw_y, TOUCH_MAX_POINTS);
                 if (points > 0) {
@@ -307,25 +376,32 @@ int main(void) {
                         if (touch_map_to_screen(&touch, &fb, raw_x[i], raw_y[i], &sx, &sy) == 0) {
                             int button = ui_hit_button(&fb, sx, sy);
                             if (button >= 0 && button < audio_voice_count()) {
-                                held[button] = 1;
+                                touched_now[button] = 1;
                             }
                         }
                     }
                 }
 
                 for (int i = 0; i < audio_voice_count(); ++i) {
-                    if (held[i] == voice_enabled[i]) {
+                    if (touched_now[i]) {
+                        hold_grace_ticks[i] = hold_release_grace;
+                    } else if (hold_grace_ticks[i] > 0) {
+                        --hold_grace_ticks[i];
+                    }
+
+                    int should_enable = (hold_grace_ticks[i] > 0) ? 1 : 0;
+
+                    if (should_enable == voice_enabled[i]) {
                         continue;
                     }
 
-                    voice_enabled[i] = held[i];
-                    audio_set_voice(&audio, i, held[i]);
-                    fb_draw_button(&fb, i, held[i]);
+                    voice_enabled[i] = should_enable;
+                    audio_set_voice(&audio, i, should_enable);
+                    fb_draw_button(&fb, i, should_enable);
                 }
             }
         }
-
-        audio_write_next(&audio);
+        usleep(2000);
     }
 
     audio_close(&audio);

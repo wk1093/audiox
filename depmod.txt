@@ -3,6 +3,11 @@
 
 # Audio / UAC2 gadget
 sound/soc/snd-soc-core
+sound/core/snd-rawmidi
+sound/core/seq/snd-seq
+sound/core/seq/snd-seq-midi
+sound/core/seq/snd-seq-midi-event
+sound/usb/snd-usb-audio
 drivers/usb/gadget/libcomposite
 drivers/usb/gadget/function/u_audio
 drivers/usb/gadget/function/usb_f_uac2

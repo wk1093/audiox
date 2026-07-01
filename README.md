@@ -1,8 +1,8 @@
 # audiox
 
-`audiox` is a small Raspberry Pi audio gadget project I am building as a single initramfs app.
+`audiox` is a custom Raspberry Pi audio workstation project that combines a low-level initramfs software stack with a long-term plan for purpose-built audio hardware.
 
-It boots straight into a custom `init` process, brings up a USB UAC2 gadget, plays local WAV voices, and shows a simple touchscreen UI with MIDI status.
+Right now it boots straight into a custom `init` process, brings up a USB UAC2 gadget, plays local WAV voices, and renders touchscreen + MIDI control; long term the same software will drive multiple reverse-HAT board variants with patchable analog/digital routing, effects, and persistent user configuration.
 
 ## What it does
 

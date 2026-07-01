@@ -47,5 +47,8 @@ This is where I want audiox to go:
 - MIDI-driven control over digital effects, including touchscreen MIDI mapping tools
 - Soundboard support by uploading audio files into rootfs
 - Persistent storage of config + mappings, with a simple text format for MIDI mappings so edits can be made without the touchscreen
+- Multiple board variants for different users, all running the same software stack (for example: a compact 4x4 digital + 2x4 analog option, and larger premium options like 8x8 or 4x8)
+- A deliberately simple rootfs layout so advanced users can do precise configuration without reflashing initramfs
+- If touchscreen flow is not preferred, configs should still be fully manageable through files; later I may add desktop software with a better editor UX than a small Pi touchscreen
 
 End goal: a premium, flexible audio workstation/interface that feels like hardware-first patching plus deep digital control.

@@ -5,6 +5,7 @@ LIBS = -lm -pthread
 KV ?= 6.18.36-v8+
 VC4_OVERLAY ?= vc4-fkms-v3d-pi4
 DSI_TOUCH_OVERLAY ?=
+DEBUG_SHELL ?= 0
 
 # Paths
 ARCH ?= aarch64
@@ -51,7 +52,7 @@ $(MODULE_LOAD_LIST): fetch_modules
 $(ROOTFS_DIR)/init: FORCE src/init.c
 	@echo "Compiling system architecture init binary..."
 	mkdir -p $(ROOTFS_DIR)
-	$(CC) $(CFLAGS) -DKERNEL_VERSION='"$(KV)"' -o $(ROOTFS_DIR)/init src/init.c $(LIBS)
+	$(CC) $(CFLAGS) -DKERNEL_VERSION='"$(KV)"' -DDEBUG_SHELL=$(DEBUG_SHELL) -o $(ROOTFS_DIR)/init src/init.c $(LIBS)
 
 # 3. Build the File System Structure and Stage Kernel Modules
 rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST)
@@ -124,7 +125,7 @@ image: initramfs
 $(DEBUG_ROOTFS)/init: FORCE src/init.c
 	@echo "Compiling debug init binary (x86_64)..."
 	mkdir -p $(DEBUG_ROOTFS)
-	$(DEBUG_CC) $(DEBUG_CFLAGS) -o $(DEBUG_ROOTFS)/init src/init.c $(LIBS)
+	$(DEBUG_CC) $(DEBUG_CFLAGS) -DDEBUG_SHELL=$(DEBUG_SHELL) -o $(DEBUG_ROOTFS)/init src/init.c $(LIBS)
 
 debug_rootfs: $(DEBUG_ROOTFS)/init
 	@echo "Creating debug rootfs structure..."

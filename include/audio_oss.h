@@ -258,7 +258,7 @@ static inline int16_t audio_voice_next_sample(audio_ctx_t *ctx, int voice_index)
     uint32_t frac = cursor_q16 & 0xFFFFU;
     if (frame >= wv->frames) {
         frame %= (uint32_t)wv->frames;
-        ctx->voice_cursor_q16[voice_index] = frame << 16;;
+        ctx->voice_cursor_q16[voice_index] = frame << 16;
         cursor_q16 = ctx->voice_cursor_q16[voice_index];
         frac = cursor_q16 & 0xFFFFU;
     }
@@ -501,7 +501,7 @@ static inline int audio_open(audio_ctx_t *ctx) {
         }
     }
 
-    // Start with all voices disabled - UI/buttons will enable them
+    ctx->voice_enabled[0] = 1;
     ctx->pending_offset = 0;
     ctx->pending_bytes = 0;
     audio_refresh_enabled(ctx);
@@ -583,62 +583,62 @@ static inline int audio_write_next(audio_ctx_t *ctx) {
         ctx->pending_bytes = audio_block_bytes();
     }
 
-    /* Keep writing until buffer is drained or device blocks */
-    while (ctx->pending_bytes > 0) {
-        size_t frames_left = ctx->pending_bytes / ctx->frame_bytes;
+    size_t frame_offset = ctx->pending_offset / ctx->frame_bytes;
+    size_t frames_left = ctx->pending_bytes / ctx->frame_bytes;
 
-        struct snd_xferi xfer;
-        memset(&xfer, 0, sizeof(xfer));
-        xfer.buf = ((uint8_t *)ctx->block_buffer) + ctx->pending_offset;
-        xfer.frames = frames_left;
+    struct snd_xferi xfer;
+    memset(&xfer, 0, sizeof(xfer));
+    xfer.buf = ((uint8_t *)ctx->block_buffer) + ctx->pending_offset;
+    xfer.frames = frames_left;
 
-        int rc = ioctl(ctx->fd, SNDRV_PCM_IOCTL_WRITEI_FRAMES, &xfer);
-        snd_pcm_sframes_t frames_written = xfer.result;
+    int rc = ioctl(ctx->fd, SNDRV_PCM_IOCTL_WRITEI_FRAMES, &xfer);
+    snd_pcm_sframes_t frames_written = xfer.result;
 
-        if (rc < 0 && frames_written >= 0) {
-            frames_written = -errno;
-        }
-
-        if (frames_written > 0) {
-            size_t bytes_written = (size_t)frames_written * ctx->frame_bytes;
-            ctx->pending_offset += bytes_written;
-            ctx->pending_bytes -= bytes_written;
-
-            if (ctx->waiting_for_host) {
-                ctx->waiting_for_host = 0;
-                printf("[INIT] ALSA host stream resumed.\n");
-            }
-            continue; /* Keep writing while device accepts data */
-        }
-
-        if (frames_written < 0) {
-            int err = (int)(-frames_written);
-
-            if (err == EPIPE || err == ESTRPIPE || err == EIO) {
-                (void)ioctl(ctx->fd, SNDRV_PCM_IOCTL_PREPARE);
-
-                if (!ctx->waiting_for_host) {
-                    ctx->waiting_for_host = 1;
-                    ctx->wait_notice_ticks = 0;
-                    printf("[INIT] [WARN] ALSA stream inactive (xrun/suspend). Waiting for host...\n");
-                } else if ((++ctx->wait_notice_ticks % 5000) == 0) {
-                    printf("[INIT] [WARN] Still waiting on ALSA host stream...\n");
-                }
-
-                ctx->pending_offset = 0;
-                ctx->pending_bytes = 0;
-                usleep(1000);
-                break;
-            }
-
-            printf("[INIT] [WARN] ALSA write error: %s (errno %d)\n", strerror(err), err);
-            usleep(10000);
-            break;
-        }
-
-        /* frames_written == 0: device buffer full, stop writing */
-        break;
+    if (rc < 0 && frames_written >= 0) {
+        frames_written = -errno;
     }
+
+    (void)frame_offset;
+
+    if (frames_written > 0) {
+        size_t bytes_written = (size_t)frames_written * ctx->frame_bytes;
+        ctx->pending_offset += bytes_written;
+        ctx->pending_bytes -= bytes_written;
+
+        if (ctx->waiting_for_host) {
+            ctx->waiting_for_host = 0;
+            printf("[INIT] ALSA host stream resumed.\n");
+        }
+
+        return 0;
+    }
+
+    if (frames_written < 0) {
+        int err = (int)(-frames_written);
+
+        if (err == EPIPE || err == ESTRPIPE || err == EIO) {
+            (void)ioctl(ctx->fd, SNDRV_PCM_IOCTL_PREPARE);
+
+            if (!ctx->waiting_for_host) {
+                ctx->waiting_for_host = 1;
+                ctx->wait_notice_ticks = 0;
+                printf("[INIT] [WARN] ALSA stream inactive (xrun/suspend). Waiting for host...\n");
+            } else if ((++ctx->wait_notice_ticks % 5000) == 0) {
+                printf("[INIT] [WARN] Still waiting on ALSA host stream...\n");
+            }
+
+            ctx->pending_offset = 0;
+            ctx->pending_bytes = 0;
+            usleep(1000);
+            return 0;
+        }
+
+        printf("[INIT] [WARN] ALSA write error: %s (errno %d)\n", strerror(err), err);
+        usleep(10000);
+        return 0;
+    }
+
+    usleep(1000);
 
     return 0;
 }

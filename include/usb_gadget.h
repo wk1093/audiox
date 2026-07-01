@@ -20,7 +20,7 @@ static inline int setup_usb_audio_gadget(void) {
     if (ensure_dir(GADGET_ROOT "/strings/0x409", 0755) < 0) return -1;
     if (write_sys_node(GADGET_ROOT "/strings/0x409/serialnumber", "0000000001\n") < 0) return -1;
     if (write_sys_node(GADGET_ROOT "/strings/0x409/manufacturer", "WyattKloos\n") < 0) return -1;
-    if (write_sys_node(GADGET_ROOT "/strings/0x409/product", "Custom Audio Matrix\n") < 0) return -1;
+    if (write_sys_node(GADGET_ROOT "/strings/0x409/product", "audiox\n") < 0) return -1;
 
     if (ensure_dir(GADGET_ROOT "/configs/c.1", 0755) < 0) return -1;
     if (ensure_dir(GADGET_ROOT "/configs/c.1/strings/0x409", 0755) < 0) return -1;

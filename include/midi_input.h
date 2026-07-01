@@ -71,7 +71,7 @@ static inline void midi_format_message(uint8_t status, uint8_t d0, uint8_t d1, c
 static inline int midi_parse_byte(midi_ctx_t *midi, uint8_t byte, midi_log_push_fn log_push, void *log_ctx) {
     if (byte >= 0xF8) {
         const char *name = NULL;
-        if (byte == 0xF8) return 0; // We don't want to fill logs
+        if (byte == 0xF8) return 0;
         if (byte == 0xFA) name = "START";
         if (byte == 0xFB) name = "CONTINUE";
         if (byte == 0xFC) name = "STOP";

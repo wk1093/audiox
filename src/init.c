@@ -22,7 +22,7 @@
 #define DEBUG_SHELL 0
 #endif
 
-#define CONFIG_MOUNT_POINT "/raspi_audio"
+#define CONFIG_MOUNT_POINT "/audiox"
 #define CONFIG_DEVICE_PATH "/dev/mmcblk0p2"
 #define CONFIG_FILE_PATH CONFIG_MOUNT_POINT "/config.txt"
 
@@ -293,36 +293,36 @@ int main(void) {
         goto emergency_halt;
     }
 
-    printf("\n==================================================\n");
-    printf("   CUSTOM AUDIO DESK APPLIANCE - INITIALIZER      \n");
-    printf("==================================================\n");
+    printf("\n========================================\n");
+    printf("            audiox init\n");
+    printf("========================================\n");
 
     run_temp_fs_shell();
 
-    printf("[INIT] Injecting real-time audio gadget driver stack...\n");
+    printf("[INIT] Loading kernel modules...\n");
     if (load_modules_from_list(MODULE_LOAD_LIST_FILE) < 0) {
-        printf("[INIT] [CRIT] Driver framework injection stalled.\n");
+        printf("[INIT] [CRIT] Failed to load kernel modules.\n");
         goto emergency_halt;
     }
-    sleep(3); // let graphics initialize before we start writing to the framebuffer
-    printf("[INIT] Gadget drivers mounted clean.\n");
+    sleep(3);
+    printf("[INIT] Kernel modules loaded.\n");
 
-    printf("[INIT] Synthesizing UAC2 blueprint structures...\n");
+    printf("[INIT] Setting up USB audio gadget...\n");
     if (setup_usb_audio_gadget() < 0) {
-        printf("[INIT] [CRIT] Structural assembly error tracked during ConfigFS generation.\n");
+        printf("[INIT] [CRIT] Failed to configure USB audio gadget.\n");
         goto emergency_halt;
     }
 
-    printf("[INIT] Binding operational stack to DesignWare OTG Core controller...\n");
+    printf("[INIT] Binding gadget to UDC...\n");
     if (write_sys_node(GADGET_UDC_NODE, GADGET_UDC_NAME) < 0) {
         goto emergency_halt;
     }
 
     sleep(1);
 
-    printf("\n==================================================\n");
-    printf("  SUCCESS: DEVICE OPERATIONAL ENGINES ARE LIVE     \n");
-    printf("==================================================\n\n");
+    printf("\n========================================\n");
+    printf("             audiox ready\n");
+    printf("========================================\n\n");
 
     debug_input_devices();
 
@@ -421,6 +421,8 @@ int main(void) {
                 model.config_mount_active = app.config.mount_active;
                 model.log = &app.log;
 
+                fb_begin_frame(&app.fb);
+
                 ui_console_frame(&app.fb,
                                  app.touch_ready ? &app.touch : NULL,
                                  app.touch_ready ? raw_x : NULL,
@@ -429,6 +431,7 @@ int main(void) {
                                  &app.cfg_touch_latch,
                                  &model,
                                  NULL);
+                (void)fb_present(&app.fb);
                 render_dirty = 0;
             }
         } else {
@@ -453,7 +456,7 @@ int main(void) {
     return 0;
 
 emergency_halt:
-    printf("[INIT] System tracking context faulted. Entering panic protection loop.\n");
+    printf("[INIT] Critical startup error. Halting.\n");
     while (1) {
         sleep(60);
     }

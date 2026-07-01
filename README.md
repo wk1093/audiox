@@ -1,0 +1,51 @@
+# audiox
+
+`audiox` is a small Raspberry Pi audio gadget project I am building as a single initramfs app.
+
+It boots straight into a custom `init` process, brings up a USB UAC2 gadget, plays local WAV voices, and shows a simple touchscreen UI with MIDI status.
+
+## What it does
+
+- Loads the required kernel modules from `/etc/module-load.list`
+- Configures a USB audio gadget through ConfigFS
+- Starts audio playback in a dedicated audio thread
+- Polls touch + MIDI input and renders a framebuffer UI
+- Stores a simple config flag at `/audiox/config.txt`
+
+## Build
+
+Main output is an initramfs image:
+
+```bash
+make initramfs
+```
+
+Useful targets:
+
+- `make show_kernel` - show detected kernel version
+- `make qemu` - boot in QEMU (aarch64) // doesn't work because qemu raspi support is very minimal (no gui, no USB, no audio)
+- `make fancyexport` - wait for SD mount and export build artifacts
+- `make image` - create a flashable image file
+- `make debug` - native x86_64 debug boot in QEMU // probably doesn't work anymore because of raspi-specific code
+
+## Notes
+
+- Put `voice0.wav` ... `voice3.wav` in `wavs/`
+- This project is still rough around the edges, but it is usable for bring-up and iteration
+
+## Long-term vision
+
+This is where I want audiox to go:
+
+- A custom reverse-HAT style board where the Raspberry Pi mounts on top of a larger audio board
+- At least 4 audio inputs and 4 audio outputs using dedicated ADC/DAC chips
+- A 48V mic input and at least 3 instrument inputs with basic op-amp front ends for clean, strong signal levels
+- Patchable routing everywhere: for now likely with jumper wires, later possibly full audio jack patch bays
+- Dedicated outputs for headphones and monitor speakers
+- Built-in mixers and hardware volume knobs, with mixer paths also patchable (analog + digital in any combination)
+- Touchscreen control for "virtual audio cables", effects routing, and mix control
+- MIDI-driven control over digital effects, including touchscreen MIDI mapping tools
+- Soundboard support by uploading audio files into rootfs
+- Persistent storage of config + mappings, with a simple text format for MIDI mappings so edits can be made without the touchscreen
+
+End goal: a premium, flexible audio workstation/interface that feels like hardware-first patching plus deep digital control.

@@ -121,12 +121,15 @@ static inline void ui_console_draw_log_panel(const fb_ctx_t *fb,
     ui_draw_text(fb, text_x, text_y, "MIDI LOG", theme->header, 1);
 
     char status_line[160];
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-truncation"
     snprintf(status_line,
              sizeof(status_line),
              "STATUS: %s%s%s",
              model->midi_connected ? "CONNECTED" : "WAITING",
              (model->midi_connected && model->midi_dev && model->midi_dev[0] != '\0') ? " " : "",
              (model->midi_connected && model->midi_dev && model->midi_dev[0] != '\0') ? model->midi_dev : "");
+#pragma GCC diagnostic pop
     ui_draw_text(fb,
                  text_x + 72,
                  text_y,

@@ -22,6 +22,13 @@ typedef struct fb_ctx {
     uint32_t height;
     uint32_t bpp;
     uint32_t line_length;
+    size_t page_len;
+    size_t draw_offset;
+    uint32_t front_page;
+    uint32_t draw_page;
+    int pageflip_enabled;
+    struct fb_var_screeninfo orig_vinfo;
+    int has_orig_vinfo;
     char dev_path[32];
 } fb_ctx_t;
 
@@ -66,7 +73,7 @@ static inline void fb_put_pixel(const fb_ctx_t *fb, uint32_t x, uint32_t y, uint
         return;
     }
 
-    uint8_t *row = fb->map + y * fb->line_length;
+    uint8_t *row = fb->map + fb->draw_offset + y * fb->line_length;
     if (fb->bpp == 16) {
         ((uint16_t *)row)[x] = (uint16_t)color;
     } else if (fb->bpp == 24) {
@@ -134,7 +141,47 @@ static inline int fb_open(fb_ctx_t *fb) {
         fb->bpp = vinfo.bits_per_pixel;
         fb->line_length = finfo.line_length;
         fb->map_len = finfo.smem_len;
+        fb->page_len = (size_t)fb->line_length * (size_t)fb->height;
+        fb->draw_offset = 0;
+        fb->front_page = 0;
+        fb->draw_page = 0;
+        fb->pageflip_enabled = 0;
+        fb->orig_vinfo = vinfo;
+        fb->has_orig_vinfo = 1;
         snprintf(fb->dev_path, sizeof(fb->dev_path), "%s", path);
+
+        struct fb_var_screeninfo req = vinfo;
+        if (req.yres_virtual < req.yres * 2) {
+            req.yres_virtual = req.yres * 2;
+            req.yoffset = 0;
+            req.xoffset = 0;
+            req.activate = FB_ACTIVATE_NOW;
+            if (ioctl(fd, FBIOPUT_VSCREENINFO, &req) == 0) {
+                struct fb_var_screeninfo now;
+                if (ioctl(fd, FBIOGET_VSCREENINFO, &now) == 0 &&
+                    now.yres == fb->height &&
+                    now.yres_virtual >= fb->height * 2) {
+                    size_t required = (size_t)fb->line_length * (size_t)fb->height * 2;
+                    if (required <= fb->map_len) {
+                        fb->pageflip_enabled = 1;
+                        fb->draw_page = 1;
+                        fb->draw_offset = fb->page_len;
+                    }
+                }
+            }
+        } else {
+            size_t required = (size_t)fb->line_length * (size_t)fb->height * 2;
+            if (required <= fb->map_len) {
+                fb->pageflip_enabled = 1;
+                fb->draw_page = 1;
+                fb->draw_offset = fb->page_len;
+            }
+        }
+
+        if (fb->pageflip_enabled) {
+            memset(fb->map, 0, fb->page_len * 2);
+            printf("[INIT] Framebuffer page-flip enabled on %s (double buffer via y-pan).\n", fb->dev_path);
+        }
 
         printf("[INIT] Framebuffer ready on %s: %ux%u @ %ubpp\n", fb->dev_path, fb->width, fb->height, fb->bpp);
         return 0;
@@ -146,6 +193,14 @@ static inline int fb_open(fb_ctx_t *fb) {
 }
 
 static inline void fb_close(fb_ctx_t *fb) {
+    if (fb->fd >= 0 && fb->has_orig_vinfo) {
+        struct fb_var_screeninfo restore = fb->orig_vinfo;
+        restore.yoffset = 0;
+        restore.xoffset = 0;
+        restore.activate = FB_ACTIVATE_NOW;
+        (void)ioctl(fb->fd, FBIOPUT_VSCREENINFO, &restore);
+    }
+
     if (fb->map) {
         munmap(fb->map, fb->map_len);
         fb->map = NULL;
@@ -155,6 +210,49 @@ static inline void fb_close(fb_ctx_t *fb) {
         close(fb->fd);
     }
     fb->fd = -1;
+}
+
+static inline void fb_begin_frame(fb_ctx_t *fb) {
+    if (!fb) {
+        return;
+    }
+
+    if (fb->pageflip_enabled) {
+        fb->draw_page = (fb->front_page ^ 1u) & 1u;
+        fb->draw_offset = fb->draw_page ? fb->page_len : 0;
+    } else {
+        fb->draw_page = 0;
+        fb->draw_offset = 0;
+    }
+}
+
+static inline int fb_present(fb_ctx_t *fb) {
+    if (!fb || fb->fd < 0) {
+        return -1;
+    }
+
+    if (!fb->pageflip_enabled) {
+        return 0;
+    }
+
+    struct fb_var_screeninfo pan;
+    if (ioctl(fb->fd, FBIOGET_VSCREENINFO, &pan) < 0) {
+        return -1;
+    }
+
+    pan.xoffset = 0;
+    pan.yoffset = fb->draw_page ? fb->height : 0;
+    pan.activate = FB_ACTIVATE_VBL;
+
+    if (ioctl(fb->fd, FBIOPAN_DISPLAY, &pan) < 0) {
+        pan.activate = FB_ACTIVATE_NOW;
+        if (ioctl(fb->fd, FBIOPAN_DISPLAY, &pan) < 0) {
+            return -1;
+        }
+    }
+
+    fb->front_page = fb->draw_page;
+    return 0;
 }
 
 static inline void fb_draw_status(const fb_ctx_t *fb, int enabled) {

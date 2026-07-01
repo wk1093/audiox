@@ -2,8 +2,7 @@ CC = aarch64-linux-gnu-gcc
 CFLAGS = -static -O3 -Iinclude -Wall -Wextra -Werror -pthread
 LIBS = -lm -pthread
 
-# Kernel version: auto-detected from firmware after fetch_deps runs
-# Fatal error if detection fails
+# Auto-detected from firmware after fetch_deps runs.
 KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")
 VC4_OVERLAY ?= vc4-fkms-v3d-pi4
 DSI_TOUCH_OVERLAY ?=
@@ -22,10 +21,10 @@ FIRMWARE_GIT_URL ?= https://github.com/raspberrypi/firmware.git
 
 SD_MOUNT_BOOT ?= /run/media/$(USER)/bootfs
 
-IMG_FILE = $(OUT_DIR)/custom_audio_console.img
+IMG_FILE = $(OUT_DIR)/audiox.img
 IMG_SIZE_MB = 128
 
-# Debug build variables (native x86_64, runs in qemu-system-x86_64)
+# Native x86_64 debug build (qemu-system-x86_64)
 DEBUG_CC     = gcc
 DEBUG_CFLAGS = -static -O0 -g -Iinclude -Wall -Wextra -Werror -pthread
 DEBUG_OUT    = $(OUT_DIR)/debug
@@ -37,12 +36,10 @@ DEBUG_KERNEL ?= $(firstword $(wildcard /boot/vmlinuz-linux /boot/vmlinuz /boot/v
 
 all: initramfs
 
-# 1. Clone/Sync Firmware Tree and Stage Boot Files
 fetch_deps:
 	@mkdir -p $(OUT_DIR)
 	@$(SCRIPTS_DIR)/sync_firmware.sh "$(FIRMWARE_GIT_URL)" "$(OUT_DIR)" "$(VC4_OVERLAY)" "$(DSI_TOUCH_OVERLAY)"
 
-# 2. Resolve Full Module Dependency Closure from depmod.txt
 fetch_modules: fetch_deps
 	@$(SCRIPTS_DIR)/resolve_modules.sh "$(KV)" "$(OUT_DIR)" "$(DEP_FILE)"
 
@@ -67,7 +64,6 @@ $(ROOTFS_DIR)/init: fetch_deps FORCE src/init.c
 	mkdir -p $(ROOTFS_DIR)
 	$(CC) $(CFLAGS) -DKERNEL_VERSION='"$(KV)"' -DDEBUG_SHELL=$(DEBUG_SHELL) -o $(ROOTFS_DIR)/init src/init.c $(LIBS)
 
-# 3. Build the File System Structure and Stage Kernel Modules
 rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST)
 	@echo "Creating rootfs structure..."
 	mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/sbin $(ROOTFS_DIR)/etc
@@ -86,17 +82,15 @@ rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST)
 		cp "$(WAV_DIR)/voice3.wav" "$(ROOTFS_DIR)/etc/wavs/"; \
 	else \
 		echo "Warning: missing one or more required wav files in $(WAV_DIR) (voice0.wav..voice3.wav)."; \
-		echo "Warning: runtime audio init will fail until all 4 files are present."; \
+		 echo "Warning: audiox runtime init will fail until all 4 files are present."; \
 	fi
 
-# 4. Pack the Directory into an Initramfs Archive
 initramfs: rootfs
 	@echo "Packaging initramfs..."
 	cd $(ROOTFS_DIR) && \
 	find . -print0 | cpio --null --create --format=newc | gzip -9 > $(INITRAMFS)
-	@echo "Success! Audio Appliance Initramfs built at: $(INITRAMFS)"
+	@echo "Success! audiox initramfs built at: $(INITRAMFS)"
 
-# 5. Emulate the Architecture using QEMU
 qemu: initramfs
 	@echo "Launching QEMU in Raspberry Pi 4 Mode..."
 	qemu-system-aarch64 \
@@ -108,7 +102,6 @@ qemu: initramfs
 		-append "console=fbcon console=tty1 quiet loglevel=3 rdinit=/init" \
 		-display sdl,gl=on
 
-# Automated Device Detection and Flashing Flow
 fancyexport: initramfs
 	@$(SCRIPTS_DIR)/wait_and_export.sh "$(SD_MOUNT_BOOT)" "$(CURDIR)"
 
@@ -130,11 +123,9 @@ export: initramfs
 	sync
 	@echo "SD Card Flashed and ready for hardware execution!"
 
-# Generate Standalone Flashable Disk Image File
 image: initramfs
 	@$(SCRIPTS_DIR)/build_image.sh "$(IMG_FILE)" "$(IMG_SIZE_MB)" "$(OUT_DIR)" "$(INITRAMFS)" "$(VC4_OVERLAY)" "$(DSI_TOUCH_OVERLAY)"
 
-# Native x86_64 Debug Configurations
 $(DEBUG_ROOTFS)/init: FORCE src/init.c
 	@echo "Compiling debug init binary (x86_64)..."
 	mkdir -p $(DEBUG_ROOTFS)

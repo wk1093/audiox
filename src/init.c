@@ -16,7 +16,7 @@
 #include "init_defs.h"
 #include "init_helpers.h"
 #include "midi_input.h"
-#include "ui_fb.h"
+#include "ui_immediate.h"
 #include "usb_gadget.h"
 
 #ifndef DEBUG_SHELL
@@ -476,255 +476,14 @@ static void hide_terminal_cursor(void) {
     fflush(stdout);
 }
 
-typedef struct ui_layout {
-    uint32_t margin;
-    uint32_t gap;
-    uint32_t title_h;
-    uint32_t btn_w;
-    uint32_t btn_h;
-    uint32_t log_x;
-    uint32_t log_y;
-    uint32_t log_w;
-    uint32_t log_h;
-    uint32_t cfg_x;
-    uint32_t cfg_y;
-    uint32_t cfg_w;
-    uint32_t cfg_h;
-} ui_layout_t;
-
-typedef struct ui_log {
-    char lines[64][96];
-    int count;
-    int head;
-} ui_log_t;
-
-static void ui_log_init(ui_log_t *log) {
-    memset(log, 0, sizeof(*log));
-}
-
-static void ui_log_push(ui_log_t *log, const char *line) {
-    if (!log || !line) {
-        return;
-    }
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wformat-truncation"
-    snprintf(log->lines[log->head], sizeof(log->lines[log->head]), "%s", line);
-#pragma GCC diagnostic pop
-    log->head = (log->head + 1) % 64;
-    if (log->count < 64) {
-        ++log->count;
-    }
-}
-
-static int ui_log_get_line(const ui_log_t *log, int idx, const char **out) {
-    if (!log || !out || idx < 0 || idx >= log->count) {
-        return -1;
-    }
-
-    int start = (log->head - log->count + 64) % 64;
-    int slot = (start + idx) % 64;
-    *out = log->lines[slot];
-    return 0;
-}
-
 static void ui_log_push_adapter(void *ctx, const char *line) {
     ui_log_push((ui_log_t *)ctx, line);
 }
 
-static void get_ui_layout(const fb_ctx_t *fb, ui_layout_t *layout) {
-    layout->margin = fb->width / 24;
-    if (layout->margin < 8) {
-        layout->margin = 8;
-    }
-
-    layout->gap = layout->margin / 2;
-    if (layout->gap < 6) {
-        layout->gap = 6;
-    }
-
-    layout->title_h = (uint32_t)ui_text_height(2) + layout->gap;
-
-    uint32_t usable_w = fb->width - (layout->margin * 2) - layout->gap;
-    layout->btn_w = usable_w / 2;
-    layout->btn_h = fb->height / 5;
-
-    if (layout->btn_w < 24) {
-        layout->btn_w = 24;
-    }
-    if (layout->btn_h < 48) {
-        layout->btn_h = 48;
-    }
-
-    uint32_t btn_y = layout->margin + layout->title_h;
-    layout->log_x = layout->margin;
-    layout->log_y = btn_y + layout->btn_h + layout->gap;
-    layout->log_w = fb->width - (layout->margin * 2);
-    layout->log_h = fb->height - layout->log_y - layout->margin;
-
-    int cfg_w = (int)layout->btn_w / 2;
-    if (cfg_w < 80) {
-        cfg_w = 80;
-    }
-    int cfg_h = ui_text_height(1) + 12;
-    if (cfg_h < 20) {
-        cfg_h = 20;
-    }
-
-    int cfg_x = (int)layout->log_x + (int)layout->log_w - cfg_w - 8;
-    int cfg_y = (int)layout->log_y + 6;
-    int cfg_min_x = (int)layout->log_x + 8;
-    int cfg_min_y = (int)layout->log_y + 6;
-
-    if (cfg_x < cfg_min_x) {
-        cfg_x = cfg_min_x;
-    }
-    if (cfg_y < cfg_min_y) {
-        cfg_y = cfg_min_y;
-    }
-
-    layout->cfg_w = (uint32_t)cfg_w;
-    layout->cfg_h = (uint32_t)cfg_h;
-    layout->cfg_x = (uint32_t)cfg_x;
-    layout->cfg_y = (uint32_t)cfg_y;
-}
-
-static int touch_map_to_screen(const touch_ctx_t *touch, const fb_ctx_t *fb, int raw_x, int raw_y, int *screen_x, int *screen_y) {
-    if (!fb || fb->width == 0 || fb->height == 0 || !screen_x || !screen_y) {
-        return -1;
-    }
-
-    if (!touch) {
-        return -1;
-    }
-
-    if (!touch->has_range) {
-        int sx = raw_x;
-        int sy = raw_y;
-
-        if (sx < 0 || sx >= (int)fb->width * 2 || sy < 0 || sy >= (int)fb->height * 2) {
-            double nx = (double)raw_x / 4095.0;
-            double ny = (double)raw_y / 4095.0;
-            if (nx < 0.0) nx = 0.0;
-            if (nx > 1.0) nx = 1.0;
-            if (ny < 0.0) ny = 0.0;
-            if (ny > 1.0) ny = 1.0;
-            sx = (int)(nx * (double)(fb->width - 1));
-            sy = (int)(ny * (double)(fb->height - 1));
-        }
-
-        if (sx < 0) sx = 0;
-        if (sx >= (int)fb->width) sx = (int)fb->width - 1;
-        if (sy < 0) sy = 0;
-        if (sy >= (int)fb->height) sy = (int)fb->height - 1;
-
-        *screen_x = sx;
-        *screen_y = sy;
-        return 0;
-    }
-
-    int range_x = touch->max_x - touch->min_x;
-    int range_y = touch->max_y - touch->min_y;
-
-    double norm_x = 0.5;
-    double norm_y = 0.5;
-
-    if (range_x > 0) {
-        norm_x = (double)(raw_x - touch->min_x) / (double)range_x;
-    }
-    if (range_y > 0) {
-        norm_y = (double)(raw_y - touch->min_y) / (double)range_y;
-    }
-
-    if (norm_x < 0.0) norm_x = 0.0;
-    if (norm_x > 1.0) norm_x = 1.0;
-    if (norm_y < 0.0) norm_y = 0.0;
-    if (norm_y > 1.0) norm_y = 1.0;
-
-    *screen_x = (int)(norm_x * (double)(fb->width - 1));
-    *screen_y = (int)(norm_y * (double)(fb->height - 1));
-    return 0;
-}
-
-static int ui_hit_button(const fb_ctx_t *fb, int x, int y) {
-    if (!fb) {
-        return -1;
-    }
-
-    ui_layout_t layout;
-    get_ui_layout(fb, &layout);
-
-    for (int idx = 0; idx < 2; ++idx) {
-        int col = idx % 2;
-
-        int bx = (int)layout.margin + col * (int)(layout.btn_w + layout.gap);
-        int by = (int)layout.margin + (int)layout.title_h;
-        int bx_end = bx + (int)layout.btn_w;
-        int by_end = by + (int)layout.btn_h;
-
-        if (x >= bx && x < bx_end && y >= by && y < by_end) {
-            return idx;
-        }
-    }
-
-    return -1;
-}
-
-static int ui_hit_config_toggle(const fb_ctx_t *fb, int x, int y) {
-    if (!fb) {
-        return 0;
-    }
-
-    ui_layout_t layout;
-    get_ui_layout(fb, &layout);
-
-    int x0 = (int)layout.cfg_x;
-    int y0 = (int)layout.cfg_y;
-    int x1 = x0 + (int)layout.cfg_w;
-    int y1 = y0 + (int)layout.cfg_h;
-
-    if (x >= x0 && x < x1 && y >= y0 && y < y1) {
-        return 1;
-    }
-    return 0;
-}
-
-static void fb_draw_button(const fb_ctx_t *fb, int idx, int enabled) {
-    if (!fb || !fb->map || idx < 0 || idx >= 2) {
-        return;
-    }
-
-    ui_layout_t layout;
-    get_ui_layout(fb, &layout);
-
-    static const char *labels[2] = {
-        "VOICE 1",
-        "VOICE 2"
-    };
-
-    uint32_t on_fill[2] = {
-        fb_pack_color(fb, 24, 146, 74),
-        fb_pack_color(fb, 20, 96, 178)
-    };
-    uint32_t off_fill = fb_pack_color(fb, 42, 46, 52);
-    uint32_t on_border = fb_pack_color(fb, 210, 246, 224);
-    uint32_t off_border = fb_pack_color(fb, 120, 126, 134);
-
-    int col = idx % 2;
-
-    uint32_t bx = layout.margin + (uint32_t)col * (layout.btn_w + layout.gap);
-    uint32_t by = layout.margin + layout.title_h;
-    ui_button_theme_t theme;
-    memset(&theme, 0, sizeof(theme));
-    theme.fill = off_fill;
-    theme.fill_active = on_fill[idx];
-    theme.border = off_border;
-    theme.border_active = on_border;
-    theme.text = fb_pack_color(fb, 210, 216, 226);
-    theme.text_active = fb_pack_color(fb, 248, 252, 255);
-
-    ui_draw_button(fb, bx, by, layout.btn_w, layout.btn_h, labels[idx], &theme, enabled, 2);
-}
+typedef struct ui_interaction {
+    int voice_touched[2];
+    int config_toggled;
+} ui_interaction_t;
 
 static void fb_draw_log_panel(const fb_ctx_t *fb,
                               const ui_layout_t *layout,
@@ -812,6 +571,35 @@ static void fb_draw_log_panel(const fb_ctx_t *fb,
     }
 }
 
+static void ui_sample_interaction(const fb_ctx_t *fb,
+                                  const touch_ctx_t *touch,
+                                  const int *raw_x,
+                                  const int *raw_y,
+                                  int points,
+                                  ui_touch_latch_t *cfg_latch,
+                                  ui_interaction_t *out) {
+    memset(out, 0, sizeof(*out));
+    if (!fb || !touch || points < 0) {
+        (void)ui_im_rising_edge(0, cfg_latch);
+        return;
+    }
+
+    ui_layout_t layout;
+    ui_layout_compute_default(fb, &layout);
+
+    ui_im_ctx_t ui;
+    ui_im_begin(&ui, fb, touch, raw_x, raw_y, points);
+
+    for (int i = 0; i < 2; ++i) {
+        ui_rect_t voice_rect = ui_layout_voice_button_rect(&layout, i);
+        out->voice_touched[i] = ui_im_touching_rect(&ui, &voice_rect);
+    }
+
+    ui_rect_t cfg_rect = ui_layout_config_rect(&layout);
+    int cfg_down = ui_im_touching_rect(&ui, &cfg_rect);
+    out->config_toggled = ui_im_rising_edge(cfg_down, cfg_latch);
+}
+
 static void fb_draw_scene(const fb_ctx_t *fb,
                           const int *enabled,
                           const ui_log_t *log,
@@ -824,7 +612,7 @@ static void fb_draw_scene(const fb_ctx_t *fb,
     }
 
     ui_layout_t layout;
-    get_ui_layout(fb, &layout);
+    ui_layout_compute_default(fb, &layout);
 
     uint32_t bg = fb_pack_color(fb, 8, 12, 16);
     ui_fill_rect(fb, 0, 0, fb->width, fb->height, bg);
@@ -834,8 +622,35 @@ static void fb_draw_scene(const fb_ctx_t *fb,
     int title_y = (int)(layout.margin / 2);
     ui_draw_text(fb, title_x, title_y, "TOUCH VOICES + MIDI LOG", title_color, 2);
 
+    static const char *labels[2] = {"VOICE 1", "VOICE 2"};
+    uint32_t off_fill = fb_pack_color(fb, 42, 46, 52);
+    uint32_t on_fill[2] = {
+        fb_pack_color(fb, 24, 146, 74),
+        fb_pack_color(fb, 20, 96, 178)
+    };
+    uint32_t off_border = fb_pack_color(fb, 120, 126, 134);
+    uint32_t on_border = fb_pack_color(fb, 210, 246, 224);
+
     for (int idx = 0; idx < 2; ++idx) {
-        fb_draw_button(fb, idx, enabled[idx]);
+        ui_button_theme_t voice_theme;
+        memset(&voice_theme, 0, sizeof(voice_theme));
+        voice_theme.fill = off_fill;
+        voice_theme.fill_active = on_fill[idx];
+        voice_theme.border = off_border;
+        voice_theme.border_active = on_border;
+        voice_theme.text = fb_pack_color(fb, 210, 216, 226);
+        voice_theme.text_active = fb_pack_color(fb, 248, 252, 255);
+
+        ui_rect_t r = ui_layout_voice_button_rect(&layout, idx);
+        ui_draw_button(fb,
+                       (uint32_t)r.x,
+                       (uint32_t)r.y,
+                       (uint32_t)r.w,
+                       (uint32_t)r.h,
+                       labels[idx],
+                       &voice_theme,
+                       enabled[idx],
+                       2);
     }
 
     fb_draw_log_panel(fb, &layout, log, midi_connected, midi_dev, config_enabled, config_mount_active);
@@ -948,7 +763,8 @@ int main(void) {
     int hold_grace_ticks[2] = {0, 0};
     const int hold_release_grace = 12;
     int midi_probe_ticks = 0;
-    int cfg_touch_latched = 0;
+    ui_touch_latch_t cfg_touch_latch;
+    memset(&cfg_touch_latch, 0, sizeof(cfg_touch_latch));
     int periodic_sync_ticks = 0;
     int mount_poll_ticks = 0;
     int touch_range_retry_ticks = 0;
@@ -985,6 +801,7 @@ int main(void) {
                     }
                 }
             }
+            (void)ui_im_rising_edge(0, &cfg_touch_latch);
         } else {
             if (!touch.has_range && ++touch_range_retry_ticks >= 1000) {
                 touch_range_retry_ticks = 0;
@@ -1000,8 +817,7 @@ int main(void) {
             if (fb_ready) {
                 int raw_x[TOUCH_MAX_POINTS];
                 int raw_y[TOUCH_MAX_POINTS];
-                int touched_now[2] = {0, 0};
-                int cfg_touched_now = 0;
+                ui_interaction_t interaction;
 
                 int points = touch_poll_points(&touch, raw_x, raw_y, TOUCH_MAX_POINTS);
                 if (points < 0) {
@@ -1010,23 +826,17 @@ int main(void) {
                     touch_ready = 0;
                     continue;
                 }
-                if (points > 0) {
-                    for (int i = 0; i < points; ++i) {
-                        int sx = 0;
-                        int sy = 0;
-                        if (touch_map_to_screen(&touch, &fb, raw_x[i], raw_y[i], &sx, &sy) == 0) {
-                            int button = ui_hit_button(&fb, sx, sy);
-                            if (button >= 0 && button < 2) {
-                                touched_now[button] = 1;
-                            } else if (ui_hit_config_toggle(&fb, sx, sy)) {
-                                cfg_touched_now = 1;
-                            }
-                        }
-                    }
-                }
+
+                ui_sample_interaction(&fb,
+                                      &touch,
+                                      raw_x,
+                                      raw_y,
+                                      points,
+                                      &cfg_touch_latch,
+                                      &interaction);
 
                 for (int i = 0; i < 2; ++i) {
-                    if (touched_now[i]) {
+                    if (interaction.voice_touched[i]) {
                         hold_grace_ticks[i] = hold_release_grace;
                     } else if (hold_grace_ticks[i] > 0) {
                         --hold_grace_ticks[i];
@@ -1043,8 +853,7 @@ int main(void) {
                     ui_dirty = 1;
                 }
 
-                if (cfg_touched_now && !cfg_touch_latched) {
-                    cfg_touch_latched = 1;
+                if (interaction.config_toggled) {
                     config_enabled = config_enabled ? 0 : 1;
                     if (write_config_flag(config_enabled) == 0) {
                         ui_log_push(&log, config_enabled ? "CONFIG TOGGLE: 1" : "CONFIG TOGGLE: 0");
@@ -1052,9 +861,6 @@ int main(void) {
                         ui_log_push(&log, "CONFIG WRITE FAILED");
                     }
                     ui_dirty = 1;
-                }
-                if (!cfg_touched_now) {
-                    cfg_touch_latched = 0;
                 }
             }
         }

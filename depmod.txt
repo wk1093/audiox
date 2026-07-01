@@ -1,0 +1,34 @@
+# Seed modules only.
+# Keep this list short: transitive dependencies are resolved automatically.
+
+# Audio / UAC2 gadget
+sound/soc/snd-soc-core
+sound/core/snd-rawmidi
+sound/core/seq/snd-seq
+sound/core/seq/snd-seq-midi
+sound/core/seq/snd-seq-midi-event
+sound/usb/snd-usb-audio
+drivers/usb/gadget/libcomposite
+drivers/usb/gadget/function/u_audio
+drivers/usb/gadget/function/usb_f_uac2
+
+# Display stack (vc4/v3d + official DSI panel)
+drivers/gpu/drm/vc4/vc4
+drivers/gpu/drm/v3d/v3d
+drivers/gpu/drm/panel/panel-raspberrypi-touchscreen
+drivers/video/backlight/backlight
+drivers/regulator/rpi-panel-attiny-regulator
+drivers/regulator/rpi-panel-v2-regulator
+
+# Touch / input buses
+drivers/i2c/busses/i2c-bcm2835
+drivers/i2c/i2c-dev
+drivers/i2c/muxes/i2c-mux-pinctrl
+drivers/input/touchscreen/raspberrypi-ts
+drivers/hid/i2c-hid/i2c-hid-of
+drivers/hid/hid-multitouch
+
+# Optional touchscreen/controller families
+drivers/input/touchscreen/usbtouchscreen
+drivers/input/touchscreen/goodix_ts
+drivers/input/touchscreen/edt-ft5x06

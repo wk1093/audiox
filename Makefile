@@ -2,7 +2,9 @@ CC = aarch64-linux-gnu-gcc
 CFLAGS = -static -O3 -Iinclude -Wall -Wextra -Werror -pthread
 LIBS = -lm -pthread
 
-KV ?= 6.18.36-v8+
+# Kernel version: auto-detected from firmware after fetch_deps runs
+# Fatal error if detection fails
+KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")
 VC4_OVERLAY ?= vc4-fkms-v3d-pi4
 DSI_TOUCH_OVERLAY ?=
 DEBUG_SHELL ?= 0
@@ -31,12 +33,13 @@ DEBUG_ROOTFS = $(DEBUG_OUT)/rootfs
 DEBUG_INITRAMFS = $(DEBUG_OUT)/initramfs.cpio.gz
 DEBUG_KERNEL ?= $(firstword $(wildcard /boot/vmlinuz-linux /boot/vmlinuz /boot/vmlinuz-generic))
 
-.PHONY: all clean rootfs initramfs fetch_deps fetch_modules show_modules qemu fancyexport export image debug debug_rootfs debug_initramfs FORCE
+.PHONY: all clean rootfs initramfs fetch_deps fetch_modules show_modules show_kernel qemu fancyexport export image debug debug_rootfs debug_initramfs FORCE
 
 all: initramfs
 
 # 1. Clone/Sync Firmware Tree and Stage Boot Files
 fetch_deps:
+	@mkdir -p $(OUT_DIR)
 	@$(SCRIPTS_DIR)/sync_firmware.sh "$(FIRMWARE_GIT_URL)" "$(OUT_DIR)" "$(VC4_OVERLAY)" "$(DSI_TOUCH_OVERLAY)"
 
 # 2. Resolve Full Module Dependency Closure from depmod.txt
@@ -46,10 +49,20 @@ fetch_modules: fetch_deps
 show_modules: fetch_modules
 	@cat $(OUT_DIR)/module-load.summary.txt
 
+show_kernel:
+	@echo "Detected kernel version: $(KV)"
+	@if [ -f "$(OUT_DIR)/firmware/extra/uname_string8" ]; then \
+		echo "Source: $(OUT_DIR)/firmware/extra/uname_string8"; \
+		echo "Full uname string:"; \
+		cat "$(OUT_DIR)/firmware/extra/uname_string8"; \
+	else \
+		echo "(using default; fetch_deps not yet run or file not found)"; \
+	fi
+
 $(MODULE_LOAD_LIST): fetch_modules
 	@:
 
-$(ROOTFS_DIR)/init: FORCE src/init.c
+$(ROOTFS_DIR)/init: fetch_deps FORCE src/init.c
 	@echo "Compiling system architecture init binary..."
 	mkdir -p $(ROOTFS_DIR)
 	$(CC) $(CFLAGS) -DKERNEL_VERSION='"$(KV)"' -DDEBUG_SHELL=$(DEBUG_SHELL) -o $(ROOTFS_DIR)/init src/init.c $(LIBS)

@@ -17,6 +17,11 @@ typedef struct ui_rect {
 
 typedef struct ui_touch_latch {
     int was_down;
+    int tracking;
+    int start_x;
+    int start_y;
+    int last_x;
+    int last_y;
 } ui_touch_latch_t;
 
 typedef struct ui_im_ctx {
@@ -200,6 +205,95 @@ static inline int ui_im_touching_rect(const ui_im_ctx_t *ui, const ui_rect_t *r)
         }
     }
     return 0;
+}
+
+static inline int ui_abs_i32(int v) {
+    return (v < 0) ? -v : v;
+}
+
+static inline int ui_im_primary_touch_point(const ui_im_ctx_t *ui, int *x, int *y) {
+    if (!ui || ui->point_count <= 0 || !x || !y) {
+        return 0;
+    }
+
+    *x = ui->sx[0];
+    *y = ui->sy[0];
+    return 1;
+}
+
+static inline int ui_im_release_tap_rect(const ui_im_ctx_t *ui,
+                                         const ui_rect_t *r,
+                                         ui_touch_latch_t *latch,
+                                         int move_tolerance_px) {
+    if (!ui || !r || !latch) {
+        return 0;
+    }
+
+    int x = 0;
+    int y = 0;
+    int down_now = ui_im_primary_touch_point(ui, &x, &y);
+
+    if (down_now) {
+        if (!latch->was_down) {
+            latch->start_x = x;
+            latch->start_y = y;
+            latch->tracking = ui_rect_contains(r, x, y) ? 1 : 0;
+        }
+        latch->last_x = x;
+        latch->last_y = y;
+    }
+
+    int fired = 0;
+    if (!down_now && latch->was_down) {
+        int dx = ui_abs_i32(latch->last_x - latch->start_x);
+        int dy = ui_abs_i32(latch->last_y - latch->start_y);
+        if (latch->tracking &&
+            dx <= move_tolerance_px &&
+            dy <= move_tolerance_px &&
+            ui_rect_contains(r, latch->last_x, latch->last_y)) {
+            fired = 1;
+        }
+        latch->tracking = 0;
+    }
+
+    latch->was_down = down_now ? 1 : 0;
+    return fired;
+}
+
+static inline int ui_im_release_swipe_horizontal(const ui_im_ctx_t *ui,
+                                                 ui_touch_latch_t *latch,
+                                                 int min_dx_px,
+                                                 int max_dy_px) {
+    if (!ui || !latch) {
+        return 0;
+    }
+
+    int x = 0;
+    int y = 0;
+    int down_now = ui_im_primary_touch_point(ui, &x, &y);
+
+    if (down_now) {
+        if (!latch->was_down) {
+            latch->start_x = x;
+            latch->start_y = y;
+            latch->tracking = 1;
+        }
+        latch->last_x = x;
+        latch->last_y = y;
+    }
+
+    int step = 0;
+    if (!down_now && latch->was_down && latch->tracking) {
+        int dx = latch->last_x - latch->start_x;
+        int dy = ui_abs_i32(latch->last_y - latch->start_y);
+        if (ui_abs_i32(dx) >= min_dx_px && dy <= max_dy_px) {
+            step = (dx < 0) ? 1 : -1;
+        }
+        latch->tracking = 0;
+    }
+
+    latch->was_down = down_now ? 1 : 0;
+    return step;
 }
 
 static inline int ui_im_rising_edge(int down_now, ui_touch_latch_t *latch) {

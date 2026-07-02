@@ -156,6 +156,8 @@ typedef struct app_state {
     int voice_enabled[AUDIO_MAX_VOICES];
     uint32_t midi_event_cursor;
     ui_touch_latch_t cfg_touch_latch;
+    ui_touch_latch_t tab_touch_latch[UI_TAB_COUNT];
+    ui_touch_latch_t swipe_touch_latch;
 } app_state_t;
 
 typedef struct app_ticks {
@@ -252,6 +254,20 @@ static int app_poll_touch(app_state_t *app, app_ticks_t *ticks, int *raw_x, int 
 static int app_apply_ui(app_state_t *app,
                         const ui_console_io_t *io) {
     int changed = 0;
+
+    if (io->tab_step != 0) {
+        int next = app->active_tab + io->tab_step;
+        while (next < 0) {
+            next += UI_TAB_COUNT;
+        }
+        while (next >= UI_TAB_COUNT) {
+            next -= UI_TAB_COUNT;
+        }
+        if (next != app->active_tab) {
+            app->active_tab = next;
+            changed = 1;
+        }
+    }
 
     if (io->selected_tab >= 0 && io->selected_tab < UI_TAB_COUNT && io->selected_tab != app->active_tab) {
         app->active_tab = io->selected_tab;
@@ -459,6 +475,8 @@ int main(void) {
                                 app.touch_ready ? raw_y : NULL,
                                 points,
                                 &app.cfg_touch_latch,
+                                app.tab_touch_latch,
+                                &app.swipe_touch_latch,
                                 &model,
                                 &io);
             if (app_apply_ui(&app, &io)) {
@@ -489,6 +507,8 @@ int main(void) {
                                  app.touch_ready ? raw_y : NULL,
                                  points,
                                  &app.cfg_touch_latch,
+                                 app.tab_touch_latch,
+                                 &app.swipe_touch_latch,
                                  &model,
                                  NULL);
                 (void)fb_present(&app.fb);
@@ -496,6 +516,10 @@ int main(void) {
             }
         } else {
             (void)ui_im_rising_edge(0, &app.cfg_touch_latch);
+            for (int i = 0; i < UI_TAB_COUNT; ++i) {
+                (void)ui_im_rising_edge(0, &app.tab_touch_latch[i]);
+            }
+            (void)ui_im_rising_edge(0, &app.swipe_touch_latch);
         }
 
         if (tick_task_due(&ticks.periodic_sync)) {

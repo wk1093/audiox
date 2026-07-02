@@ -11,6 +11,10 @@
 #define UI_TAB_LOG 2
 #define UI_TAB_COUNT 3
 
+#define UI_TAP_MOVE_TOLERANCE_PX 18
+#define UI_TAB_SWIPE_MIN_DX_PX 64
+#define UI_TAB_SWIPE_MAX_DY_PX 36
+
 typedef struct ui_console_theme {
     ui_button_theme_t tab_theme;
     ui_button_theme_t cfg_theme;
@@ -41,6 +45,7 @@ typedef struct ui_console_model {
 typedef struct ui_console_io {
     int config_toggled;
     int selected_tab;
+    int tab_step;
 } ui_console_io_t;
 
 static inline void ui_console_theme_default(const fb_ctx_t *fb, ui_console_theme_t *theme) {
@@ -315,11 +320,14 @@ static inline void ui_console_interact(const fb_ctx_t *fb,
                                        const int *raw_y,
                                        int points,
                                        ui_touch_latch_t *cfg_latch,
+                                       ui_touch_latch_t tab_latches[UI_TAB_COUNT],
+                                       ui_touch_latch_t *swipe_latch,
                                        const ui_console_model_t *model,
                                        ui_console_io_t *io) {
     if (io) {
         memset(io, 0, sizeof(*io));
         io->selected_tab = -1;
+        io->tab_step = 0;
     }
 
     if (!fb || !fb->map || !model) {
@@ -332,19 +340,27 @@ static inline void ui_console_interact(const fb_ctx_t *fb,
     ui_im_ctx_t ui;
     ui_im_begin(&ui, fb, touch, raw_x, raw_y, points);
 
+    if (io && swipe_latch) {
+        io->tab_step = ui_im_release_swipe_horizontal(&ui,
+                                                      swipe_latch,
+                                                      UI_TAB_SWIPE_MIN_DX_PX,
+                                                      UI_TAB_SWIPE_MAX_DY_PX);
+    }
+
     for (int i = 0; i < UI_TAB_COUNT; ++i) {
         ui_rect_t tab = ui_console_tab_rect(fb, i);
-        if (ui_im_touching_rect(&ui, &tab) && io) {
+        if (io && tab_latches &&
+            ui_im_release_tap_rect(&ui, &tab, &tab_latches[i], UI_TAP_MOVE_TOLERANCE_PX)) {
             io->selected_tab = i;
         }
     }
 
     ui_rect_t content = ui_console_content_rect(fb);
     ui_rect_t cfg_rect = ui_console_config_button_rect(&content);
-    int cfg_down = (model->active_tab == UI_TAB_CONFIG) ? ui_im_touching_rect(&ui, &cfg_rect) : 0;
-    int toggled = ui_im_rising_edge(cfg_down, cfg_latch);
     if (io) {
-        io->config_toggled = toggled;
+        io->config_toggled = (model->active_tab == UI_TAB_CONFIG)
+                                 ? ui_im_release_tap_rect(&ui, &cfg_rect, cfg_latch, UI_TAP_MOVE_TOLERANCE_PX)
+                                 : 0;
     }
 }
 
@@ -354,11 +370,14 @@ static inline void ui_console_frame(const fb_ctx_t *fb,
                                     const int *raw_y,
                                     int points,
                                     ui_touch_latch_t *cfg_latch,
+                                    ui_touch_latch_t tab_latches[UI_TAB_COUNT],
+                                    ui_touch_latch_t *swipe_latch,
                                     const ui_console_model_t *model,
                                     ui_console_io_t *io) {
     if (io) {
         memset(io, 0, sizeof(*io));
         io->selected_tab = -1;
+        io->tab_step = 0;
     }
 
     if (!fb || !fb->map || !model || !model->log) {
@@ -371,7 +390,7 @@ static inline void ui_console_frame(const fb_ctx_t *fb,
     ui_console_theme_t theme;
     ui_console_theme_default(fb, &theme);
 
-    ui_console_interact(fb, touch, raw_x, raw_y, points, cfg_latch, model, io);
+    ui_console_interact(fb, touch, raw_x, raw_y, points, cfg_latch, tab_latches, swipe_latch, model, io);
 
     ui_fill_rect(fb, 0, 0, fb->width, fb->height, theme.bg);
     ui_console_draw_tab_bar(fb, &theme, model->active_tab);

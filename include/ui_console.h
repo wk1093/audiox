@@ -15,6 +15,11 @@
 #define UI_TAB_SWIPE_MIN_DX_PX 64
 #define UI_TAB_SWIPE_MAX_DY_PX 36
 
+#define UI_LOG_FILTER_INFO (1u << UI_LOG_INFO)
+#define UI_LOG_FILTER_WARN (1u << UI_LOG_WARN)
+#define UI_LOG_FILTER_ERROR (1u << UI_LOG_ERROR)
+#define UI_LOG_FILTER_ALL (UI_LOG_FILTER_INFO | UI_LOG_FILTER_WARN | UI_LOG_FILTER_ERROR)
+
 typedef struct ui_console_theme {
     ui_button_theme_t tab_theme;
     ui_button_theme_t cfg_theme;
@@ -27,6 +32,9 @@ typedef struct ui_console_theme {
     uint32_t status_ok;
     uint32_t status_wait;
     uint32_t status_active;
+    uint32_t log_info;
+    uint32_t log_warn;
+    uint32_t log_error;
 } ui_console_theme_t;
 
 typedef struct ui_console_model {
@@ -39,6 +47,7 @@ typedef struct ui_console_model {
     int config_enabled;
     int config_mount_active;
     int active_tab;
+    uint8_t log_filter_mask;
     const ui_log_t *log;
 } ui_console_model_t;
 
@@ -46,6 +55,7 @@ typedef struct ui_console_io {
     int config_toggled;
     int selected_tab;
     int tab_step;
+    int log_filter_toggled[3];
 } ui_console_io_t;
 
 static inline void ui_console_theme_default(const fb_ctx_t *fb, ui_console_theme_t *theme) {
@@ -75,6 +85,9 @@ static inline void ui_console_theme_default(const fb_ctx_t *fb, ui_console_theme
     theme->status_ok = fb_pack_color(fb, 128, 224, 148);
     theme->status_wait = fb_pack_color(fb, 236, 184, 96);
     theme->status_active = fb_pack_color(fb, 112, 176, 255);
+    theme->log_info = fb_pack_color(fb, 182, 196, 212);
+    theme->log_warn = fb_pack_color(fb, 236, 184, 96);
+    theme->log_error = fb_pack_color(fb, 245, 110, 110);
 }
 
 static inline ui_rect_t ui_console_tab_rect(const fb_ctx_t *fb, int idx) {
@@ -133,6 +146,15 @@ static inline ui_rect_t ui_console_config_button_rect(const ui_rect_t *content) 
         x = content->x + 8;
     }
 
+    return ui_rect_make(x, y, w, h);
+}
+
+static inline ui_rect_t ui_console_log_filter_button_rect(const ui_rect_t *content, int idx) {
+    int h = ui_text_height(1) + 10;
+    int w = 72;
+    int gap = 6;
+    int x = content->x + 8 + idx * (w + gap);
+    int y = content->y + 8;
     return ui_rect_make(x, y, w, h);
 }
 
@@ -264,53 +286,120 @@ static inline void ui_console_draw_log_panel(const fb_ctx_t *fb,
 
     ui_console_draw_panel_bg(fb, content, theme);
 
+    static const char *filter_labels[3] = {"INFO", "WARN", "ERROR"};
+    for (int i = 0; i < 3; ++i) {
+        uint8_t mask = (uint8_t)(1u << i);
+        ui_rect_t b = ui_console_log_filter_button_rect(content, i);
+        ui_draw_button(fb,
+                       (uint32_t)b.x,
+                       (uint32_t)b.y,
+                       (uint32_t)b.w,
+                       (uint32_t)b.h,
+                       filter_labels[i],
+                       &theme->tab_theme,
+                       (model->log_filter_mask & mask) ? 1 : 0,
+                       1);
+    }
+
     int text_x = content->x + 8;
-    int text_y = content->y + 8;
-    ui_draw_text(fb, text_x, text_y, "MIDI + CONFIG LOG", theme->header, 1);
-
-    char status_line[160];
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wformat-truncation"
-    snprintf(status_line,
-             sizeof(status_line),
-             "MIDI: %s%s%s",
-             model->midi_connected ? "CONNECTED" : "WAITING",
-             (model->midi_connected && model->midi_dev && model->midi_dev[0] != '\0') ? " " : "",
-             (model->midi_connected && model->midi_dev && model->midi_dev[0] != '\0') ? model->midi_dev : "");
-#pragma GCC diagnostic pop
-    ui_draw_text(fb,
-                 text_x,
-                 text_y + ui_text_height(1) + 2,
-                 status_line,
-                 model->midi_connected ? theme->status_ok : theme->status_wait,
-                 1);
-
-    ui_draw_text(fb,
-                 text_x,
-                 text_y + ((ui_text_height(1) + 2) * 2),
-                 model->config_mount_active ? "CFG FS: MOUNTED" : "CFG FS: UNMOUNTED",
-                 model->config_mount_active ? theme->status_ok : theme->status_wait,
-                 1);
-
     int line_h = ui_text_height(1) + 2;
-    int first_line_y = text_y + ((ui_text_height(1) + 2) * 3) + 2;
+    int first_line_y = content->y + ui_text_height(1) + 24;
     int max_lines = (content->h - (first_line_y - content->y) - 8) / line_h;
     if (max_lines < 1) {
         return;
     }
 
-    int start_idx = model->log->count - max_lines;
-    if (start_idx < 0) {
-        start_idx = 0;
+    int max_chars = (content->w - 16) / 8;
+    if (max_chars < 8) {
+        max_chars = 8;
+    }
+
+    int rows_used = 0;
+    int start_idx = model->log->count;
+    for (int i = model->log->count - 1; i >= 0; --i) {
+        const char *line = NULL;
+        uint8_t level = UI_LOG_INFO;
+        if (ui_log_get_line_with_level(model->log, i, &line, &level) != 0 || !line) {
+            continue;
+        }
+
+        if ((model->log_filter_mask & (uint8_t)(1u << level)) == 0) {
+            continue;
+        }
+
+        size_t len = strlen(line);
+        int wraps = (int)((len + (size_t)max_chars - 1) / (size_t)max_chars);
+        if (wraps < 1) {
+            wraps = 1;
+        }
+
+        if (rows_used + wraps > max_lines) {
+            break;
+        }
+
+        rows_used += wraps;
+        start_idx = i;
     }
 
     int row = 0;
-    for (int i = start_idx; i < model->log->count; ++i) {
+    for (int i = start_idx; i < model->log->count && row < max_lines; ++i) {
         const char *line = NULL;
-        if (ui_log_get_line(model->log, i, &line) == 0 && line) {
-            ui_draw_text(fb, text_x, first_line_y + (row * line_h), line, theme->text, 1);
+        uint8_t level = UI_LOG_INFO;
+        if (ui_log_get_line_with_level(model->log, i, &line, &level) != 0 || !line) {
+            continue;
         }
-        ++row;
+
+        if ((model->log_filter_mask & (uint8_t)(1u << level)) == 0) {
+            continue;
+        }
+
+        uint32_t color = theme->log_info;
+        if (level == UI_LOG_WARN) {
+            color = theme->log_warn;
+        } else if (level == UI_LOG_ERROR) {
+            color = theme->log_error;
+        }
+
+        size_t len = strlen(line);
+        size_t pos = 0;
+        while (row < max_lines) {
+            char chunk[97];
+            if (pos >= len) {
+                if (pos == 0) {
+                    chunk[0] = '\0';
+                } else {
+                    break;
+                }
+            }
+
+            size_t remaining = (pos < len) ? (len - pos) : 0;
+            size_t take = remaining;
+            if (take > (size_t)max_chars) {
+                take = (size_t)max_chars;
+            }
+            if (take > sizeof(chunk) - 1) {
+                take = sizeof(chunk) - 1;
+            }
+
+            if (take > 0) {
+                memcpy(chunk, line + pos, take);
+            }
+            chunk[take] = '\0';
+
+            ui_draw_text(fb, text_x, first_line_y + (row * line_h), chunk, color, 1);
+            ++row;
+
+            if (pos >= len) {
+                break;
+            }
+            pos += take;
+            if (take == 0) {
+                break;
+            }
+            if (pos >= len) {
+                break;
+            }
+        }
     }
 }
 
@@ -321,6 +410,7 @@ static inline void ui_console_interact(const fb_ctx_t *fb,
                                        int points,
                                        ui_touch_latch_t *cfg_latch,
                                        ui_touch_latch_t tab_latches[UI_TAB_COUNT],
+                                       ui_touch_latch_t log_filter_latches[3],
                                        ui_touch_latch_t *swipe_latch,
                                        const ui_console_model_t *model,
                                        ui_console_io_t *io) {
@@ -361,6 +451,16 @@ static inline void ui_console_interact(const fb_ctx_t *fb,
         io->config_toggled = (model->active_tab == UI_TAB_CONFIG)
                                  ? ui_im_release_tap_rect(&ui, &cfg_rect, cfg_latch, UI_TAP_MOVE_TOLERANCE_PX)
                                  : 0;
+
+        if (model->active_tab == UI_TAB_LOG && log_filter_latches) {
+            for (int i = 0; i < 3; ++i) {
+                ui_rect_t b = ui_console_log_filter_button_rect(&content, i);
+                io->log_filter_toggled[i] = ui_im_release_tap_rect(&ui,
+                                                                    &b,
+                                                                    &log_filter_latches[i],
+                                                                    UI_TAP_MOVE_TOLERANCE_PX);
+            }
+        }
     }
 }
 
@@ -371,15 +471,10 @@ static inline void ui_console_frame(const fb_ctx_t *fb,
                                     int points,
                                     ui_touch_latch_t *cfg_latch,
                                     ui_touch_latch_t tab_latches[UI_TAB_COUNT],
+                                    ui_touch_latch_t log_filter_latches[3],
                                     ui_touch_latch_t *swipe_latch,
                                     const ui_console_model_t *model,
                                     ui_console_io_t *io) {
-    if (io) {
-        memset(io, 0, sizeof(*io));
-        io->selected_tab = -1;
-        io->tab_step = 0;
-    }
-
     if (!fb || !fb->map || !model || !model->log) {
         if (cfg_latch) {
             (void)ui_im_rising_edge(0, cfg_latch);
@@ -387,10 +482,17 @@ static inline void ui_console_frame(const fb_ctx_t *fb,
         return;
     }
 
+    (void)touch;
+    (void)raw_x;
+    (void)raw_y;
+    (void)points;
+    (void)tab_latches;
+    (void)log_filter_latches;
+    (void)swipe_latch;
+    (void)io;
+
     ui_console_theme_t theme;
     ui_console_theme_default(fb, &theme);
-
-    ui_console_interact(fb, touch, raw_x, raw_y, points, cfg_latch, tab_latches, swipe_latch, model, io);
 
     ui_fill_rect(fb, 0, 0, fb->width, fb->height, theme.bg);
     ui_console_draw_tab_bar(fb, &theme, model->active_tab);

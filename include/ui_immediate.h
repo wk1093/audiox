@@ -34,9 +34,16 @@ typedef struct ui_im_ctx {
 
 typedef struct ui_log {
     char lines[64][96];
+    uint8_t level[64];
     int count;
     int head;
 } ui_log_t;
+
+typedef enum ui_log_level {
+    UI_LOG_INFO = 0,
+    UI_LOG_WARN = 1,
+    UI_LOG_ERROR = 2
+} ui_log_level_t;
 
 typedef struct ui_layout {
     uint32_t margin;
@@ -58,7 +65,23 @@ static inline void ui_log_init(ui_log_t *log) {
     memset(log, 0, sizeof(*log));
 }
 
-static inline void ui_log_push(ui_log_t *log, const char *line) {
+static inline uint8_t ui_log_detect_level(const char *line) {
+    if (!line) {
+        return UI_LOG_INFO;
+    }
+
+    if (strstr(line, "[CRIT]") || strstr(line, "[ERR]") || strstr(line, " ERROR")) {
+        return UI_LOG_ERROR;
+    }
+
+    if (strstr(line, "[WARN]") || strstr(line, " WARNING")) {
+        return UI_LOG_WARN;
+    }
+
+    return UI_LOG_INFO;
+}
+
+static inline void ui_log_push_level(ui_log_t *log, const char *line, uint8_t level) {
     if (!log || !line) {
         return;
     }
@@ -67,10 +90,15 @@ static inline void ui_log_push(ui_log_t *log, const char *line) {
 #pragma GCC diagnostic ignored "-Wformat-truncation"
     snprintf(log->lines[log->head], sizeof(log->lines[log->head]), "%s", line);
 #pragma GCC diagnostic pop
+    log->level[log->head] = level;
     log->head = (log->head + 1) % 64;
     if (log->count < 64) {
         ++log->count;
     }
+}
+
+static inline void ui_log_push(ui_log_t *log, const char *line) {
+    ui_log_push_level(log, line, ui_log_detect_level(line));
 }
 
 static inline int ui_log_get_line(const ui_log_t *log, int idx, const char **out) {
@@ -81,6 +109,20 @@ static inline int ui_log_get_line(const ui_log_t *log, int idx, const char **out
     int start = (log->head - log->count + 64) % 64;
     int slot = (start + idx) % 64;
     *out = log->lines[slot];
+    return 0;
+}
+
+static inline int ui_log_get_line_with_level(const ui_log_t *log, int idx, const char **out, uint8_t *level_out) {
+    if (!log || !out || idx < 0 || idx >= log->count) {
+        return -1;
+    }
+
+    int start = (log->head - log->count + 64) % 64;
+    int slot = (start + idx) % 64;
+    *out = log->lines[slot];
+    if (level_out) {
+        *level_out = log->level[slot];
+    }
     return 0;
 }
 

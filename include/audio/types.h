@@ -51,6 +51,9 @@ typedef struct audio_ctx {
     size_t frame_bytes;
     uint8_t input_channels;
     uint32_t input_sample_rate;
+    uint32_t input_resample_pos_q16;
+    int16_t input_last_mono_sample;
+    uint8_t input_have_last_sample;
     uint32_t input_probe_ticks;
     audio_control_state_t control;
     struct wav_voice {

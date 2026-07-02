@@ -352,6 +352,9 @@ static inline void audio_close_input_device(audio_ctx_t *ctx, const char *reason
     ctx->input_pcm_path[0] = '\0';
     ctx->input_channels = 0;
     ctx->input_sample_rate = 0;
+    ctx->input_resample_pos_q16 = 0;
+    ctx->input_last_mono_sample = 0;
+    ctx->input_have_last_sample = 0;
     ctx->input_probe_ticks = AUDIO_INPUT_PROBE_BLOCKS;
 }
 
@@ -381,6 +384,9 @@ static inline int audio_try_open_input_candidate(audio_ctx_t *ctx, const char *p
                 ctx->input_fd = fd;
                 ctx->input_channels = (uint8_t)channel_attempts[ch_idx];
                 ctx->input_sample_rate = rate_attempts[rate_idx];
+                ctx->input_resample_pos_q16 = 0;
+                ctx->input_last_mono_sample = 0;
+                ctx->input_have_last_sample = 0;
                 audio_copy_pcm_path(ctx->input_pcm_path, sizeof(ctx->input_pcm_path), path);
                 ctx->input_probe_ticks = 0;
                   printf("[INIT] Audio input connected: %s (%uch, %u Hz, period=%u periods=%u)\n",
@@ -477,15 +483,19 @@ static inline int audio_capture_read_mix(audio_ctx_t *ctx, int16_t *mix_out, siz
 
     if (frames_read > 0) {
         uint32_t input_rate = ctx->input_sample_rate ? ctx->input_sample_rate : SAMPLE_RATE;
+        size_t out_filled = 0;
 
         if (input_rate == SAMPLE_RATE) {
             size_t limit = (size_t)frames_read < frames ? (size_t)frames_read : frames;
             for (size_t i = 0; i < limit; ++i) {
                 mix_out[i] = audio_capture_frame_mono(raw, i, ctx->input_channels);
+                ctx->input_last_mono_sample = mix_out[i];
+                ctx->input_have_last_sample = 1;
             }
+            out_filled = limit;
         } else if (frames_read > 1) {
             uint32_t step_q16 = (uint32_t)(((uint64_t)input_rate << 16) / SAMPLE_RATE);
-            uint32_t pos_q16 = 0;
+            uint32_t pos_q16 = ctx->input_resample_pos_q16;
 
             for (size_t out_idx = 0; out_idx < frames; ++out_idx) {
                 uint32_t src_idx = pos_q16 >> 16;
@@ -506,10 +516,24 @@ static inline int audio_capture_read_mix(audio_ctx_t *ctx, int16_t *mix_out, siz
                 }
 
                 mix_out[out_idx] = (int16_t)interp;
+                ctx->input_last_mono_sample = mix_out[out_idx];
+                ctx->input_have_last_sample = 1;
+                out_filled = out_idx + 1U;
                 pos_q16 += step_q16;
             }
+
+            ctx->input_resample_pos_q16 = pos_q16 & 0xFFFFU;
         } else {
             mix_out[0] = audio_capture_frame_mono(raw, 0, ctx->input_channels);
+            ctx->input_last_mono_sample = mix_out[0];
+            ctx->input_have_last_sample = 1;
+            out_filled = 1;
+        }
+
+        if (out_filled < frames && ctx->input_have_last_sample) {
+            for (size_t i = out_filled; i < frames; ++i) {
+                mix_out[i] = ctx->input_last_mono_sample;
+            }
         }
 
         return (int)frames_read;

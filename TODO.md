@@ -23,10 +23,10 @@ This is the rough plan for audiox. Not fancy. Just the stuff I need to get done 
 - [x] Create modular headers under `include/audio/` and keep existing API stable
 - [x] Convert `include/audio_oss.h` to umbrella include
 - [x] Add placeholder router node/bus structs for future DAG work
-- [ ] Move runtime control state toward snapshot-friendly layout (no behavior change yet)
+- [x] Move runtime control state toward snapshot-friendly layout (no behavior change yet)
 - [x] Verify build on debug profile
-- [ ] Verify build on target cross-compile profile
-- [ ] Example with rerouting a separate USB audio device (a usb mic) to the usb gadget output (this is the first real test of the routing model)
+- [x] Verify build on target cross-compile profile
+- [x] Example with rerouting a separate USB audio device (a usb mic) to the usb gadget output (this is the first real test of the routing model)
 
 ## Next
 

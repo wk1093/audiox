@@ -11,6 +11,7 @@ static inline size_t audio_block_bytes(void) {
 static inline int audio_open(audio_ctx_t *ctx) {
     memset(ctx, 0, sizeof(*ctx));
     ctx->fd = -1;
+    ctx->input_fd = -1;
     ctx->frame_bytes = sizeof(int16_t) * 2;
 
     if (pthread_mutex_init(&ctx->state_lock, NULL) != 0) {
@@ -23,7 +24,7 @@ static inline int audio_open(audio_ctx_t *ctx) {
         return -1;
     }
 
-    ctx->voice_note_base = 36;
+    ctx->control.voice_note_base = 36;
 
     if (audio_load_voice_bank(ctx) < 0) {
         close(ctx->fd);
@@ -35,6 +36,9 @@ static inline int audio_open(audio_ctx_t *ctx) {
     ctx->pending_offset = 0;
     ctx->pending_bytes = 0;
     audio_refresh_enabled(ctx);
+    if (audio_try_open_input_device(ctx) < 0) {
+        printf("[INIT] [WARN] USB mic input not available at startup. Continuing without live input.\n");
+    }
     printf("[INIT] ALSA playback initialized on %s using dynamic voice bank.\n", ctx->pcm_path);
     return 0;
 }
@@ -43,6 +47,7 @@ static inline void audio_close(audio_ctx_t *ctx) {
     for (int i = 0; i < audio_voice_capacity(); ++i) {
         audio_unload_wav_voice(ctx, i);
     }
+    audio_close_input_device(ctx, NULL);
     if (ctx->fd >= 0) {
         close(ctx->fd);
     }
@@ -55,19 +60,23 @@ static inline int audio_write_next(audio_ctx_t *ctx) {
         const uint16_t gain_max = 32767;
         const uint16_t gain_attack = 1024;
         const uint16_t gain_release = 768;
+        audio_control_state_t *control = &ctx->control;
+        int16_t input_mix[BUFFER_FRAMES];
+
+        (void)audio_capture_read_mix(ctx, input_mix, BUFFER_FRAMES);
 
         pthread_mutex_lock(&ctx->state_lock);
 
         for (int i = 0; i < BUFFER_FRAMES; ++i) {
-            int16_t value = 0;
+            int32_t value = input_mix[i];
 
-            if (ctx->enabled) {
+            if (control->enabled) {
                 int64_t mixed_accum = 0;
                 uint32_t active = 0;
 
                 for (int v = 0; v < audio_voice_count(ctx); ++v) {
-                    uint16_t g = ctx->voice_gain_q15[v];
-                    uint16_t target = ctx->voice_enabled[v] ? gain_max : 0;
+                    uint16_t g = control->voice_gain_q15[v];
+                    uint16_t target = control->voice_enabled[v] ? gain_max : 0;
 
                     if (g < target) {
                         uint32_t stepped = (uint32_t)g + gain_attack;
@@ -79,7 +88,7 @@ static inline int audio_write_next(audio_ctx_t *ctx) {
                         }
                     }
 
-                    ctx->voice_gain_q15[v] = g;
+                    control->voice_gain_q15[v] = g;
                     if (g == 0) {
                         continue;
                     }
@@ -92,19 +101,19 @@ static inline int audio_write_next(audio_ctx_t *ctx) {
                     int64_t denom = (int64_t)gain_max * (int64_t)active;
                     int32_t mixed = (int32_t)(mixed_accum / denom);
                     mixed = (mixed * 3) / 4;
-
-                    if (mixed > 32767) {
-                        mixed = 32767;
-                    }
-                    if (mixed < -32768) {
-                        mixed = -32768;
-                    }
-                    value = (int16_t)mixed;
+                    value += mixed;
                 }
             }
 
-            ctx->block_buffer[i * 2] = value;
-            ctx->block_buffer[i * 2 + 1] = value;
+            if (value > 32767) {
+                value = 32767;
+            }
+            if (value < -32768) {
+                value = -32768;
+            }
+
+            ctx->block_buffer[i * 2] = (int16_t)value;
+            ctx->block_buffer[i * 2 + 1] = (int16_t)value;
         }
 
         pthread_mutex_unlock(&ctx->state_lock);

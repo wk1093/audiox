@@ -11,7 +11,7 @@
 #define FREQUENCY 440.0
 #define AMPLITUDE 16000
 #define PI 3.14159265358979323846
-#define BUFFER_FRAMES 512
+#define BUFFER_FRAMES 128
 
 #define MODULE_LOAD_LIST_FILE "/etc/module-load.list"
 

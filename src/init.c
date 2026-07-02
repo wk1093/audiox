@@ -32,9 +32,26 @@ static int app_printf_router(const char *fmt, ...);
 #define CONFIG_FILE_PATH CONFIG_MOUNT_POINT "/config.txt"
 
 typedef void (*runtime_log_fn_t)(void *ctx, const char *line);
+typedef struct app_state app_state_t;
+
+static void app_boot_status(app_state_t *app, const char *status_line);
 
 static ui_log_t *g_ui_log = NULL;
 static int g_ui_log_active = 0;
+static app_state_t *g_boot_status_app = NULL;
+static int g_boot_status_active = 0;
+static char g_boot_last_error[384];
+
+static int app_line_is_boot_error(const char *line) {
+    if (!line || !line[0]) {
+        return 0;
+    }
+
+    if (strstr(line, "[ERR]") || strstr(line, "[CRIT]") || strstr(line, "FAILED") || strstr(line, "Failed")) {
+        return 1;
+    }
+    return 0;
+}
 
 static void app_log_bind_ui(ui_log_t *log) {
     g_ui_log = log;
@@ -70,6 +87,13 @@ static int app_printf_router(const char *fmt, ...) {
 
     if (len > 0) {
         ui_log_push(g_ui_log, line);
+
+        if (g_boot_status_active && g_boot_status_app && app_line_is_boot_error(line)) {
+            size_t copy_len = strnlen(line, sizeof(g_boot_last_error) - 1);
+            memcpy(g_boot_last_error, line, copy_len);
+            g_boot_last_error[copy_len] = '\0';
+            app_boot_status(g_boot_status_app, g_boot_last_error);
+        }
     }
 
     return n;
@@ -188,7 +212,7 @@ static void log_sink_noop(void *ctx, const char *line) {
     (void)line;
 }
 
-typedef struct app_state {
+struct app_state {
     audio_ctx_t audio;
     fb_ctx_t fb;
     touch_ctx_t touch;
@@ -207,7 +231,7 @@ typedef struct app_state {
     ui_touch_latch_t log_filter_touch_latch[3];
     ui_touch_latch_t control_touch_latch[3];
     ui_touch_latch_t swipe_touch_latch;
-} app_state_t;
+};
 
 typedef struct app_ticks {
     tick_task_t touch_retry;
@@ -529,6 +553,9 @@ int main(void) {
     app_ticks_t ticks;
     app_state_init(&app);
     app_ticks_init(&ticks);
+    g_boot_status_app = &app;
+    g_boot_status_active = 1;
+    g_boot_last_error[0] = '\0';
     runtime_log_set_sink(ui_log_push_adapter, &app.log);
 
     run_temp_fs_shell();
@@ -593,6 +620,8 @@ int main(void) {
     }
 
     app_boot_status(&app, "Startup complete. Entering runtime loop...");
+    g_boot_status_active = 0;
+    g_boot_status_app = NULL;
 
     app_redraw_mode_t redraw_mode = APP_REDRAW_FULL;
 
@@ -751,6 +780,13 @@ int main(void) {
     return 0;
 
 emergency_halt:
+    if (g_boot_status_app && g_boot_status_app->fb_ready) {
+        if (g_boot_last_error[0]) {
+            app_boot_status(g_boot_status_app, g_boot_last_error);
+        } else {
+            app_boot_status(g_boot_status_app, "Startup error. Check UI log for details.");
+        }
+    }
     printf("[INIT] Critical startup error. Halting.\n");
     while (1) {
         sleep(60);

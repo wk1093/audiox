@@ -17,6 +17,10 @@
 
 #include "init_defs.h"
 
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
 #define AUDIO_MAX_VOICES 16
 #define AUDIO_MAX_VOICE_NAME 48
 
@@ -39,10 +43,15 @@ typedef struct audio_control_snapshot {
 
 typedef struct audio_ctx {
     int fd;
+    int input_fd;
     pthread_mutex_t state_lock;
-    char pcm_path[64];
+    char pcm_path[PATH_MAX];
+    char input_pcm_path[PATH_MAX];
     snd_pcm_uframes_t period_frames;
     size_t frame_bytes;
+    uint8_t input_channels;
+    uint32_t input_sample_rate;
+    uint32_t input_probe_ticks;
     audio_control_state_t control;
     struct wav_voice {
         int16_t *pcm;

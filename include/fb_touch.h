@@ -49,6 +49,77 @@ typedef struct touch_ctx {
 
 #define TOUCH_MAX_POINTS 10
 
+static inline int touch_test_bit(const unsigned long *bits, unsigned int bit) {
+    return (bits[bit / (8U * sizeof(unsigned long))] >> (bit % (8U * sizeof(unsigned long)))) & 1UL;
+}
+
+static inline int touch_query_bits(int fd, unsigned int ev, unsigned long *bits, size_t bits_len) {
+    memset(bits, 0, bits_len);
+    return ioctl(fd, EVIOCGBIT(ev, bits_len), bits);
+}
+
+static inline void touch_copy_string(char *dst, size_t dst_size, const char *src) {
+    if (!dst || dst_size == 0) {
+        return;
+    }
+
+    if (!src) {
+        dst[0] = '\0';
+        return;
+    }
+
+    size_t len = strnlen(src, dst_size - 1);
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+}
+
+static inline int touch_is_candidate_device(int fd, int *score_out) {
+    unsigned long ev_bits[(EV_MAX / (8 * sizeof(unsigned long))) + 2];
+    unsigned long abs_bits[(ABS_MAX / (8 * sizeof(unsigned long))) + 2];
+    unsigned long key_bits[(KEY_MAX / (8 * sizeof(unsigned long))) + 2];
+    int score = 0;
+
+    if (touch_query_bits(fd, 0, ev_bits, sizeof(ev_bits)) < 0) {
+        return 0;
+    }
+    if (!touch_test_bit(ev_bits, EV_ABS)) {
+        return 0;
+    }
+    if (touch_query_bits(fd, EV_ABS, abs_bits, sizeof(abs_bits)) < 0) {
+        return 0;
+    }
+
+    int has_abs_xy = touch_test_bit(abs_bits, ABS_X) && touch_test_bit(abs_bits, ABS_Y);
+    int has_mt_xy = touch_test_bit(abs_bits, ABS_MT_POSITION_X) && touch_test_bit(abs_bits, ABS_MT_POSITION_Y);
+    int has_mt_slot = touch_test_bit(abs_bits, ABS_MT_SLOT);
+    int has_mt_tracking = touch_test_bit(abs_bits, ABS_MT_TRACKING_ID);
+
+    if (!has_abs_xy && !has_mt_xy) {
+        return 0;
+    }
+
+    if (touch_query_bits(fd, EV_KEY, key_bits, sizeof(key_bits)) == 0 && touch_test_bit(key_bits, BTN_TOUCH)) {
+        score += 3;
+    }
+    if (has_mt_xy) {
+        score += 4;
+    }
+    if (has_abs_xy) {
+        score += 2;
+    }
+    if (has_mt_slot) {
+        score += 2;
+    }
+    if (has_mt_tracking) {
+        score += 2;
+    }
+
+    if (score_out) {
+        *score_out = score;
+    }
+    return score > 0;
+}
+
 static inline int touch_probe_abs_axis(int fd, unsigned long code, int *out_min, int *out_max) {
     struct input_absinfo absinfo;
     if (ioctl(fd, EVIOCGABS(code), &absinfo) < 0) {
@@ -288,7 +359,10 @@ static inline int touch_open(touch_ctx_t *touch) {
         return -1;
     }
 
-    int fallback_fd = -1;
+    int best_fd = -1;
+    int best_score = -1;
+    char best_path[256] = {0};
+    char best_name[128] = {0};
     struct dirent *entry;
 
     while ((entry = readdir(dir)) != NULL) {
@@ -312,35 +386,22 @@ static inline int touch_open(touch_ctx_t *touch) {
             name[0] = '\0';
         }
 
-        if (strcasestr(name, "touch") != NULL || strcasestr(name, "ft") != NULL || strcasestr(name, "goodix") != NULL) {
-            touch->fd = fd;
-
-            int ok_x = (touch_probe_abs_axis(fd, ABS_X, &touch->min_x, &touch->max_x) == 0) ||
-                       (touch_probe_abs_axis(fd, ABS_MT_POSITION_X, &touch->min_x, &touch->max_x) == 0);
-            int ok_y = (touch_probe_abs_axis(fd, ABS_Y, &touch->min_y, &touch->max_y) == 0) ||
-                       (touch_probe_abs_axis(fd, ABS_MT_POSITION_Y, &touch->min_y, &touch->max_y) == 0);
-            touch->has_range = ok_x && ok_y && (touch->max_x > touch->min_x) && (touch->max_y > touch->min_y);
-
-            struct input_absinfo slot_info;
-            if (ioctl(fd, EVIOCGABS(ABS_MT_SLOT), &slot_info) == 0 && slot_info.maximum >= 0) {
-                int slots = slot_info.maximum + 1;
-                if (slots > TOUCH_MAX_POINTS) slots = TOUCH_MAX_POINTS;
-                touch->supports_mt_slots = 1;
-                touch->max_slots = slots;
-            } else {
-                touch->supports_mt_slots = 0;
-                touch->max_slots = 1;
+        int score = 0;
+        if (touch_is_candidate_device(fd, &score)) {
+            if (strcasestr(name, "touch") != NULL || strcasestr(name, "ft") != NULL || strcasestr(name, "goodix") != NULL) {
+                score += 4;
             }
-            touch->current_slot = 0;
 
-            printf("[INIT] Touch input selected: %s (%s)\n", path, name[0] ? name : "unknown");
-            closedir(dir);
-            return 0;
-        }
-
-        if (fallback_fd < 0) {
-            fallback_fd = fd;
-            fd = -1;
+            if (score > best_score) {
+                if (best_fd >= 0) {
+                    close(best_fd);
+                }
+                best_fd = fd;
+                best_score = score;
+                touch_copy_string(best_path, sizeof(best_path), path);
+                touch_copy_string(best_name, sizeof(best_name), name[0] ? name : "unknown");
+                fd = -1;
+            }
         }
 
         if (fd >= 0) {
@@ -350,8 +411,8 @@ static inline int touch_open(touch_ctx_t *touch) {
 
     closedir(dir);
 
-    if (fallback_fd >= 0) {
-        touch->fd = fallback_fd;
+    if (best_fd >= 0) {
+        touch->fd = best_fd;
         int ok_x = (touch_probe_abs_axis(touch->fd, ABS_X, &touch->min_x, &touch->max_x) == 0) ||
                    (touch_probe_abs_axis(touch->fd, ABS_MT_POSITION_X, &touch->min_x, &touch->max_x) == 0);
         int ok_y = (touch_probe_abs_axis(touch->fd, ABS_Y, &touch->min_y, &touch->max_y) == 0) ||
@@ -370,11 +431,11 @@ static inline int touch_open(touch_ctx_t *touch) {
         }
         touch->current_slot = 0;
 
-        printf("[INIT] Touch input fallback selected: generic /dev/input/event*\n");
+        printf("[INIT] Touch input selected: %s (%s)\n", best_path, best_name[0] ? best_name : "unknown");
         return 0;
     }
 
-    printf("[INIT] [WARN] No /dev/input/event* device available for touch polling.\n");
+    printf("[INIT] [WARN] No touch-capable /dev/input/event* device available for touch polling.\n");
     return -1;
 }
 

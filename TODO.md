@@ -9,6 +9,25 @@ This is the rough plan for audiox. Not fancy. Just the stuff I need to get done 
 - Add a real internal routing model so "virtual wires" are not a future panic attack
 - Make the config side simple enough that I can edit it by hand without hating myself
 
+## Audio refactor phases
+
+- Phase 0 (in progress): split monolithic audio code into modules without changing behavior
+- Phase 1: replace render-path mutex reads with control snapshot swap
+- Phase 2: add routing model container + prevalidated execution order (linear path first)
+- Phase 3: move render path to node execution (same current audible result)
+- Phase 4: add first effect node contract + bypass + smoothed params
+- Phase 5: expose routing/effects params to config + touchscreen + MIDI
+
+### Phase 0 checklist
+
+- [x] Create modular headers under `include/audio/` and keep existing API stable
+- [x] Convert `include/audio_oss.h` to umbrella include
+- [x] Add placeholder router node/bus structs for future DAG work
+- [ ] Move runtime control state toward snapshot-friendly layout (no behavior change yet)
+- [x] Verify build on debug profile
+- [ ] Verify build on target cross-compile profile
+- [ ] Example with rerouting a separate USB audio device (a usb mic) to the usb gadget output (this is the first real test of the routing model)
+
 ## Next
 
 - Finish UI cleanup so the touchscreen shows routing, inputs, outputs, and status without being cluttered

@@ -17,24 +17,20 @@ if [[ "$LOCAL_MAIN" != "$REMOTE_MAIN" ]]; then
     exit 1
 fi
 
-# 3. Perform the squash merge
-echo "Merging dev into main..."
+# 3. Force main to match dev
+echo "Merging 'dev' into 'main'..."
 git switch main
-git merge --squash dev --allow-unrelated-histories
+git checkout dev -- . || exit 1
+git add -A || exit 1
 
-# 4. Commit and Push
-if [[ $? -eq 0 ]]; then
-    git commit
-    
-    echo "Pushing to GitHub..."
-    git push github main
-    
-    echo "Pushing granular history to Gitea..."
-    git push gitea dev
-else
-    echo "Merge failed! Check for conflicts."
-    exit 1
-fi
+# 4. Commit and push
+git commit
+
+echo "Pushing to GitHub..."
+git push github main
+
+echo "Pushing granular history to Gitea..."
+git push gitea dev
 
 # 5. Return to dev
 git switch dev

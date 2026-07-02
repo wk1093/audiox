@@ -16,14 +16,14 @@ static inline int audio_voice_count(const audio_ctx_t *ctx) {
     if (!ctx) {
         return 0;
     }
-    return (int)ctx->voice_count;
+    return (int)ctx->control.voice_count;
 }
 
 static inline uint8_t audio_voice_note_base(const audio_ctx_t *ctx) {
     if (!ctx) {
         return 36;
     }
-    return ctx->voice_note_base;
+    return ctx->control.voice_note_base;
 }
 
 static inline const char *audio_voice_name(const audio_ctx_t *ctx, int voice_index) {
@@ -167,10 +167,10 @@ static inline void audio_unload_wav_voice(audio_ctx_t *ctx, int voice_index) {
     ctx->wav[voice_index].frames = 0;
     ctx->wav[voice_index].sample_rate = 0;
     ctx->wav[voice_index].channels = 0;
-    ctx->voice_cursor_q16[voice_index] = 0;
-    ctx->voice_enabled[voice_index] = 0;
-    ctx->voice_gain_q15[voice_index] = 0;
-    ctx->voice_loop[voice_index] = 0;
+    ctx->control.voice_cursor_q16[voice_index] = 0;
+    ctx->control.voice_enabled[voice_index] = 0;
+    ctx->control.voice_gain_q15[voice_index] = 0;
+    ctx->control.voice_loop[voice_index] = 0;
     ctx->voice_name[voice_index][0] = '\0';
 }
 
@@ -311,10 +311,10 @@ static inline int audio_load_wav_voice(audio_ctx_t *ctx,
     ctx->wav[voice_index].frames = frames;
     ctx->wav[voice_index].sample_rate = sample_rate;
     ctx->wav[voice_index].channels = channels;
-    ctx->voice_cursor_q16[voice_index] = 0;
-    ctx->voice_enabled[voice_index] = 0;
-    ctx->voice_gain_q15[voice_index] = 0;
-    ctx->voice_loop[voice_index] = 0;
+    ctx->control.voice_cursor_q16[voice_index] = 0;
+    ctx->control.voice_enabled[voice_index] = 0;
+    ctx->control.voice_gain_q15[voice_index] = 0;
+    ctx->control.voice_loop[voice_index] = 0;
     snprintf(ctx->voice_name[voice_index], sizeof(ctx->voice_name[voice_index]), "%s", name ? name : path);
 
     printf("[INIT] Loaded voice %d WAV: %s (%u Hz, %u ch, %zu frames)\n",
@@ -362,7 +362,7 @@ static inline int audio_load_voice_bank(audio_ctx_t *ctx) {
         return -1;
     }
 
-    ctx->voice_count = (uint8_t)ok;
+    ctx->control.voice_count = (uint8_t)ok;
     printf("[INIT] Loaded %d voice(s) from %s\n", ok, source_dir);
     return 0;
 }
@@ -377,26 +377,26 @@ static inline int16_t audio_voice_next_sample(audio_ctx_t *ctx, int voice_index)
         return 0;
     }
 
-    uint32_t cursor_q16 = ctx->voice_cursor_q16[voice_index];
+    uint32_t cursor_q16 = ctx->control.voice_cursor_q16[voice_index];
     uint32_t frame = cursor_q16 >> 16;
     uint32_t frac = cursor_q16 & 0xFFFFU;
 
     if (frame >= wv->frames) {
-        if (ctx->voice_loop[voice_index]) {
+        if (ctx->control.voice_loop[voice_index]) {
             frame %= (uint32_t)wv->frames;
-            ctx->voice_cursor_q16[voice_index] = frame << 16;
-            cursor_q16 = ctx->voice_cursor_q16[voice_index];
+            ctx->control.voice_cursor_q16[voice_index] = frame << 16;
+            cursor_q16 = ctx->control.voice_cursor_q16[voice_index];
             frac = cursor_q16 & 0xFFFFU;
         } else {
-            ctx->voice_enabled[voice_index] = 0;
-            ctx->voice_gain_q15[voice_index] = 0;
+            ctx->control.voice_enabled[voice_index] = 0;
+            ctx->control.voice_gain_q15[voice_index] = 0;
             return 0;
         }
     }
 
     uint32_t next_frame = frame + 1;
     if (next_frame >= wv->frames) {
-        next_frame = ctx->voice_loop[voice_index] ? 0 : frame;
+        next_frame = ctx->control.voice_loop[voice_index] ? 0 : frame;
     }
 
     int32_t sample_a = 0;
@@ -419,12 +419,12 @@ static inline int16_t audio_voice_next_sample(audio_ctx_t *ctx, int voice_index)
     if (step_q16 == 0) {
         step_q16 = 1;
     }
-    ctx->voice_cursor_q16[voice_index] += step_q16;
+    ctx->control.voice_cursor_q16[voice_index] += step_q16;
 
-    if ((ctx->voice_cursor_q16[voice_index] >> 16) >= wv->frames && !ctx->voice_loop[voice_index]) {
-        ctx->voice_enabled[voice_index] = 0;
-    } else if ((ctx->voice_cursor_q16[voice_index] >> 16) >= wv->frames && ctx->voice_loop[voice_index]) {
-        ctx->voice_cursor_q16[voice_index] %= (uint32_t)(wv->frames << 16);
+    if ((ctx->control.voice_cursor_q16[voice_index] >> 16) >= wv->frames && !ctx->control.voice_loop[voice_index]) {
+        ctx->control.voice_enabled[voice_index] = 0;
+    } else if ((ctx->control.voice_cursor_q16[voice_index] >> 16) >= wv->frames && ctx->control.voice_loop[voice_index]) {
+        ctx->control.voice_cursor_q16[voice_index] %= (uint32_t)(wv->frames << 16);
     }
 
     if (interp > 32767) {

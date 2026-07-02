@@ -384,12 +384,15 @@ static int app_apply_ui(app_state_t *app,
 
 static int app_refresh_voice_status(app_state_t *app) {
     int changed = 0;
-    int count = audio_voice_count(&app->audio);
+    audio_control_snapshot_t snapshot;
+
+    memset(&snapshot, 0, sizeof(snapshot));
+    audio_copy_control_snapshot(&app->audio, &snapshot);
 
     for (int i = 0; i < AUDIO_MAX_VOICES; ++i) {
         int next = 0;
-        if (i < count) {
-            next = audio_voice_is_enabled(&app->audio, i);
+        if (i < snapshot.voice_count) {
+            next = snapshot.voice_enabled[i] ? 1 : 0;
         }
         if (next != app->voice_enabled[i]) {
             app->voice_enabled[i] = next;

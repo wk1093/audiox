@@ -23,7 +23,7 @@ static inline int audio_open(audio_ctx_t *ctx) {
         return -1;
     }
 
-    ctx->voice_note_base = 36;
+    ctx->control.voice_note_base = 36;
 
     if (audio_load_voice_bank(ctx) < 0) {
         close(ctx->fd);
@@ -55,19 +55,20 @@ static inline int audio_write_next(audio_ctx_t *ctx) {
         const uint16_t gain_max = 32767;
         const uint16_t gain_attack = 1024;
         const uint16_t gain_release = 768;
+        audio_control_state_t *control = &ctx->control;
 
         pthread_mutex_lock(&ctx->state_lock);
 
         for (int i = 0; i < BUFFER_FRAMES; ++i) {
             int16_t value = 0;
 
-            if (ctx->enabled) {
+            if (control->enabled) {
                 int64_t mixed_accum = 0;
                 uint32_t active = 0;
 
                 for (int v = 0; v < audio_voice_count(ctx); ++v) {
-                    uint16_t g = ctx->voice_gain_q15[v];
-                    uint16_t target = ctx->voice_enabled[v] ? gain_max : 0;
+                    uint16_t g = control->voice_gain_q15[v];
+                    uint16_t target = control->voice_enabled[v] ? gain_max : 0;
 
                     if (g < target) {
                         uint32_t stepped = (uint32_t)g + gain_attack;
@@ -79,7 +80,7 @@ static inline int audio_write_next(audio_ctx_t *ctx) {
                         }
                     }
 
-                    ctx->voice_gain_q15[v] = g;
+                    control->voice_gain_q15[v] = g;
                     if (g == 0) {
                         continue;
                     }

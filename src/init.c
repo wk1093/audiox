@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <stdarg.h>
 #include <string.h>
+#include <sys/reboot.h>
 #include <unistd.h>
 
 static int app_printf_router(const char *fmt, ...);
@@ -204,6 +205,7 @@ typedef struct app_state {
     ui_touch_latch_t cfg_touch_latch;
     ui_touch_latch_t tab_touch_latch[UI_TAB_COUNT];
     ui_touch_latch_t log_filter_touch_latch[3];
+    ui_touch_latch_t control_touch_latch[3];
     ui_touch_latch_t swipe_touch_latch;
 } app_state_t;
 
@@ -213,6 +215,12 @@ typedef struct app_ticks {
     tick_task_t mount_poll;
     tick_task_t periodic_sync;
 } app_ticks_t;
+
+typedef enum app_redraw_mode {
+    APP_REDRAW_NONE = 0,
+    APP_REDRAW_PANEL = 1,
+    APP_REDRAW_FULL = 2
+} app_redraw_mode_t;
 
 static void app_ticks_init(app_ticks_t *ticks) {
     tick_task_init(&ticks->touch_retry, 200);
@@ -345,6 +353,29 @@ static int app_apply_ui(app_state_t *app,
                 app->log_filter_mask = next;
                 changed = 1;
             }
+        }
+    }
+
+    if (io->control_sync) {
+        sync();
+        ui_log_push(&app->log, "CONTROL: SYNC COMPLETE");
+    }
+
+    if (io->control_restart) {
+        ui_log_push(&app->log, "CONTROL: RESTART REQUESTED");
+        sync();
+        if (reboot(RB_AUTOBOOT) < 0) {
+            printf("[INIT] [ERR] reboot(RB_AUTOBOOT) failed: %s\n", strerror(errno));
+            ui_log_push(&app->log, "CONTROL: RESTART FAILED");
+        }
+    }
+
+    if (io->control_shutdown) {
+        ui_log_push(&app->log, "CONTROL: SHUTDOWN REQUESTED");
+        sync();
+        if (reboot(RB_POWER_OFF) < 0) {
+            printf("[INIT] [ERR] reboot(RB_POWER_OFF) failed: %s\n", strerror(errno));
+            ui_log_push(&app->log, "CONTROL: SHUTDOWN FAILED");
         }
     }
 
@@ -560,7 +591,7 @@ int main(void) {
 
     app_boot_status(&app, "Startup complete. Entering runtime loop...");
 
-    int render_dirty = 1;
+    app_redraw_mode_t redraw_mode = APP_REDRAW_FULL;
 
     while (1) {
         int prev_log_head = app.log.head;
@@ -568,16 +599,23 @@ int main(void) {
 
         int conn_changed = 0;
         int midi_updated = midi_runtime_poll(&app.midi, log_sink_noop, NULL, &conn_changed);
-        if (midi_updated || conn_changed) {
-            render_dirty = 1;
+        if (conn_changed) {
+            if (redraw_mode < APP_REDRAW_PANEL) {
+                redraw_mode = APP_REDRAW_PANEL;
+            }
         }
+        (void)midi_updated;
 
         if (app_apply_midi_soundboard(&app)) {
-            render_dirty = 1;
+            if (app.active_tab == UI_TAB_SOUNDBOARD && redraw_mode < APP_REDRAW_PANEL) {
+                redraw_mode = APP_REDRAW_PANEL;
+            }
         }
 
         if (app_refresh_voice_status(&app)) {
-            render_dirty = 1;
+            if (app.active_tab == UI_TAB_SOUNDBOARD && redraw_mode < APP_REDRAW_PANEL) {
+                redraw_mode = APP_REDRAW_PANEL;
+            }
         }
 
         if (tick_task_due(&ticks.mount_poll)) {
@@ -585,7 +623,9 @@ int main(void) {
             int mount_after = config_store_refresh_mount_state(&app.config);
             if (mount_before != mount_after) {
                 ui_log_push(&app.log, mount_after ? "CFG FS MOUNTED" : "CFG FS UNMOUNTED");
-                render_dirty = 1;
+                if (app.active_tab == UI_TAB_CONFIG && redraw_mode < APP_REDRAW_PANEL) {
+                    redraw_mode = APP_REDRAW_PANEL;
+                }
             }
         }
 
@@ -620,18 +660,25 @@ int main(void) {
                                 &app.cfg_touch_latch,
                                 app.tab_touch_latch,
                                 app.log_filter_touch_latch,
+                                app.control_touch_latch,
                                 &app.swipe_touch_latch,
                                 &model,
                                 &io);
             if (app_apply_ui(&app, &io)) {
-                render_dirty = 1;
+                if (io.selected_tab >= 0 || io.tab_step != 0) {
+                    redraw_mode = APP_REDRAW_FULL;
+                } else if (redraw_mode < APP_REDRAW_PANEL) {
+                    redraw_mode = APP_REDRAW_PANEL;
+                }
             }
 
             if (app.log.head != prev_log_head || app.log.count != prev_log_count) {
-                render_dirty = 1;
+                if (app.active_tab == UI_TAB_LOG && redraw_mode < APP_REDRAW_PANEL) {
+                    redraw_mode = APP_REDRAW_PANEL;
+                }
             }
 
-            if (render_dirty) {
+            if (redraw_mode != APP_REDRAW_NONE) {
                 model.voice_enabled = app.voice_enabled;
                 model.voice_name = app.audio.voice_name;
                 model.voice_count = audio_voice_count(&app.audio);
@@ -644,21 +691,30 @@ int main(void) {
                 model.log_filter_mask = app.log_filter_mask;
                 model.log = &app.log;
 
-                fb_begin_frame(&app.fb);
-
-                ui_console_frame(&app.fb,
-                                 app.touch_ready ? &app.touch : NULL,
-                                 app.touch_ready ? raw_x : NULL,
-                                 app.touch_ready ? raw_y : NULL,
-                                 points,
-                                 &app.cfg_touch_latch,
-                                 app.tab_touch_latch,
-                                 app.log_filter_touch_latch,
-                                 &app.swipe_touch_latch,
-                                 &model,
-                                 &io);
-                (void)fb_present(&app.fb);
-                render_dirty = 0;
+                if (redraw_mode == APP_REDRAW_FULL) {
+                    fb_begin_frame(&app.fb);
+                    ui_console_frame(&app.fb,
+                                     app.touch_ready ? &app.touch : NULL,
+                                     app.touch_ready ? raw_x : NULL,
+                                     app.touch_ready ? raw_y : NULL,
+                                     points,
+                                     &app.cfg_touch_latch,
+                                     app.tab_touch_latch,
+                                     app.log_filter_touch_latch,
+                                     app.control_touch_latch,
+                                     &app.swipe_touch_latch,
+                                     &model,
+                                     &io);
+                    (void)fb_present(&app.fb);
+                } else {
+                    if (app.fb.pageflip_enabled) {
+                        app.fb.draw_page = app.fb.front_page;
+                        app.fb.draw_offset = app.fb.front_page ? app.fb.page_len : 0;
+                    }
+                    ui_console_draw_tab_bar_only(&app.fb, &model);
+                    ui_console_draw_active_panel_only(&app.fb, &model);
+                }
+                redraw_mode = APP_REDRAW_NONE;
             }
         } else {
             (void)ui_im_rising_edge(0, &app.cfg_touch_latch);
@@ -667,6 +723,9 @@ int main(void) {
             }
             for (int i = 0; i < 3; ++i) {
                 (void)ui_im_rising_edge(0, &app.log_filter_touch_latch[i]);
+            }
+            for (int i = 0; i < 3; ++i) {
+                (void)ui_im_rising_edge(0, &app.control_touch_latch[i]);
             }
             (void)ui_im_rising_edge(0, &app.swipe_touch_latch);
         }

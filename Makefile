@@ -1,5 +1,5 @@
 CC = aarch64-linux-gnu-gcc
-CFLAGS = -static -O3 -Iinclude -Wall -Wextra -Werror -pthread
+CFLAGS = -static -O3 -Iinclude -Wall -Wextra -Werror -Wno-error=format-truncation -pthread
 LIBS = -lm -pthread
 
 # Auto-detected from firmware after fetch_deps runs.

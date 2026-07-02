@@ -207,11 +207,6 @@ static void ui_log_push_adapter(void *ctx, const char *line) {
     ui_log_push((ui_log_t *)ctx, line);
 }
 
-static void log_sink_noop(void *ctx, const char *line) {
-    (void)ctx;
-    (void)line;
-}
-
 struct app_state {
     audio_ctx_t audio;
     fb_ctx_t fb;
@@ -630,7 +625,7 @@ int main(void) {
         int prev_log_count = app.log.count;
 
         int conn_changed = 0;
-        int midi_updated = midi_runtime_poll(&app.midi, log_sink_noop, NULL, &conn_changed);
+        int midi_updated = midi_runtime_poll(&app.midi, ui_log_push_adapter, &app.log, &conn_changed);
         if (conn_changed) {
             if (redraw_mode < APP_REDRAW_PANEL) {
                 redraw_mode = APP_REDRAW_PANEL;

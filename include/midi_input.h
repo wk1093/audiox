@@ -17,6 +17,10 @@ typedef struct midi_ctx {
     uint8_t data_buf[2];
     int data_have;
     int data_need;
+    uint32_t event_seq;
+    uint8_t last_status;
+    uint8_t last_d0;
+    uint8_t last_d1;
 } midi_ctx_t;
 
 typedef void (*midi_log_push_fn)(void *ctx, const char *line);
@@ -30,6 +34,26 @@ static inline void midi_log_emit(midi_log_push_fn log_push, void *log_ctx, const
 static inline void midi_ctx_init(midi_ctx_t *midi) {
     memset(midi, 0, sizeof(*midi));
     midi->fd = -1;
+}
+
+static inline int midi_consume_event(midi_ctx_t *midi,
+                                     uint32_t *cursor,
+                                     uint8_t *status,
+                                     uint8_t *d0,
+                                     uint8_t *d1) {
+    if (!midi || !cursor || !status || !d0 || !d1) {
+        return 0;
+    }
+
+    if (midi->event_seq == 0 || *cursor == midi->event_seq) {
+        return 0;
+    }
+
+    *cursor = midi->event_seq;
+    *status = midi->last_status;
+    *d0 = midi->last_d0;
+    *d1 = midi->last_d1;
+    return 1;
 }
 
 static inline int midi_status_data_len(uint8_t status) {
@@ -110,6 +134,10 @@ static inline int midi_parse_byte(midi_ctx_t *midi, uint8_t byte, midi_log_push_
         char line[96];
         uint8_t d0 = midi->data_buf[0];
         uint8_t d1 = (midi->data_need > 1) ? midi->data_buf[1] : 0;
+        midi->last_status = midi->running_status;
+        midi->last_d0 = d0;
+        midi->last_d1 = d1;
+        ++midi->event_seq;
         midi_format_message(midi->running_status, d0, d1, line, sizeof(line));
         midi_log_emit(log_push, log_ctx, line);
         midi->data_have = 0;

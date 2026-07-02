@@ -1,23 +1,36 @@
 #ifndef AUDIO_VOICE_BANK_H
 #define AUDIO_VOICE_BANK_H
 
+#include <dirent.h>
+
 #include "audio/types.h"
 
-static inline int audio_voice_count(void) {
-    return 4;
+#define AUDIO_ROOTFS_WAV_DIR "/audiox/wavs"
+#define AUDIO_INITRAM_WAV_DIR "/etc/wavs"
+
+static inline int audio_voice_capacity(void) {
+    return AUDIO_MAX_VOICES;
 }
 
-static inline const char *audio_voice_wav_path(int voice_index) {
-    static const char *paths[4] = {
-        "/etc/wavs/voice0.wav",
-        "/etc/wavs/voice1.wav",
-        "/etc/wavs/voice2.wav",
-        "/etc/wavs/voice3.wav"
-    };
-    if (voice_index < 0 || voice_index >= (int)(sizeof(paths) / sizeof(paths[0]))) {
+static inline int audio_voice_count(const audio_ctx_t *ctx) {
+    if (!ctx) {
+        return 0;
+    }
+    return (int)ctx->voice_count;
+}
+
+static inline uint8_t audio_voice_note_base(const audio_ctx_t *ctx) {
+    if (!ctx) {
+        return 36;
+    }
+    return ctx->voice_note_base;
+}
+
+static inline const char *audio_voice_name(const audio_ctx_t *ctx, int voice_index) {
+    if (!ctx || voice_index < 0 || voice_index >= audio_voice_count(ctx)) {
         return NULL;
     }
-    return paths[voice_index];
+    return ctx->voice_name[voice_index][0] ? ctx->voice_name[voice_index] : NULL;
 }
 
 static inline uint16_t audio_read_le16(const uint8_t *p) {
@@ -44,19 +57,127 @@ static inline int audio_read_full(int fd, void *buf, size_t bytes) {
     return 0;
 }
 
+static inline int audio_path_has_wav_suffix(const char *name) {
+    if (!name) {
+        return 0;
+    }
+
+    size_t len = strlen(name);
+    if (len < 4) {
+        return 0;
+    }
+
+    const char *ext = name + (len - 4);
+    return (ext[0] == '.' &&
+            (ext[1] == 'w' || ext[1] == 'W') &&
+            (ext[2] == 'a' || ext[2] == 'A') &&
+            (ext[3] == 'v' || ext[3] == 'V'))
+               ? 1
+               : 0;
+}
+
+static inline int audio_path_is_voice_prefix(const char *name) {
+    if (!name) {
+        return 0;
+    }
+
+    return ((name[0] == 'v' || name[0] == 'V') &&
+            (name[1] == 'o' || name[1] == 'O') &&
+            (name[2] == 'i' || name[2] == 'I') &&
+            (name[3] == 'c' || name[3] == 'C') &&
+            (name[4] == 'e' || name[4] == 'E'))
+               ? 1
+               : 0;
+}
+
+static inline int audio_strcmp_for_sort(const void *a, const void *b) {
+    const char *const *pa = (const char *const *)a;
+    const char *const *pb = (const char *const *)b;
+    return strcmp(*pa, *pb);
+}
+
+static inline int audio_collect_wavs_from_dir(const char *dir,
+                                              char paths[AUDIO_MAX_VOICES][256],
+                                              char names[AUDIO_MAX_VOICES][AUDIO_MAX_VOICE_NAME],
+                                              int require_voice_prefix) {
+    DIR *dp = opendir(dir);
+    if (!dp) {
+        return 0;
+    }
+
+    char found[AUDIO_MAX_VOICES][256];
+    char found_name[AUDIO_MAX_VOICES][AUDIO_MAX_VOICE_NAME];
+    char sort_name[AUDIO_MAX_VOICES][256];
+    char *sort_refs[AUDIO_MAX_VOICES];
+    int count = 0;
+
+    struct dirent *entry;
+    while ((entry = readdir(dp)) != NULL && count < AUDIO_MAX_VOICES) {
+        if (entry->d_name[0] == '.') {
+            continue;
+        }
+        if (!audio_path_has_wav_suffix(entry->d_name)) {
+            continue;
+        }
+        if (require_voice_prefix && !audio_path_is_voice_prefix(entry->d_name)) {
+            continue;
+        }
+
+        int n = snprintf(found[count], sizeof(found[count]), "%s/%s", dir, entry->d_name);
+        if (n <= 0 || (size_t)n >= sizeof(found[count])) {
+            continue;
+        }
+
+        snprintf(found_name[count], sizeof(found_name[count]), "%.47s", entry->d_name);
+        snprintf(sort_name[count], sizeof(sort_name[count]), "%s", entry->d_name);
+        sort_refs[count] = sort_name[count];
+        ++count;
+    }
+
+    closedir(dp);
+
+    if (count == 0) {
+        return 0;
+    }
+
+    qsort(sort_refs, (size_t)count, sizeof(sort_refs[0]), audio_strcmp_for_sort);
+
+    int out = 0;
+    for (int i = 0; i < count && out < AUDIO_MAX_VOICES; ++i) {
+        for (int j = 0; j < count; ++j) {
+            if (strcmp(sort_refs[i], sort_name[j]) == 0) {
+                snprintf(paths[out], 256, "%s", found[j]);
+                snprintf(names[out], AUDIO_MAX_VOICE_NAME, "%s", found_name[j]);
+                ++out;
+                break;
+            }
+        }
+    }
+
+    return out;
+}
+
 static inline void audio_unload_wav_voice(audio_ctx_t *ctx, int voice_index) {
-    if (voice_index < 0 || voice_index >= audio_voice_count()) {
+    if (!ctx || voice_index < 0 || voice_index >= audio_voice_capacity()) {
         return;
     }
+
     free(ctx->wav[voice_index].pcm);
     ctx->wav[voice_index].pcm = NULL;
     ctx->wav[voice_index].frames = 0;
     ctx->wav[voice_index].sample_rate = 0;
     ctx->wav[voice_index].channels = 0;
     ctx->voice_cursor_q16[voice_index] = 0;
+    ctx->voice_enabled[voice_index] = 0;
+    ctx->voice_gain_q15[voice_index] = 0;
+    ctx->voice_loop[voice_index] = 0;
+    ctx->voice_name[voice_index][0] = '\0';
 }
 
-static inline int audio_load_wav_voice(audio_ctx_t *ctx, int voice_index, const char *path) {
+static inline int audio_load_wav_voice(audio_ctx_t *ctx,
+                                       int voice_index,
+                                       const char *path,
+                                       const char *name) {
     uint8_t riff_header[12];
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
@@ -191,6 +312,10 @@ static inline int audio_load_wav_voice(audio_ctx_t *ctx, int voice_index, const 
     ctx->wav[voice_index].sample_rate = sample_rate;
     ctx->wav[voice_index].channels = channels;
     ctx->voice_cursor_q16[voice_index] = 0;
+    ctx->voice_enabled[voice_index] = 0;
+    ctx->voice_gain_q15[voice_index] = 0;
+    ctx->voice_loop[voice_index] = 0;
+    snprintf(ctx->voice_name[voice_index], sizeof(ctx->voice_name[voice_index]), "%s", name ? name : path);
 
     printf("[INIT] Loaded voice %d WAV: %s (%u Hz, %u ch, %zu frames)\n",
            voice_index,
@@ -201,8 +326,49 @@ static inline int audio_load_wav_voice(audio_ctx_t *ctx, int voice_index, const 
     return 0;
 }
 
+static inline int audio_load_voice_bank(audio_ctx_t *ctx) {
+    if (!ctx) {
+        return -1;
+    }
+
+    char paths[AUDIO_MAX_VOICES][256];
+    char names[AUDIO_MAX_VOICES][AUDIO_MAX_VOICE_NAME];
+    int loaded = audio_collect_wavs_from_dir(AUDIO_ROOTFS_WAV_DIR, paths, names, 0);
+    const char *source_dir = AUDIO_ROOTFS_WAV_DIR;
+
+    if (loaded == 0) {
+        loaded = audio_collect_wavs_from_dir(AUDIO_INITRAM_WAV_DIR, paths, names, 1);
+        source_dir = AUDIO_INITRAM_WAV_DIR;
+    }
+
+    if (loaded == 0) {
+        printf("[INIT] [ERR] No WAV voices found in %s or %s\n", AUDIO_ROOTFS_WAV_DIR, AUDIO_INITRAM_WAV_DIR);
+        return -1;
+    }
+
+    for (int i = 0; i < audio_voice_capacity(); ++i) {
+        audio_unload_wav_voice(ctx, i);
+    }
+
+    int ok = 0;
+    for (int i = 0; i < loaded; ++i) {
+        if (audio_load_wav_voice(ctx, i, paths[i], names[i]) == 0) {
+            ++ok;
+        }
+    }
+
+    if (ok == 0) {
+        printf("[INIT] [ERR] Could not load any WAV voices from %s\n", source_dir);
+        return -1;
+    }
+
+    ctx->voice_count = (uint8_t)ok;
+    printf("[INIT] Loaded %d voice(s) from %s\n", ok, source_dir);
+    return 0;
+}
+
 static inline int16_t audio_voice_next_sample(audio_ctx_t *ctx, int voice_index) {
-    if (voice_index < 0 || voice_index >= audio_voice_count()) {
+    if (!ctx || voice_index < 0 || voice_index >= audio_voice_count(ctx)) {
         return 0;
     }
 
@@ -214,16 +380,23 @@ static inline int16_t audio_voice_next_sample(audio_ctx_t *ctx, int voice_index)
     uint32_t cursor_q16 = ctx->voice_cursor_q16[voice_index];
     uint32_t frame = cursor_q16 >> 16;
     uint32_t frac = cursor_q16 & 0xFFFFU;
+
     if (frame >= wv->frames) {
-        frame %= (uint32_t)wv->frames;
-        ctx->voice_cursor_q16[voice_index] = frame << 16;
-        cursor_q16 = ctx->voice_cursor_q16[voice_index];
-        frac = cursor_q16 & 0xFFFFU;
+        if (ctx->voice_loop[voice_index]) {
+            frame %= (uint32_t)wv->frames;
+            ctx->voice_cursor_q16[voice_index] = frame << 16;
+            cursor_q16 = ctx->voice_cursor_q16[voice_index];
+            frac = cursor_q16 & 0xFFFFU;
+        } else {
+            ctx->voice_enabled[voice_index] = 0;
+            ctx->voice_gain_q15[voice_index] = 0;
+            return 0;
+        }
     }
 
     uint32_t next_frame = frame + 1;
     if (next_frame >= wv->frames) {
-        next_frame = 0;
+        next_frame = ctx->voice_loop[voice_index] ? 0 : frame;
     }
 
     int32_t sample_a = 0;
@@ -247,7 +420,10 @@ static inline int16_t audio_voice_next_sample(audio_ctx_t *ctx, int voice_index)
         step_q16 = 1;
     }
     ctx->voice_cursor_q16[voice_index] += step_q16;
-    if ((ctx->voice_cursor_q16[voice_index] >> 16) >= wv->frames) {
+
+    if ((ctx->voice_cursor_q16[voice_index] >> 16) >= wv->frames && !ctx->voice_loop[voice_index]) {
+        ctx->voice_enabled[voice_index] = 0;
+    } else if ((ctx->voice_cursor_q16[voice_index] >> 16) >= wv->frames && ctx->voice_loop[voice_index]) {
         ctx->voice_cursor_q16[voice_index] %= (uint32_t)(wv->frames << 16);
     }
 

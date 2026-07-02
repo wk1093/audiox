@@ -23,31 +23,24 @@ static inline int audio_open(audio_ctx_t *ctx) {
         return -1;
     }
 
-    for (int i = 0; i < audio_voice_count(); ++i) {
-        ctx->voice_enabled[i] = 0;
-        ctx->voice_gain_q15[i] = 0;
-        ctx->voice_cursor_q16[i] = 0;
-        if (audio_load_wav_voice(ctx, i, audio_voice_wav_path(i)) < 0) {
-            for (int loaded = 0; loaded < i; ++loaded) {
-                audio_unload_wav_voice(ctx, loaded);
-            }
-            close(ctx->fd);
-            ctx->fd = -1;
-            pthread_mutex_destroy(&ctx->state_lock);
-            return -1;
-        }
+    ctx->voice_note_base = 36;
+
+    if (audio_load_voice_bank(ctx) < 0) {
+        close(ctx->fd);
+        ctx->fd = -1;
+        pthread_mutex_destroy(&ctx->state_lock);
+        return -1;
     }
 
-    ctx->voice_enabled[0] = 1;
     ctx->pending_offset = 0;
     ctx->pending_bytes = 0;
     audio_refresh_enabled(ctx);
-    printf("[INIT] ALSA playback initialized on %s using WAV voices from /etc/wavs.\n", ctx->pcm_path);
+    printf("[INIT] ALSA playback initialized on %s using dynamic voice bank.\n", ctx->pcm_path);
     return 0;
 }
 
 static inline void audio_close(audio_ctx_t *ctx) {
-    for (int i = 0; i < audio_voice_count(); ++i) {
+    for (int i = 0; i < audio_voice_capacity(); ++i) {
         audio_unload_wav_voice(ctx, i);
     }
     if (ctx->fd >= 0) {
@@ -72,7 +65,7 @@ static inline int audio_write_next(audio_ctx_t *ctx) {
                 int64_t mixed_accum = 0;
                 uint32_t active = 0;
 
-                for (int v = 0; v < audio_voice_count(); ++v) {
+                for (int v = 0; v < audio_voice_count(ctx); ++v) {
                     uint16_t g = ctx->voice_gain_q15[v];
                     uint16_t target = ctx->voice_enabled[v] ? gain_max : 0;
 

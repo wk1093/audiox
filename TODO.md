@@ -26,6 +26,7 @@ This is the rough plan for audiox. Not fancy. Just the stuff I need to get done 
 - [ ] Move runtime control state toward snapshot-friendly layout (no behavior change yet)
 - [x] Verify build on debug profile
 - [ ] Verify build on target cross-compile profile
+- [ ] Example with rerouting a separate USB audio device (a usb mic) to the usb gadget output (this is the first real test of the routing model)
 
 ## Next
 

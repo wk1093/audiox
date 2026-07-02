@@ -150,10 +150,11 @@ typedef struct app_state {
     midi_runtime_t midi;
     config_store_t config;
     int config_enabled;
+    int active_tab;
     int fb_ready;
     int touch_ready;
-    int voice_enabled[4];
-    int hold_grace_ticks[2];
+    int voice_enabled[AUDIO_MAX_VOICES];
+    uint32_t midi_event_cursor;
     ui_touch_latch_t cfg_touch_latch;
 } app_state_t;
 
@@ -176,6 +177,7 @@ static void app_state_init(app_state_t *app) {
     ui_log_init(&app->log);
     midi_runtime_init(&app->midi, 50);
     config_store_init(&app->config, CONFIG_MOUNT_POINT, CONFIG_DEVICE_PATH, CONFIG_FILE_PATH);
+    app->active_tab = UI_TAB_SOUNDBOARD;
 }
 
 static int app_open_audio_thread(app_state_t *app) {
@@ -248,23 +250,12 @@ static int app_poll_touch(app_state_t *app, app_ticks_t *ticks, int *raw_x, int 
 }
 
 static int app_apply_ui(app_state_t *app,
-                        const ui_console_io_t *io,
-                        int hold_release_grace) {
+                        const ui_console_io_t *io) {
     int changed = 0;
 
-    for (int i = 0; i < 2; ++i) {
-        if (io->voice_touch[i]) {
-            app->hold_grace_ticks[i] = hold_release_grace;
-        } else if (app->hold_grace_ticks[i] > 0) {
-            --app->hold_grace_ticks[i];
-        }
-
-        int should_enable = (app->hold_grace_ticks[i] > 0) ? 1 : 0;
-        if (should_enable != app->voice_enabled[i]) {
-            app->voice_enabled[i] = should_enable;
-            audio_set_voice(&app->audio, i, should_enable);
-            changed = 1;
-        }
+    if (io->selected_tab >= 0 && io->selected_tab < UI_TAB_COUNT && io->selected_tab != app->active_tab) {
+        app->active_tab = io->selected_tab;
+        changed = 1;
     }
 
     if (io->config_toggled) {
@@ -281,6 +272,63 @@ static int app_apply_ui(app_state_t *app,
     }
 
     return changed;
+}
+
+static int app_refresh_voice_status(app_state_t *app) {
+    int changed = 0;
+    int count = audio_voice_count(&app->audio);
+
+    for (int i = 0; i < AUDIO_MAX_VOICES; ++i) {
+        int next = 0;
+        if (i < count) {
+            next = audio_voice_is_enabled(&app->audio, i);
+        }
+        if (next != app->voice_enabled[i]) {
+            app->voice_enabled[i] = next;
+            changed = 1;
+        }
+    }
+
+    return changed;
+}
+
+static int app_apply_midi_soundboard(app_state_t *app) {
+    uint8_t status = 0;
+    uint8_t d0 = 0;
+    uint8_t d1 = 0;
+
+    if (!midi_consume_event(&app->midi.ctx,
+                            &app->midi_event_cursor,
+                            &status,
+                            &d0,
+                            &d1)) {
+        return 0;
+    }
+
+    uint8_t kind = (uint8_t)(status & 0xF0);
+    if (kind != 0x90 || d1 == 0) {
+        return 0;
+    }
+
+    int slot = (int)d0 - (int)audio_voice_note_base(&app->audio);
+    if (slot < 0 || slot >= audio_voice_count(&app->audio)) {
+        return 0;
+    }
+
+    if (audio_trigger_voice(&app->audio, slot) == 0) {
+        char line[96];
+        const char *name = audio_voice_name(&app->audio, slot);
+        snprintf(line,
+                 sizeof(line),
+                 "TRIG N%03u SLOT %d %s",
+                 (unsigned)d0,
+                 slot,
+                 name ? name : "");
+        ui_log_push(&app->log, line);
+        return 1;
+    }
+
+    return 0;
 }
 
 int main(void) {
@@ -347,17 +395,13 @@ int main(void) {
     }
 
     app.fb_ready = (fb_open(&app.fb) == 0);
-    app.voice_enabled[0] = audio_voice_is_enabled(&app.audio, 0);
-    app.voice_enabled[1] = audio_voice_is_enabled(&app.audio, 1);
-    app.voice_enabled[2] = audio_voice_is_enabled(&app.audio, 2);
-    app.voice_enabled[3] = audio_voice_is_enabled(&app.audio, 3);
+    (void)app_refresh_voice_status(&app);
 
     app.touch_ready = (touch_open(&app.touch) == 0);
     if (!app.touch_ready) {
         printf("[INIT] [WARN] Touch control disabled. Audio will continue playing.\n");
     }
 
-    const int hold_release_grace = 12;
     int render_dirty = 1;
 
     while (1) {
@@ -367,6 +411,14 @@ int main(void) {
         int conn_changed = 0;
         int midi_updated = midi_runtime_poll(&app.midi, ui_log_push_adapter, &app.log, &conn_changed);
         if (midi_updated || conn_changed) {
+            render_dirty = 1;
+        }
+
+        if (app_apply_midi_soundboard(&app)) {
+            render_dirty = 1;
+        }
+
+        if (app_refresh_voice_status(&app)) {
             render_dirty = 1;
         }
 
@@ -388,10 +440,14 @@ int main(void) {
 
         ui_console_model_t model = {
             .voice_enabled = app.voice_enabled,
+            .voice_name = app.audio.voice_name,
+            .voice_count = audio_voice_count(&app.audio),
+            .voice_note_base = audio_voice_note_base(&app.audio),
             .midi_connected = app.midi.ctx.connected,
             .midi_dev = app.midi.ctx.dev_path,
             .config_enabled = app.config_enabled,
             .config_mount_active = app.config.mount_active,
+            .active_tab = app.active_tab,
             .log = &app.log
         };
         ui_console_io_t io;
@@ -405,7 +461,7 @@ int main(void) {
                                 &app.cfg_touch_latch,
                                 &model,
                                 &io);
-            if (app_apply_ui(&app, &io, hold_release_grace)) {
+            if (app_apply_ui(&app, &io)) {
                 render_dirty = 1;
             }
 
@@ -415,10 +471,14 @@ int main(void) {
 
             if (render_dirty) {
                 model.voice_enabled = app.voice_enabled;
+                model.voice_name = app.audio.voice_name;
+                model.voice_count = audio_voice_count(&app.audio);
+                model.voice_note_base = audio_voice_note_base(&app.audio);
                 model.midi_connected = app.midi.ctx.connected;
                 model.midi_dev = app.midi.ctx.dev_path;
                 model.config_enabled = app.config_enabled;
                 model.config_mount_active = app.config.mount_active;
+                model.active_tab = app.active_tab;
                 model.log = &app.log;
 
                 fb_begin_frame(&app.fb);

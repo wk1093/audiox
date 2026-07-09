@@ -14,6 +14,7 @@
 #define BUFFER_FRAMES 128
 
 #define MODULE_LOAD_LIST_FILE "/etc/module-load.list"
+#define BOOT_LOGO_PPM_PATH "/etc/logo_boot.ppm"
 
 #define GADGET_ROOT "/sys/kernel/config/usb_gadget/g1"
 #define GADGET_UAC2_FUNC GADGET_ROOT "/functions/uac2.usb0"

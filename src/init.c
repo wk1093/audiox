@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <errno.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -226,6 +227,11 @@ struct app_state {
     ui_touch_latch_t log_filter_touch_latch[3];
     ui_touch_latch_t control_touch_latch[3];
     ui_touch_latch_t swipe_touch_latch;
+    uint8_t *boot_logo_rgb;
+    uint32_t boot_logo_w;
+    uint32_t boot_logo_h;
+    int boot_logo_loaded;
+    int boot_logo_failed;
 };
 
 typedef struct app_ticks {
@@ -257,6 +263,178 @@ static void app_state_init(app_state_t *app) {
     config_store_init(&app->config, CONFIG_MOUNT_POINT, CONFIG_DEVICE_PATH, CONFIG_FILE_PATH);
     app->active_tab = UI_TAB_SOUNDBOARD;
     app->log_filter_mask = UI_LOG_FILTER_ALL;
+}
+
+static int app_ppm_next_token(FILE *fp, char *token, size_t token_cap) {
+    if (!fp || !token || token_cap == 0) {
+        return 0;
+    }
+
+    int c = fgetc(fp);
+    for (;;) {
+        while (c != EOF && isspace(c)) {
+            c = fgetc(fp);
+        }
+        if (c != '#') {
+            break;
+        }
+        while (c != EOF && c != '\n') {
+            c = fgetc(fp);
+        }
+        c = fgetc(fp);
+    }
+
+    if (c == EOF) {
+        return 0;
+    }
+
+    size_t idx = 0;
+    while (c != EOF && !isspace(c) && c != '#') {
+        if (idx + 1 < token_cap) {
+            token[idx++] = (char)c;
+        }
+        c = fgetc(fp);
+    }
+    token[idx] = '\0';
+
+    if (c == '#') {
+        while (c != EOF && c != '\n') {
+            c = fgetc(fp);
+        }
+    }
+
+    return idx > 0;
+}
+
+static int app_load_boot_logo(app_state_t *app) {
+    if (!app) {
+        return -1;
+    }
+
+    if (app->boot_logo_loaded) {
+        return 0;
+    }
+    if (app->boot_logo_failed) {
+        return -1;
+    }
+
+    FILE *fp = fopen(BOOT_LOGO_PPM_PATH, "rb");
+    if (!fp) {
+        app->boot_logo_failed = 1;
+        return -1;
+    }
+
+    char token[64];
+    if (!app_ppm_next_token(fp, token, sizeof(token)) || strcmp(token, "P6") != 0) {
+        fclose(fp);
+        app->boot_logo_failed = 1;
+        return -1;
+    }
+
+    if (!app_ppm_next_token(fp, token, sizeof(token))) {
+        fclose(fp);
+        app->boot_logo_failed = 1;
+        return -1;
+    }
+    unsigned long w = strtoul(token, NULL, 10);
+
+    if (!app_ppm_next_token(fp, token, sizeof(token))) {
+        fclose(fp);
+        app->boot_logo_failed = 1;
+        return -1;
+    }
+    unsigned long h = strtoul(token, NULL, 10);
+
+    if (!app_ppm_next_token(fp, token, sizeof(token))) {
+        fclose(fp);
+        app->boot_logo_failed = 1;
+        return -1;
+    }
+    unsigned long maxval = strtoul(token, NULL, 10);
+
+    if (w == 0 || h == 0 || w > 4096 || h > 4096 || maxval != 255) {
+        fclose(fp);
+        app->boot_logo_failed = 1;
+        return -1;
+    }
+
+    size_t px_count = (size_t)w * (size_t)h;
+    if (px_count > (SIZE_MAX / 3u)) {
+        fclose(fp);
+        app->boot_logo_failed = 1;
+        return -1;
+    }
+
+    size_t rgb_len = px_count * 3u;
+    uint8_t *rgb = (uint8_t *)malloc(rgb_len);
+    if (!rgb) {
+        fclose(fp);
+        app->boot_logo_failed = 1;
+        return -1;
+    }
+
+    size_t nread = fread(rgb, 1, rgb_len, fp);
+    fclose(fp);
+    if (nread != rgb_len) {
+        free(rgb);
+        app->boot_logo_failed = 1;
+        return -1;
+    }
+
+    app->boot_logo_rgb = rgb;
+    app->boot_logo_w = (uint32_t)w;
+    app->boot_logo_h = (uint32_t)h;
+    app->boot_logo_loaded = 1;
+    return 0;
+}
+
+static void app_draw_boot_logo(const app_state_t *app,
+                               int x,
+                               int y,
+                               int max_w,
+                               int max_h) {
+    if (!app || !app->boot_logo_loaded || !app->boot_logo_rgb || max_w <= 0 || max_h <= 0) {
+        return;
+    }
+
+    int src_w = (int)app->boot_logo_w;
+    int src_h = (int)app->boot_logo_h;
+    if (src_w <= 0 || src_h <= 0) {
+        return;
+    }
+
+    int dst_w = src_w;
+    int dst_h = src_h;
+
+    if (dst_w > max_w) {
+        dst_h = (dst_h * max_w) / dst_w;
+        dst_w = max_w;
+    }
+    if (dst_h > max_h) {
+        dst_w = (dst_w * max_h) / dst_h;
+        dst_h = max_h;
+    }
+    if (dst_w <= 0 || dst_h <= 0) {
+        return;
+    }
+
+    int dx0 = x + (max_w - dst_w) / 2;
+    int dy0 = y + (max_h - dst_h) / 2;
+
+    for (int dy = 0; dy < dst_h; ++dy) {
+        int sy = (dy * src_h) / dst_h;
+        for (int dx = 0; dx < dst_w; ++dx) {
+            int sx = (dx * src_w) / dst_w;
+            size_t idx = ((size_t)sy * (size_t)src_w + (size_t)sx) * 3u;
+            uint8_t r = app->boot_logo_rgb[idx + 0];
+            uint8_t g = app->boot_logo_rgb[idx + 1];
+            uint8_t b = app->boot_logo_rgb[idx + 2];
+            fb_put_pixel(&app->fb,
+                         (uint32_t)(dx0 + dx),
+                         (uint32_t)(dy0 + dy),
+                         fb_pack_color(&app->fb, r, g, b));
+        }
+    }
 }
 
 static int app_open_audio_thread(app_state_t *app) {
@@ -466,41 +644,49 @@ static void app_boot_draw(app_state_t *app, const char *status_line) {
         return;
     }
 
-    const char *title = "AUDIOX";
-    const uint32_t title_scale = 3;
+    (void)app_load_boot_logo(app);
 
     fb_begin_frame(&app->fb);
 
     uint32_t bg = fb_pack_color(&app->fb, 8, 11, 16);
-    uint32_t title_color = fb_pack_color(&app->fb, 230, 238, 248);
     uint32_t status_color = fb_pack_color(&app->fb, 150, 188, 228);
-    uint32_t panel = fb_pack_color(&app->fb, 22, 30, 40);
 
     fb_fill_rect(&app->fb, 0, 0, app->fb.width, app->fb.height, bg);
 
-    int panel_w = (int)app->fb.width - 48;
-    if (panel_w < 80) {
-        panel_w = (int)app->fb.width;
+    int logo_w = (int)app->fb.width - 48;
+    if (logo_w < 32) {
+        logo_w = (int)app->fb.width;
     }
-    int panel_x = ((int)app->fb.width - panel_w) / 2;
-    int panel_y = (int)app->fb.height / 3;
-    int panel_h = 92;
-    if (panel_y + panel_h > (int)app->fb.height - 8) {
-        panel_h = (int)app->fb.height - panel_y - 8;
+    int logo_h = (int)app->fb.height / 2;
+    if (logo_h < 32) {
+        logo_h = (int)app->fb.height;
     }
-    if (panel_h > 8) {
-        fb_fill_rect(&app->fb, (uint32_t)panel_x, (uint32_t)panel_y, (uint32_t)panel_w, (uint32_t)panel_h, panel);
+    int logo_x = ((int)app->fb.width - logo_w) / 2;
+    if (logo_x < 0) {
+        logo_x = 0;
+    }
+    int logo_y = ((int)app->fb.height / 2) - (logo_h / 2);
+    if (logo_y < 0) {
+        logo_y = 0;
     }
 
-    int tw = ui_text_width(title, title_scale);
-    int tx = ((int)app->fb.width - tw) / 2;
-    int ty = (int)app->fb.height / 3;
-    ui_draw_text(&app->fb, tx, ty, title, title_color, title_scale);
+    if (app->boot_logo_loaded) {
+        app_draw_boot_logo(app, logo_x, logo_y, logo_w, logo_h);
+    } else {
+        const char *fallback = "AUDIOX";
+        int tw = ui_text_width(fallback, 3);
+        int tx = ((int)app->fb.width - tw) / 2;
+        int ty = logo_y + ((logo_h - ui_text_height(3)) / 2);
+        ui_draw_text(&app->fb, tx, ty, fallback, fb_pack_color(&app->fb, 230, 238, 248), 3);
+    }
 
     if (status_line && status_line[0]) {
         int sw = ui_text_width(status_line, 1);
         int sx = ((int)app->fb.width - sw) / 2;
-        int sy = ty + ui_text_height(title_scale) + 18;
+        int sy = logo_y + logo_h + 14;
+        if (sy + ui_text_height(1) > (int)app->fb.height - 2) {
+            sy = (int)app->fb.height - ui_text_height(1) - 2;
+        }
         ui_draw_text(&app->fb, sx, sy, status_line, status_color, 1);
     }
 

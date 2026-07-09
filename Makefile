@@ -17,6 +17,7 @@ MODULE_LOAD_LIST = $(OUT_DIR)/module-load.list
 SCRIPTS_DIR = $(CURDIR)/scripts
 DEP_FILE = $(CURDIR)/depmod.txt
 WAV_DIR ?= $(CURDIR)/wavs
+BOOT_LOGO_PPM ?= $(CURDIR)/logo_boot.ppm
 FIRMWARE_GIT_URL ?= https://github.com/raspberrypi/firmware.git
 
 SD_MOUNT_BOOT ?= /run/media/$(USER)/bootfs
@@ -84,6 +85,12 @@ rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST)
 		echo "Warning: missing one or more required wav files in $(WAV_DIR) (voice0.wav..voice3.wav)."; \
 		 echo "Warning: audiox runtime init will fail until all 4 files are present."; \
 	fi
+	@if [ -f "$(BOOT_LOGO_PPM)" ]; then \
+		echo "Staging boot logo from $(BOOT_LOGO_PPM)..."; \
+		cp "$(BOOT_LOGO_PPM)" "$(ROOTFS_DIR)/etc/logo_boot.ppm"; \
+	else \
+		echo "Warning: boot logo file not found at $(BOOT_LOGO_PPM)"; \
+	fi
 
 initramfs: rootfs
 	@echo "Packaging initramfs..."
@@ -145,6 +152,12 @@ debug_rootfs: $(DEBUG_ROOTFS)/init
 	else \
 		echo "Warning: missing one or more required wav files in $(WAV_DIR) (voice0.wav..voice3.wav)."; \
 		echo "Warning: debug runtime audio init will fail until all 4 files are present."; \
+	fi
+	@if [ -f "$(BOOT_LOGO_PPM)" ]; then \
+		echo "Staging boot logo from $(BOOT_LOGO_PPM) into debug rootfs..."; \
+		cp "$(BOOT_LOGO_PPM)" "$(DEBUG_ROOTFS)/etc/logo_boot.ppm"; \
+	else \
+		echo "Warning: boot logo file not found at $(BOOT_LOGO_PPM)"; \
 	fi
 
 debug_initramfs: debug_rootfs

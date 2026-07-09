@@ -23,6 +23,7 @@ SCRIPTS_DIR = $(CURDIR)/scripts
 DEP_FILE = $(CURDIR)/depmod.txt
 WAV_DIR ?= $(CURDIR)/wavs
 BOOT_LOGO_PPM ?= $(CURDIR)/logo_boot.ppm
+WEB_INDEX_HTML ?= $(CURDIR)/web/index.html
 FIRMWARE_GIT_URL ?= https://github.com/raspberrypi/firmware.git
 
 SD_MOUNT_BOOT ?= /run/media/$(USER)/bootfs
@@ -81,6 +82,7 @@ rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST)
 	mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/sbin $(ROOTFS_DIR)/etc
 	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev
 	mkdir -p $(ROOTFS_DIR)/etc/wavs
+	mkdir -p $(ROOTFS_DIR)/etc/www
 	mkdir -p $(ROOTFS_DIR)/lib/modules
 	
 	@echo "Staging kernel objects into target lib tree..."
@@ -101,6 +103,12 @@ rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST)
 		cp "$(BOOT_LOGO_PPM)" "$(ROOTFS_DIR)/etc/logo_boot.ppm"; \
 	else \
 		echo "Warning: boot logo file not found at $(BOOT_LOGO_PPM)"; \
+	fi
+	@if [ -f "$(WEB_INDEX_HTML)" ]; then \
+		echo "Staging web index from $(WEB_INDEX_HTML)..."; \
+		cp "$(WEB_INDEX_HTML)" "$(ROOTFS_DIR)/etc/www/index.html"; \
+	else \
+		echo "Warning: web index file not found at $(WEB_INDEX_HTML)"; \
 	fi
 
 initramfs: rootfs
@@ -159,6 +167,7 @@ debug_rootfs: $(DEBUG_ROOTFS)/init
 	mkdir -p $(DEBUG_ROOTFS)/bin $(DEBUG_ROOTFS)/sbin $(DEBUG_ROOTFS)/etc
 	mkdir -p $(DEBUG_ROOTFS)/proc $(DEBUG_ROOTFS)/sys $(DEBUG_ROOTFS)/dev
 	mkdir -p $(DEBUG_ROOTFS)/etc/wavs
+	mkdir -p $(DEBUG_ROOTFS)/etc/www
 	@if [ -f "$(WAV_DIR)/voice0.wav" ] && [ -f "$(WAV_DIR)/voice1.wav" ] && [ -f "$(WAV_DIR)/voice2.wav" ] && [ -f "$(WAV_DIR)/voice3.wav" ]; then \
 		echo "Staging WAV voices from $(WAV_DIR) into debug rootfs..."; \
 		cp "$(WAV_DIR)/voice0.wav" "$(DEBUG_ROOTFS)/etc/wavs/"; \
@@ -174,6 +183,12 @@ debug_rootfs: $(DEBUG_ROOTFS)/init
 		cp "$(BOOT_LOGO_PPM)" "$(DEBUG_ROOTFS)/etc/logo_boot.ppm"; \
 	else \
 		echo "Warning: boot logo file not found at $(BOOT_LOGO_PPM)"; \
+	fi
+	@if [ -f "$(WEB_INDEX_HTML)" ]; then \
+		echo "Staging web index from $(WEB_INDEX_HTML) into debug rootfs..."; \
+		cp "$(WEB_INDEX_HTML)" "$(DEBUG_ROOTFS)/etc/www/index.html"; \
+	else \
+		echo "Warning: web index file not found at $(WEB_INDEX_HTML)"; \
 	fi
 
 debug_initramfs: debug_rootfs

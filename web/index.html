@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>audiox web</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --fg: #e8f1ff;
+      --muted: #9bb0cc;
+      --accent: #4ad3a8;
+    }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "DejaVu Sans", sans-serif;
+      background: radial-gradient(circle at 20% 10%, #1a2531, var(--bg));
+      color: var(--fg);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+    }
+    .card {
+      width: min(92vw, 560px);
+      border: 1px solid #2a3544;
+      border-radius: 12px;
+      padding: 24px;
+      background: rgba(13, 19, 26, 0.72);
+      backdrop-filter: blur(2px);
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--accent);
+      margin-right: 8px;
+      box-shadow: 0 0 14px var(--accent);
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1><span class="dot"></span>audiox</h1>
+    <p>Basic HTTP endpoint is live. This page is served from initramfs at /etc/www/index.html.</p>
+  </main>
+</body>
+</html>

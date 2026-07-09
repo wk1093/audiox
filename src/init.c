@@ -16,6 +16,7 @@ static int app_printf_router(const char *fmt, ...);
 #include "fb_touch.h"
 #include "config_store.h"
 #include "fs_shell.h"
+#include "http_server.h"
 #include "init_defs.h"
 #include "init_helpers.h"
 #include "midi_runtime.h"
@@ -228,6 +229,8 @@ struct app_state {
     ui_touch_latch_t control_touch_latch[3];
     ui_touch_latch_t swipe_touch_latch;
     ui_ppm_image_t boot_logo;
+    http_server_t http;
+    int http_ready;
 };
 
 typedef struct app_ticks {
@@ -633,6 +636,13 @@ int main(void) {
             if (setup_network_interface() < 0) {
                 printf("[INIT] [WARN] Failed to set up network interface. Continuing without network support.\n");
                 network_support = 0;
+            } else {
+                app_boot_status(&app, "Starting HTTP server...");
+                if (http_server_start(&app.http, 80, "/etc/www/index.html") < 0) {
+                    printf("[INIT] [WARN] HTTP server failed to start. Continuing without web UI.\n");
+                } else {
+                    app.http_ready = 1;
+                }
             }
         }
     }

@@ -33,6 +33,20 @@ Useful targets:
 - Put `voice0.wav` ... `voice3.wav` in `wavs/`
 - This project is still rough around the edges, but it is usable for bring-up and iteration
 
+Network currently requires this on linux host (sometimes, only tested on one machine):
+Either this on every time you plugin the Pi:
+```bash
+sudo ip addr add 169.254.0.1/16 dev usb0
+sudo ip link set usb0 up
+```
+
+Or this once:
+```bash
+sudo nmcli connection add type ethernet ifname usb0 con-name audiox-usb0 ipv4.method link-local ipv6.method ignore connection.autoconnect yes
+sudo nmcli connection up audiox-usb0
+```
+
+
 ## Long-term vision
 
 This is where I want audiox to go:

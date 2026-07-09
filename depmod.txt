@@ -32,3 +32,8 @@ drivers/hid/hid-multitouch
 drivers/input/touchscreen/usbtouchscreen
 drivers/input/touchscreen/goodix_ts
 drivers/input/touchscreen/edt-ft5x06
+
+# The network stack for providing the ethernet gadget for the web ui
+drivers/usb/gadget/function/u_ether
+drivers/usb/gadget/function/usb_f_ncm
+

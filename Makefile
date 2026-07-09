@@ -2,6 +2,11 @@ CC = aarch64-linux-gnu-gcc
 CFLAGS = -static -O3 -Iinclude -Wall -Wextra -Werror -Wno-error=format-truncation -pthread
 LIBS = -lm -pthread
 
+# Version information
+AUDIOX_VERSION_MAJOR = 0
+AUDIOX_VERSION_MINOR = 1
+AUDIOX_VERSION_PATCH = 0
+
 # Auto-detected from firmware after fetch_deps runs.
 KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")
 VC4_OVERLAY ?= vc4-fkms-v3d-pi4
@@ -17,6 +22,8 @@ MODULE_LOAD_LIST = $(OUT_DIR)/module-load.list
 SCRIPTS_DIR = $(CURDIR)/scripts
 DEP_FILE = $(CURDIR)/depmod.txt
 WAV_DIR ?= $(CURDIR)/wavs
+BOOT_LOGO_PPM ?= $(CURDIR)/logo_boot.ppm
+WEB_INDEX_HTML ?= $(CURDIR)/web/index.html
 FIRMWARE_GIT_URL ?= https://github.com/raspberrypi/firmware.git
 
 SD_MOUNT_BOOT ?= /run/media/$(USER)/bootfs
@@ -62,13 +69,20 @@ $(MODULE_LOAD_LIST): fetch_modules
 $(ROOTFS_DIR)/init: fetch_deps FORCE src/init.c
 	@echo "Compiling system architecture init binary..."
 	mkdir -p $(ROOTFS_DIR)
-	$(CC) $(CFLAGS) -DKERNEL_VERSION='"$(KV)"' -DDEBUG_SHELL=$(DEBUG_SHELL) -o $(ROOTFS_DIR)/init src/init.c $(LIBS)
+	$(CC) $(CFLAGS) \
+		-DKERNEL_VERSION='"$(KV)"' \
+		-DAUDIOX_VERSION_MAJOR=$(AUDIOX_VERSION_MAJOR) \
+		-DAUDIOX_VERSION_MINOR=$(AUDIOX_VERSION_MINOR) \
+		-DAUDIOX_VERSION_PATCH=$(AUDIOX_VERSION_PATCH) \
+		-DDEBUG_SHELL=$(DEBUG_SHELL) \
+		-o $(ROOTFS_DIR)/init src/init.c $(LIBS)
 
 rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST)
 	@echo "Creating rootfs structure..."
 	mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/sbin $(ROOTFS_DIR)/etc
 	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev
 	mkdir -p $(ROOTFS_DIR)/etc/wavs
+	mkdir -p $(ROOTFS_DIR)/etc/www
 	mkdir -p $(ROOTFS_DIR)/lib/modules
 	
 	@echo "Staging kernel objects into target lib tree..."
@@ -83,6 +97,18 @@ rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST)
 	else \
 		echo "Warning: missing one or more required wav files in $(WAV_DIR) (voice0.wav..voice3.wav)."; \
 		 echo "Warning: audiox runtime init will fail until all 4 files are present."; \
+	fi
+	@if [ -f "$(BOOT_LOGO_PPM)" ]; then \
+		echo "Staging boot logo from $(BOOT_LOGO_PPM)..."; \
+		cp "$(BOOT_LOGO_PPM)" "$(ROOTFS_DIR)/etc/logo_boot.ppm"; \
+	else \
+		echo "Warning: boot logo file not found at $(BOOT_LOGO_PPM)"; \
+	fi
+	@if [ -f "$(WEB_INDEX_HTML)" ]; then \
+		echo "Staging web index from $(WEB_INDEX_HTML)..."; \
+		cp "$(WEB_INDEX_HTML)" "$(ROOTFS_DIR)/etc/www/index.html"; \
+	else \
+		echo "Warning: web index file not found at $(WEB_INDEX_HTML)"; \
 	fi
 
 initramfs: rootfs
@@ -129,13 +155,19 @@ image: initramfs
 $(DEBUG_ROOTFS)/init: FORCE src/init.c
 	@echo "Compiling debug init binary (x86_64)..."
 	mkdir -p $(DEBUG_ROOTFS)
-	$(DEBUG_CC) $(DEBUG_CFLAGS) -DDEBUG_SHELL=$(DEBUG_SHELL) -o $(DEBUG_ROOTFS)/init src/init.c $(LIBS)
+	$(DEBUG_CC) $(DEBUG_CFLAGS) \
+		-DAUDIOX_VERSION_MAJOR=$(AUDIOX_VERSION_MAJOR) \
+		-DAUDIOX_VERSION_MINOR=$(AUDIOX_VERSION_MINOR) \
+		-DAUDIOX_VERSION_PATCH=$(AUDIOX_VERSION_PATCH) \
+		-DDEBUG_SHELL=$(DEBUG_SHELL) \
+		-o $(DEBUG_ROOTFS)/init src/init.c $(LIBS)
 
 debug_rootfs: $(DEBUG_ROOTFS)/init
 	@echo "Creating debug rootfs structure..."
 	mkdir -p $(DEBUG_ROOTFS)/bin $(DEBUG_ROOTFS)/sbin $(DEBUG_ROOTFS)/etc
 	mkdir -p $(DEBUG_ROOTFS)/proc $(DEBUG_ROOTFS)/sys $(DEBUG_ROOTFS)/dev
 	mkdir -p $(DEBUG_ROOTFS)/etc/wavs
+	mkdir -p $(DEBUG_ROOTFS)/etc/www
 	@if [ -f "$(WAV_DIR)/voice0.wav" ] && [ -f "$(WAV_DIR)/voice1.wav" ] && [ -f "$(WAV_DIR)/voice2.wav" ] && [ -f "$(WAV_DIR)/voice3.wav" ]; then \
 		echo "Staging WAV voices from $(WAV_DIR) into debug rootfs..."; \
 		cp "$(WAV_DIR)/voice0.wav" "$(DEBUG_ROOTFS)/etc/wavs/"; \
@@ -145,6 +177,18 @@ debug_rootfs: $(DEBUG_ROOTFS)/init
 	else \
 		echo "Warning: missing one or more required wav files in $(WAV_DIR) (voice0.wav..voice3.wav)."; \
 		echo "Warning: debug runtime audio init will fail until all 4 files are present."; \
+	fi
+	@if [ -f "$(BOOT_LOGO_PPM)" ]; then \
+		echo "Staging boot logo from $(BOOT_LOGO_PPM) into debug rootfs..."; \
+		cp "$(BOOT_LOGO_PPM)" "$(DEBUG_ROOTFS)/etc/logo_boot.ppm"; \
+	else \
+		echo "Warning: boot logo file not found at $(BOOT_LOGO_PPM)"; \
+	fi
+	@if [ -f "$(WEB_INDEX_HTML)" ]; then \
+		echo "Staging web index from $(WEB_INDEX_HTML) into debug rootfs..."; \
+		cp "$(WEB_INDEX_HTML)" "$(DEBUG_ROOTFS)/etc/www/index.html"; \
+	else \
+		echo "Warning: web index file not found at $(WEB_INDEX_HTML)"; \
 	fi
 
 debug_initramfs: debug_rootfs

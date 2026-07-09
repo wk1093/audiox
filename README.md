@@ -8,9 +8,16 @@ Right now it boots straight into a custom `init` process, brings up a USB UAC2 g
 
 - Loads the required kernel modules from `/etc/module-load.list`
 - Configures a USB audio gadget through ConfigFS
+- Configures a USB NCM network gadget (`usb0`) for host<->Pi control traffic
 - Starts audio playback in a dedicated audio thread
 - Polls touch + MIDI input and renders a framebuffer UI
 - Stores a simple config flag at `/audiox/config.txt`
+- Runs a basic HTTP server on port 80 for early web tooling
+- Serves a static page from `/etc/www/index.html`
+- Exposes basic rootfs file APIs over HTTP:
+	- `GET /main/rootfs/<path>` -> reads `/audiox/<path>`
+	- `PUT /main/rootfs/<path>` -> writes `/audiox/<path>`
+- Exposes a web soundboard trigger endpoint so web and MIDI can both trigger voices
 
 ## Build
 
@@ -32,6 +39,33 @@ Useful targets:
 
 - Put `voice0.wav` ... `voice3.wav` in `wavs/`
 - This project is still rough around the edges, but it is usable for bring-up and iteration
+
+Network currently requires this on linux host (sometimes, only tested on one machine):
+Either this on every time you plugin the Pi:
+```bash
+sudo ip addr add 169.254.0.1/16 dev usb0
+sudo ip link set usb0 up
+```
+
+Or this once:
+```bash
+sudo nmcli connection add type ethernet ifname usb0 con-name audiox-usb0 ipv4.method link-local ipv6.method ignore connection.autoconnect yes
+sudo nmcli connection up audiox-usb0
+```
+
+Quick endpoint examples (replace IP if needed):
+```bash
+# static web page
+curl http://169.254.1.2/
+
+# read/write config files via HTTP API
+curl http://169.254.1.2/main/rootfs/config.txt
+curl -X PUT --data-binary '1\n' http://169.254.1.2/main/rootfs/config.txt
+
+# trigger soundboard slot 0 from web/API
+curl http://169.254.1.2/api/soundboard/trigger/0
+```
+
 
 ## Long-term vision
 

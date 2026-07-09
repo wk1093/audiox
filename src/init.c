@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <errno.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -15,12 +16,14 @@ static int app_printf_router(const char *fmt, ...);
 #include "fb_touch.h"
 #include "config_store.h"
 #include "fs_shell.h"
+#include "http_server.h"
 #include "init_defs.h"
 #include "init_helpers.h"
 #include "midi_runtime.h"
 #include "rt_sched.h"
 #include "tick_sched.h"
 #include "ui_console.h"
+#include "ui_ppm.h"
 #include "usb_gadget.h"
 
 #ifndef DEBUG_SHELL
@@ -28,7 +31,6 @@ static int app_printf_router(const char *fmt, ...);
 #endif
 
 #define CONFIG_MOUNT_POINT "/audiox"
-#define CONFIG_DEVICE_PATH "/dev/mmcblk0p2"
 #define CONFIG_FILE_PATH CONFIG_MOUNT_POINT "/config.txt"
 
 typedef void (*runtime_log_fn_t)(void *ctx, const char *line);
@@ -226,6 +228,9 @@ struct app_state {
     ui_touch_latch_t log_filter_touch_latch[3];
     ui_touch_latch_t control_touch_latch[3];
     ui_touch_latch_t swipe_touch_latch;
+    ui_ppm_image_t boot_logo;
+    http_server_t http;
+    int http_ready;
 };
 
 typedef struct app_ticks {
@@ -257,6 +262,24 @@ static void app_state_init(app_state_t *app) {
     config_store_init(&app->config, CONFIG_MOUNT_POINT, CONFIG_DEVICE_PATH, CONFIG_FILE_PATH);
     app->active_tab = UI_TAB_SOUNDBOARD;
     app->log_filter_mask = UI_LOG_FILTER_ALL;
+}
+
+static int app_load_boot_logo(app_state_t *app) {
+    if (!app) {
+        return -1;
+    }
+    return ui_ppm_load(&app->boot_logo, BOOT_LOGO_PPM_PATH);
+}
+
+static void app_draw_boot_logo(const app_state_t *app,
+                               int x,
+                               int y,
+                               int max_w,
+                               int max_h) {
+    if (!app) {
+        return;
+    }
+    ui_ppm_draw(&app->boot_logo, &app->fb, x, y, max_w, max_h);
 }
 
 static int app_open_audio_thread(app_state_t *app) {
@@ -461,46 +484,73 @@ static int app_apply_midi_soundboard(app_state_t *app) {
     return 0;
 }
 
+static int app_http_trigger_soundboard_slot(void *ctx, int slot) {
+    app_state_t *app = (app_state_t *)ctx;
+    if (!app) {
+        return -1;
+    }
+
+    int max_slots = audio_voice_count(&app->audio);
+    if (slot < 0 || slot >= max_slots) {
+        return -1;
+    }
+
+    if (audio_trigger_voice(&app->audio, slot) != 0) {
+        return -1;
+    }
+
+    printf("[INIT] HTTP trigger slot %d\n", slot);
+    return 0;
+}
+
 static void app_boot_draw(app_state_t *app, const char *status_line) {
     if (!app || !app->fb_ready) {
         return;
     }
 
-    const char *title = "AUDIOX";
-    const uint32_t title_scale = 3;
+    (void)app_load_boot_logo(app);
 
     fb_begin_frame(&app->fb);
 
     uint32_t bg = fb_pack_color(&app->fb, 8, 11, 16);
-    uint32_t title_color = fb_pack_color(&app->fb, 230, 238, 248);
     uint32_t status_color = fb_pack_color(&app->fb, 150, 188, 228);
-    uint32_t panel = fb_pack_color(&app->fb, 22, 30, 40);
 
     fb_fill_rect(&app->fb, 0, 0, app->fb.width, app->fb.height, bg);
 
-    int panel_w = (int)app->fb.width - 48;
-    if (panel_w < 80) {
-        panel_w = (int)app->fb.width;
+    int logo_w = (int)app->fb.width - 48;
+    if (logo_w < 32) {
+        logo_w = (int)app->fb.width;
     }
-    int panel_x = ((int)app->fb.width - panel_w) / 2;
-    int panel_y = (int)app->fb.height / 3;
-    int panel_h = 92;
-    if (panel_y + panel_h > (int)app->fb.height - 8) {
-        panel_h = (int)app->fb.height - panel_y - 8;
+    int logo_h = (int)app->fb.height / 2;
+    if (logo_h < 32) {
+        logo_h = (int)app->fb.height;
     }
-    if (panel_h > 8) {
-        fb_fill_rect(&app->fb, (uint32_t)panel_x, (uint32_t)panel_y, (uint32_t)panel_w, (uint32_t)panel_h, panel);
+    int logo_x = ((int)app->fb.width - logo_w) / 2;
+    if (logo_x < 0) {
+        logo_x = 0;
+    }
+    int logo_y = ((int)app->fb.height / 2) - (logo_h / 2);
+    if (logo_y < 0) {
+        logo_y = 0;
     }
 
-    int tw = ui_text_width(title, title_scale);
-    int tx = ((int)app->fb.width - tw) / 2;
-    int ty = (int)app->fb.height / 3;
-    ui_draw_text(&app->fb, tx, ty, title, title_color, title_scale);
+    if (app->boot_logo.loaded) {
+        app_draw_boot_logo(app, logo_x, logo_y, logo_w, logo_h);
+    } else {
+        const char *fallback = "AUDIOX";
+        int tw = ui_text_width(fallback, 3);
+        int tx = ((int)app->fb.width - tw) / 2;
+        int ty = logo_y + ((logo_h - ui_text_height(3)) / 2);
+        ui_draw_text(&app->fb, tx, ty, fallback, fb_pack_color(&app->fb, 230, 238, 248), 3);
+    }
 
     if (status_line && status_line[0]) {
         int sw = ui_text_width(status_line, 1);
         int sx = ((int)app->fb.width - sw) / 2;
-        int sy = ty + ui_text_height(title_scale) + 18;
+        int sy = logo_y + logo_h + 14;
+        if (sy + ui_text_height(1) > (int)app->fb.height - 2) {
+            sy = (int)app->fb.height - ui_text_height(1) - 2;
+        }
         ui_draw_text(&app->fb, sx, sy, status_line, status_color, 1);
     }
 
@@ -555,15 +605,15 @@ int main(void) {
 
     run_temp_fs_shell();
 
+    // TODO: Load graphics first so that we can show a boot logo while loading modules
     app_boot_status(&app, "Loading kernel modules...");
     printf("[INIT] Loading kernel modules...\n");
     if (load_modules_from_list(MODULE_LOAD_LIST_FILE) < 0) {
         printf("[INIT] [CRIT] Failed to load kernel modules.\n");
         goto emergency_halt;
     }
-    sleep(3);
-    printf("[INIT] Kernel modules loaded.\n");
 
+    printf("[INIT] Kernel modules loaded.\n");
     app_try_enable_ui_logging(&app);
     app_boot_status(&app, app.fb_ready ? "Framebuffer ready. Initializing services..." : "Framebuffer not ready yet. Continuing startup...");
 
@@ -574,14 +624,53 @@ int main(void) {
         goto emergency_halt;
     }
 
+    int network_support = 1;
+
+    app_boot_status(&app, "Setting up USB network gadget...");
+    printf("[INIT] USB audio gadget configured.\n");
+    printf("[INIT] Setting up USB network gadget...\n");
+    if (setup_usb_network_gadget() < 0) {
+        printf("[INIT] [WARN] Failed to configure USB network gadget. Continuing without network support.\n");
+        network_support = 0;
+    }
+
     app_boot_status(&app, "Binding USB gadget to controller...");
     printf("[INIT] Binding gadget to UDC...\n");
     if (write_sys_node(GADGET_UDC_NODE, GADGET_UDC_NAME) < 0) {
         goto emergency_halt;
     }
 
-    sleep(1);
+    if (network_support) {
+        app_boot_status(&app, "Waiting for network gadget to become ready...");
+        printf("[INIT] Waiting for network gadget to become ready...\n");
+        for (int i = 0; i < 20 && !is_network_ready(); ++i) {
+            usleep(500 * 1000);
+        }
+        if (!is_network_ready()) {
+            printf("[INIT] [WARN] Network gadget did not become ready. Continuing without network support.\n");
+            network_support = 0;
+        } else {
+            app_boot_status(&app, "Setting up network interface...");
+            printf("[INIT] Setting up network interface...\n");
+            if (setup_network_interface() < 0) {
+                printf("[INIT] [WARN] Failed to set up network interface. Continuing without network support.\n");
+                network_support = 0;
+            } else {
+                app_boot_status(&app, "Starting HTTP server...");
+                if (http_server_start(&app.http,
+                                      80,
+                                      "/etc/www/index.html",
+                                      app_http_trigger_soundboard_slot,
+                                      &app) < 0) {
+                    printf("[INIT] [WARN] HTTP server failed to start. Continuing without web UI.\n");
+                } else {
+                    app.http_ready = 1;
+                }
+            }
+        }
+    }
 
+    sleep(1);
     printf("\n========================================\n");
     printf("             audiox ready\n");
     printf("========================================\n\n");
@@ -674,7 +763,8 @@ int main(void) {
             .config_mount_active = app.config.mount_active,
             .active_tab = app.active_tab,
             .log_filter_mask = app.log_filter_mask,
-            .log = &app.log
+            .log = &app.log,
+            .boot_logo = &app.boot_logo
         };
         ui_console_io_t io;
 
@@ -717,6 +807,7 @@ int main(void) {
                 model.active_tab = app.active_tab;
                 model.log_filter_mask = app.log_filter_mask;
                 model.log = &app.log;
+                model.boot_logo = &app.boot_logo;
 
                 if (redraw_mode == APP_REDRAW_FULL) {
                     fb_begin_frame(&app.fb);

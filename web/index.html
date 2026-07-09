@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>audiox web</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --fg: #e8f1ff;
+      --muted: #9bb0cc;
+      --accent: #4ad3a8;
+    }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "DejaVu Sans", sans-serif;
+      background: radial-gradient(circle at 20% 10%, #1a2531, var(--bg));
+      color: var(--fg);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+    }
+    .card {
+      width: min(92vw, 560px);
+      border: 1px solid #2a3544;
+      border-radius: 12px;
+      padding: 24px;
+      background: rgba(13, 19, 26, 0.72);
+      backdrop-filter: blur(2px);
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 16px;
+    }
+    button {
+      border: 1px solid #2f7f6a;
+      background: #173328;
+      color: var(--fg);
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 15px;
+      cursor: pointer;
+    }
+    button:active {
+      transform: translateY(1px);
+    }
+    .status {
+      margin-top: 12px;
+      min-height: 1.2em;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--accent);
+      margin-right: 8px;
+      box-shadow: 0 0 14px var(--accent);
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1><span class="dot"></span>audiox</h1>
+    <p>Basic HTTP endpoint is live. Test soundboard trigger over web:</p>
+    <div class="grid">
+      <button data-slot="0">Play Slot 0</button>
+      <button data-slot="1">Play Slot 1</button>
+      <button data-slot="2">Play Slot 2</button>
+      <button data-slot="3">Play Slot 3</button>
+    </div>
+    <div class="status" id="status">idle</div>
+  </main>
+  <script>
+    const statusEl = document.getElementById('status');
+    async function triggerSlot(slot) {
+      statusEl.textContent = `triggering slot ${slot}...`;
+      try {
+        const res = await fetch(`/api/soundboard/trigger/${slot}`, { method: 'POST' });
+        const txt = await res.text();
+        if (!res.ok) {
+          statusEl.textContent = `error: ${res.status} ${txt.trim()}`;
+          return;
+        }
+        statusEl.textContent = txt.trim() || `triggered slot ${slot}`;
+      } catch (err) {
+        statusEl.textContent = `request failed: ${err}`;
+      }
+    }
+
+    document.querySelectorAll('button[data-slot]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        triggerSlot(btn.dataset.slot);
+      });
+    });
+  </script>
+</body>
+</html>

@@ -14,11 +14,15 @@
 #define BUFFER_FRAMES 128
 
 #define MODULE_LOAD_LIST_FILE "/etc/module-load.list"
+#define BOOT_LOGO_PPM_PATH "/etc/logo_boot.ppm"
 
 #define GADGET_ROOT "/sys/kernel/config/usb_gadget/g1"
 #define GADGET_UAC2_FUNC GADGET_ROOT "/functions/uac2.usb0"
 #define GADGET_CONFIG_LINK GADGET_ROOT "/configs/c.1/uac2.usb0"
+#define GADGET_NETWORK_FUNC GADGET_ROOT "/functions/ncm.usb0"
+#define GADGET_NETWORK_LINK GADGET_ROOT "/configs/c.1/ncm.usb0"
 #define GADGET_UDC_NODE GADGET_ROOT "/UDC"
 #define GADGET_UDC_NAME "fe980000.usb\n"
+#define CONFIG_DEVICE_PATH "/dev/mmcblk0p2"
 
 #endif

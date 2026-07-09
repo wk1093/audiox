@@ -5,6 +5,8 @@
 
 #include "audio/types.h"
 #include "ui_immediate.h"
+#include "ui_ppm.h"
+#include "version.h"
 
 #define UI_TAB_SOUNDBOARD 0
 #define UI_TAB_CONFIG 1
@@ -50,6 +52,7 @@ typedef struct ui_console_model {
     int active_tab;
     uint8_t log_filter_mask;
     const ui_log_t *log;
+    const ui_ppm_image_t *boot_logo;
 } ui_console_model_t;
 
 typedef struct ui_console_io {
@@ -163,19 +166,19 @@ static inline ui_rect_t ui_console_log_filter_button_rect(const ui_rect_t *conte
 }
 
 static inline ui_rect_t ui_console_control_button_rect(const ui_rect_t *content, int idx) {
-    int gap = 8;
+    int gap = 6;
     int x = content->x + 12;
     int w = content->w - 24;
-    if (w < 80) {
-        w = 80;
+    if (w < 60) {
+        w = 60;
     }
 
-    int h = (content->h - 40 - (2 * gap)) / 3;
-    if (h < 28) {
-        h = 28;
+    int h = (content->h - 210 - (2 * gap)) / 3;
+    if (h < 20) {
+        h = 20;
     }
 
-    int y = content->y + 20 + idx * (h + gap);
+    int y = content->y + 190 + idx * (h + gap);
     return ui_rect_make(x, y, w, h);
 }
 
@@ -429,10 +432,41 @@ static inline void ui_console_draw_control_panel(const fb_ctx_t *fb,
                                                  const ui_rect_t *content,
                                                  const ui_console_theme_t *theme,
                                                  const ui_console_model_t *model) {
-    (void)model;
-
     ui_console_draw_panel_bg(fb, content, theme);
-    ui_draw_text(fb, content->x + 8, content->y + 8, "CONTROL", theme->header, 1);
+
+    int logo_box_w = content->w - 16;
+    int logo_max_h = 140;
+    int logo_x = content->x + 8;
+    int logo_y = content->y + 8;
+
+    int logo_box_h = logo_max_h;
+    if (logo_box_w <= 0) {
+        logo_box_w = 100;
+    }
+
+    ui_stroke_rect(fb, (uint32_t)logo_x, (uint32_t)logo_y, (uint32_t)logo_box_w, (uint32_t)logo_box_h, theme->panel_border, 1);
+
+    if (model && model->boot_logo) {
+        ui_ppm_draw(model->boot_logo, fb, logo_x + 2, logo_y + 2, logo_box_w - 4, logo_box_h - 4);
+    } else {
+        int fallback_x = logo_x + (logo_box_w - ui_text_width("A", 1)) / 2;
+        int fallback_y = logo_y + (logo_box_h - ui_text_height(1)) / 2;
+        ui_draw_text(fb, fallback_x, fallback_y, "A", theme->header, 1);
+    }
+
+    char version_str[32];
+    snprintf(version_str, sizeof(version_str), "v%d.%d.%d",
+             AUDIOX_VERSION_MAJOR, AUDIOX_VERSION_MINOR, AUDIOX_VERSION_PATCH);
+
+    int text_y = logo_y + logo_box_h + 8;
+    int title_w = ui_text_width("AUDIOX", 1);
+    int title_x = content->x + (content->w - title_w) / 2;
+    ui_draw_text(fb, title_x, text_y, "AUDIOX", theme->header, 1);
+
+    int version_label_y = text_y + ui_text_height(1) + 2;
+    int version_w = ui_text_width(version_str, 1);
+    int version_x = content->x + (content->w - version_w) / 2;
+    ui_draw_text(fb, version_x, version_label_y, version_str, theme->text, 1);
 
     static const char *labels[3] = {
         "SYNC",
@@ -450,7 +484,7 @@ static inline void ui_console_draw_control_panel(const fb_ctx_t *fb,
                        labels[i],
                        &theme->tab_theme,
                        0,
-                       2);
+                       1);
     }
 }
 

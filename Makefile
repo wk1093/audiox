@@ -2,6 +2,11 @@ CC = aarch64-linux-gnu-gcc
 CFLAGS = -static -O3 -Iinclude -Wall -Wextra -Werror -Wno-error=format-truncation -pthread
 LIBS = -lm -pthread
 
+# Version information
+AUDIOX_VERSION_MAJOR = 0
+AUDIOX_VERSION_MINOR = 1
+AUDIOX_VERSION_PATCH = 0
+
 # Auto-detected from firmware after fetch_deps runs.
 KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")
 VC4_OVERLAY ?= vc4-fkms-v3d-pi4
@@ -63,7 +68,13 @@ $(MODULE_LOAD_LIST): fetch_modules
 $(ROOTFS_DIR)/init: fetch_deps FORCE src/init.c
 	@echo "Compiling system architecture init binary..."
 	mkdir -p $(ROOTFS_DIR)
-	$(CC) $(CFLAGS) -DKERNEL_VERSION='"$(KV)"' -DDEBUG_SHELL=$(DEBUG_SHELL) -o $(ROOTFS_DIR)/init src/init.c $(LIBS)
+	$(CC) $(CFLAGS) \
+		-DKERNEL_VERSION='"$(KV)"' \
+		-DAUDIOX_VERSION_MAJOR=$(AUDIOX_VERSION_MAJOR) \
+		-DAUDIOX_VERSION_MINOR=$(AUDIOX_VERSION_MINOR) \
+		-DAUDIOX_VERSION_PATCH=$(AUDIOX_VERSION_PATCH) \
+		-DDEBUG_SHELL=$(DEBUG_SHELL) \
+		-o $(ROOTFS_DIR)/init src/init.c $(LIBS)
 
 rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST)
 	@echo "Creating rootfs structure..."
@@ -136,7 +147,12 @@ image: initramfs
 $(DEBUG_ROOTFS)/init: FORCE src/init.c
 	@echo "Compiling debug init binary (x86_64)..."
 	mkdir -p $(DEBUG_ROOTFS)
-	$(DEBUG_CC) $(DEBUG_CFLAGS) -DDEBUG_SHELL=$(DEBUG_SHELL) -o $(DEBUG_ROOTFS)/init src/init.c $(LIBS)
+	$(DEBUG_CC) $(DEBUG_CFLAGS) \
+		-DAUDIOX_VERSION_MAJOR=$(AUDIOX_VERSION_MAJOR) \
+		-DAUDIOX_VERSION_MINOR=$(AUDIOX_VERSION_MINOR) \
+		-DAUDIOX_VERSION_PATCH=$(AUDIOX_VERSION_PATCH) \
+		-DDEBUG_SHELL=$(DEBUG_SHELL) \
+		-o $(DEBUG_ROOTFS)/init src/init.c $(LIBS)
 
 debug_rootfs: $(DEBUG_ROOTFS)/init
 	@echo "Creating debug rootfs structure..."

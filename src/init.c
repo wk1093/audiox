@@ -22,6 +22,7 @@ static int app_printf_router(const char *fmt, ...);
 #include "rt_sched.h"
 #include "tick_sched.h"
 #include "ui_console.h"
+#include "ui_ppm.h"
 #include "usb_gadget.h"
 
 #ifndef DEBUG_SHELL
@@ -227,11 +228,7 @@ struct app_state {
     ui_touch_latch_t log_filter_touch_latch[3];
     ui_touch_latch_t control_touch_latch[3];
     ui_touch_latch_t swipe_touch_latch;
-    uint8_t *boot_logo_rgb;
-    uint32_t boot_logo_w;
-    uint32_t boot_logo_h;
-    int boot_logo_loaded;
-    int boot_logo_failed;
+    ui_ppm_image_t boot_logo;
 };
 
 typedef struct app_ticks {
@@ -265,127 +262,11 @@ static void app_state_init(app_state_t *app) {
     app->log_filter_mask = UI_LOG_FILTER_ALL;
 }
 
-static int app_ppm_next_token(FILE *fp, char *token, size_t token_cap) {
-    if (!fp || !token || token_cap == 0) {
-        return 0;
-    }
-
-    int c = fgetc(fp);
-    for (;;) {
-        while (c != EOF && isspace(c)) {
-            c = fgetc(fp);
-        }
-        if (c != '#') {
-            break;
-        }
-        while (c != EOF && c != '\n') {
-            c = fgetc(fp);
-        }
-        c = fgetc(fp);
-    }
-
-    if (c == EOF) {
-        return 0;
-    }
-
-    size_t idx = 0;
-    while (c != EOF && !isspace(c) && c != '#') {
-        if (idx + 1 < token_cap) {
-            token[idx++] = (char)c;
-        }
-        c = fgetc(fp);
-    }
-    token[idx] = '\0';
-
-    if (c == '#') {
-        while (c != EOF && c != '\n') {
-            c = fgetc(fp);
-        }
-    }
-
-    return idx > 0;
-}
-
 static int app_load_boot_logo(app_state_t *app) {
     if (!app) {
         return -1;
     }
-
-    if (app->boot_logo_loaded) {
-        return 0;
-    }
-    if (app->boot_logo_failed) {
-        return -1;
-    }
-
-    FILE *fp = fopen(BOOT_LOGO_PPM_PATH, "rb");
-    if (!fp) {
-        app->boot_logo_failed = 1;
-        return -1;
-    }
-
-    char token[64];
-    if (!app_ppm_next_token(fp, token, sizeof(token)) || strcmp(token, "P6") != 0) {
-        fclose(fp);
-        app->boot_logo_failed = 1;
-        return -1;
-    }
-
-    if (!app_ppm_next_token(fp, token, sizeof(token))) {
-        fclose(fp);
-        app->boot_logo_failed = 1;
-        return -1;
-    }
-    unsigned long w = strtoul(token, NULL, 10);
-
-    if (!app_ppm_next_token(fp, token, sizeof(token))) {
-        fclose(fp);
-        app->boot_logo_failed = 1;
-        return -1;
-    }
-    unsigned long h = strtoul(token, NULL, 10);
-
-    if (!app_ppm_next_token(fp, token, sizeof(token))) {
-        fclose(fp);
-        app->boot_logo_failed = 1;
-        return -1;
-    }
-    unsigned long maxval = strtoul(token, NULL, 10);
-
-    if (w == 0 || h == 0 || w > 4096 || h > 4096 || maxval != 255) {
-        fclose(fp);
-        app->boot_logo_failed = 1;
-        return -1;
-    }
-
-    size_t px_count = (size_t)w * (size_t)h;
-    if (px_count > (SIZE_MAX / 3u)) {
-        fclose(fp);
-        app->boot_logo_failed = 1;
-        return -1;
-    }
-
-    size_t rgb_len = px_count * 3u;
-    uint8_t *rgb = (uint8_t *)malloc(rgb_len);
-    if (!rgb) {
-        fclose(fp);
-        app->boot_logo_failed = 1;
-        return -1;
-    }
-
-    size_t nread = fread(rgb, 1, rgb_len, fp);
-    fclose(fp);
-    if (nread != rgb_len) {
-        free(rgb);
-        app->boot_logo_failed = 1;
-        return -1;
-    }
-
-    app->boot_logo_rgb = rgb;
-    app->boot_logo_w = (uint32_t)w;
-    app->boot_logo_h = (uint32_t)h;
-    app->boot_logo_loaded = 1;
-    return 0;
+    return ui_ppm_load(&app->boot_logo, BOOT_LOGO_PPM_PATH);
 }
 
 static void app_draw_boot_logo(const app_state_t *app,
@@ -393,48 +274,10 @@ static void app_draw_boot_logo(const app_state_t *app,
                                int y,
                                int max_w,
                                int max_h) {
-    if (!app || !app->boot_logo_loaded || !app->boot_logo_rgb || max_w <= 0 || max_h <= 0) {
+    if (!app) {
         return;
     }
-
-    int src_w = (int)app->boot_logo_w;
-    int src_h = (int)app->boot_logo_h;
-    if (src_w <= 0 || src_h <= 0) {
-        return;
-    }
-
-    int dst_w = src_w;
-    int dst_h = src_h;
-
-    if (dst_w > max_w) {
-        dst_h = (dst_h * max_w) / dst_w;
-        dst_w = max_w;
-    }
-    if (dst_h > max_h) {
-        dst_w = (dst_w * max_h) / dst_h;
-        dst_h = max_h;
-    }
-    if (dst_w <= 0 || dst_h <= 0) {
-        return;
-    }
-
-    int dx0 = x + (max_w - dst_w) / 2;
-    int dy0 = y + (max_h - dst_h) / 2;
-
-    for (int dy = 0; dy < dst_h; ++dy) {
-        int sy = (dy * src_h) / dst_h;
-        for (int dx = 0; dx < dst_w; ++dx) {
-            int sx = (dx * src_w) / dst_w;
-            size_t idx = ((size_t)sy * (size_t)src_w + (size_t)sx) * 3u;
-            uint8_t r = app->boot_logo_rgb[idx + 0];
-            uint8_t g = app->boot_logo_rgb[idx + 1];
-            uint8_t b = app->boot_logo_rgb[idx + 2];
-            fb_put_pixel(&app->fb,
-                         (uint32_t)(dx0 + dx),
-                         (uint32_t)(dy0 + dy),
-                         fb_pack_color(&app->fb, r, g, b));
-        }
-    }
+    ui_ppm_draw(&app->boot_logo, &app->fb, x, y, max_w, max_h);
 }
 
 static int app_open_audio_thread(app_state_t *app) {
@@ -670,7 +513,7 @@ static void app_boot_draw(app_state_t *app, const char *status_line) {
         logo_y = 0;
     }
 
-    if (app->boot_logo_loaded) {
+    if (app->boot_logo.loaded) {
         app_draw_boot_logo(app, logo_x, logo_y, logo_w, logo_h);
     } else {
         const char *fallback = "AUDIOX";
@@ -860,7 +703,8 @@ int main(void) {
             .config_mount_active = app.config.mount_active,
             .active_tab = app.active_tab,
             .log_filter_mask = app.log_filter_mask,
-            .log = &app.log
+            .log = &app.log,
+            .boot_logo = &app.boot_logo
         };
         ui_console_io_t io;
 
@@ -903,6 +747,7 @@ int main(void) {
                 model.active_tab = app.active_tab;
                 model.log_filter_mask = app.log_filter_mask;
                 model.log = &app.log;
+                model.boot_logo = &app.boot_logo;
 
                 if (redraw_mode == APP_REDRAW_FULL) {
                     fb_begin_frame(&app.fb);

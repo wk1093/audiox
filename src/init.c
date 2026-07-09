@@ -30,7 +30,6 @@ static int app_printf_router(const char *fmt, ...);
 #endif
 
 #define CONFIG_MOUNT_POINT "/audiox"
-#define CONFIG_DEVICE_PATH "/dev/mmcblk0p2"
 #define CONFIG_FILE_PATH CONFIG_MOUNT_POINT "/config.txt"
 
 typedef void (*runtime_log_fn_t)(void *ctx, const char *line);
@@ -584,15 +583,15 @@ int main(void) {
 
     run_temp_fs_shell();
 
+    // TODO: Load graphics first so that we can show a boot logo while loading modules
     app_boot_status(&app, "Loading kernel modules...");
     printf("[INIT] Loading kernel modules...\n");
     if (load_modules_from_list(MODULE_LOAD_LIST_FILE) < 0) {
         printf("[INIT] [CRIT] Failed to load kernel modules.\n");
         goto emergency_halt;
     }
-    sleep(3);
-    printf("[INIT] Kernel modules loaded.\n");
 
+    printf("[INIT] Kernel modules loaded.\n");
     app_try_enable_ui_logging(&app);
     app_boot_status(&app, app.fb_ready ? "Framebuffer ready. Initializing services..." : "Framebuffer not ready yet. Continuing startup...");
 
@@ -603,14 +602,42 @@ int main(void) {
         goto emergency_halt;
     }
 
+    int network_support = 1;
+
+    app_boot_status(&app, "Setting up USB network gadget...");
+    printf("[INIT] USB audio gadget configured.\n");
+    printf("[INIT] Setting up USB network gadget...\n");
+    if (setup_usb_network_gadget() < 0) {
+        printf("[INIT] [WARN] Failed to configure USB network gadget. Continuing without network support.\n");
+        network_support = 0;
+    }
+
     app_boot_status(&app, "Binding USB gadget to controller...");
     printf("[INIT] Binding gadget to UDC...\n");
     if (write_sys_node(GADGET_UDC_NODE, GADGET_UDC_NAME) < 0) {
         goto emergency_halt;
     }
 
-    sleep(1);
+    if (network_support) {
+        app_boot_status(&app, "Waiting for network gadget to become ready...");
+        printf("[INIT] Waiting for network gadget to become ready...\n");
+        for (int i = 0; i < 20 && !is_network_ready(); ++i) {
+            usleep(500 * 1000);
+        }
+        if (!is_network_ready()) {
+            printf("[INIT] [WARN] Network gadget did not become ready. Continuing without network support.\n");
+            network_support = 0;
+        } else {
+            app_boot_status(&app, "Setting up network interface...");
+            printf("[INIT] Setting up network interface...\n");
+            if (setup_network_interface() < 0) {
+                printf("[INIT] [WARN] Failed to set up network interface. Continuing without network support.\n");
+                network_support = 0;
+            }
+        }
+    }
 
+    sleep(1);
     printf("\n========================================\n");
     printf("             audiox ready\n");
     printf("========================================\n\n");

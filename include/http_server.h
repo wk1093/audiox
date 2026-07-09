@@ -18,7 +18,10 @@
 #define HTTP_BODY_MAX 49152
 #define HTTP_API_PREFIX "/api/"
 #define HTTP_ROOTFS_PREFIX HTTP_API_PREFIX "rootfs/"
+#define HTTP_SOUNDBOARD_TRIGGER_PREFIX HTTP_API_PREFIX "soundboard/trigger/"
 #define HTTP_FS_ROOT "/audiox/"
+
+typedef int (*http_soundboard_trigger_fn)(void *ctx, int slot);
 
 typedef struct http_server {
     int listen_fd;
@@ -26,6 +29,8 @@ typedef struct http_server {
     int started;
     char body[16384];
     size_t body_len;
+    http_soundboard_trigger_fn soundboard_trigger;
+    void *soundboard_ctx;
 } http_server_t;
 
 static inline void http_server_load_body(http_server_t *srv, const char *html_path) {
@@ -287,6 +292,52 @@ static inline int http_handle_api_put(int cfd, const char *path, const char *bod
     return 0;
 }
 
+static inline int http_handle_soundboard_trigger(http_server_t *srv,
+                                                 int cfd,
+                                                 const char *path) {
+    if (!srv || !path) {
+        static const char bad[] = "bad request\n";
+        (void)http_send_response(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+        return 0;
+    }
+
+    if (!srv->soundboard_trigger) {
+        static const char err[] = "soundboard trigger not configured\n";
+        (void)http_send_response(cfd, "503 Service Unavailable", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+        return 0;
+    }
+
+    const char *slot_str = path + strlen(HTTP_SOUNDBOARD_TRIGGER_PREFIX);
+    if (!slot_str[0]) {
+        static const char bad[] = "missing slot\n";
+        (void)http_send_response(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+        return 0;
+    }
+
+    char *endp = NULL;
+    long slot_long = strtol(slot_str, &endp, 10);
+    if (!endp || *endp != '\0' || slot_long < 0 || slot_long > 1024) {
+        static const char bad[] = "invalid slot\n";
+        (void)http_send_response(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+        return 0;
+    }
+
+    int rc = srv->soundboard_trigger(srv->soundboard_ctx, (int)slot_long);
+    if (rc == 0) {
+        char out[48];
+        int n = snprintf(out, sizeof(out), "triggered slot %ld\n", slot_long);
+        if (n < 0) {
+            n = 0;
+        }
+        (void)http_send_response(cfd, "200 OK", "text/plain; charset=utf-8", out, (size_t)n);
+        return 0;
+    }
+
+    static const char err[] = "trigger failed\n";
+    (void)http_send_response(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+    return 0;
+}
+
 static inline void http_server_handle_client(http_server_t *srv, int cfd) {
     char req[HTTP_REQ_MAX];
     size_t have = 0;
@@ -324,6 +375,17 @@ static inline void http_server_handle_client(http_server_t *srv, int cfd) {
 
     if (strcmp(method, "GET") == 0 && (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0)) {
         (void)http_send_response(cfd, "200 OK", "text/html; charset=utf-8", srv->body, srv->body_len);
+        return;
+    }
+
+    if (strncmp(path, HTTP_SOUNDBOARD_TRIGGER_PREFIX, strlen(HTTP_SOUNDBOARD_TRIGGER_PREFIX)) == 0) {
+        if (strcmp(method, "GET") == 0 || strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0) {
+            (void)http_handle_soundboard_trigger(srv, cfd, path);
+            return;
+        }
+
+        static const char mna[] = "method not allowed\n";
+        (void)http_send_response(cfd, "405 Method Not Allowed", "text/plain; charset=utf-8", mna, sizeof(mna) - 1);
         return;
     }
 
@@ -395,13 +457,19 @@ static inline void *http_server_thread_main(void *arg) {
     return NULL;
 }
 
-static inline int http_server_start(http_server_t *srv, uint16_t port, const char *html_path) {
+static inline int http_server_start(http_server_t *srv,
+                                    uint16_t port,
+                                    const char *html_path,
+                                    http_soundboard_trigger_fn trigger_fn,
+                                    void *trigger_ctx) {
     if (!srv) {
         return -1;
     }
 
     memset(srv, 0, sizeof(*srv));
     srv->listen_fd = -1;
+    srv->soundboard_trigger = trigger_fn;
+    srv->soundboard_ctx = trigger_ctx;
 
     http_server_load_body(srv, html_path);
 

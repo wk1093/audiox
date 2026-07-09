@@ -484,6 +484,25 @@ static int app_apply_midi_soundboard(app_state_t *app) {
     return 0;
 }
 
+static int app_http_trigger_soundboard_slot(void *ctx, int slot) {
+    app_state_t *app = (app_state_t *)ctx;
+    if (!app) {
+        return -1;
+    }
+
+    int max_slots = audio_voice_count(&app->audio);
+    if (slot < 0 || slot >= max_slots) {
+        return -1;
+    }
+
+    if (audio_trigger_voice(&app->audio, slot) != 0) {
+        return -1;
+    }
+
+    printf("[INIT] HTTP trigger slot %d\n", slot);
+    return 0;
+}
+
 static void app_boot_draw(app_state_t *app, const char *status_line) {
     if (!app || !app->fb_ready) {
         return;
@@ -638,7 +657,11 @@ int main(void) {
                 network_support = 0;
             } else {
                 app_boot_status(&app, "Starting HTTP server...");
-                if (http_server_start(&app.http, 80, "/etc/www/index.html") < 0) {
+                if (http_server_start(&app.http,
+                                      80,
+                                      "/etc/www/index.html",
+                                      app_http_trigger_soundboard_slot,
+                                      &app) < 0) {
                     printf("[INIT] [WARN] HTTP server failed to start. Continuing without web UI.\n");
                 } else {
                     app.http_ready = 1;

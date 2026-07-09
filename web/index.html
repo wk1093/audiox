@@ -37,6 +37,30 @@
       color: var(--muted);
       line-height: 1.5;
     }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 16px;
+    }
+    button {
+      border: 1px solid #2f7f6a;
+      background: #173328;
+      color: var(--fg);
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 15px;
+      cursor: pointer;
+    }
+    button:active {
+      transform: translateY(1px);
+    }
+    .status {
+      margin-top: 12px;
+      min-height: 1.2em;
+      color: var(--muted);
+      font-size: 14px;
+    }
     .dot {
       display: inline-block;
       width: 10px;
@@ -52,7 +76,37 @@
 <body>
   <main class="card">
     <h1><span class="dot"></span>audiox</h1>
-    <p>Basic HTTP endpoint is live. This page is served from initramfs at /etc/www/index.html.</p>
+    <p>Basic HTTP endpoint is live. Test soundboard trigger over web:</p>
+    <div class="grid">
+      <button data-slot="0">Play Slot 0</button>
+      <button data-slot="1">Play Slot 1</button>
+      <button data-slot="2">Play Slot 2</button>
+      <button data-slot="3">Play Slot 3</button>
+    </div>
+    <div class="status" id="status">idle</div>
   </main>
+  <script>
+    const statusEl = document.getElementById('status');
+    async function triggerSlot(slot) {
+      statusEl.textContent = `triggering slot ${slot}...`;
+      try {
+        const res = await fetch(`/api/soundboard/trigger/${slot}`, { method: 'POST' });
+        const txt = await res.text();
+        if (!res.ok) {
+          statusEl.textContent = `error: ${res.status} ${txt.trim()}`;
+          return;
+        }
+        statusEl.textContent = txt.trim() || `triggered slot ${slot}`;
+      } catch (err) {
+        statusEl.textContent = `request failed: ${err}`;
+      }
+    }
+
+    document.querySelectorAll('button[data-slot]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        triggerSlot(btn.dataset.slot);
+      });
+    });
+  </script>
 </body>
 </html>

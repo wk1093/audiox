@@ -9,6 +9,18 @@ This is the rough plan for audiox. Not fancy. Just the stuff I need to get done 
 - Add a real internal routing model so "virtual wires" are not a future panic attack
 - Make the config side simple enough that I can edit it by hand without hating myself
 
+## Network + web control status
+
+- [x] USB NCM gadget link is up from init (usb0)
+- [x] Link-local static endpoint on Pi side with gratuitous ARP announce
+- [x] Basic HTTP server on port 80 in init runtime
+- [x] Static web page staged into initramfs (`/etc/www/index.html`)
+- [x] HTTP rootfs API: `GET/PUT /main/rootfs/<path>` mapped to `/audiox/<path>`
+- [x] Web soundboard trigger endpoint wired into runtime audio trigger path
+- [ ] Revisit temporary DHCP for better host plug-and-play on Linux
+- [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)
+- [ ] Expand web UI from test page into real config + soundboard control panel + soundboard upload + midi assignment to soundboard slots + routing view + status view + log view
+
 ## Audio refactor phases
 
 - Phase 0 (in progress): split monolithic audio code into modules without changing behavior
@@ -31,6 +43,7 @@ This is the rough plan for audiox. Not fancy. Just the stuff I need to get done 
 ## Next
 
 - Finish UI cleanup so the touchscreen shows routing, inputs, outputs, and status without being cluttered
+- Make web control panel useful enough for normal testing (voice buttons + config toggles + status)
 - Add board profiles for Pi 4 / Pi 5, with Pi 3 treated like a maybe-if-it-has-a-good-day option
 - Move model-specific stuff out of random places and into one obvious config/profile path
 - Keep audio + UI + config code separated enough that I can change one without breaking everything else

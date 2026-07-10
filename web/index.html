@@ -6,38 +6,37 @@
   <title>audiox web</title>
   <style>
     :root {
-      --bg0: #0a131a;
-      --bg1: #11212d;
-      --card: rgba(13, 24, 32, 0.82);
-      --border: #29465a;
+      --bg0: #091019;
+      --bg1: #102130;
+      --card: rgba(14, 27, 38, 0.84);
+      --border: #28465a;
       --fg: #e6f2ff;
-      --muted: #96aec2;
+      --muted: #95afc3;
       --ok: #6fdaa0;
       --warn: #ff9f84;
       --line: #7ac8ff;
-      --line-hover: #ffa86d;
+      --line-hot: #ffc684;
+      --accent: #5fb2ff;
+      --accent2: #92d46e;
     }
 
-    * {
-      box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
 
     body {
       margin: 0;
       font-family: "IBM Plex Sans", "DejaVu Sans", sans-serif;
       color: var(--fg);
       background:
-        radial-gradient(1100px 500px at 0% 0%, #17303f 0%, transparent 60%),
-        radial-gradient(800px 500px at 100% 100%, #142734 0%, transparent 58%),
-        linear-gradient(140deg, var(--bg0), var(--bg1));
+        radial-gradient(1000px 460px at 0% 0%, #163447 0%, transparent 58%),
+        radial-gradient(920px 540px at 100% 100%, #142433 0%, transparent 60%),
+        linear-gradient(138deg, var(--bg0), var(--bg1));
       min-height: 100vh;
     }
 
-    .shell {
-      width: min(1220px, 96vw);
-      margin: 16px auto;
+    .app {
+      width: min(1240px, 96vw);
+      margin: 14px auto;
       display: grid;
-      grid-template-columns: 1fr 320px;
       gap: 12px;
     }
 
@@ -50,12 +49,13 @@
     }
 
     .head {
-      padding: 12px 14px;
-      border-bottom: 1px solid #223d4e;
+      padding: 11px 14px;
+      border-bottom: 1px solid #223f52;
       display: flex;
       justify-content: space-between;
       align-items: center;
       gap: 10px;
+      flex-wrap: wrap;
     }
 
     .title {
@@ -63,16 +63,32 @@
       font-size: 19px;
     }
 
-    .subtitle {
+    .sub {
       color: var(--muted);
       font-size: 12px;
       margin-top: 2px;
     }
 
-    .row-actions {
+    .tabs {
       display: flex;
-      flex-wrap: wrap;
       gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .tab-btn {
+      border: 1px solid #355f79;
+      border-radius: 9px;
+      background: #133246;
+      color: var(--fg);
+      padding: 8px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .tab-btn.active {
+      border-color: #6ca1be;
+      background: #1b4258;
+      box-shadow: 0 0 0 1px rgba(108, 161, 190, 0.3) inset;
     }
 
     button {
@@ -91,13 +107,38 @@
       color: #d8ffe2;
     }
 
-    .content {
+    button.warn {
+      border-color: #865a4e;
+      background: #442921;
+      color: #ffd9cf;
+    }
+
+    .tab-page {
+      display: none;
       padding: 12px;
     }
 
-    .graph-wrap {
-      position: relative;
-      height: min(68vh, 720px);
+    .tab-page.active {
+      display: block;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 13px;
+      min-height: 1.2em;
+      padding: 0 12px 12px;
+    }
+
+    .status.ok { color: var(--ok); }
+    .status.warn { color: var(--warn); }
+
+    .routing-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 12px;
+    }
+
+    .graph-shell {
       border: 1px solid #223f51;
       border-radius: 10px;
       overflow: hidden;
@@ -106,6 +147,36 @@
         linear-gradient(90deg, rgba(122, 200, 255, 0.08) 1px, transparent 1px),
         #0e1a24;
       background-size: 30px 30px;
+      position: relative;
+    }
+
+    .graph-toolbar {
+      border-bottom: 1px solid #234357;
+      padding: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(10, 24, 35, 0.75);
+    }
+
+    .graph-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .graph-hint {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .graph-wrap {
+      position: relative;
+      height: min(66vh, 700px);
+      overflow: hidden;
       cursor: grab;
     }
 
@@ -130,7 +201,7 @@
 
     .node {
       position: absolute;
-      width: 245px;
+      width: 250px;
       border: 1px solid #3d6880;
       border-radius: 10px;
       background: linear-gradient(180deg, #112535, #0d1d2a);
@@ -145,6 +216,8 @@
       align-items: center;
       gap: 8px;
       font-size: 13px;
+      cursor: move;
+      user-select: none;
     }
 
     .kind {
@@ -161,10 +234,7 @@
       padding: 8px;
     }
 
-    .col {
-      display: grid;
-      gap: 5px;
-    }
+    .col { display: grid; gap: 5px; }
 
     .port {
       border: 1px solid #345c73;
@@ -183,13 +253,8 @@
       text-overflow: ellipsis;
     }
 
-    .port.in {
-      border-color: #2d607f;
-    }
-
-    .port.out {
-      border-color: #5f7c34;
-    }
+    .port.in { border-color: #2d607f; }
+    .port.out { border-color: #5f7c34; }
 
     .port.active {
       outline: 1px solid #f0c26e;
@@ -203,67 +268,53 @@
       flex: 0 0 auto;
     }
 
-    .dot.in {
-      background: #79c2ff;
-    }
-
-    .dot.out {
-      background: #9ad968;
-    }
+    .dot.in { background: #79c2ff; }
+    .dot.out { background: #9ad968; }
 
     .edge-line {
       stroke: var(--line);
-      stroke-width: 2.2;
+      stroke-width: 2.4;
+      fill: none;
+      stroke-linecap: round;
+      pointer-events: none;
+      transition: stroke 100ms ease, filter 100ms ease;
+    }
+
+    .edge-line.hot {
+      stroke: var(--line-hot);
+      filter: drop-shadow(0 0 5px rgba(255, 186, 110, 0.95));
+    }
+
+    .edge-hit {
+      stroke: rgba(0, 0, 0, 0);
+      stroke-width: 18;
       fill: none;
       stroke-linecap: round;
       pointer-events: stroke;
       cursor: pointer;
-      transition: stroke 120ms ease;
     }
 
-    .edge-line:hover {
-      stroke: var(--line-hover);
-    }
-
-    .side {
-      display: grid;
-      gap: 10px;
-      align-content: start;
-      padding: 10px;
-    }
-
-    .block {
+    .side-card {
       border: 1px solid #264759;
       border-radius: 10px;
       background: #0f1e29;
       padding: 10px;
+      display: grid;
+      gap: 8px;
+      align-content: start;
     }
 
-    .block h2 {
-      margin: 0 0 8px;
+    .side-card h2 {
+      margin: 0;
       font-size: 13px;
       text-transform: uppercase;
       letter-spacing: 0.06em;
     }
 
-    .status {
-      min-height: 1.2em;
-      color: var(--muted);
-      font-size: 13px;
-    }
-
-    .status.ok {
-      color: var(--ok);
-    }
-
-    .status.warn {
-      color: var(--warn);
-    }
-
     .edge-list {
       display: grid;
       gap: 5px;
-      max-height: 210px;
+      max-height: 250px;
       overflow: auto;
       font-size: 12px;
     }
@@ -284,10 +335,18 @@
       gap: 8px;
     }
 
+    .cfg-wrap {
+      max-width: 700px;
+      border: 1px solid #264759;
+      border-radius: 10px;
+      background: #0f1e29;
+      padding: 12px;
+    }
+
     .cfg-row {
       display: grid;
-      grid-template-columns: 1fr 98px;
-      gap: 8px;
+      grid-template-columns: 1fr 110px;
+      gap: 10px;
       margin-top: 8px;
       align-items: center;
     }
@@ -297,7 +356,9 @@
       font-size: 13px;
     }
 
-    input[type="number"] {
+    input[type="number"],
+    input[type="text"],
+    input[type="file"] {
       width: 100%;
       border: 1px solid #36566a;
       border-radius: 8px;
@@ -308,56 +369,81 @@
     }
 
     .cfg-actions {
-      margin-top: 10px;
+      margin-top: 12px;
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 8px;
     }
 
-    @media (max-width: 980px) {
-      .shell {
-        grid-template-columns: 1fr;
-      }
+    .control-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      max-width: 760px;
+    }
 
-      .graph-wrap {
-        height: 60vh;
-      }
+    .mock-upload {
+      display: grid;
+      gap: 10px;
+      max-width: 760px;
+      border: 1px solid #264759;
+      border-radius: 10px;
+      background: #0f1e29;
+      padding: 12px;
+    }
+
+    .muted { color: var(--muted); font-size: 12px; }
+
+    @media (max-width: 1020px) {
+      .routing-grid { grid-template-columns: 1fr; }
+      .graph-wrap { height: 58vh; }
     }
   </style>
 </head>
 <body>
-  <main class="shell">
-    <section class="panel">
-      <div class="head">
-        <div>
-          <h1 class="title">audiox Routing Graph</h1>
-          <div class="subtitle">Click an output then an input to create routes. Drag empty canvas to pan. Click a route line to delete.</div>
-        </div>
-        <div class="row-actions">
-          <button id="btn-route-save" class="primary">Save Routing</button>
-        </div>
+  <main class="app panel">
+    <header class="head">
+      <div>
+        <h1 class="title">audiox Web Control</h1>
+        <div class="sub">Minimal control surface for routing, config, status, and soundboard upload mock.</div>
       </div>
-      <div class="content">
-        <div class="graph-wrap" id="graph-wrap">
-          <svg id="links"></svg>
-          <div id="nodes"></div>
-        </div>
+      <nav class="tabs" id="tabs">
+        <button class="tab-btn active" data-tab="routing">Routing</button>
+        <button class="tab-btn" data-tab="config">Config</button>
+        <button class="tab-btn" data-tab="control">Control/Status</button>
+        <button class="tab-btn" data-tab="upload">Soundboard Upload</button>
+      </nav>
+    </header>
+
+    <section class="tab-page active" data-page="routing">
+      <div class="routing-grid">
+        <section class="graph-shell">
+          <div class="graph-toolbar">
+            <div class="graph-actions">
+              <button id="btn-route-save" class="primary">Save Routing</button>
+              <button id="btn-edge-delete-mode" class="warn">Delete Lines: ON</button>
+              <button id="btn-zoom-out">-</button>
+              <button id="btn-zoom-reset">100%</button>
+              <button id="btn-zoom-in">+</button>
+              <span class="graph-hint" id="zoom-label">zoom 100%</span>
+            </div>
+            <div class="graph-hint">Drag block header to move. Drag empty canvas to pan. Wheel to zoom.</div>
+          </div>
+          <div class="graph-wrap" id="graph-wrap">
+            <svg id="links"></svg>
+            <div id="nodes"></div>
+          </div>
+        </section>
+
+        <aside class="side-card">
+          <h2>Routes</h2>
+          <div id="edge-list" class="edge-list"></div>
+        </aside>
       </div>
     </section>
 
-    <aside class="panel side">
-      <section class="block">
-        <h2>Soundboard</h2>
-        <div class="grid2">
-          <button data-slot="0">Play Slot 0</button>
-          <button data-slot="1">Play Slot 1</button>
-          <button data-slot="2">Play Slot 2</button>
-          <button data-slot="3">Play Slot 3</button>
-        </div>
-      </section>
-
-      <section class="block">
-        <h2>Runtime Config</h2>
+    <section class="tab-page" data-page="config">
+      <div class="cfg-wrap">
         <div class="cfg-row">
           <label for="usb_playback_channels">USB Playback Channels</label>
           <input id="usb_playback_channels" type="number" min="1" max="16" step="1" value="2">
@@ -379,18 +465,48 @@
           <button id="btn-save">Save Config</button>
           <button id="btn-reload">Reload Config</button>
         </div>
-      </section>
+      </div>
+    </section>
 
-      <section class="block">
-        <h2>Routes</h2>
-        <div id="edge-list" class="edge-list"></div>
-      </section>
+    <section class="tab-page" data-page="control">
+      <div class="control-grid">
+        <section class="side-card">
+          <h2>Soundboard Triggers</h2>
+          <div class="grid2">
+            <button data-slot="0">Play Slot 0</button>
+            <button data-slot="1">Play Slot 1</button>
+            <button data-slot="2">Play Slot 2</button>
+            <button data-slot="3">Play Slot 3</button>
+          </div>
+        </section>
+        <section class="side-card">
+          <h2>System Status</h2>
+          <div class="muted">Config and routing controls are available in their own tabs.</div>
+          <div class="muted">No log streaming by design.</div>
+        </section>
+      </div>
+    </section>
 
-      <section class="block">
-        <h2>Status</h2>
-        <div id="status" class="status">idle</div>
-      </section>
-    </aside>
+    <section class="tab-page" data-page="upload">
+      <div class="mock-upload">
+        <h2 style="margin:0; font-size:14px; text-transform:uppercase; letter-spacing:.06em;">Soundboard Upload (Mock)</h2>
+        <div class="cfg-row" style="margin-top:0;">
+          <label for="upload_slot">Target Slot</label>
+          <input id="upload_slot" type="number" min="0" max="31" value="0">
+        </div>
+        <div class="cfg-row" style="grid-template-columns: 1fr;">
+          <label for="upload_file">Audio File</label>
+          <input id="upload_file" type="file" accept="audio/*">
+        </div>
+        <div class="grid2" style="grid-template-columns: 1fr 1fr;">
+          <button id="btn-upload-mock" class="primary">Upload (Mock)</button>
+          <button id="btn-upload-clear">Clear</button>
+        </div>
+        <div class="muted">This page is UI-only for now. No file transfer is sent.</div>
+      </div>
+    </section>
+
+    <div id="status" class="status">idle</div>
   </main>
 
   <script>
@@ -399,6 +515,8 @@
     const nodesEl = document.getElementById('nodes');
     const linksEl = document.getElementById('links');
     const graphWrapEl = document.getElementById('graph-wrap');
+    const zoomLabelEl = document.getElementById('zoom-label');
+    const tabsEl = document.getElementById('tabs');
 
     const configPath = '/api/rootfs/config.staging.txt';
     const realConfigPath = '/api/rootfs/config.txt';
@@ -411,16 +529,72 @@
       positions: {},
       panX: 0,
       panY: 0,
+      scale: 1,
       panning: false,
       panStartX: 0,
       panStartY: 0,
       panOriginX: 0,
       panOriginY: 0,
+      draggingNode: null,
+      dragOffsetX: 0,
+      dragOffsetY: 0,
+      edgeDeleteEnabled: true,
+      activeTab: 'routing',
     };
 
     function setStatus(text, kind = '') {
       statusEl.textContent = text;
       statusEl.className = `status ${kind}`.trim();
+    }
+
+    function setActiveTab(tab) {
+      state.activeTab = tab;
+      document.querySelectorAll('.tab-btn').forEach((el) => {
+        el.classList.toggle('active', el.dataset.tab === tab);
+      });
+      document.querySelectorAll('.tab-page').forEach((el) => {
+        el.classList.toggle('active', el.dataset.page === tab);
+      });
+      if (tab === 'routing') {
+        renderLinks();
+      }
+    }
+
+    function updateZoomLabel() {
+      zoomLabelEl.textContent = `zoom ${Math.round(state.scale * 100)}%`;
+      document.getElementById('btn-zoom-reset').textContent = `${Math.round(state.scale * 100)}%`;
+    }
+
+    function graphCoordsFromClient(clientX, clientY) {
+      const wrapRect = graphWrapEl.getBoundingClientRect();
+      return {
+        x: (clientX - wrapRect.left - state.panX) / state.scale,
+        y: (clientY - wrapRect.top - state.panY) / state.scale,
+      };
+    }
+
+    function setZoom(nextScale, anchorClientX = null, anchorClientY = null) {
+      const oldScale = state.scale;
+      const clamped = Math.max(0.35, Math.min(2.8, nextScale));
+      if (Math.abs(clamped - oldScale) < 0.0001) {
+        return;
+      }
+
+      const wrapRect = graphWrapEl.getBoundingClientRect();
+      const anchorX = anchorClientX == null ? wrapRect.left + (wrapRect.width * 0.5) : anchorClientX;
+      const anchorY = anchorClientY == null ? wrapRect.top + (wrapRect.height * 0.5) : anchorClientY;
+      const graphPoint = graphCoordsFromClient(anchorX, anchorY);
+
+      state.scale = clamped;
+      state.panX = (anchorX - wrapRect.left) - (graphPoint.x * state.scale);
+      state.panY = (anchorY - wrapRect.top) - (graphPoint.y * state.scale);
+      applyViewportTransform();
+      renderLinks();
+      updateZoomLabel();
+    }
+
+    function applyViewportTransform() {
+      nodesEl.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.scale})`;
     }
 
     function getConfigFromForm() {
@@ -447,6 +621,7 @@
         usb_sample_rate: 44100,
         usb_sample_size: 2,
       };
+
       for (const rawLine of text.split(/\r?\n/)) {
         const line = rawLine.trim();
         if (!line || line.startsWith('#')) continue;
@@ -483,6 +658,7 @@
             return null;
           }
         }
+
         const cfg = parseConfigText(txt);
         setFormFromConfig(cfg);
         setStatus('config loaded', 'ok');
@@ -497,6 +673,7 @@
       const cfg = getConfigFromForm();
       const payload = formatConfigText(cfg);
       setStatus('saving config...');
+
       try {
         const res = await fetch(configPath, {
           method: 'PUT',
@@ -508,6 +685,7 @@
           setStatus(`config save failed: ${res.status} ${txt.trim()}`, 'warn');
           return false;
         }
+
         setStatus('config saved', 'ok');
         return true;
       } catch (err) {
@@ -525,6 +703,7 @@
           setStatus(`reload failed: ${res.status} ${txt.trim()}`, 'warn');
           return false;
         }
+
         setStatus(txt.trim() || 'config reloaded', 'ok');
         return true;
       } catch (err) {
@@ -584,7 +763,9 @@
 
       state.panX = 0;
       state.panY = 0;
-      applyPanTransform();
+      state.scale = 1;
+      applyViewportTransform();
+      updateZoomLabel();
     }
 
     function clearOutputSelection() {
@@ -691,12 +872,53 @@
       });
     }
 
+    function beginNodeDrag(ev, nodeId) {
+      const pos = state.positions[nodeId];
+      if (!pos) {
+        return;
+      }
+
+      const graph = graphCoordsFromClient(ev.clientX, ev.clientY);
+      state.draggingNode = nodeId;
+      state.dragOffsetX = graph.x - pos.x;
+      state.dragOffsetY = graph.y - pos.y;
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+
+    function moveNodeDrag(ev) {
+      if (!state.draggingNode) {
+        return false;
+      }
+
+      const graph = graphCoordsFromClient(ev.clientX, ev.clientY);
+      const nodeId = state.draggingNode;
+      state.positions[nodeId] = {
+        x: Math.round(graph.x - state.dragOffsetX),
+        y: Math.round(graph.y - state.dragOffsetY),
+      };
+
+      const nodeEl = nodesEl.querySelector(`.node[data-node-id="${nodeId}"]`);
+      if (nodeEl) {
+        nodeEl.style.left = `${state.positions[nodeId].x}px`;
+        nodeEl.style.top = `${state.positions[nodeId].y}px`;
+      }
+
+      renderLinks();
+      return true;
+    }
+
+    function endNodeDrag() {
+      state.draggingNode = null;
+    }
+
     function renderNodes() {
       nodesEl.innerHTML = '';
 
       for (const node of state.nodes) {
         const wrap = document.createElement('div');
         wrap.className = 'node';
+        wrap.dataset.nodeId = node.id;
         const pos = state.positions[node.id] || { x: 20, y: 20 };
         wrap.style.left = `${pos.x}px`;
         wrap.style.top = `${pos.y}px`;
@@ -704,6 +926,7 @@
         const head = document.createElement('div');
         head.className = 'headbar';
         head.innerHTML = `<strong>${node.label}</strong><span class="kind">${node.kind}</span>`;
+        head.addEventListener('mousedown', (ev) => beginNodeDrag(ev, node.id));
 
         const ports = document.createElement('div');
         ports.className = 'ports';
@@ -748,17 +971,12 @@
 
         ports.appendChild(inCol);
         ports.appendChild(outCol);
-
         wrap.appendChild(head);
         wrap.appendChild(ports);
         nodesEl.appendChild(wrap);
       }
 
-      applyPanTransform();
-    }
-
-    function applyPanTransform() {
-      nodesEl.style.transform = `translate(${state.panX}px, ${state.panY}px)`;
+      applyViewportTransform();
     }
 
     function getPortCenter(nodeId, dir, ch) {
@@ -774,6 +992,7 @@
 
     function renderLinks() {
       linksEl.innerHTML = '';
+
       state.edges.forEach((edge, idx) => {
         const a = getPortCenter(edge.src, 'out', edge.srcChannel);
         const b = getPortCenter(edge.dst, 'in', edge.dstChannel);
@@ -782,11 +1001,32 @@
         const c = Math.max(60, Math.abs(b.x - a.x) * 0.4);
         const d = `M ${a.x},${a.y} C ${a.x + c},${a.y} ${b.x - c},${b.y} ${b.x},${b.y}`;
 
-        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        path.setAttribute('d', d);
-        path.setAttribute('class', 'edge-line');
-        path.addEventListener('click', () => removeEdge(idx));
-        linksEl.appendChild(path);
+        const visual = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        visual.setAttribute('d', d);
+        visual.setAttribute('class', 'edge-line');
+
+        const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        hit.setAttribute('d', d);
+        hit.setAttribute('class', 'edge-hit');
+
+        hit.addEventListener('mouseenter', () => {
+          visual.classList.add('hot');
+        });
+
+        hit.addEventListener('mouseleave', () => {
+          visual.classList.remove('hot');
+        });
+
+        hit.addEventListener('click', () => {
+          if (!state.edgeDeleteEnabled) {
+            setStatus('line delete is disabled. toggle Delete Lines to ON.', 'warn');
+            return;
+          }
+          removeEdge(idx);
+        });
+
+        linksEl.appendChild(visual);
+        linksEl.appendChild(hit);
       });
     }
 
@@ -844,7 +1084,7 @@
     }
 
     function beginPan(ev) {
-      if (ev.target.closest('.node') || ev.target.closest('.edge-line')) {
+      if (ev.target.closest('.node') || ev.target.closest('.edge-hit') || ev.target.closest('button')) {
         return;
       }
       state.panning = true;
@@ -857,6 +1097,9 @@
     }
 
     function movePan(ev) {
+      if (moveNodeDrag(ev)) {
+        return;
+      }
       if (!state.panning) {
         return;
       }
@@ -864,11 +1107,12 @@
       const dy = ev.clientY - state.panStartY;
       state.panX = state.panOriginX + dx;
       state.panY = state.panOriginY + dy;
-      applyPanTransform();
+      applyViewportTransform();
       renderLinks();
     }
 
     function endPan() {
+      endNodeDrag();
       if (!state.panning) {
         return;
       }
@@ -876,12 +1120,34 @@
       graphWrapEl.classList.remove('panning');
     }
 
+    function onGraphWheel(ev) {
+      ev.preventDefault();
+      const step = ev.deltaY < 0 ? 1.1 : 0.9;
+      setZoom(state.scale * step, ev.clientX, ev.clientY);
+    }
+
+    function setEdgeDeleteMode(enabled) {
+      state.edgeDeleteEnabled = !!enabled;
+      const btn = document.getElementById('btn-edge-delete-mode');
+      btn.textContent = `Delete Lines: ${state.edgeDeleteEnabled ? 'ON' : 'OFF'}`;
+      btn.classList.toggle('warn', state.edgeDeleteEnabled);
+      btn.classList.toggle('primary', !state.edgeDeleteEnabled);
+    }
+
     async function initializeGraphFromConfig() {
       const cfg = (await loadConfig()) || getConfigFromForm();
       buildNodesFromConfig(cfg);
       await loadRoutingFile();
       renderGraph();
+      updateZoomLabel();
+      setEdgeDeleteMode(true);
     }
+
+    tabsEl.querySelectorAll('.tab-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        setActiveTab(btn.dataset.tab);
+      });
+    });
 
     document.querySelectorAll('button[data-slot]').forEach((btn) => {
       btn.addEventListener('click', () => triggerSlot(btn.dataset.slot));
@@ -906,20 +1172,52 @@
     document.getElementById('btn-reload').addEventListener('click', async () => {
       const ok = await reloadConfig();
       if (ok) {
-        const cfg = getConfigFromForm();
-        buildNodesFromConfig(cfg);
+        buildNodesFromConfig(getConfigFromForm());
         await loadRoutingFile();
       }
     });
 
     document.getElementById('btn-route-save').addEventListener('click', saveRouting);
 
+    document.getElementById('btn-edge-delete-mode').addEventListener('click', () => {
+      setEdgeDeleteMode(!state.edgeDeleteEnabled);
+    });
+
+    document.getElementById('btn-zoom-in').addEventListener('click', () => {
+      setZoom(state.scale * 1.15);
+    });
+
+    document.getElementById('btn-zoom-out').addEventListener('click', () => {
+      setZoom(state.scale * 0.87);
+    });
+
+    document.getElementById('btn-zoom-reset').addEventListener('click', () => {
+      setZoom(1);
+    });
+
     graphWrapEl.addEventListener('mousedown', beginPan);
+    graphWrapEl.addEventListener('wheel', onGraphWheel, { passive: false });
     window.addEventListener('mousemove', movePan);
     window.addEventListener('mouseup', endPan);
     graphWrapEl.addEventListener('mouseleave', endPan);
 
     window.addEventListener('resize', renderLinks);
+
+    document.getElementById('btn-upload-mock').addEventListener('click', () => {
+      const slot = Number(document.getElementById('upload_slot').value || 0);
+      const file = document.getElementById('upload_file').files[0];
+      if (!file) {
+        setStatus('mock upload: pick a file first', 'warn');
+        return;
+      }
+      setStatus(`mock upload ready for slot ${slot}: ${file.name}`, 'ok');
+    });
+
+    document.getElementById('btn-upload-clear').addEventListener('click', () => {
+      document.getElementById('upload_slot').value = '0';
+      document.getElementById('upload_file').value = '';
+      setStatus('mock upload form cleared');
+    });
 
     initializeGraphFromConfig();
   </script>

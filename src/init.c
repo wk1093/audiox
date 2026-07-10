@@ -35,7 +35,6 @@ static int app_printf_router(const char *fmt, ...);
 #define CONFIG_REAL_FILE_PATH CONFIG_MOUNT_POINT "/config.txt"
 #define CONFIG_STAGING_FILE_PATH CONFIG_MOUNT_POINT "/config.staging.txt"
 #define ROUTING_REAL_FILE_PATH CONFIG_MOUNT_POINT "/routing.txt"
-#define ROUTING_STAGING_FILE_PATH CONFIG_MOUNT_POINT "/routing.staging.txt"
 
 typedef void (*runtime_log_fn_t)(void *ctx, const char *line);
 typedef struct app_state app_state_t;
@@ -238,7 +237,6 @@ struct app_state {
     int audio_started;
     app_runtime_config_t runtime_cfg;
     audio_route_graph_t route_active;
-    audio_route_graph_t route_staging;
     audio_route_mix_config_t route_mix_active;
 };
 
@@ -277,7 +275,6 @@ static void app_state_init(app_state_t *app) {
     audio_route_graph_default(&app->route_active,
                               (uint16_t)app->runtime_cfg.usb_capture_channels,
                               (uint16_t)app->runtime_cfg.usb_playback_channels);
-    app->route_staging = app->route_active;
     audio_route_mix_config_default(&app->route_mix_active,
                                    (uint16_t)app->runtime_cfg.usb_playback_channels);
     (void)audio_route_compile_mix(&app->route_active,
@@ -387,6 +384,36 @@ static int app_route_load_file(app_state_t *app,
     return 0;
 }
 
+static int app_reload_routing_config(app_state_t *app) {
+    if (!app) {
+        return -1;
+    }
+
+    audio_route_graph_t route_graph;
+    int route_loaded = app_route_load_file(app, ROUTING_REAL_FILE_PATH, &route_graph);
+    if (route_loaded < 0) {
+        audio_route_graph_default(&route_graph,
+                                  (uint16_t)app->runtime_cfg.usb_capture_channels,
+                                  (uint16_t)app->runtime_cfg.usb_playback_channels);
+        printf("[INIT] [WARN] Routing file not found or invalid (%s); using default routing.\n",
+               ROUTING_REAL_FILE_PATH);
+    }
+
+    app->route_active = route_graph;
+    if (audio_route_compile_mix(&route_graph,
+                                &app->route_mix_active,
+                                (uint16_t)app->runtime_cfg.usb_playback_channels) < 0) {
+        printf("[INIT] [ERR] Failed to compile routing graph.\n");
+        return -1;
+    }
+
+    if (app->audio_started) {
+        audio_set_route_mix_config(&app->audio, &app->route_mix_active);
+    }
+
+    return 0;
+}
+
 static int app_apply_runtime_config(app_state_t *app,
                                     const app_runtime_config_t *cfg,
                                     int runtime_reload) {
@@ -427,8 +454,6 @@ static int app_reload_runtime_config(app_state_t *app, int runtime_reload) {
     }
 
     const char *primary_path = runtime_reload ? CONFIG_STAGING_FILE_PATH : CONFIG_REAL_FILE_PATH;
-    const char *route_primary = runtime_reload ? ROUTING_STAGING_FILE_PATH : ROUTING_REAL_FILE_PATH;
-
     app_runtime_config_t cfg;
     app_runtime_config_defaults(&cfg);
     if (app_load_runtime_config_file(primary_path, &cfg) < 0) {
@@ -479,33 +504,11 @@ static int app_reload_runtime_config(app_state_t *app, int runtime_reload) {
            cfg.usb_sample_rate,
            cfg.usb_sample_size);
 
-    audio_route_graph_t route_graph;
-    int route_loaded = app_route_load_file(app, route_primary, &route_graph);
-    if (route_loaded < 0) {
-        audio_route_graph_default(&route_graph,
-                                  (uint16_t)cfg.usb_capture_channels,
-                                  (uint16_t)cfg.usb_playback_channels);
-        printf("[INIT] [WARN] Routing file not found or invalid (%s); using default routing.\n", route_primary);
-    }
-
-    app->route_staging = route_graph;
-    app->route_active = route_graph;
-    if (audio_route_compile_mix(&route_graph,
-                                &app->route_mix_active,
-                                (uint16_t)cfg.usb_playback_channels) == 0 && app->audio_started) {
-        audio_set_route_mix_config(&app->audio, &app->route_mix_active);
-    }
-
-    if (runtime_reload && access(ROUTING_STAGING_FILE_PATH, F_OK) == 0) {
-        if (config_store_copy_file(ROUTING_STAGING_FILE_PATH, ROUTING_REAL_FILE_PATH) < 0) {
-            printf("[INIT] [WARN] Failed to promote routing config %s -> %s\n",
-                   ROUTING_STAGING_FILE_PATH,
-                   ROUTING_REAL_FILE_PATH);
-        } else {
-            printf("[INIT] Promoted routing config %s -> %s\n",
-                   ROUTING_STAGING_FILE_PATH,
-                   ROUTING_REAL_FILE_PATH);
+    if (app_reload_routing_config(app) < 0) {
+        if (runtime_reload) {
+            audio_runtime_set_suspended(&app->audio, 0);
         }
+        return -1;
     }
 
     if (runtime_reload) {
@@ -771,6 +774,21 @@ static int app_http_reload_config(void *ctx) {
     return 0;
 }
 
+static int app_http_reload_routing(void *ctx) {
+    app_state_t *app = (app_state_t *)ctx;
+    if (!app) {
+        return -1;
+    }
+
+    if (app_reload_routing_config(app) < 0) {
+        return -1;
+    }
+
+    ui_log_push(&app->log, "ROUTING RELOADED");
+    printf("[INIT] HTTP routing reload completed.\n");
+    return 0;
+}
+
 static void app_boot_draw(app_state_t *app, const char *status_line) {
     if (!app || !app->fb_ready) {
         return;
@@ -937,6 +955,8 @@ int main(void) {
                                       app_http_trigger_soundboard_slot,
                                       &app,
                                       app_http_reload_config,
+                                      &app,
+                                      app_http_reload_routing,
                                       &app) < 0) {
                     printf("[INIT] [WARN] HTTP server failed to start. Continuing without web UI.\n");
                 } else {

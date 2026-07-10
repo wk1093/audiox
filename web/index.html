@@ -12,10 +12,10 @@
       --border: #29465a;
       --fg: #e6f2ff;
       --muted: #96aec2;
-      --accent: #6fd3ff;
       --ok: #6fdaa0;
       --warn: #ff9f84;
       --line: #7ac8ff;
+      --line-hover: #ffa86d;
     }
 
     * {
@@ -91,12 +91,6 @@
       color: #d8ffe2;
     }
 
-    button.warn {
-      border-color: #8f5a4f;
-      background: #4a2a23;
-      color: #ffdcd2;
-    }
-
     .content {
       padding: 12px;
     }
@@ -112,6 +106,11 @@
         linear-gradient(90deg, rgba(122, 200, 255, 0.08) 1px, transparent 1px),
         #0e1a24;
       background-size: 30px 30px;
+      cursor: grab;
+    }
+
+    .graph-wrap.panning {
+      cursor: grabbing;
     }
 
     svg#links {
@@ -119,13 +118,14 @@
       inset: 0;
       width: 100%;
       height: 100%;
-      pointer-events: none;
+      pointer-events: auto;
     }
 
     #nodes {
       position: absolute;
       inset: 0;
       padding: 10px;
+      transform-origin: 0 0;
     }
 
     .node {
@@ -211,6 +211,20 @@
       background: #9ad968;
     }
 
+    .edge-line {
+      stroke: var(--line);
+      stroke-width: 2.2;
+      fill: none;
+      stroke-linecap: round;
+      pointer-events: stroke;
+      cursor: pointer;
+      transition: stroke 120ms ease;
+    }
+
+    .edge-line:hover {
+      stroke: var(--line-hover);
+    }
+
     .side {
       display: grid;
       gap: 10px;
@@ -270,12 +284,6 @@
       gap: 8px;
     }
 
-    .cfg {
-      margin-top: 10px;
-      border-top: 1px solid #263f50;
-      padding-top: 10px;
-    }
-
     .cfg-row {
       display: grid;
       grid-template-columns: 1fr 98px;
@@ -323,13 +331,10 @@
       <div class="head">
         <div>
           <h1 class="title">audiox Routing Graph</h1>
-          <div class="subtitle">Patch output ports into input ports, save routing to file, then apply via runtime reload.</div>
+          <div class="subtitle">Click an output then an input to create routes. Drag empty canvas to pan. Click a route line to delete.</div>
         </div>
         <div class="row-actions">
-          <button id="btn-route-load">Reload Routing File</button>
-          <button id="btn-route-reset" class="warn">Reset Staged</button>
-          <button id="btn-route-save">Save Routing File</button>
-          <button id="btn-route-apply" class="primary">Apply Routing (Reload)</button>
+          <button id="btn-route-save" class="primary">Save Routing</button>
         </div>
       </div>
       <div class="content">
@@ -377,7 +382,7 @@
       </section>
 
       <section class="block">
-        <h2>Staged Edges</h2>
+        <h2>Routes</h2>
         <div id="edge-list" class="edge-list"></div>
       </section>
 
@@ -397,15 +402,20 @@
 
     const configPath = '/api/rootfs/config.staging.txt';
     const realConfigPath = '/api/rootfs/config.txt';
-    const routingPath = '/api/rootfs/routing.staging.txt';
-    const realRoutingPath = '/api/rootfs/routing.txt';
+    const routingPath = '/api/rootfs/routing.txt';
 
     const state = {
       nodes: [],
       edges: [],
       selectedOut: null,
       positions: {},
-      generation: 1,
+      panX: 0,
+      panY: 0,
+      panning: false,
+      panStartX: 0,
+      panStartY: 0,
+      panOriginX: 0,
+      panOriginY: 0,
     };
 
     function setStatus(text, kind = '') {
@@ -523,6 +533,21 @@
       }
     }
 
+    async function reloadRoutingFast() {
+      try {
+        const res = await fetch('/api/routing/reload', { method: 'POST' });
+        const txt = await res.text();
+        if (!res.ok) {
+          setStatus(`routing reload failed: ${res.status} ${txt.trim()}`, 'warn');
+          return false;
+        }
+        return true;
+      } catch (err) {
+        setStatus(`routing reload error: ${err}`, 'warn');
+        return false;
+      }
+    }
+
     async function triggerSlot(slot) {
       setStatus(`triggering slot ${slot}...`);
       try {
@@ -556,6 +581,10 @@
         usb_gadget_out: { x: 650, y: 20 },
         soundboard_virtual_out: { x: 650, y: 250 },
       };
+
+      state.panX = 0;
+      state.panY = 0;
+      applyPanTransform();
     }
 
     function clearOutputSelection() {
@@ -574,18 +603,21 @@
 
     function addEdge(edge) {
       if (hasEdge(edge)) {
-        setStatus('edge already staged', 'warn');
+        setStatus('route already exists', 'warn');
         return;
       }
       state.edges.push(edge);
       renderGraph();
-      setStatus('edge staged', 'ok');
+      setStatus('route added (not saved yet)', 'ok');
     }
 
     function removeEdge(index) {
+      if (index < 0 || index >= state.edges.length) {
+        return;
+      }
       state.edges.splice(index, 1);
       renderGraph();
-      setStatus('edge removed', 'ok');
+      setStatus('route removed (not saved yet)', 'ok');
     }
 
     function parseRoutingText(text) {
@@ -623,39 +655,6 @@
       return out.join('\n');
     }
 
-    function buildDefaultEdges() {
-      const mic = state.nodes.find((n) => n.id === 'usb_mic_in');
-      const sb = state.nodes.find((n) => n.id === 'soundboard_out');
-      const gadget = state.nodes.find((n) => n.id === 'usb_gadget_out');
-      const virt = state.nodes.find((n) => n.id === 'soundboard_virtual_out');
-      const next = [];
-
-      if (mic && gadget) {
-        const c = Math.min(mic.channels, gadget.channels);
-        for (let i = 0; i < c; i += 1) {
-          next.push({ src: mic.id, dst: gadget.id, srcChannel: i, dstChannel: i });
-        }
-      }
-
-      if (sb && gadget) {
-        const c = Math.min(sb.channels, gadget.channels);
-        for (let i = 0; i < c; i += 1) {
-          next.push({ src: sb.id, dst: gadget.id, srcChannel: i, dstChannel: i });
-        }
-      }
-
-      if (sb && virt) {
-        const c = Math.min(sb.channels, virt.channels);
-        for (let i = 0; i < c; i += 1) {
-          next.push({ src: sb.id, dst: virt.id, srcChannel: i, dstChannel: i });
-        }
-      }
-
-      state.edges = next;
-      renderGraph();
-      setStatus('staged routing reset to defaults', 'ok');
-    }
-
     function nodeAcceptsInput(node) {
       return node.kind === 'output' || node.kind === 'effect';
     }
@@ -671,7 +670,7 @@
     function renderEdgesList() {
       edgeListEl.innerHTML = '';
       if (!state.edges.length) {
-        edgeListEl.textContent = 'no staged edges';
+        edgeListEl.textContent = 'no routes';
         return;
       }
 
@@ -754,6 +753,12 @@
         wrap.appendChild(ports);
         nodesEl.appendChild(wrap);
       }
+
+      applyPanTransform();
+    }
+
+    function applyPanTransform() {
+      nodesEl.style.transform = `translate(${state.panX}px, ${state.panY}px)`;
     }
 
     function getPortCenter(nodeId, dir, ch) {
@@ -769,22 +774,20 @@
 
     function renderLinks() {
       linksEl.innerHTML = '';
-      for (const edge of state.edges) {
+      state.edges.forEach((edge, idx) => {
         const a = getPortCenter(edge.src, 'out', edge.srcChannel);
         const b = getPortCenter(edge.dst, 'in', edge.dstChannel);
-        if (!a || !b) continue;
+        if (!a || !b) return;
 
         const c = Math.max(60, Math.abs(b.x - a.x) * 0.4);
         const d = `M ${a.x},${a.y} C ${a.x + c},${a.y} ${b.x - c},${b.y} ${b.x},${b.y}`;
 
         const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         path.setAttribute('d', d);
-        path.setAttribute('stroke', 'var(--line)');
-        path.setAttribute('stroke-width', '2.2');
-        path.setAttribute('fill', 'none');
-        path.setAttribute('stroke-linecap', 'round');
+        path.setAttribute('class', 'edge-line');
+        path.addEventListener('click', () => removeEdge(idx));
         linksEl.appendChild(path);
-      }
+      });
     }
 
     function renderGraph() {
@@ -794,36 +797,27 @@
     }
 
     async function loadRoutingFile() {
-      setStatus('loading routing file...');
+      setStatus('loading routing...');
       try {
-        let res = await fetch(routingPath, { method: 'GET' });
-        let txt = await res.text();
+        const res = await fetch(routingPath, { method: 'GET' });
+        const txt = await res.text();
         if (!res.ok) {
-          res = await fetch(realRoutingPath, { method: 'GET' });
-          txt = await res.text();
-          if (!res.ok) {
-            buildDefaultEdges();
-            setStatus('routing file missing, defaults staged', 'warn');
-            return;
-          }
-        }
-
-        state.edges = parseRoutingText(txt);
-        if (!state.edges.length) {
-          buildDefaultEdges();
-          setStatus('routing file empty, defaults staged', 'warn');
+          state.edges = [];
+          renderGraph();
+          setStatus('routing file missing, starting empty', 'warn');
           return;
         }
 
+        state.edges = parseRoutingText(txt);
         renderGraph();
-        setStatus('routing file loaded', 'ok');
+        setStatus('routing loaded', 'ok');
       } catch (err) {
         setStatus(`routing load error: ${err}`, 'warn');
       }
     }
 
-    async function saveRoutingFile() {
-      setStatus('saving routing file...');
+    async function saveRouting() {
+      setStatus('saving routing...');
       try {
         const res = await fetch(routingPath, {
           method: 'PUT',
@@ -835,7 +829,13 @@
           setStatus(`routing save failed: ${res.status} ${txt.trim()}`, 'warn');
           return false;
         }
-        setStatus('routing file saved', 'ok');
+
+        const reloaded = await reloadRoutingFast();
+        if (!reloaded) {
+          return false;
+        }
+
+        setStatus('routing saved and reloaded', 'ok');
         return true;
       } catch (err) {
         setStatus(`routing save error: ${err}`, 'warn');
@@ -843,13 +843,37 @@
       }
     }
 
-    async function applyRoutingReload() {
-      const saved = await saveRoutingFile();
-      if (!saved) return;
-      const reloaded = await reloadConfig();
-      if (!reloaded) return;
-      await loadRoutingFile();
-      setStatus('routing saved and reload sent', 'ok');
+    function beginPan(ev) {
+      if (ev.target.closest('.node') || ev.target.closest('.edge-line')) {
+        return;
+      }
+      state.panning = true;
+      graphWrapEl.classList.add('panning');
+      state.panStartX = ev.clientX;
+      state.panStartY = ev.clientY;
+      state.panOriginX = state.panX;
+      state.panOriginY = state.panY;
+      ev.preventDefault();
+    }
+
+    function movePan(ev) {
+      if (!state.panning) {
+        return;
+      }
+      const dx = ev.clientX - state.panStartX;
+      const dy = ev.clientY - state.panStartY;
+      state.panX = state.panOriginX + dx;
+      state.panY = state.panOriginY + dy;
+      applyPanTransform();
+      renderLinks();
+    }
+
+    function endPan() {
+      if (!state.panning) {
+        return;
+      }
+      state.panning = false;
+      graphWrapEl.classList.remove('panning');
     }
 
     async function initializeGraphFromConfig() {
@@ -875,15 +899,25 @@
       const ok = await saveConfig();
       if (ok) {
         buildNodesFromConfig(getConfigFromForm());
-        renderGraph();
+        await loadRoutingFile();
       }
     });
 
-    document.getElementById('btn-reload').addEventListener('click', reloadConfig);
-    document.getElementById('btn-route-load').addEventListener('click', loadRoutingFile);
-    document.getElementById('btn-route-save').addEventListener('click', saveRoutingFile);
-    document.getElementById('btn-route-apply').addEventListener('click', applyRoutingReload);
-    document.getElementById('btn-route-reset').addEventListener('click', buildDefaultEdges);
+    document.getElementById('btn-reload').addEventListener('click', async () => {
+      const ok = await reloadConfig();
+      if (ok) {
+        const cfg = getConfigFromForm();
+        buildNodesFromConfig(cfg);
+        await loadRoutingFile();
+      }
+    });
+
+    document.getElementById('btn-route-save').addEventListener('click', saveRouting);
+
+    graphWrapEl.addEventListener('mousedown', beginPan);
+    window.addEventListener('mousemove', movePan);
+    window.addEventListener('mouseup', endPan);
+    graphWrapEl.addEventListener('mouseleave', endPan);
 
     window.addEventListener('resize', renderLinks);
 

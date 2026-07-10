@@ -21,10 +21,12 @@
 #define HTTP_ROOTFS_PREFIX HTTP_API_PREFIX "rootfs/"
 #define HTTP_SOUNDBOARD_TRIGGER_PREFIX HTTP_API_PREFIX "soundboard/trigger/"
 #define HTTP_CONFIG_RELOAD_PATH HTTP_API_PREFIX "config/reload"
+#define HTTP_ROUTING_RELOAD_PATH HTTP_API_PREFIX "routing/reload"
 #define HTTP_FS_ROOT "/audiox/"
 
 typedef int (*http_soundboard_trigger_fn)(void *ctx, int slot);
 typedef int (*http_config_reload_fn)(void *ctx);
+typedef int (*http_routing_reload_fn)(void *ctx);
 
 typedef struct http_server {
     int listen_fd;
@@ -37,6 +39,8 @@ typedef struct http_server {
     void *soundboard_ctx;
     http_config_reload_fn config_reload;
     void *config_reload_ctx;
+    http_routing_reload_fn routing_reload;
+    void *routing_reload_ctx;
 } http_server_t;
 
 static inline void http_server_load_body(http_server_t *srv, const char *html_path) {
@@ -701,6 +705,32 @@ static inline int http_handle_config_reload(http_server_t *srv,
     return 0;
 }
 
+static inline int http_handle_routing_reload(http_server_t *srv,
+                                             int cfd) {
+    if (!srv) {
+        static const char bad[] = "bad request\n";
+        (void)http_send_response(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+        return 0;
+    }
+
+    if (!srv->routing_reload) {
+        static const char err[] = "routing reload not configured\n";
+        (void)http_send_response(cfd, "503 Service Unavailable", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+        return 0;
+    }
+
+    int rc = srv->routing_reload(srv->routing_reload_ctx);
+    if (rc == 0) {
+        static const char out[] = "routing reloaded\n";
+        (void)http_send_response(cfd, "200 OK", "text/plain; charset=utf-8", out, sizeof(out) - 1);
+        return 0;
+    }
+
+    static const char err[] = "routing reload failed\n";
+    (void)http_send_response(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+    return 0;
+}
+
 static inline void http_server_handle_client(http_server_t *srv, int cfd) {
     char req[HTTP_REQ_MAX];
     size_t have = 0;
@@ -757,6 +787,17 @@ static inline void http_server_handle_client(http_server_t *srv, int cfd) {
     if (strcmp(path, HTTP_CONFIG_RELOAD_PATH) == 0) {
         if (strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0) {
             (void)http_handle_config_reload(srv, cfd);
+            return;
+        }
+
+        static const char mna[] = "method not allowed\n";
+        (void)http_send_response(cfd, "405 Method Not Allowed", "text/plain; charset=utf-8", mna, sizeof(mna) - 1);
+        return;
+    }
+
+    if (strcmp(path, HTTP_ROUTING_RELOAD_PATH) == 0) {
+        if (strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0) {
+            (void)http_handle_routing_reload(srv, cfd);
             return;
         }
 
@@ -839,7 +880,9 @@ static inline int http_server_start(http_server_t *srv,
                                     http_soundboard_trigger_fn trigger_fn,
                                     void *trigger_ctx,
                                     http_config_reload_fn config_reload_fn,
-                                    void *config_reload_ctx) {
+                                    void *config_reload_ctx,
+                                    http_routing_reload_fn routing_reload_fn,
+                                    void *routing_reload_ctx) {
     if (!srv) {
         return -1;
     }
@@ -850,6 +893,8 @@ static inline int http_server_start(http_server_t *srv,
     srv->soundboard_ctx = trigger_ctx;
     srv->config_reload = config_reload_fn;
     srv->config_reload_ctx = config_reload_ctx;
+    srv->routing_reload = routing_reload_fn;
+    srv->routing_reload_ctx = routing_reload_ctx;
 
     http_server_load_body(srv, html_path);
 

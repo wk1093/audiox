@@ -171,6 +171,7 @@ static inline void audio_unload_wav_voice(audio_ctx_t *ctx, int voice_index) {
     ctx->control.voice_enabled[voice_index] = 0;
     ctx->control.voice_gain_q15[voice_index] = 0;
     ctx->control.voice_loop[voice_index] = 0;
+    ++ctx->control.voice_revision[voice_index];
     ctx->voice_name[voice_index][0] = '\0';
 }
 
@@ -315,6 +316,7 @@ static inline int audio_load_wav_voice(audio_ctx_t *ctx,
     ctx->control.voice_enabled[voice_index] = 0;
     ctx->control.voice_gain_q15[voice_index] = 0;
     ctx->control.voice_loop[voice_index] = 0;
+    ++ctx->control.voice_revision[voice_index];
     snprintf(ctx->voice_name[voice_index], sizeof(ctx->voice_name[voice_index]), "%s", name ? name : path);
 
     printf("[INIT] Loaded voice %d WAV: %s (%u Hz, %u ch, %zu frames)\n",
@@ -367,8 +369,10 @@ static inline int audio_load_voice_bank(audio_ctx_t *ctx) {
     return 0;
 }
 
-static inline int16_t audio_voice_next_sample(audio_ctx_t *ctx, int voice_index) {
-    if (!ctx || voice_index < 0 || voice_index >= audio_voice_count(ctx)) {
+static inline int16_t audio_voice_next_sample_state(audio_ctx_t *ctx,
+                                                    audio_control_state_t *state,
+                                                    int voice_index) {
+    if (!ctx || !state || voice_index < 0 || voice_index >= audio_voice_count(ctx)) {
         return 0;
     }
 
@@ -377,26 +381,26 @@ static inline int16_t audio_voice_next_sample(audio_ctx_t *ctx, int voice_index)
         return 0;
     }
 
-    uint32_t cursor_q16 = ctx->control.voice_cursor_q16[voice_index];
+    uint32_t cursor_q16 = state->voice_cursor_q16[voice_index];
     uint32_t frame = cursor_q16 >> 16;
     uint32_t frac = cursor_q16 & 0xFFFFU;
 
     if (frame >= wv->frames) {
-        if (ctx->control.voice_loop[voice_index]) {
+        if (state->voice_loop[voice_index]) {
             frame %= (uint32_t)wv->frames;
-            ctx->control.voice_cursor_q16[voice_index] = frame << 16;
-            cursor_q16 = ctx->control.voice_cursor_q16[voice_index];
+            state->voice_cursor_q16[voice_index] = frame << 16;
+            cursor_q16 = state->voice_cursor_q16[voice_index];
             frac = cursor_q16 & 0xFFFFU;
         } else {
-            ctx->control.voice_enabled[voice_index] = 0;
-            ctx->control.voice_gain_q15[voice_index] = 0;
+            state->voice_enabled[voice_index] = 0;
+            state->voice_gain_q15[voice_index] = 0;
             return 0;
         }
     }
 
     uint32_t next_frame = frame + 1;
     if (next_frame >= wv->frames) {
-        next_frame = ctx->control.voice_loop[voice_index] ? 0 : frame;
+        next_frame = state->voice_loop[voice_index] ? 0 : frame;
     }
 
     int32_t sample_a = 0;
@@ -419,12 +423,12 @@ static inline int16_t audio_voice_next_sample(audio_ctx_t *ctx, int voice_index)
     if (step_q16 == 0) {
         step_q16 = 1;
     }
-    ctx->control.voice_cursor_q16[voice_index] += step_q16;
+    state->voice_cursor_q16[voice_index] += step_q16;
 
-    if ((ctx->control.voice_cursor_q16[voice_index] >> 16) >= wv->frames && !ctx->control.voice_loop[voice_index]) {
-        ctx->control.voice_enabled[voice_index] = 0;
-    } else if ((ctx->control.voice_cursor_q16[voice_index] >> 16) >= wv->frames && ctx->control.voice_loop[voice_index]) {
-        ctx->control.voice_cursor_q16[voice_index] %= (uint32_t)(wv->frames << 16);
+    if ((state->voice_cursor_q16[voice_index] >> 16) >= wv->frames && !state->voice_loop[voice_index]) {
+        state->voice_enabled[voice_index] = 0;
+    } else if ((state->voice_cursor_q16[voice_index] >> 16) >= wv->frames && state->voice_loop[voice_index]) {
+        state->voice_cursor_q16[voice_index] %= (uint32_t)(wv->frames << 16);
     }
 
     if (interp > 32767) {
@@ -434,6 +438,13 @@ static inline int16_t audio_voice_next_sample(audio_ctx_t *ctx, int voice_index)
         interp = -32768;
     }
     return (int16_t)interp;
+}
+
+static inline int16_t audio_voice_next_sample(audio_ctx_t *ctx, int voice_index) {
+    if (!ctx) {
+        return 0;
+    }
+    return audio_voice_next_sample_state(ctx, &ctx->control, voice_index);
 }
 
 #endif

@@ -1,6 +1,7 @@
 #ifndef HTTP_SERVER_H
 #define HTTP_SERVER_H
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -19,9 +20,11 @@
 #define HTTP_API_PREFIX "/api/"
 #define HTTP_ROOTFS_PREFIX HTTP_API_PREFIX "rootfs/"
 #define HTTP_SOUNDBOARD_TRIGGER_PREFIX HTTP_API_PREFIX "soundboard/trigger/"
+#define HTTP_CONFIG_RELOAD_PATH HTTP_API_PREFIX "config/reload"
 #define HTTP_FS_ROOT "/audiox/"
 
 typedef int (*http_soundboard_trigger_fn)(void *ctx, int slot);
+typedef int (*http_config_reload_fn)(void *ctx);
 
 typedef struct http_server {
     int listen_fd;
@@ -31,6 +34,8 @@ typedef struct http_server {
     size_t body_len;
     http_soundboard_trigger_fn soundboard_trigger;
     void *soundboard_ctx;
+    http_config_reload_fn config_reload;
+    void *config_reload_ctx;
 } http_server_t;
 
 static inline void http_server_load_body(http_server_t *srv, const char *html_path) {
@@ -186,6 +191,222 @@ static inline int http_safe_api_suffix(const char *suffix) {
     return 1;
 }
 
+static inline int http_path_is_rootfs(const char *path) {
+    if (!path) {
+        return 0;
+    }
+    if (strcmp(path, "/api/rootfs") == 0) {
+        return 1;
+    }
+    if (strncmp(path, HTTP_ROOTFS_PREFIX, strlen(HTTP_ROOTFS_PREFIX)) == 0) {
+        return 1;
+    }
+    return 0;
+}
+
+static inline const char *http_rootfs_suffix(const char *path) {
+    if (!path) {
+        return NULL;
+    }
+    if (strcmp(path, "/api/rootfs") == 0) {
+        return "";
+    }
+    if (strncmp(path, HTTP_ROOTFS_PREFIX, strlen(HTTP_ROOTFS_PREFIX)) == 0) {
+        return path + strlen(HTTP_ROOTFS_PREFIX);
+    }
+    return NULL;
+}
+
+static inline int http_is_unreserved_url_char(char c) {
+    if ((c >= 'a' && c <= 'z') ||
+        (c >= 'A' && c <= 'Z') ||
+        (c >= '0' && c <= '9') ||
+        c == '-' || c == '_' || c == '.' || c == '~') {
+        return 1;
+    }
+    return 0;
+}
+
+static inline size_t http_url_encode_component(const char *src, char *dst, size_t dst_sz) {
+    static const char hex[] = "0123456789ABCDEF";
+    size_t out = 0;
+
+    if (!dst || dst_sz == 0) {
+        return 0;
+    }
+
+    if (!src) {
+        dst[0] = '\0';
+        return 0;
+    }
+
+    for (size_t i = 0; src[i] != '\0'; ++i) {
+        unsigned char ch = (unsigned char)src[i];
+        if (http_is_unreserved_url_char((char)ch)) {
+            if (out + 1 >= dst_sz) {
+                break;
+            }
+            dst[out++] = (char)ch;
+            continue;
+        }
+
+        if (out + 3 >= dst_sz) {
+            break;
+        }
+        dst[out++] = '%';
+        dst[out++] = hex[(ch >> 4) & 0x0F];
+        dst[out++] = hex[ch & 0x0F];
+    }
+
+    dst[out] = '\0';
+    return out;
+}
+
+static inline size_t http_html_escape_append(char *dst, size_t dst_sz, size_t off, const char *src) {
+    if (!dst || dst_sz == 0 || !src) {
+        return off;
+    }
+
+    for (size_t i = 0; src[i] != '\0'; ++i) {
+        const char *rep = NULL;
+        size_t rep_len = 0;
+        char ch = src[i];
+
+        if (ch == '&') {
+            rep = "&amp;";
+            rep_len = 5;
+        } else if (ch == '<') {
+            rep = "&lt;";
+            rep_len = 4;
+        } else if (ch == '>') {
+            rep = "&gt;";
+            rep_len = 4;
+        } else if (ch == '"') {
+            rep = "&quot;";
+            rep_len = 6;
+        }
+
+        if (rep) {
+            if (off + rep_len + 1 >= dst_sz) {
+                return off;
+            }
+            memcpy(dst + off, rep, rep_len);
+            off += rep_len;
+        } else {
+            if (off + 2 >= dst_sz) {
+                return off;
+            }
+            dst[off++] = ch;
+        }
+    }
+
+    dst[off] = '\0';
+    return off;
+}
+
+static inline int http_send_rootfs_dir_listing(int cfd,
+                                               const char *api_path,
+                                               const char *fs_path) {
+    DIR *dir = opendir(fs_path);
+    if (!dir) {
+        static const char err[] = "opendir failed\n";
+        (void)http_send_response(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+        return 0;
+    }
+
+    char base_href[300];
+    size_t base_len = 0;
+    if (api_path && api_path[0]) {
+        base_len = strlen(api_path);
+        if (base_len > sizeof(base_href) - 2) {
+            base_len = sizeof(base_href) - 2;
+        }
+        memcpy(base_href, api_path, base_len);
+    }
+    if (base_len == 0) {
+        base_len = strnlen(HTTP_ROOTFS_PREFIX, sizeof(base_href) - 1);
+        memcpy(base_href, HTTP_ROOTFS_PREFIX, base_len);
+    }
+    if (base_len > 0 && base_href[base_len - 1] != '/') {
+        base_href[base_len++] = '/';
+    }
+    base_href[base_len] = '\0';
+
+    char body[HTTP_BODY_MAX];
+    size_t off = 0;
+    int n = snprintf(body,
+                     sizeof(body),
+                     "<!doctype html><html><head><meta charset=\"utf-8\">"
+                     "<title>audiox rootfs</title></head><body><h1>audiox rootfs</h1><p>");
+    if (n > 0) {
+        off = (size_t)n;
+    }
+    off = http_html_escape_append(body, sizeof(body), off, api_path ? api_path : HTTP_ROOTFS_PREFIX);
+    if (off + 16 < sizeof(body)) {
+        memcpy(body + off, "</p><ul>", 7);
+        off += 7;
+        body[off] = '\0';
+    }
+
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+            continue;
+        }
+
+        char full[512];
+        int fn = snprintf(full, sizeof(full), "%s/%s", fs_path, ent->d_name);
+        if (fn <= 0 || (size_t)fn >= sizeof(full)) {
+            continue;
+        }
+
+        struct stat st;
+        int is_dir = (stat(full, &st) == 0 && S_ISDIR(st.st_mode)) ? 1 : 0;
+
+        char enc[512];
+        (void)http_url_encode_component(ent->d_name, enc, sizeof(enc));
+
+        int wrote = snprintf(body + off,
+                             sizeof(body) - off,
+                             "<li><a href=\"%s%s%s\">",
+                             base_href,
+                             enc,
+                             is_dir ? "/" : "");
+        if (wrote <= 0 || (size_t)wrote >= sizeof(body) - off) {
+            break;
+        }
+        off += (size_t)wrote;
+
+        off = http_html_escape_append(body, sizeof(body), off, ent->d_name);
+        if (is_dir) {
+            if (off + 2 >= sizeof(body)) {
+                break;
+            }
+            body[off++] = '/';
+        }
+
+        if (off + 11 >= sizeof(body)) {
+            break;
+        }
+        memcpy(body + off, "</a></li>", 9);
+        off += 9;
+        body[off] = '\0';
+    }
+
+    closedir(dir);
+
+    if (off + 20 >= sizeof(body)) {
+        off = sizeof(body) - 32;
+        memcpy(body + off, "<li>... truncated ...</li>", 24);
+        off += 24;
+    }
+    memcpy(body + off, "</ul></body></html>\n", 20);
+    off += 20;
+
+    (void)http_send_response(cfd, "200 OK", "text/html; charset=utf-8", body, off);
+    return 0;
+}
+
 static inline int http_ensure_parent_dirs(const char *path) {
     if (!path || !path[0]) {
         return -1;
@@ -214,7 +435,13 @@ static inline int http_ensure_parent_dirs(const char *path) {
 }
 
 static inline int http_handle_api_get(int cfd, const char *path) {
-    const char *suffix = path + strlen(HTTP_ROOTFS_PREFIX);
+    const char *suffix = http_rootfs_suffix(path);
+    if (!suffix) {
+        static const char bad[] = "bad path\n";
+        (void)http_send_response(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+        return 0;
+    }
+
     if (!http_safe_api_suffix(suffix)) {
         static const char bad[] = "bad path\n";
         (void)http_send_response(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
@@ -229,10 +456,21 @@ static inline int http_handle_api_get(int cfd, const char *path) {
         return 0;
     }
 
-    int fd = open(fs_path, O_RDONLY);
-    if (fd < 0) {
+    struct stat st;
+    if (stat(fs_path, &st) < 0) {
         static const char nf[] = "not found\n";
         (void)http_send_response(cfd, "404 Not Found", "text/plain; charset=utf-8", nf, sizeof(nf) - 1);
+        return 0;
+    }
+
+    if (S_ISDIR(st.st_mode)) {
+        return http_send_rootfs_dir_listing(cfd, path, fs_path);
+    }
+
+    int fd = open(fs_path, O_RDONLY);
+    if (fd < 0) {
+        static const char err[] = "open failed\n";
+        (void)http_send_response(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
         return 0;
     }
 
@@ -251,7 +489,13 @@ static inline int http_handle_api_get(int cfd, const char *path) {
 }
 
 static inline int http_handle_api_put(int cfd, const char *path, const char *body, size_t body_len) {
-    const char *suffix = path + strlen(HTTP_ROOTFS_PREFIX);
+    const char *suffix = http_rootfs_suffix(path);
+    if (!suffix) {
+        static const char bad[] = "bad path\n";
+        (void)http_send_response(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+        return 0;
+    }
+
     if (!http_safe_api_suffix(suffix)) {
         static const char bad[] = "bad path\n";
         (void)http_send_response(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
@@ -338,6 +582,32 @@ static inline int http_handle_soundboard_trigger(http_server_t *srv,
     return 0;
 }
 
+static inline int http_handle_config_reload(http_server_t *srv,
+                                            int cfd) {
+    if (!srv) {
+        static const char bad[] = "bad request\n";
+        (void)http_send_response(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+        return 0;
+    }
+
+    if (!srv->config_reload) {
+        static const char err[] = "config reload not configured\n";
+        (void)http_send_response(cfd, "503 Service Unavailable", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+        return 0;
+    }
+
+    int rc = srv->config_reload(srv->config_reload_ctx);
+    if (rc == 0) {
+        static const char out[] = "config reloaded\n";
+        (void)http_send_response(cfd, "200 OK", "text/plain; charset=utf-8", out, sizeof(out) - 1);
+        return 0;
+    }
+
+    static const char err[] = "config reload failed\n";
+    (void)http_send_response(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+    return 0;
+}
+
 static inline void http_server_handle_client(http_server_t *srv, int cfd) {
     char req[HTTP_REQ_MAX];
     size_t have = 0;
@@ -389,7 +659,18 @@ static inline void http_server_handle_client(http_server_t *srv, int cfd) {
         return;
     }
 
-    if (strncmp(path, HTTP_ROOTFS_PREFIX, strlen(HTTP_ROOTFS_PREFIX)) == 0) {
+    if (strcmp(path, HTTP_CONFIG_RELOAD_PATH) == 0) {
+        if (strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0) {
+            (void)http_handle_config_reload(srv, cfd);
+            return;
+        }
+
+        static const char mna[] = "method not allowed\n";
+        (void)http_send_response(cfd, "405 Method Not Allowed", "text/plain; charset=utf-8", mna, sizeof(mna) - 1);
+        return;
+    }
+
+    if (http_path_is_rootfs(path)) {
         if (strcmp(method, "GET") == 0) {
             (void)http_handle_api_get(cfd, path);
             return;
@@ -461,7 +742,9 @@ static inline int http_server_start(http_server_t *srv,
                                     uint16_t port,
                                     const char *html_path,
                                     http_soundboard_trigger_fn trigger_fn,
-                                    void *trigger_ctx) {
+                                    void *trigger_ctx,
+                                    http_config_reload_fn config_reload_fn,
+                                    void *config_reload_ctx) {
     if (!srv) {
         return -1;
     }
@@ -470,6 +753,8 @@ static inline int http_server_start(http_server_t *srv,
     srv->listen_fd = -1;
     srv->soundboard_trigger = trigger_fn;
     srv->soundboard_ctx = trigger_ctx;
+    srv->config_reload = config_reload_fn;
+    srv->config_reload_ctx = config_reload_ctx;
 
     http_server_load_body(srv, html_path);
 

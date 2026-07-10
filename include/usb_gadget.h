@@ -500,7 +500,135 @@ static inline int send_gratuitous_arp(const char *ifname, const char *ip_addr) {
     return 0;
 }
 
+static inline int setup_usb_audio_gadget_layout(unsigned int playback_channels,
+                                                unsigned int capture_channels,
+                                                unsigned int sample_rate,
+                                                unsigned int sample_size_bytes);
+
+static inline int usb_audio_gadget_reconfigure_layout(unsigned int playback_channels,
+                                                      unsigned int capture_channels,
+                                                      unsigned int sample_rate,
+                                                      unsigned int sample_size_bytes);
+
 static inline int setup_usb_audio_gadget(void) {
+    return setup_usb_audio_gadget_layout(2, 2, SAMPLE_RATE, 2);
+}
+
+static inline uint32_t usb_audio_channel_mask(unsigned int channels) {
+    if (channels == 0 || channels > 16) {
+        return 0;
+    }
+    return (1u << channels) - 1u;
+}
+
+static inline int write_sys_node_u32(const char *path, uint32_t value) {
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%u\n", (unsigned)value);
+    if (n <= 0 || (size_t)n >= sizeof(buf)) {
+        return -1;
+    }
+    return write_sys_node(path, buf);
+}
+
+static inline int read_sys_node_u32(const char *path, uint32_t *value_out) {
+    if (!path || !value_out) {
+        return -1;
+    }
+
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return -1;
+    }
+
+    char buf[64];
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) {
+        return -1;
+    }
+
+    buf[n] = '\0';
+    char *endp = NULL;
+    unsigned long v = strtoul(buf, &endp, 10);
+    if (endp == buf) {
+        return -1;
+    }
+
+    *value_out = (uint32_t)v;
+    return 0;
+}
+
+static inline unsigned int usb_audio_channels_from_mask(uint32_t mask) {
+    if (mask == 0) {
+        return 0;
+    }
+
+    unsigned int channels = 0;
+    uint32_t m = mask;
+    while ((m & 1u) != 0u) {
+        ++channels;
+        m >>= 1;
+    }
+
+    if (m != 0u || channels > 16U) {
+        return 0;
+    }
+    return channels;
+}
+
+static inline int usb_audio_bind_udc_retry(void) {
+    for (int i = 0; i < 8; ++i) {
+        if (write_sys_node(GADGET_UDC_NODE, GADGET_UDC_NAME) == 0) {
+            return 0;
+        }
+        usleep(30000);
+    }
+
+    printf("[INIT] [ERR] USB gadget bind failed after retries (UDC=%s, name=%s).\n",
+           GADGET_UDC_NODE,
+           GADGET_UDC_NAME);
+    return -1;
+}
+
+static inline void usb_audio_unlink_config_link(void) {
+    if (unlink(GADGET_CONFIG_LINK) == 0) {
+        printf("[INIT] Unlinked existing UAC2 config link before layout update.\n");
+        return;
+    }
+
+    if (errno == ENOENT) {
+        return;
+    }
+
+    printf("[INIT] [WARN] Failed to unlink UAC2 config link (%s): %s\n",
+           GADGET_CONFIG_LINK,
+           strerror(errno));
+}
+
+static inline int setup_usb_audio_gadget_layout(unsigned int playback_channels,
+                                                unsigned int capture_channels,
+                                                unsigned int sample_rate,
+                                                unsigned int sample_size_bytes) {
+    uint32_t p_chmask = usb_audio_channel_mask(playback_channels);
+    uint32_t c_chmask = usb_audio_channel_mask(capture_channels);
+
+    if (p_chmask == 0 || c_chmask == 0) {
+        printf("[INIT] [ERR] Invalid USB audio channel layout p=%u c=%u\n",
+               playback_channels,
+               capture_channels);
+        return -1;
+    }
+
+    if (sample_rate < 8000 || sample_rate > 192000) {
+        printf("[INIT] [ERR] Invalid USB audio sample rate: %u\n", sample_rate);
+        return -1;
+    }
+
+    if (sample_size_bytes == 0 || sample_size_bytes > 4) {
+        printf("[INIT] [ERR] Invalid USB audio sample size: %u\n", sample_size_bytes);
+        return -1;
+    }
+
     if (ensure_dir(GADGET_ROOT, 0755) < 0) return -1;
 
     if (write_sys_node(GADGET_ROOT "/idVendor", "0x6666\n") < 0) return -1;
@@ -519,18 +647,114 @@ static inline int setup_usb_audio_gadget(void) {
 
     if (ensure_dir(GADGET_UAC2_FUNC, 0755) < 0) return -1;
 
-    if (write_sys_node(GADGET_UAC2_FUNC "/c_chmask", "3\n") < 0) return -1;
-    if (write_sys_node(GADGET_UAC2_FUNC "/c_srate", "44100\n") < 0) return -1;
-    if (write_sys_node(GADGET_UAC2_FUNC "/c_ssize", "2\n") < 0) return -1;
+    if (write_sys_node_u32(GADGET_UAC2_FUNC "/c_chmask", c_chmask) < 0) return -1;
+    if (write_sys_node_u32(GADGET_UAC2_FUNC "/c_srate", sample_rate) < 0) return -1;
+    if (write_sys_node_u32(GADGET_UAC2_FUNC "/c_ssize", sample_size_bytes) < 0) return -1;
 
-    if (write_sys_node(GADGET_UAC2_FUNC "/p_chmask", "3\n") < 0) return -1;
-    if (write_sys_node(GADGET_UAC2_FUNC "/p_srate", "44100\n") < 0) return -1;
-    if (write_sys_node(GADGET_UAC2_FUNC "/p_ssize", "2\n") < 0) return -1;
+    if (write_sys_node_u32(GADGET_UAC2_FUNC "/p_chmask", p_chmask) < 0) return -1;
+    if (write_sys_node_u32(GADGET_UAC2_FUNC "/p_srate", sample_rate) < 0) return -1;
+    if (write_sys_node_u32(GADGET_UAC2_FUNC "/p_ssize", sample_size_bytes) < 0) return -1;
 
     if (symlink(GADGET_UAC2_FUNC, GADGET_CONFIG_LINK) < 0 && errno != EEXIST) {
         printf("[INIT] [ERR] Symlink layout assignment failed: %s\n", strerror(errno));
         return -1;
     }
+
+    printf("[INIT] USB audio layout applied: playback=%uch capture=%uch rate=%u ssize=%u\n",
+           playback_channels,
+           capture_channels,
+           sample_rate,
+           sample_size_bytes);
+
+    return 0;
+}
+
+static inline int usb_audio_gadget_reconfigure_layout(unsigned int playback_channels,
+                                                      unsigned int capture_channels,
+                                                      unsigned int sample_rate,
+                                                      unsigned int sample_size_bytes) {
+    unsigned int prev_playback_channels = 2;
+    unsigned int prev_capture_channels = 2;
+    unsigned int prev_sample_rate = SAMPLE_RATE;
+    unsigned int prev_sample_size = 2;
+
+    uint32_t prev_c_chmask = 0;
+    uint32_t prev_p_chmask = 0;
+    uint32_t prev_c_srate = 0;
+    uint32_t prev_p_srate = 0;
+    uint32_t prev_c_ssize = 0;
+    uint32_t prev_p_ssize = 0;
+
+    if (read_sys_node_u32(GADGET_UAC2_FUNC "/c_chmask", &prev_c_chmask) == 0) {
+        unsigned int ch = usb_audio_channels_from_mask(prev_c_chmask);
+        if (ch > 0) {
+            prev_capture_channels = ch;
+        }
+    }
+    if (read_sys_node_u32(GADGET_UAC2_FUNC "/p_chmask", &prev_p_chmask) == 0) {
+        unsigned int ch = usb_audio_channels_from_mask(prev_p_chmask);
+        if (ch > 0) {
+            prev_playback_channels = ch;
+        }
+    }
+    if (read_sys_node_u32(GADGET_UAC2_FUNC "/c_srate", &prev_c_srate) == 0 && prev_c_srate > 0) {
+        prev_sample_rate = (unsigned int)prev_c_srate;
+    } else if (read_sys_node_u32(GADGET_UAC2_FUNC "/p_srate", &prev_p_srate) == 0 && prev_p_srate > 0) {
+        prev_sample_rate = (unsigned int)prev_p_srate;
+    }
+    if (read_sys_node_u32(GADGET_UAC2_FUNC "/c_ssize", &prev_c_ssize) == 0 && prev_c_ssize > 0) {
+        prev_sample_size = (unsigned int)prev_c_ssize;
+    } else if (read_sys_node_u32(GADGET_UAC2_FUNC "/p_ssize", &prev_p_ssize) == 0 && prev_p_ssize > 0) {
+        prev_sample_size = (unsigned int)prev_p_ssize;
+    }
+
+    int unbound = 0;
+    if (write_sys_node(GADGET_UDC_NODE, "\n") == 0) {
+        unbound = 1;
+    } else if (write_sys_node(GADGET_UDC_NODE, "") == 0) {
+        unbound = 1;
+    }
+
+    if (!unbound) {
+        printf("[INIT] [WARN] USB gadget unbind before audio reconfigure failed (UDC=%s). Attempting live update.\n",
+               GADGET_UDC_NODE);
+    } else {
+        usleep(20000);
+    }
+
+    usb_audio_unlink_config_link();
+
+    if (setup_usb_audio_gadget_layout(playback_channels,
+                                      capture_channels,
+                                      sample_rate,
+                                      sample_size_bytes) < 0) {
+        printf("[INIT] [WARN] New USB audio layout failed; rebinding previous gadget layout.\n");
+        if (usb_audio_bind_udc_retry() < 0) {
+            printf("[INIT] [WARN] Rebind after failed layout update did not recover; attempting explicit layout restore p=%u c=%u rate=%u ssize=%u\n",
+                   prev_playback_channels,
+                   prev_capture_channels,
+                   prev_sample_rate,
+                   prev_sample_size);
+            (void)setup_usb_audio_gadget_layout(prev_playback_channels,
+                                                prev_capture_channels,
+                                                prev_sample_rate,
+                                                prev_sample_size);
+            (void)usb_audio_bind_udc_retry();
+        }
+        return -1;
+    }
+
+    if (usb_audio_bind_udc_retry() < 0) {
+        printf("[INIT] [ERR] USB gadget rebind failed after audio layout update; restoring previous layout.\n");
+        (void)setup_usb_audio_gadget_layout(prev_playback_channels,
+                                            prev_capture_channels,
+                                            prev_sample_rate,
+                                            prev_sample_size);
+        (void)usb_audio_bind_udc_retry();
+        return -1;
+    }
+
+    printf("[INIT] USB audio gadget reconfigured at runtime.\n");
 
     return 0;
 }

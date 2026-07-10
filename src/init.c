@@ -14,6 +14,7 @@ static int app_printf_router(const char *fmt, ...);
 
 #include "audio_oss.h"
 #include "fb_touch.h"
+#include "app_config.h"
 #include "config_store.h"
 #include "fs_shell.h"
 #include "http_server.h"
@@ -31,7 +32,8 @@ static int app_printf_router(const char *fmt, ...);
 #endif
 
 #define CONFIG_MOUNT_POINT "/audiox"
-#define CONFIG_FILE_PATH CONFIG_MOUNT_POINT "/config.txt"
+#define CONFIG_REAL_FILE_PATH CONFIG_MOUNT_POINT "/config.txt"
+#define CONFIG_STAGING_FILE_PATH CONFIG_MOUNT_POINT "/config.staging.txt"
 
 typedef void (*runtime_log_fn_t)(void *ctx, const char *line);
 typedef struct app_state app_state_t;
@@ -216,7 +218,6 @@ struct app_state {
     ui_log_t log;
     midi_runtime_t midi;
     config_store_t config;
-    int config_enabled;
     int active_tab;
     uint8_t log_filter_mask;
     int fb_ready;
@@ -224,6 +225,7 @@ struct app_state {
     int voice_enabled[AUDIO_MAX_VOICES];
     uint32_t midi_event_cursor;
     ui_touch_latch_t cfg_touch_latch;
+    ui_touch_latch_t cfg_reload_touch_latch;
     ui_touch_latch_t tab_touch_latch[UI_TAB_COUNT];
     ui_touch_latch_t log_filter_touch_latch[3];
     ui_touch_latch_t control_touch_latch[3];
@@ -231,6 +233,7 @@ struct app_state {
     ui_ppm_image_t boot_logo;
     http_server_t http;
     int http_ready;
+    app_runtime_config_t runtime_cfg;
 };
 
 typedef struct app_ticks {
@@ -259,9 +262,110 @@ static void app_state_init(app_state_t *app) {
     app_log_bind_ui(&app->log);
     app_log_set_ui_active(0);
     midi_runtime_init(&app->midi, 50);
-    config_store_init(&app->config, CONFIG_MOUNT_POINT, CONFIG_DEVICE_PATH, CONFIG_FILE_PATH);
+    config_store_init(&app->config,
+                      CONFIG_MOUNT_POINT,
+                      CONFIG_DEVICE_PATH,
+                      CONFIG_REAL_FILE_PATH,
+                      CONFIG_STAGING_FILE_PATH);
+    app_runtime_config_defaults(&app->runtime_cfg);
     app->active_tab = UI_TAB_SOUNDBOARD;
     app->log_filter_mask = UI_LOG_FILTER_ALL;
+}
+
+static int app_apply_runtime_config(app_state_t *app,
+                                    const app_runtime_config_t *cfg,
+                                    int runtime_reload) {
+    if (!app || !cfg) {
+        return -1;
+    }
+
+    app->runtime_cfg = *cfg;
+
+    if (!app_runtime_config_is_valid(cfg)) {
+        printf("[INIT] [ERR] Invalid USB layout in config file.\n");
+        return -1;
+    }
+
+    if (runtime_reload) {
+        return usb_audio_gadget_reconfigure_layout(cfg->usb_playback_channels,
+                                                   cfg->usb_capture_channels,
+                                                   cfg->usb_sample_rate,
+                                                   cfg->usb_sample_size);
+    }
+
+    return setup_usb_audio_gadget_layout(cfg->usb_playback_channels,
+                                         cfg->usb_capture_channels,
+                                         cfg->usb_sample_rate,
+                                         cfg->usb_sample_size);
+}
+
+static int app_reload_runtime_config(app_state_t *app, int runtime_reload) {
+    if (!app) {
+        return -1;
+    }
+
+    if (runtime_reload) {
+        audio_runtime_set_suspended(&app->audio, 1);
+        usleep(50000);
+    }
+
+    const char *primary_path = runtime_reload ? CONFIG_STAGING_FILE_PATH : CONFIG_REAL_FILE_PATH;
+
+    app_runtime_config_t cfg;
+    app_runtime_config_defaults(&cfg);
+    if (app_load_runtime_config_file(primary_path, &cfg) < 0) {
+        printf("[INIT] [WARN] Failed to read runtime config file %s\n", primary_path);
+        if (runtime_reload) {
+            audio_runtime_set_suspended(&app->audio, 0);
+        }
+        return -1;
+    }
+
+    if (app_apply_runtime_config(app, &cfg, runtime_reload) < 0) {
+        printf("[INIT] [ERR] Failed to apply runtime config from %s.\n", primary_path);
+
+        if (runtime_reload) {
+            app_runtime_config_t rollback_cfg;
+            app_runtime_config_defaults(&rollback_cfg);
+
+            if (app_load_runtime_config_file(CONFIG_REAL_FILE_PATH, &rollback_cfg) == 0 &&
+                app_apply_runtime_config(app, &rollback_cfg, 1) == 0) {
+                printf("[INIT] Rolled back to previous runtime config from %s\n", CONFIG_REAL_FILE_PATH);
+            } else {
+                printf("[INIT] [CRIT] Failed to roll back runtime config from %s\n", CONFIG_REAL_FILE_PATH);
+            }
+
+            (void)usb_audio_bind_udc_retry();
+        }
+
+        if (runtime_reload) {
+            audio_runtime_set_suspended(&app->audio, 0);
+        }
+
+        return -1;
+    }
+
+    if (runtime_reload) {
+        if (config_store_copy_file(CONFIG_STAGING_FILE_PATH, CONFIG_REAL_FILE_PATH) < 0) {
+            printf("[INIT] [ERR] Applied staging config but failed to promote to %s\n", CONFIG_REAL_FILE_PATH);
+            audio_runtime_set_suspended(&app->audio, 0);
+            return -1;
+        }
+        printf("[INIT] Promoted staging config %s -> %s\n", CONFIG_STAGING_FILE_PATH, CONFIG_REAL_FILE_PATH);
+    }
+
+    printf("[INIT] Runtime config loaded from %s: playback=%u capture=%u rate=%u ssize=%u\n",
+           primary_path,
+           cfg.usb_playback_channels,
+           cfg.usb_capture_channels,
+           cfg.usb_sample_rate,
+           cfg.usb_sample_size);
+
+    if (runtime_reload) {
+        audio_runtime_set_suspended(&app->audio, 0);
+    }
+
+    return 0;
 }
 
 static int app_load_boot_logo(app_state_t *app) {
@@ -374,15 +478,11 @@ static int app_apply_ui(app_state_t *app,
         changed = 1;
     }
 
-    if (io->config_toggled) {
-        app->config_enabled = app->config_enabled ? 0 : 1;
-        if (config_store_write_flag(&app->config,
-                                    app->config_enabled,
-                                    runtime_log_line_adapter,
-                                    NULL) == 0) {
-            ui_log_push(&app->log, app->config_enabled ? "CONFIG TOGGLE: 1" : "CONFIG TOGGLE: 0");
+    if (io->config_reloaded) {
+        if (app_reload_runtime_config(app, 1) == 0) {
+            ui_log_push(&app->log, "CONFIG RELOAD: OK");
         } else {
-            ui_log_push(&app->log, "CONFIG WRITE FAILED");
+            ui_log_push(&app->log, "CONFIG RELOAD: FAILED");
         }
         changed = 1;
     }
@@ -503,6 +603,21 @@ static int app_http_trigger_soundboard_slot(void *ctx, int slot) {
     return 0;
 }
 
+static int app_http_reload_config(void *ctx) {
+    app_state_t *app = (app_state_t *)ctx;
+    if (!app) {
+        return -1;
+    }
+
+    if (app_reload_runtime_config(app, 1) < 0) {
+        return -1;
+    }
+
+    ui_log_push(&app->log, "CONFIG RELOADED");
+    printf("[INIT] HTTP config reload completed.\n");
+    return 0;
+}
+
 static void app_boot_draw(app_state_t *app, const char *status_line) {
     if (!app || !app->fb_ready) {
         return;
@@ -617,9 +732,15 @@ int main(void) {
     app_try_enable_ui_logging(&app);
     app_boot_status(&app, app.fb_ready ? "Framebuffer ready. Initializing services..." : "Framebuffer not ready yet. Continuing startup...");
 
-    app_boot_status(&app, "Setting up USB audio gadget...");
-    printf("[INIT] Setting up USB audio gadget...\n");
-    if (setup_usb_audio_gadget() < 0) {
+    app_boot_status(&app, "Loading config store...");
+    (void)config_store_ensure(&app.config,
+                              NULL,
+                              runtime_log_line_adapter,
+                              NULL);
+
+    app_boot_status(&app, "Applying runtime config...");
+    printf("[INIT] Applying runtime config...\n");
+    if (app_reload_runtime_config(&app, 0) < 0) {
         printf("[INIT] [CRIT] Failed to configure USB audio gadget.\n");
         goto emergency_halt;
     }
@@ -661,6 +782,8 @@ int main(void) {
                                       80,
                                       "/etc/www/index.html",
                                       app_http_trigger_soundboard_slot,
+                                      &app,
+                                      app_http_reload_config,
                                       &app) < 0) {
                     printf("[INIT] [WARN] HTTP server failed to start. Continuing without web UI.\n");
                 } else {
@@ -677,12 +800,6 @@ int main(void) {
 
     app_boot_status(&app, "Enumerating input devices...");
     debug_input_devices();
-
-    app_boot_status(&app, "Loading config store...");
-    (void)config_store_ensure(&app.config,
-                              &app.config_enabled,
-                              runtime_log_line_adapter,
-                              NULL);
 
     ui_log_push(&app.log, "UI READY");
     ui_log_push(&app.log, "WAITING FOR MIDI CONTROLLER...");
@@ -759,8 +876,11 @@ int main(void) {
             .voice_note_base = audio_voice_note_base(&app.audio),
             .midi_connected = app.midi.ctx.connected,
             .midi_dev = app.midi.ctx.dev_path,
-            .config_enabled = app.config_enabled,
             .config_mount_active = app.config.mount_active,
+            .usb_playback_channels = app.runtime_cfg.usb_playback_channels,
+            .usb_capture_channels = app.runtime_cfg.usb_capture_channels,
+            .usb_sample_rate = app.runtime_cfg.usb_sample_rate,
+            .usb_sample_size = app.runtime_cfg.usb_sample_size,
             .active_tab = app.active_tab,
             .log_filter_mask = app.log_filter_mask,
             .log = &app.log,
@@ -775,6 +895,7 @@ int main(void) {
                                 app.touch_ready ? raw_y : NULL,
                                 points,
                                 &app.cfg_touch_latch,
+                                &app.cfg_reload_touch_latch,
                                 app.tab_touch_latch,
                                 app.log_filter_touch_latch,
                                 app.control_touch_latch,
@@ -802,8 +923,11 @@ int main(void) {
                 model.voice_note_base = audio_voice_note_base(&app.audio);
                 model.midi_connected = app.midi.ctx.connected;
                 model.midi_dev = app.midi.ctx.dev_path;
-                model.config_enabled = app.config_enabled;
                 model.config_mount_active = app.config.mount_active;
+                model.usb_playback_channels = app.runtime_cfg.usb_playback_channels;
+                model.usb_capture_channels = app.runtime_cfg.usb_capture_channels;
+                model.usb_sample_rate = app.runtime_cfg.usb_sample_rate;
+                model.usb_sample_size = app.runtime_cfg.usb_sample_size;
                 model.active_tab = app.active_tab;
                 model.log_filter_mask = app.log_filter_mask;
                 model.log = &app.log;
@@ -817,6 +941,7 @@ int main(void) {
                                      app.touch_ready ? raw_y : NULL,
                                      points,
                                      &app.cfg_touch_latch,
+                                     &app.cfg_reload_touch_latch,
                                      app.tab_touch_latch,
                                      app.log_filter_touch_latch,
                                      app.control_touch_latch,
@@ -836,6 +961,7 @@ int main(void) {
             }
         } else {
             (void)ui_im_rising_edge(0, &app.cfg_touch_latch);
+            (void)ui_im_rising_edge(0, &app.cfg_reload_touch_latch);
             for (int i = 0; i < UI_TAB_COUNT; ++i) {
                 (void)ui_im_rising_edge(0, &app.tab_touch_latch[i]);
             }

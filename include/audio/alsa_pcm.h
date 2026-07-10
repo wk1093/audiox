@@ -3,6 +3,7 @@
 
 #include <dirent.h>
 
+#include "audio/device.h"
 #include "audio/types.h"
 
 #define AUDIO_MAX_PCM_CANDIDATES 32
@@ -277,6 +278,41 @@ static inline int16_t audio_capture_frame_mono(const int16_t *raw, size_t frame_
     return (int16_t)sample;
 }
 
+static inline void audio_input_ring_reset(audio_ctx_t *ctx) {
+    if (!ctx) {
+        return;
+    }
+    ctx->input_ring_head = 0;
+    ctx->input_ring_tail = 0;
+    ctx->input_ring_count = 0;
+}
+
+static inline void audio_input_ring_push(audio_ctx_t *ctx, int16_t sample) {
+    if (!ctx) {
+        return;
+    }
+
+    if (ctx->input_ring_count >= AUDIO_INPUT_RING_FRAMES) {
+        ctx->input_ring_tail = (ctx->input_ring_tail + 1U) % AUDIO_INPUT_RING_FRAMES;
+        ctx->input_ring_count = AUDIO_INPUT_RING_FRAMES - 1U;
+    }
+
+    ctx->input_ring[ctx->input_ring_head] = sample;
+    ctx->input_ring_head = (ctx->input_ring_head + 1U) % AUDIO_INPUT_RING_FRAMES;
+    ++ctx->input_ring_count;
+}
+
+static inline int audio_input_ring_pop(audio_ctx_t *ctx, int16_t *sample_out) {
+    if (!ctx || !sample_out || ctx->input_ring_count == 0U) {
+        return 0;
+    }
+
+    *sample_out = ctx->input_ring[ctx->input_ring_tail];
+    ctx->input_ring_tail = (ctx->input_ring_tail + 1U) % AUDIO_INPUT_RING_FRAMES;
+    --ctx->input_ring_count;
+    return 1;
+}
+
 static inline int audio_try_open_playback_candidate(audio_ctx_t *ctx, const char *path) {
     static const struct {
         unsigned int period_frames;
@@ -293,6 +329,9 @@ static inline int audio_try_open_playback_candidate(audio_ctx_t *ctx, const char
         return -1;
     }
 
+    const char *node_name = strrchr(path, '/');
+    node_name = node_name ? (node_name + 1) : path;
+
     for (size_t i = 0; i < (sizeof(playback_profiles) / sizeof(playback_profiles[0])); ++i) {
         if (audio_pcm_configure_hw_fd(fd,
                                       path,
@@ -306,6 +345,14 @@ static inline int audio_try_open_playback_candidate(audio_ctx_t *ctx, const char
                                       0) == 0) {
             ctx->fd = fd;
             audio_copy_pcm_path(ctx->pcm_path, sizeof(ctx->pcm_path), path);
+            audio_endpoint_assign(&ctx->playback_endpoint,
+                                  AUDIO_DEVICE_ROLE_PLAYBACK,
+                                  path,
+                                  audio_pcm_card_index_from_path(path),
+                                  audio_pcm_device_is_usb(node_name),
+                                  2,
+                                  SAMPLE_RATE,
+                                  sizeof(int16_t));
             printf("[INIT] ALSA PCM opened: %s (S16_LE, 2ch, %d Hz, period=%u periods=%u)\n",
                    ctx->pcm_path,
                    SAMPLE_RATE,
@@ -350,17 +397,21 @@ static inline void audio_close_input_device(audio_ctx_t *ctx, const char *reason
     }
 
     ctx->input_pcm_path[0] = '\0';
+    audio_endpoint_reset(&ctx->capture_endpoint, AUDIO_DEVICE_ROLE_CAPTURE);
     ctx->input_channels = 0;
     ctx->input_sample_rate = 0;
     ctx->input_resample_pos_q16 = 0;
     ctx->input_last_mono_sample = 0;
     ctx->input_have_last_sample = 0;
     ctx->input_probe_ticks = AUDIO_INPUT_PROBE_BLOCKS;
+    audio_input_ring_reset(ctx);
 }
 
 static inline int audio_try_open_input_candidate(audio_ctx_t *ctx, const char *path) {
     const unsigned int channel_attempts[] = {1, 2};
     const unsigned int rate_attempts[] = {SAMPLE_RATE, AUDIO_INPUT_FALLBACK_RATE};
+    const char *node_name = strrchr(path, '/');
+    node_name = node_name ? (node_name + 1) : path;
 
     for (size_t rate_idx = 0; rate_idx < (sizeof(rate_attempts) / sizeof(rate_attempts[0])); ++rate_idx) {
         for (size_t ch_idx = 0; ch_idx < (sizeof(channel_attempts) / sizeof(channel_attempts[0])); ++ch_idx) {
@@ -387,7 +438,16 @@ static inline int audio_try_open_input_candidate(audio_ctx_t *ctx, const char *p
                 ctx->input_resample_pos_q16 = 0;
                 ctx->input_last_mono_sample = 0;
                 ctx->input_have_last_sample = 0;
+                audio_input_ring_reset(ctx);
                 audio_copy_pcm_path(ctx->input_pcm_path, sizeof(ctx->input_pcm_path), path);
+                  audio_endpoint_assign(&ctx->capture_endpoint,
+                               AUDIO_DEVICE_ROLE_CAPTURE,
+                               path,
+                               audio_pcm_card_index_from_path(path),
+                               audio_pcm_device_is_usb(node_name),
+                               channel_attempts[ch_idx],
+                               rate_attempts[rate_idx],
+                               sizeof(int16_t));
                 ctx->input_probe_ticks = 0;
                   printf("[INIT] Audio input connected: %s (%uch, %u Hz, period=%u periods=%u)\n",
                        ctx->input_pcm_path,
@@ -458,108 +518,115 @@ static inline int audio_capture_read_mix(audio_ctx_t *ctx, int16_t *mix_out, siz
         return 0;
     }
 
-    size_t capture_frames = frames;
-    if (ctx->input_sample_rate > 0 && ctx->input_sample_rate != SAMPLE_RATE) {
-        capture_frames = (size_t)((((uint64_t)frames * (uint64_t)ctx->input_sample_rate) + SAMPLE_RATE - 1U) / SAMPLE_RATE) + 2U;
-    }
-    if (capture_frames > AUDIO_INPUT_MAX_CAPTURE_FRAMES) {
-        capture_frames = AUDIO_INPUT_MAX_CAPTURE_FRAMES;
-    }
-
-    int16_t raw[AUDIO_INPUT_MAX_CAPTURE_FRAMES * 2];
-    memset(raw, 0, sizeof(raw));
-
-    struct snd_xferi xfer;
-    memset(&xfer, 0, sizeof(xfer));
-    xfer.buf = raw;
-    xfer.frames = capture_frames;
-
-    int rc = ioctl(ctx->input_fd, SNDRV_PCM_IOCTL_READI_FRAMES, &xfer);
-    snd_pcm_sframes_t frames_read = xfer.result;
-
-    if (rc < 0 && frames_read >= 0) {
-        frames_read = -errno;
-    }
-
-    if (frames_read > 0) {
-        uint32_t input_rate = ctx->input_sample_rate ? ctx->input_sample_rate : SAMPLE_RATE;
-        size_t out_filled = 0;
-
-        if (input_rate == SAMPLE_RATE) {
-            size_t limit = (size_t)frames_read < frames ? (size_t)frames_read : frames;
-            for (size_t i = 0; i < limit; ++i) {
-                mix_out[i] = audio_capture_frame_mono(raw, i, ctx->input_channels);
-                ctx->input_last_mono_sample = mix_out[i];
-                ctx->input_have_last_sample = 1;
-            }
-            out_filled = limit;
-        } else if (frames_read > 1) {
-            uint32_t step_q16 = (uint32_t)(((uint64_t)input_rate << 16) / SAMPLE_RATE);
-            uint32_t pos_q16 = ctx->input_resample_pos_q16;
-
-            for (size_t out_idx = 0; out_idx < frames; ++out_idx) {
-                uint32_t src_idx = pos_q16 >> 16;
-                if ((size_t)(src_idx + 1U) >= (size_t)frames_read) {
-                    break;
-                }
-
-                uint32_t frac = pos_q16 & 0xFFFFU;
-                int32_t s0 = audio_capture_frame_mono(raw, src_idx, ctx->input_channels);
-                int32_t s1 = audio_capture_frame_mono(raw, src_idx + 1U, ctx->input_channels);
-                int32_t interp = s0 + (int32_t)(((int64_t)(s1 - s0) * frac) >> 16);
-
-                if (interp > 32767) {
-                    interp = 32767;
-                }
-                if (interp < -32768) {
-                    interp = -32768;
-                }
-
-                mix_out[out_idx] = (int16_t)interp;
-                ctx->input_last_mono_sample = mix_out[out_idx];
-                ctx->input_have_last_sample = 1;
-                out_filled = out_idx + 1U;
-                pos_q16 += step_q16;
-            }
-
-            ctx->input_resample_pos_q16 = pos_q16 & 0xFFFFU;
-        } else {
-            mix_out[0] = audio_capture_frame_mono(raw, 0, ctx->input_channels);
-            ctx->input_last_mono_sample = mix_out[0];
-            ctx->input_have_last_sample = 1;
-            out_filled = 1;
+    int reads = 0;
+    while (reads < 4 && ctx->input_ring_count < (uint32_t)(frames * 2U)) {
+        size_t capture_frames = frames;
+        if (ctx->input_sample_rate > 0 && ctx->input_sample_rate != SAMPLE_RATE) {
+            capture_frames = (size_t)((((uint64_t)frames * (uint64_t)ctx->input_sample_rate) + SAMPLE_RATE - 1U) / SAMPLE_RATE) + 2U;
+        }
+        if (capture_frames > AUDIO_INPUT_MAX_CAPTURE_FRAMES) {
+            capture_frames = AUDIO_INPUT_MAX_CAPTURE_FRAMES;
         }
 
-        if (out_filled < frames && ctx->input_have_last_sample) {
-            for (size_t i = out_filled; i < frames; ++i) {
-                mix_out[i] = ctx->input_last_mono_sample;
+        int16_t raw[AUDIO_INPUT_MAX_CAPTURE_FRAMES * 2];
+        memset(raw, 0, sizeof(raw));
+
+        struct snd_xferi xfer;
+        memset(&xfer, 0, sizeof(xfer));
+        xfer.buf = raw;
+        xfer.frames = capture_frames;
+
+        int rc = ioctl(ctx->input_fd, SNDRV_PCM_IOCTL_READI_FRAMES, &xfer);
+        snd_pcm_sframes_t frames_read = xfer.result;
+
+        if (rc < 0 && frames_read >= 0) {
+            frames_read = -errno;
+        }
+
+        if (frames_read > 0) {
+            uint32_t input_rate = ctx->input_sample_rate ? ctx->input_sample_rate : SAMPLE_RATE;
+
+            if (input_rate == SAMPLE_RATE) {
+                for (size_t i = 0; i < (size_t)frames_read; ++i) {
+                    int16_t s = audio_capture_frame_mono(raw, i, ctx->input_channels);
+                    audio_input_ring_push(ctx, s);
+                }
+            } else if (frames_read > 1) {
+                uint32_t step_q16 = (uint32_t)(((uint64_t)input_rate << 16) / SAMPLE_RATE);
+                uint32_t pos_q16 = ctx->input_resample_pos_q16;
+
+                for (;;) {
+                    uint32_t src_idx = pos_q16 >> 16;
+                    if ((size_t)(src_idx + 1U) >= (size_t)frames_read) {
+                        break;
+                    }
+
+                    uint32_t frac = pos_q16 & 0xFFFFU;
+                    int32_t s0 = audio_capture_frame_mono(raw, src_idx, ctx->input_channels);
+                    int32_t s1 = audio_capture_frame_mono(raw, src_idx + 1U, ctx->input_channels);
+                    int32_t interp = s0 + (int32_t)(((int64_t)(s1 - s0) * frac) >> 16);
+
+                    if (interp > 32767) {
+                        interp = 32767;
+                    }
+                    if (interp < -32768) {
+                        interp = -32768;
+                    }
+
+                    audio_input_ring_push(ctx, (int16_t)interp);
+                    pos_q16 += step_q16;
+                }
+
+                ctx->input_resample_pos_q16 = pos_q16 & 0xFFFFU;
+            } else {
+                audio_input_ring_push(ctx, audio_capture_frame_mono(raw, 0, ctx->input_channels));
             }
+
+            ++reads;
+            continue;
         }
 
-        return (int)frames_read;
-    }
-
-    if (frames_read == 0 || frames_read == -ENODEV || frames_read == -EBADFD) {
-        audio_close_input_device(ctx, "[INIT] Audio input disconnected");
-        return 0;
-    }
-
-    if (frames_read == -EAGAIN || frames_read == -EWOULDBLOCK) {
-        return 0;
-    }
-
-    if (frames_read == -EPIPE || frames_read == -ESTRPIPE || frames_read == -EIO) {
-        if (ioctl(ctx->input_fd, SNDRV_PCM_IOCTL_PREPARE) < 0) {
-            audio_close_input_device(ctx, "[INIT] Audio input dropped after capture xrun");
+        if (frames_read == 0 || frames_read == -ENODEV || frames_read == -EBADFD) {
+            audio_close_input_device(ctx, "[INIT] Audio input disconnected");
+            break;
         }
-        return 0;
+
+        if (frames_read == -EAGAIN || frames_read == -EWOULDBLOCK) {
+            break;
+        }
+
+        if (frames_read == -EPIPE || frames_read == -ESTRPIPE || frames_read == -EIO) {
+            if (ioctl(ctx->input_fd, SNDRV_PCM_IOCTL_PREPARE) < 0) {
+                audio_close_input_device(ctx, "[INIT] Audio input dropped after capture xrun");
+            }
+            break;
+        }
+
+        printf("[INIT] [WARN] Audio input read error on %s: %s\n",
+               ctx->input_pcm_path,
+               strerror((int)(-frames_read)));
+        audio_close_input_device(ctx, "[INIT] Audio input closed after read error");
+        break;
     }
 
-    printf("[INIT] [WARN] Audio input read error on %s: %s\n",
-           ctx->input_pcm_path,
-           strerror((int)(-frames_read)));
-    audio_close_input_device(ctx, "[INIT] Audio input closed after read error");
-    return 0;
+    size_t out_filled = 0;
+    while (out_filled < frames) {
+        int16_t s = 0;
+        if (!audio_input_ring_pop(ctx, &s)) {
+            break;
+        }
+        mix_out[out_filled++] = s;
+        ctx->input_last_mono_sample = s;
+        ctx->input_have_last_sample = 1;
+    }
+
+    if (out_filled < frames && ctx->input_have_last_sample) {
+        for (size_t i = out_filled; i < frames; ++i) {
+            mix_out[i] = ctx->input_last_mono_sample;
+        }
+    }
+
+    return (int)out_filled;
 }
 
 #endif

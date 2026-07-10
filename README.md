@@ -64,6 +64,15 @@ curl -X PUT --data-binary '1\n' http://169.254.1.2/main/rootfs/config.txt
 
 # trigger soundboard slot 0 from web/API
 curl http://169.254.1.2/api/soundboard/trigger/0
+
+# write staging audio config and reload (promotes to config.txt on success)
+cat <<'EOF' | curl -X PUT --data-binary @- http://169.254.1.2/api/rootfs/config.staging.txt
+usb_playback_channels=4
+usb_capture_channels=2
+usb_sample_rate=44100
+usb_sample_size=2
+EOF
+curl -X POST http://169.254.1.2/api/config/reload
 ```
 
 

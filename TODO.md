@@ -8,6 +8,7 @@ This is the rough plan for audiox. Not fancy. Just the stuff I need to get done 
 - Keep the hot path tight: fixed buffers, no dumb allocations, no weird locks if I can avoid them
 - Add a real internal routing model so "virtual wires" are not a future panic attack
 - Make the config side simple enough that I can edit it by hand without hating myself
+- AUDIO CRACKLING FIX: drift-aware resampling (adaptive SRC based on ring fill level)
 
 ## Network + web control status
 

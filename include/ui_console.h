@@ -47,8 +47,11 @@ typedef struct ui_console_model {
     uint8_t voice_note_base;
     int midi_connected;
     const char *midi_dev;
-    int config_enabled;
     int config_mount_active;
+    unsigned int usb_playback_channels;
+    unsigned int usb_capture_channels;
+    unsigned int usb_sample_rate;
+    unsigned int usb_sample_size;
     int active_tab;
     uint8_t log_filter_mask;
     const ui_log_t *log;
@@ -56,7 +59,7 @@ typedef struct ui_console_model {
 } ui_console_model_t;
 
 typedef struct ui_console_io {
-    int config_toggled;
+    int config_reloaded;
     int selected_tab;
     int tab_step;
     int log_filter_toggled[3];
@@ -143,11 +146,11 @@ static inline ui_rect_t ui_console_content_rect(const fb_ctx_t *fb) {
     return ui_rect_make(x, y, w, h);
 }
 
-static inline ui_rect_t ui_console_config_button_rect(const ui_rect_t *content) {
+static inline ui_rect_t ui_console_config_reload_button_rect(const ui_rect_t *content) {
     int w = 112;
     int h = ui_text_height(1) + 12;
     int x = content->x + content->w - w - 8;
-    int y = content->y + 8;
+    int y = content->y + 8 + h + 6;
 
     if (x < content->x + 8) {
         x = content->x + 8;
@@ -287,18 +290,46 @@ static inline void ui_console_draw_config_panel(const fb_ctx_t *fb,
                  model->config_mount_active ? theme->status_ok : theme->status_wait,
                  1);
 
-    ui_rect_t cfg_rect = ui_console_config_button_rect(content);
-    char cfg_label[24];
-    snprintf(cfg_label, sizeof(cfg_label), "CFG %s", model->config_enabled ? "ON" : "OFF");
+    ui_rect_t reload_rect = ui_console_config_reload_button_rect(content);
+    char line[96];
+
     ui_draw_button(fb,
-                   (uint32_t)cfg_rect.x,
-                   (uint32_t)cfg_rect.y,
-                   (uint32_t)cfg_rect.w,
-                   (uint32_t)cfg_rect.h,
-                   cfg_label,
-                   &theme->cfg_theme,
-                   model->config_enabled,
+                   (uint32_t)reload_rect.x,
+                   (uint32_t)reload_rect.y,
+                   (uint32_t)reload_rect.w,
+                   (uint32_t)reload_rect.h,
+                   "RELOAD CFG",
+                   &theme->tab_theme,
+                   0,
                    1);
+
+    int info_y = content->y + 8 + ui_text_height(1) + 26;
+    snprintf(line,
+             sizeof(line),
+             "USB PLAYBACK CH: %u",
+             model->usb_playback_channels);
+    ui_draw_text(fb, content->x + 8, info_y, line, theme->text, 1);
+
+    info_y += ui_text_height(1) + 4;
+    snprintf(line,
+             sizeof(line),
+             "USB CAPTURE CH: %u",
+             model->usb_capture_channels);
+    ui_draw_text(fb, content->x + 8, info_y, line, theme->text, 1);
+
+    info_y += ui_text_height(1) + 4;
+    snprintf(line,
+             sizeof(line),
+             "USB SAMPLE RATE: %u",
+             model->usb_sample_rate);
+    ui_draw_text(fb, content->x + 8, info_y, line, theme->text, 1);
+
+    info_y += ui_text_height(1) + 4;
+    snprintf(line,
+             sizeof(line),
+             "USB SAMPLE SIZE: %u",
+             model->usb_sample_size);
+    ui_draw_text(fb, content->x + 8, info_y, line, theme->text, 1);
 }
 
 static inline void ui_console_draw_log_panel(const fb_ctx_t *fb,
@@ -494,6 +525,7 @@ static inline void ui_console_interact(const fb_ctx_t *fb,
                                        const int *raw_y,
                                        int points,
                                        ui_touch_latch_t *cfg_latch,
+                                       ui_touch_latch_t *cfg_reload_latch,
                                        ui_touch_latch_t tab_latches[UI_TAB_COUNT],
                                        ui_touch_latch_t log_filter_latches[3],
                                        ui_touch_latch_t control_latches[3],
@@ -532,11 +564,11 @@ static inline void ui_console_interact(const fb_ctx_t *fb,
     }
 
     ui_rect_t content = ui_console_content_rect(fb);
-    ui_rect_t cfg_rect = ui_console_config_button_rect(&content);
+    ui_rect_t reload_rect = ui_console_config_reload_button_rect(&content);
     if (io) {
-        io->config_toggled = (model->active_tab == UI_TAB_CONFIG)
-                                 ? ui_im_release_tap_rect(&ui, &cfg_rect, cfg_latch, UI_TAP_MOVE_TOLERANCE_PX)
-                                 : 0;
+        io->config_reloaded = (model->active_tab == UI_TAB_CONFIG)
+                                  ? ui_im_release_tap_rect(&ui, &reload_rect, cfg_reload_latch, UI_TAP_MOVE_TOLERANCE_PX)
+                                  : 0;
 
         if (model->active_tab == UI_TAB_LOG && log_filter_latches) {
             for (int i = 0; i < 3; ++i) {
@@ -575,6 +607,7 @@ static inline void ui_console_frame(const fb_ctx_t *fb,
                                     const int *raw_y,
                                     int points,
                                     ui_touch_latch_t *cfg_latch,
+                                    ui_touch_latch_t *cfg_reload_latch,
                                     ui_touch_latch_t tab_latches[UI_TAB_COUNT],
                                     ui_touch_latch_t log_filter_latches[3],
                                     ui_touch_latch_t control_latches[3],
@@ -592,6 +625,7 @@ static inline void ui_console_frame(const fb_ctx_t *fb,
     (void)raw_x;
     (void)raw_y;
     (void)points;
+    (void)cfg_reload_latch;
     (void)tab_latches;
     (void)log_filter_latches;
     (void)control_latches;

@@ -43,6 +43,42 @@
       gap: 10px;
       margin-top: 16px;
     }
+    .cfg {
+      margin-top: 18px;
+      border-top: 1px solid #253241;
+      padding-top: 14px;
+    }
+    .cfg h2 {
+      margin: 0 0 8px;
+      font-size: 17px;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 100px;
+      gap: 8px;
+      margin-top: 8px;
+      align-items: center;
+    }
+    .row label {
+      color: var(--muted);
+      font-size: 14px;
+    }
+    input[type="number"], select {
+      border: 1px solid #31465d;
+      background: #101a24;
+      color: var(--fg);
+      border-radius: 8px;
+      padding: 8px;
+      font-size: 14px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .actions {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }
     button {
       border: 1px solid #2f7f6a;
       background: #173328;
@@ -83,10 +119,142 @@
       <button data-slot="2">Play Slot 2</button>
       <button data-slot="3">Play Slot 3</button>
     </div>
+
+    <section class="cfg">
+      <h2>Runtime Config</h2>
+      <div class="row">
+        <label for="usb_playback_channels">USB Playback Channels</label>
+        <input id="usb_playback_channels" type="number" min="1" max="16" step="1" value="2">
+      </div>
+      <div class="row">
+        <label for="usb_capture_channels">USB Capture Channels</label>
+        <input id="usb_capture_channels" type="number" min="1" max="16" step="1" value="2">
+      </div>
+      <div class="row">
+        <label for="usb_sample_rate">USB Sample Rate</label>
+        <input id="usb_sample_rate" type="number" min="8000" max="192000" step="1" value="44100">
+      </div>
+      <div class="row">
+        <label for="usb_sample_size">USB Sample Size (bytes)</label>
+        <input id="usb_sample_size" type="number" min="1" max="4" step="1" value="2">
+      </div>
+      <div class="actions">
+        <button id="btn-load">Load Config</button>
+        <button id="btn-save">Save Config</button>
+        <button id="btn-reload">Reload Config</button>
+      </div>
+    </section>
+
     <div class="status" id="status">idle</div>
   </main>
   <script>
     const statusEl = document.getElementById('status');
+    const configPath = '/api/rootfs/config.staging.txt';
+    const realConfigPath = '/api/rootfs/config.txt';
+
+    function getConfigFromForm() {
+      return {
+        usb_playback_channels: Number(document.getElementById('usb_playback_channels').value) || 2,
+        usb_capture_channels: Number(document.getElementById('usb_capture_channels').value) || 2,
+        usb_sample_rate: Number(document.getElementById('usb_sample_rate').value) || 44100,
+        usb_sample_size: Number(document.getElementById('usb_sample_size').value) || 2,
+      };
+    }
+
+    function setFormFromConfig(cfg) {
+      if (!cfg) return;
+      document.getElementById('usb_playback_channels').value = String(cfg.usb_playback_channels ?? 2);
+      document.getElementById('usb_capture_channels').value = String(cfg.usb_capture_channels ?? 2);
+      document.getElementById('usb_sample_rate').value = String(cfg.usb_sample_rate ?? 44100);
+      document.getElementById('usb_sample_size').value = String(cfg.usb_sample_size ?? 2);
+    }
+
+    function parseConfigText(text) {
+      const cfg = {
+        usb_playback_channels: 2,
+        usb_capture_channels: 2,
+        usb_sample_rate: 44100,
+        usb_sample_size: 2,
+      };
+      for (const rawLine of text.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('#')) continue;
+        const eq = line.indexOf('=');
+        if (eq < 0) continue;
+        const key = line.slice(0, eq).trim();
+        const value = Number(line.slice(eq + 1).trim());
+        if (Number.isNaN(value)) continue;
+        if (key in cfg) cfg[key] = value;
+      }
+      return cfg;
+    }
+
+    function formatConfigText(cfg) {
+      return [
+        `usb_playback_channels=${cfg.usb_playback_channels}`,
+        `usb_capture_channels=${cfg.usb_capture_channels}`,
+        `usb_sample_rate=${cfg.usb_sample_rate}`,
+        `usb_sample_size=${cfg.usb_sample_size}`,
+        ''
+      ].join('\n');
+    }
+
+    async function loadConfig() {
+      statusEl.textContent = 'loading config...';
+      try {
+        let res = await fetch(configPath, { method: 'GET' });
+        let txt = await res.text();
+        if (!res.ok) {
+          res = await fetch(realConfigPath, { method: 'GET' });
+          txt = await res.text();
+          if (!res.ok) {
+            statusEl.textContent = `config load failed: ${res.status} ${txt.trim()}`;
+            return;
+          }
+        }
+        setFormFromConfig(parseConfigText(txt));
+        statusEl.textContent = 'config loaded';
+      } catch (err) {
+        statusEl.textContent = `config load error: ${err}`;
+      }
+    }
+
+    async function saveConfig() {
+      const cfg = getConfigFromForm();
+      const payload = formatConfigText(cfg);
+      statusEl.textContent = 'saving config...';
+      try {
+        const res = await fetch(configPath, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'text/plain' },
+          body: payload,
+        });
+        const txt = await res.text();
+        if (!res.ok) {
+          statusEl.textContent = `config save failed: ${res.status} ${txt.trim()}`;
+          return;
+        }
+        statusEl.textContent = 'config saved';
+      } catch (err) {
+        statusEl.textContent = `config save error: ${err}`;
+      }
+    }
+
+    async function reloadConfig() {
+      statusEl.textContent = 'reloading config...';
+      try {
+        const res = await fetch('/api/config/reload', { method: 'POST' });
+        const txt = await res.text();
+        if (!res.ok) {
+          statusEl.textContent = `reload failed: ${res.status} ${txt.trim()}`;
+          return;
+        }
+        statusEl.textContent = txt.trim() || 'config reloaded';
+      } catch (err) {
+        statusEl.textContent = `reload error: ${err}`;
+      }
+    }
+
     async function triggerSlot(slot) {
       statusEl.textContent = `triggering slot ${slot}...`;
       try {
@@ -107,6 +275,12 @@
         triggerSlot(btn.dataset.slot);
       });
     });
+
+    document.getElementById('btn-load').addEventListener('click', loadConfig);
+    document.getElementById('btn-save').addEventListener('click', saveConfig);
+    document.getElementById('btn-reload').addEventListener('click', reloadConfig);
+
+    loadConfig();
   </script>
 </body>
 </html>

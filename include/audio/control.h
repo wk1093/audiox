@@ -59,6 +59,7 @@ static inline void audio_set_voice(audio_ctx_t *ctx, int voice_index, int enable
     if (!enabled) {
         ctx->control.voice_gain_q15[voice_index] = 0;
     }
+    ++ctx->control.voice_revision[voice_index];
     audio_refresh_enabled(ctx);
     pthread_mutex_unlock(&ctx->state_lock);
 }
@@ -76,6 +77,7 @@ static inline int audio_toggle_voice(audio_ctx_t *ctx, int voice_index) {
     if (!ctx->control.voice_enabled[voice_index]) {
         ctx->control.voice_gain_q15[voice_index] = 0;
     }
+    ++ctx->control.voice_revision[voice_index];
     audio_refresh_enabled(ctx);
     int enabled = ctx->control.voice_enabled[voice_index] ? 1 : 0;
     pthread_mutex_unlock(&ctx->state_lock);
@@ -92,6 +94,7 @@ static inline int audio_trigger_voice(audio_ctx_t *ctx, int voice_index) {
     ctx->control.voice_enabled[voice_index] = 1;
     ctx->control.voice_loop[voice_index] = 0;
     ctx->control.voice_gain_q15[voice_index] = 0;
+    ++ctx->control.voice_revision[voice_index];
     audio_refresh_enabled(ctx);
     pthread_mutex_unlock(&ctx->state_lock);
     return 0;

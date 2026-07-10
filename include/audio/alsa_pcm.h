@@ -331,12 +331,19 @@ static inline int audio_try_open_playback_candidate(audio_ctx_t *ctx, const char
 
     const char *node_name = strrchr(path, '/');
     node_name = node_name ? (node_name + 1) : path;
+    unsigned int desired_channels = ctx->preferred_playback_channels ? ctx->preferred_playback_channels : 2U;
+    if (desired_channels > AUDIO_MAX_PLAYBACK_CHANNELS) {
+        desired_channels = AUDIO_MAX_PLAYBACK_CHANNELS;
+    }
+    if (desired_channels == 0U) {
+        desired_channels = 2U;
+    }
 
     for (size_t i = 0; i < (sizeof(playback_profiles) / sizeof(playback_profiles[0])); ++i) {
         if (audio_pcm_configure_hw_fd(fd,
                                       path,
                                       SAMPLE_RATE,
-                                      2,
+                                      desired_channels,
                                       playback_profiles[i].period_frames,
                                       playback_profiles[i].periods,
                                       &ctx->period_frames,
@@ -344,17 +351,19 @@ static inline int audio_try_open_playback_candidate(audio_ctx_t *ctx, const char
                                       1,
                                       0) == 0) {
             ctx->fd = fd;
+            ctx->playback_channels = (uint8_t)desired_channels;
             audio_copy_pcm_path(ctx->pcm_path, sizeof(ctx->pcm_path), path);
             audio_endpoint_assign(&ctx->playback_endpoint,
                                   AUDIO_DEVICE_ROLE_PLAYBACK,
                                   path,
                                   audio_pcm_card_index_from_path(path),
                                   audio_pcm_device_is_usb(node_name),
-                                  2,
+                                  desired_channels,
                                   SAMPLE_RATE,
                                   sizeof(int16_t));
-            printf("[INIT] ALSA PCM opened: %s (S16_LE, 2ch, %d Hz, period=%u periods=%u)\n",
+            printf("[INIT] ALSA PCM opened: %s (S16_LE, %uch, %d Hz, period=%u periods=%u)\n",
                    ctx->pcm_path,
+                   desired_channels,
                    SAMPLE_RATE,
                    (unsigned)ctx->period_frames,
                    playback_profiles[i].periods);

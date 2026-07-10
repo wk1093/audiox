@@ -30,6 +30,7 @@ typedef struct http_server {
     int listen_fd;
     pthread_t thread;
     int started;
+    char html_path[512];
     char body[16384];
     size_t body_len;
     http_soundboard_trigger_fn soundboard_trigger;
@@ -47,35 +48,16 @@ static inline void http_server_load_body(http_server_t *srv, const char *html_pa
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>audiox</title></head>"
         "<body><h1>audiox</h1><p>Web UI placeholder</p></body></html>\n";
 
-    srv->body_len = 0;
-    if (!html_path || !html_path[0]) {
-        size_t n = sizeof(fallback) - 1;
-        memcpy(srv->body, fallback, n);
-        srv->body_len = n;
-        return;
+    memset(srv->html_path, 0, sizeof(srv->html_path));
+    if (html_path && html_path[0]) {
+        size_t npath = strnlen(html_path, sizeof(srv->html_path) - 1);
+        memcpy(srv->html_path, html_path, npath);
+        srv->html_path[npath] = '\0';
     }
 
-    int fd = open(html_path, O_RDONLY);
-    if (fd < 0) {
-        size_t n = sizeof(fallback) - 1;
-        memcpy(srv->body, fallback, n);
-        srv->body_len = n;
-        printf("[INIT] [WARN] HTTP content file missing (%s), using fallback page.\n", html_path);
-        return;
-    }
-
-    ssize_t nread = read(fd, srv->body, sizeof(srv->body));
-    close(fd);
-
-    if (nread <= 0) {
-        size_t n = sizeof(fallback) - 1;
-        memcpy(srv->body, fallback, n);
-        srv->body_len = n;
-        printf("[INIT] [WARN] HTTP content file empty (%s), using fallback page.\n", html_path);
-        return;
-    }
-
-    srv->body_len = (size_t)nread;
+    size_t n = sizeof(fallback) - 1;
+    memcpy(srv->body, fallback, n);
+    srv->body_len = n;
 }
 
 static inline int http_send_all(int fd, const void *buf, size_t len) {
@@ -126,6 +108,129 @@ static inline int http_send_response(int fd,
         }
     }
     return 0;
+}
+
+static inline int http_send_response_header_only(int fd,
+                                                 const char *status,
+                                                 const char *content_type,
+                                                 size_t body_len) {
+    char hdr[256];
+    int hlen = snprintf(hdr,
+                        sizeof(hdr),
+                        "HTTP/1.1 %s\r\n"
+                        "Content-Type: %s\r\n"
+                        "Content-Length: %zu\r\n"
+                        "Connection: close\r\n\r\n",
+                        status,
+                        content_type,
+                        body_len);
+    if (hlen <= 0) {
+        return -1;
+    }
+    return http_send_all(fd, hdr, (size_t)hlen);
+}
+
+static inline const char *http_guess_content_type(const char *path) {
+    if (!path) {
+        return "application/octet-stream";
+    }
+
+    const char *dot = strrchr(path, '.');
+    if (!dot) {
+        return "application/octet-stream";
+    }
+
+    if (strcasecmp(dot, ".html") == 0 || strcasecmp(dot, ".htm") == 0) {
+        return "text/html; charset=utf-8";
+    }
+    if (strcasecmp(dot, ".css") == 0) {
+        return "text/css; charset=utf-8";
+    }
+    if (strcasecmp(dot, ".js") == 0) {
+        return "application/javascript; charset=utf-8";
+    }
+    if (strcasecmp(dot, ".json") == 0) {
+        return "application/json; charset=utf-8";
+    }
+    if (strcasecmp(dot, ".txt") == 0) {
+        return "text/plain; charset=utf-8";
+    }
+    if (strcasecmp(dot, ".svg") == 0) {
+        return "image/svg+xml";
+    }
+    if (strcasecmp(dot, ".png") == 0) {
+        return "image/png";
+    }
+    if (strcasecmp(dot, ".jpg") == 0 || strcasecmp(dot, ".jpeg") == 0) {
+        return "image/jpeg";
+    }
+    if (strcasecmp(dot, ".gif") == 0) {
+        return "image/gif";
+    }
+    if (strcasecmp(dot, ".webp") == 0) {
+        return "image/webp";
+    }
+    if (strcasecmp(dot, ".ico") == 0) {
+        return "image/x-icon";
+    }
+    if (strcasecmp(dot, ".wav") == 0) {
+        return "audio/wav";
+    }
+
+    return "application/octet-stream";
+}
+
+static inline int http_send_open_file(int cfd,
+                                      int fd,
+                                      const char *status,
+                                      const char *content_type,
+                                      size_t file_size) {
+    if (http_send_response_header_only(cfd, status, content_type, file_size) < 0) {
+        return -1;
+    }
+
+    char buf[8192];
+    while (1) {
+        ssize_t nr = read(fd, buf, sizeof(buf));
+        if (nr < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        if (nr == 0) {
+            break;
+        }
+        if (http_send_all(cfd, buf, (size_t)nr) < 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static inline int http_send_file_path(int cfd,
+                                      const char *path,
+                                      const char *content_type_override) {
+    if (!path || !path[0]) {
+        return -1;
+    }
+
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return -1;
+    }
+
+    struct stat st;
+    if (fstat(fd, &st) < 0 || !S_ISREG(st.st_mode) || st.st_size < 0) {
+        close(fd);
+        return -1;
+    }
+
+    const char *ctype = content_type_override ? content_type_override : http_guess_content_type(path);
+    int rc = http_send_open_file(cfd, fd, "200 OK", ctype, (size_t)st.st_size);
+    close(fd);
+    return rc;
 }
 
 static inline ssize_t http_find_header_end(const char *buf, size_t len) {
@@ -324,7 +429,7 @@ static inline int http_send_rootfs_dir_listing(int cfd,
         memcpy(base_href, api_path, base_len);
     }
     if (base_len == 0) {
-        base_len = strnlen(HTTP_ROOTFS_PREFIX, sizeof(base_href) - 1);
+        base_len = strlen(HTTP_ROOTFS_PREFIX);
         memcpy(base_href, HTTP_ROOTFS_PREFIX, base_len);
     }
     if (base_len > 0 && base_href[base_len - 1] != '/') {
@@ -467,24 +572,12 @@ static inline int http_handle_api_get(int cfd, const char *path) {
         return http_send_rootfs_dir_listing(cfd, path, fs_path);
     }
 
-    int fd = open(fs_path, O_RDONLY);
-    if (fd < 0) {
-        static const char err[] = "open failed\n";
-        (void)http_send_response(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
-        return 0;
-    }
-
-    char buf[HTTP_BODY_MAX];
-    ssize_t n = read(fd, buf, sizeof(buf));
-    close(fd);
-
-    if (n < 0) {
+    if (http_send_file_path(cfd, fs_path, NULL) < 0) {
         static const char err[] = "read failed\n";
         (void)http_send_response(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
         return 0;
     }
 
-    (void)http_send_response(cfd, "200 OK", "application/octet-stream", buf, (size_t)n);
     return 0;
 }
 
@@ -644,7 +737,9 @@ static inline void http_server_handle_client(http_server_t *srv, int cfd) {
     }
 
     if (strcmp(method, "GET") == 0 && (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0)) {
-        (void)http_send_response(cfd, "200 OK", "text/html; charset=utf-8", srv->body, srv->body_len);
+        if (http_send_file_path(cfd, srv->html_path, "text/html; charset=utf-8") < 0) {
+            (void)http_send_response(cfd, "200 OK", "text/html; charset=utf-8", srv->body, srv->body_len);
+        }
         return;
     }
 

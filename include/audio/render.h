@@ -4,8 +4,15 @@
 #include "audio/alsa_pcm.h"
 #include "audio/control.h"
 
-static inline size_t audio_block_bytes(void) {
-    return sizeof(int16_t) * BUFFER_FRAMES * 2;
+static inline size_t audio_block_bytes(const audio_ctx_t *ctx) {
+    uint8_t channels = 2;
+    if (ctx && ctx->playback_channels > 0) {
+        channels = ctx->playback_channels;
+    }
+    if (channels > AUDIO_MAX_PLAYBACK_CHANNELS) {
+        channels = AUDIO_MAX_PLAYBACK_CHANNELS;
+    }
+    return sizeof(int16_t) * BUFFER_FRAMES * channels;
 }
 
 static inline int audio_runtime_is_suspended(audio_ctx_t *ctx) {
@@ -84,10 +91,21 @@ static inline int audio_try_reopen_playback(audio_ctx_t *ctx) {
 }
 
 static inline int audio_open(audio_ctx_t *ctx) {
+    uint8_t preferred_playback_channels = 2;
+    uint8_t preferred_capture_channels = 2;
+
+    if (ctx) {
+        preferred_playback_channels = ctx->preferred_playback_channels ? ctx->preferred_playback_channels : 2;
+        preferred_capture_channels = ctx->preferred_capture_channels ? ctx->preferred_capture_channels : 2;
+    }
+
     memset(ctx, 0, sizeof(*ctx));
     ctx->fd = -1;
     ctx->input_fd = -1;
-    ctx->frame_bytes = sizeof(int16_t) * 2;
+    ctx->preferred_playback_channels = preferred_playback_channels;
+    ctx->preferred_capture_channels = preferred_capture_channels;
+    ctx->playback_channels = preferred_playback_channels ? preferred_playback_channels : 2;
+    ctx->frame_bytes = sizeof(int16_t) * ctx->playback_channels;
     audio_endpoint_reset(&ctx->playback_endpoint, AUDIO_DEVICE_ROLE_PLAYBACK);
     audio_endpoint_reset(&ctx->capture_endpoint, AUDIO_DEVICE_ROLE_CAPTURE);
 
@@ -112,6 +130,8 @@ static inline int audio_open(audio_ctx_t *ctx) {
 
     ctx->pending_offset = 0;
     ctx->pending_bytes = 0;
+    audio_route_mix_config_default(&ctx->route_mix, ctx->playback_channels);
+    memset(ctx->soundboard_virtual_last, 0, sizeof(ctx->soundboard_virtual_last));
     audio_refresh_enabled(ctx);
     if (audio_try_open_input_device(ctx) < 0) {
         printf("[INIT] [WARN] USB mic input not available at startup. Continuing without live input.\n");
@@ -156,6 +176,7 @@ static inline int audio_write_next(audio_ctx_t *ctx) {
         const uint16_t gain_attack = 1024;
         const uint16_t gain_release = 768;
         audio_control_state_t control;
+        audio_route_mix_config_t route_mix;
         int16_t input_mix[BUFFER_FRAMES];
         int voice_count = 0;
 
@@ -163,11 +184,22 @@ static inline int audio_write_next(audio_ctx_t *ctx) {
 
         pthread_mutex_lock(&ctx->state_lock);
         memcpy(&control, &ctx->control, sizeof(control));
+        route_mix = ctx->route_mix;
         voice_count = (int)control.voice_count;
         pthread_mutex_unlock(&ctx->state_lock);
 
+        uint8_t out_channels = ctx->playback_channels;
+        if (out_channels == 0 || out_channels > AUDIO_MAX_PLAYBACK_CHANNELS) {
+            out_channels = 2;
+        }
+
+        if (route_mix.gadget_channels == 0 || route_mix.gadget_channels > AUDIO_MAX_PLAYBACK_CHANNELS) {
+            route_mix.gadget_channels = out_channels;
+        }
+
         for (int i = 0; i < BUFFER_FRAMES; ++i) {
-            int32_t value = input_mix[i];
+            int32_t mic_value = input_mix[i];
+            int32_t soundboard_value = 0;
 
             if (control.enabled) {
                 int64_t mixed_accum = 0;
@@ -200,19 +232,41 @@ static inline int audio_write_next(audio_ctx_t *ctx) {
                     int64_t denom = (int64_t)gain_max * (int64_t)active;
                     int32_t mixed = (int32_t)(mixed_accum / denom);
                     mixed = (mixed * 3) / 4;
-                    value += mixed;
+                    soundboard_value = mixed;
                 }
             }
 
-            if (value > 32767) {
-                value = 32767;
-            }
-            if (value < -32768) {
-                value = -32768;
+            if (route_mix.soundboard_to_virtual) {
+                int32_t clipped = soundboard_value;
+                if (clipped > 32767) {
+                    clipped = 32767;
+                }
+                if (clipped < -32768) {
+                    clipped = -32768;
+                }
+                ctx->soundboard_virtual_last[i] = (int16_t)clipped;
+            } else {
+                ctx->soundboard_virtual_last[i] = 0;
             }
 
-            ctx->block_buffer[i * 2] = (int16_t)value;
-            ctx->block_buffer[i * 2 + 1] = (int16_t)value;
+            for (uint8_t ch = 0; ch < out_channels; ++ch) {
+                int32_t value = 0;
+                if (ch < route_mix.gadget_channels && route_mix.mic_to_gadget[ch]) {
+                    value += mic_value;
+                }
+                if (ch < route_mix.gadget_channels && route_mix.soundboard_to_gadget[ch]) {
+                    value += soundboard_value;
+                }
+
+                if (value > 32767) {
+                    value = 32767;
+                }
+                if (value < -32768) {
+                    value = -32768;
+                }
+
+                ctx->block_buffer[(i * out_channels) + ch] = (int16_t)value;
+            }
         }
 
         pthread_mutex_lock(&ctx->state_lock);
@@ -229,7 +283,7 @@ static inline int audio_write_next(audio_ctx_t *ctx) {
         pthread_mutex_unlock(&ctx->state_lock);
 
         ctx->pending_offset = 0;
-        ctx->pending_bytes = audio_block_bytes();
+        ctx->pending_bytes = audio_block_bytes(ctx);
     }
 
     size_t frame_offset = ctx->pending_offset / ctx->frame_bytes;

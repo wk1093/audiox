@@ -15,6 +15,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "audio/router_model.h"
 #include "init_defs.h"
 
 #ifndef PATH_MAX
@@ -24,6 +25,7 @@
 #define AUDIO_MAX_VOICES 16
 #define AUDIO_MAX_VOICE_NAME 48
 #define AUDIO_INPUT_RING_FRAMES (BUFFER_FRAMES * 64)
+#define AUDIO_MAX_PLAYBACK_CHANNELS AUDIO_ROUTE_MAX_GADGET_CHANNELS
 
 typedef enum audio_device_role {
     AUDIO_DEVICE_ROLE_PLAYBACK = 0,
@@ -91,7 +93,10 @@ typedef struct audio_ctx {
     audio_endpoint_t capture_endpoint;
     snd_pcm_uframes_t period_frames;
     size_t frame_bytes;
+    uint8_t playback_channels;
+    uint8_t preferred_playback_channels;
     uint8_t input_channels;
+    uint8_t preferred_capture_channels;
     uint32_t input_sample_rate;
     uint32_t input_resample_pos_q16;
     int16_t input_last_mono_sample;
@@ -109,7 +114,9 @@ typedef struct audio_ctx {
         uint16_t channels;
     } wav[AUDIO_MAX_VOICES];
     char voice_name[AUDIO_MAX_VOICES][AUDIO_MAX_VOICE_NAME];
-    int16_t block_buffer[BUFFER_FRAMES * 2];
+    audio_route_mix_config_t route_mix;
+    int16_t soundboard_virtual_last[BUFFER_FRAMES];
+    int16_t block_buffer[BUFFER_FRAMES * AUDIO_MAX_PLAYBACK_CHANNELS];
     size_t pending_offset;
     size_t pending_bytes;
     int runtime_suspended;

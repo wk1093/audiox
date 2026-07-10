@@ -100,4 +100,26 @@ static inline int audio_trigger_voice(audio_ctx_t *ctx, int voice_index) {
     return 0;
 }
 
+static inline void audio_set_route_mix_config(audio_ctx_t *ctx,
+                                              const audio_route_mix_config_t *cfg) {
+    if (!ctx || !cfg) {
+        return;
+    }
+
+    pthread_mutex_lock(&ctx->state_lock);
+    ctx->route_mix = *cfg;
+    pthread_mutex_unlock(&ctx->state_lock);
+}
+
+static inline void audio_copy_route_mix_config(const audio_ctx_t *ctx,
+                                               audio_route_mix_config_t *cfg) {
+    if (!ctx || !cfg) {
+        return;
+    }
+
+    pthread_mutex_lock((pthread_mutex_t *)&ctx->state_lock);
+    *cfg = ctx->route_mix;
+    pthread_mutex_unlock((pthread_mutex_t *)&ctx->state_lock);
+}
+
 #endif

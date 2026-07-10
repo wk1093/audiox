@@ -34,6 +34,8 @@ static int app_printf_router(const char *fmt, ...);
 #define CONFIG_MOUNT_POINT "/audiox"
 #define CONFIG_REAL_FILE_PATH CONFIG_MOUNT_POINT "/config.txt"
 #define CONFIG_STAGING_FILE_PATH CONFIG_MOUNT_POINT "/config.staging.txt"
+#define ROUTING_REAL_FILE_PATH CONFIG_MOUNT_POINT "/routing.txt"
+#define ROUTING_STAGING_FILE_PATH CONFIG_MOUNT_POINT "/routing.staging.txt"
 
 typedef void (*runtime_log_fn_t)(void *ctx, const char *line);
 typedef struct app_state app_state_t;
@@ -233,7 +235,11 @@ struct app_state {
     ui_ppm_image_t boot_logo;
     http_server_t http;
     int http_ready;
+    int audio_started;
     app_runtime_config_t runtime_cfg;
+    audio_route_graph_t route_active;
+    audio_route_graph_t route_staging;
+    audio_route_mix_config_t route_mix_active;
 };
 
 typedef struct app_ticks {
@@ -268,8 +274,117 @@ static void app_state_init(app_state_t *app) {
                       CONFIG_REAL_FILE_PATH,
                       CONFIG_STAGING_FILE_PATH);
     app_runtime_config_defaults(&app->runtime_cfg);
+    audio_route_graph_default(&app->route_active,
+                              (uint16_t)app->runtime_cfg.usb_capture_channels,
+                              (uint16_t)app->runtime_cfg.usb_playback_channels);
+    app->route_staging = app->route_active;
+    audio_route_mix_config_default(&app->route_mix_active,
+                                   (uint16_t)app->runtime_cfg.usb_playback_channels);
+    (void)audio_route_compile_mix(&app->route_active,
+                                  &app->route_mix_active,
+                                  (uint16_t)app->runtime_cfg.usb_playback_channels);
     app->active_tab = UI_TAB_SOUNDBOARD;
     app->log_filter_mask = UI_LOG_FILTER_ALL;
+}
+
+static int app_route_parse_edge_line(audio_route_graph_t *graph, const char *line) {
+    if (!graph || !line) {
+        return -1;
+    }
+
+    if (strncmp(line, "edge=", 5) != 0) {
+        return -1;
+    }
+
+    char copy[192];
+    size_t n = strnlen(line + 5, sizeof(copy) - 1);
+    memcpy(copy, line + 5, n);
+    copy[n] = '\0';
+
+    char *savep = NULL;
+    char *src = strtok_r(copy, ",", &savep);
+    char *dst = strtok_r(NULL, ",", &savep);
+    char *src_ch_str = strtok_r(NULL, ",", &savep);
+    char *dst_ch_str = strtok_r(NULL, ",", &savep);
+
+    if (!src || !dst || !src_ch_str || !dst_ch_str) {
+        return -1;
+    }
+
+    int src_idx = audio_route_find_node(graph, src);
+    int dst_idx = audio_route_find_node(graph, dst);
+    if (src_idx < 0 || dst_idx < 0) {
+        return -1;
+    }
+
+    char *endp = NULL;
+    long src_ch = strtol(src_ch_str, &endp, 10);
+    if (!endp || (*endp != '\0' && *endp != '\n' && *endp != '\r') || src_ch < 0) {
+        return -1;
+    }
+
+    endp = NULL;
+    long dst_ch = strtol(dst_ch_str, &endp, 10);
+    if (!endp || (*endp != '\0' && *endp != '\n' && *endp != '\r') || dst_ch < 0) {
+        return -1;
+    }
+
+    if (audio_route_edge_add(graph,
+                             src_idx,
+                             dst_idx,
+                             (uint16_t)src_ch,
+                             (uint16_t)dst_ch,
+                             32767u) < 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int app_route_load_file(app_state_t *app,
+                               const char *path,
+                               audio_route_graph_t *graph_out) {
+    if (!app || !path || !graph_out) {
+        return -1;
+    }
+
+    audio_route_graph_t graph;
+    audio_route_graph_default(&graph,
+                              (uint16_t)app->runtime_cfg.usb_capture_channels,
+                              (uint16_t)app->runtime_cfg.usb_playback_channels);
+
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        *graph_out = graph;
+        return -1;
+    }
+
+    graph.edge_count = 0;
+    char line[256];
+    int parsed_any = 0;
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') {
+            ++p;
+        }
+        if (*p == '\0' || *p == '\n' || *p == '#') {
+            continue;
+        }
+        if (app_route_parse_edge_line(&graph, p) == 0) {
+            parsed_any = 1;
+        }
+    }
+    fclose(fp);
+
+    if (!parsed_any) {
+        audio_route_graph_default(&graph,
+                                  (uint16_t)app->runtime_cfg.usb_capture_channels,
+                                  (uint16_t)app->runtime_cfg.usb_playback_channels);
+    }
+
+    graph.generation = app->route_active.generation + 1;
+    *graph_out = graph;
+    return 0;
 }
 
 static int app_apply_runtime_config(app_state_t *app,
@@ -280,6 +395,8 @@ static int app_apply_runtime_config(app_state_t *app,
     }
 
     app->runtime_cfg = *cfg;
+    app->audio.preferred_playback_channels = (uint8_t)cfg->usb_playback_channels;
+    app->audio.preferred_capture_channels = (uint8_t)cfg->usb_capture_channels;
 
     if (!app_runtime_config_is_valid(cfg)) {
         printf("[INIT] [ERR] Invalid USB layout in config file.\n");
@@ -310,6 +427,7 @@ static int app_reload_runtime_config(app_state_t *app, int runtime_reload) {
     }
 
     const char *primary_path = runtime_reload ? CONFIG_STAGING_FILE_PATH : CONFIG_REAL_FILE_PATH;
+    const char *route_primary = runtime_reload ? ROUTING_STAGING_FILE_PATH : ROUTING_REAL_FILE_PATH;
 
     app_runtime_config_t cfg;
     app_runtime_config_defaults(&cfg);
@@ -361,6 +479,35 @@ static int app_reload_runtime_config(app_state_t *app, int runtime_reload) {
            cfg.usb_sample_rate,
            cfg.usb_sample_size);
 
+    audio_route_graph_t route_graph;
+    int route_loaded = app_route_load_file(app, route_primary, &route_graph);
+    if (route_loaded < 0) {
+        audio_route_graph_default(&route_graph,
+                                  (uint16_t)cfg.usb_capture_channels,
+                                  (uint16_t)cfg.usb_playback_channels);
+        printf("[INIT] [WARN] Routing file not found or invalid (%s); using default routing.\n", route_primary);
+    }
+
+    app->route_staging = route_graph;
+    app->route_active = route_graph;
+    if (audio_route_compile_mix(&route_graph,
+                                &app->route_mix_active,
+                                (uint16_t)cfg.usb_playback_channels) == 0 && app->audio_started) {
+        audio_set_route_mix_config(&app->audio, &app->route_mix_active);
+    }
+
+    if (runtime_reload && access(ROUTING_STAGING_FILE_PATH, F_OK) == 0) {
+        if (config_store_copy_file(ROUTING_STAGING_FILE_PATH, ROUTING_REAL_FILE_PATH) < 0) {
+            printf("[INIT] [WARN] Failed to promote routing config %s -> %s\n",
+                   ROUTING_STAGING_FILE_PATH,
+                   ROUTING_REAL_FILE_PATH);
+        } else {
+            printf("[INIT] Promoted routing config %s -> %s\n",
+                   ROUTING_STAGING_FILE_PATH,
+                   ROUTING_REAL_FILE_PATH);
+        }
+    }
+
     if (runtime_reload) {
         audio_runtime_set_suspended(&app->audio, 0);
     }
@@ -387,9 +534,14 @@ static void app_draw_boot_logo(const app_state_t *app,
 }
 
 static int app_open_audio_thread(app_state_t *app) {
+    app->audio.preferred_playback_channels = (uint8_t)app->runtime_cfg.usb_playback_channels;
+    app->audio.preferred_capture_channels = (uint8_t)app->runtime_cfg.usb_capture_channels;
+
     if (audio_open(&app->audio) < 0) {
         return -1;
     }
+
+    audio_set_route_mix_config(&app->audio, &app->route_mix_active);
 
     (void)rt_set_current_thread_other("main");
 
@@ -411,6 +563,7 @@ static int app_open_audio_thread(app_state_t *app) {
         }
     }
 
+    app->audio_started = 1;
     return 0;
 }
 

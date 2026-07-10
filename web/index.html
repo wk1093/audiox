@@ -6,151 +6,412 @@
   <title>audiox web</title>
   <style>
     :root {
-      --bg: #0f1419;
-      --fg: #e8f1ff;
-      --muted: #9bb0cc;
-      --accent: #4ad3a8;
+      --bg0: #0a131a;
+      --bg1: #11212d;
+      --card: rgba(13, 24, 32, 0.82);
+      --border: #29465a;
+      --fg: #e6f2ff;
+      --muted: #96aec2;
+      --accent: #6fd3ff;
+      --ok: #6fdaa0;
+      --warn: #ff9f84;
+      --line: #7ac8ff;
     }
+
+    * {
+      box-sizing: border-box;
+    }
+
     body {
       margin: 0;
       font-family: "IBM Plex Sans", "DejaVu Sans", sans-serif;
-      background: radial-gradient(circle at 20% 10%, #1a2531, var(--bg));
       color: var(--fg);
+      background:
+        radial-gradient(1100px 500px at 0% 0%, #17303f 0%, transparent 60%),
+        radial-gradient(800px 500px at 100% 100%, #142734 0%, transparent 58%),
+        linear-gradient(140deg, var(--bg0), var(--bg1));
       min-height: 100vh;
-      display: grid;
-      place-items: center;
     }
-    .card {
-      width: min(92vw, 560px);
-      border: 1px solid #2a3544;
+
+    .shell {
+      width: min(1220px, 96vw);
+      margin: 16px auto;
+      display: grid;
+      grid-template-columns: 1fr 320px;
+      gap: 12px;
+    }
+
+    .panel {
+      border: 1px solid var(--border);
       border-radius: 12px;
-      padding: 24px;
-      background: rgba(13, 19, 26, 0.72);
+      background: var(--card);
       backdrop-filter: blur(2px);
+      box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
     }
-    h1 {
-      margin: 0 0 8px;
-      font-size: 28px;
-    }
-    p {
-      margin: 0;
-      color: var(--muted);
-      line-height: 1.5;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+
+    .head {
+      padding: 12px 14px;
+      border-bottom: 1px solid #223d4e;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
       gap: 10px;
-      margin-top: 16px;
     }
-    .cfg {
-      margin-top: 18px;
-      border-top: 1px solid #253241;
-      padding-top: 14px;
+
+    .title {
+      margin: 0;
+      font-size: 19px;
     }
-    .cfg h2 {
-      margin: 0 0 8px;
-      font-size: 17px;
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 2px;
     }
-    .row {
+
+    .row-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    button {
+      border: 1px solid #39647d;
+      border-radius: 8px;
+      background: #143446;
+      color: var(--fg);
+      padding: 9px 11px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    button.primary {
+      border-color: #5f8f5e;
+      background: #234329;
+      color: #d8ffe2;
+    }
+
+    button.warn {
+      border-color: #8f5a4f;
+      background: #4a2a23;
+      color: #ffdcd2;
+    }
+
+    .content {
+      padding: 12px;
+    }
+
+    .graph-wrap {
+      position: relative;
+      height: min(68vh, 720px);
+      border: 1px solid #223f51;
+      border-radius: 10px;
+      overflow: hidden;
+      background:
+        linear-gradient(rgba(122, 200, 255, 0.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(122, 200, 255, 0.08) 1px, transparent 1px),
+        #0e1a24;
+      background-size: 30px 30px;
+    }
+
+    svg#links {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    #nodes {
+      position: absolute;
+      inset: 0;
+      padding: 10px;
+    }
+
+    .node {
+      position: absolute;
+      width: 245px;
+      border: 1px solid #3d6880;
+      border-radius: 10px;
+      background: linear-gradient(180deg, #112535, #0d1d2a);
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.26);
+    }
+
+    .node .headbar {
+      padding: 7px 9px;
+      border-bottom: 1px solid #2c4f64;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+    }
+
+    .kind {
+      color: var(--muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .ports {
       display: grid;
-      grid-template-columns: 1fr 100px;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      padding: 8px;
+    }
+
+    .col {
+      display: grid;
+      gap: 5px;
+    }
+
+    .port {
+      border: 1px solid #345c73;
+      border-radius: 6px;
+      padding: 4px 6px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      background: #132735;
+      user-select: none;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .port.in {
+      border-color: #2d607f;
+    }
+
+    .port.out {
+      border-color: #5f7c34;
+    }
+
+    .port.active {
+      outline: 1px solid #f0c26e;
+      box-shadow: 0 0 0 1px rgba(240, 194, 110, 0.35) inset;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 100px;
+      flex: 0 0 auto;
+    }
+
+    .dot.in {
+      background: #79c2ff;
+    }
+
+    .dot.out {
+      background: #9ad968;
+    }
+
+    .side {
+      display: grid;
+      gap: 10px;
+      align-content: start;
+      padding: 10px;
+    }
+
+    .block {
+      border: 1px solid #264759;
+      border-radius: 10px;
+      background: #0f1e29;
+      padding: 10px;
+    }
+
+    .block h2 {
+      margin: 0 0 8px;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .status {
+      min-height: 1.2em;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .status.ok {
+      color: var(--ok);
+    }
+
+    .status.warn {
+      color: var(--warn);
+    }
+
+    .edge-list {
+      display: grid;
+      gap: 5px;
+      max-height: 210px;
+      overflow: auto;
+      font-size: 12px;
+    }
+
+    .edge-item {
+      border: 1px solid #33576c;
+      border-radius: 6px;
+      padding: 5px 6px;
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .cfg {
+      margin-top: 10px;
+      border-top: 1px solid #263f50;
+      padding-top: 10px;
+    }
+
+    .cfg-row {
+      display: grid;
+      grid-template-columns: 1fr 98px;
       gap: 8px;
       margin-top: 8px;
       align-items: center;
     }
-    .row label {
+
+    .cfg-row label {
       color: var(--muted);
-      font-size: 14px;
+      font-size: 13px;
     }
-    input[type="number"], select {
-      border: 1px solid #31465d;
-      background: #101a24;
-      color: var(--fg);
-      border-radius: 8px;
-      padding: 8px;
-      font-size: 14px;
+
+    input[type="number"] {
       width: 100%;
-      box-sizing: border-box;
+      border: 1px solid #36566a;
+      border-radius: 8px;
+      background: #10212c;
+      color: var(--fg);
+      padding: 7px;
+      font-size: 13px;
     }
-    .actions {
+
+    .cfg-actions {
+      margin-top: 10px;
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 8px;
-      margin-top: 12px;
     }
-    button {
-      border: 1px solid #2f7f6a;
-      background: #173328;
-      color: var(--fg);
-      border-radius: 8px;
-      padding: 12px;
-      font-size: 15px;
-      cursor: pointer;
-    }
-    button:active {
-      transform: translateY(1px);
-    }
-    .status {
-      margin-top: 12px;
-      min-height: 1.2em;
-      color: var(--muted);
-      font-size: 14px;
-    }
-    .dot {
-      display: inline-block;
-      width: 10px;
-      height: 10px;
-      border-radius: 999px;
-      background: var(--accent);
-      margin-right: 8px;
-      box-shadow: 0 0 14px var(--accent);
-      vertical-align: middle;
+
+    @media (max-width: 980px) {
+      .shell {
+        grid-template-columns: 1fr;
+      }
+
+      .graph-wrap {
+        height: 60vh;
+      }
     }
   </style>
 </head>
 <body>
-  <main class="card">
-    <h1><span class="dot"></span>audiox</h1>
-    <p>Basic HTTP endpoint is live. Test soundboard trigger over web:</p>
-    <div class="grid">
-      <button data-slot="0">Play Slot 0</button>
-      <button data-slot="1">Play Slot 1</button>
-      <button data-slot="2">Play Slot 2</button>
-      <button data-slot="3">Play Slot 3</button>
-    </div>
-
-    <section class="cfg">
-      <h2>Runtime Config</h2>
-      <div class="row">
-        <label for="usb_playback_channels">USB Playback Channels</label>
-        <input id="usb_playback_channels" type="number" min="1" max="16" step="1" value="2">
+  <main class="shell">
+    <section class="panel">
+      <div class="head">
+        <div>
+          <h1 class="title">audiox Routing Graph</h1>
+          <div class="subtitle">Patch output ports into input ports, save routing to file, then apply via runtime reload.</div>
+        </div>
+        <div class="row-actions">
+          <button id="btn-route-load">Reload Routing File</button>
+          <button id="btn-route-reset" class="warn">Reset Staged</button>
+          <button id="btn-route-save">Save Routing File</button>
+          <button id="btn-route-apply" class="primary">Apply Routing (Reload)</button>
+        </div>
       </div>
-      <div class="row">
-        <label for="usb_capture_channels">USB Capture Channels</label>
-        <input id="usb_capture_channels" type="number" min="1" max="16" step="1" value="2">
-      </div>
-      <div class="row">
-        <label for="usb_sample_rate">USB Sample Rate</label>
-        <input id="usb_sample_rate" type="number" min="8000" max="192000" step="1" value="44100">
-      </div>
-      <div class="row">
-        <label for="usb_sample_size">USB Sample Size (bytes)</label>
-        <input id="usb_sample_size" type="number" min="1" max="4" step="1" value="2">
-      </div>
-      <div class="actions">
-        <button id="btn-load">Load Config</button>
-        <button id="btn-save">Save Config</button>
-        <button id="btn-reload">Reload Config</button>
+      <div class="content">
+        <div class="graph-wrap" id="graph-wrap">
+          <svg id="links"></svg>
+          <div id="nodes"></div>
+        </div>
       </div>
     </section>
 
-    <div class="status" id="status">idle</div>
+    <aside class="panel side">
+      <section class="block">
+        <h2>Soundboard</h2>
+        <div class="grid2">
+          <button data-slot="0">Play Slot 0</button>
+          <button data-slot="1">Play Slot 1</button>
+          <button data-slot="2">Play Slot 2</button>
+          <button data-slot="3">Play Slot 3</button>
+        </div>
+      </section>
+
+      <section class="block">
+        <h2>Runtime Config</h2>
+        <div class="cfg-row">
+          <label for="usb_playback_channels">USB Playback Channels</label>
+          <input id="usb_playback_channels" type="number" min="1" max="16" step="1" value="2">
+        </div>
+        <div class="cfg-row">
+          <label for="usb_capture_channels">USB Capture Channels</label>
+          <input id="usb_capture_channels" type="number" min="1" max="16" step="1" value="2">
+        </div>
+        <div class="cfg-row">
+          <label for="usb_sample_rate">USB Sample Rate</label>
+          <input id="usb_sample_rate" type="number" min="8000" max="192000" step="1" value="44100">
+        </div>
+        <div class="cfg-row">
+          <label for="usb_sample_size">USB Sample Size (bytes)</label>
+          <input id="usb_sample_size" type="number" min="1" max="4" step="1" value="2">
+        </div>
+        <div class="cfg-actions">
+          <button id="btn-load">Load Config</button>
+          <button id="btn-save">Save Config</button>
+          <button id="btn-reload">Reload Config</button>
+        </div>
+      </section>
+
+      <section class="block">
+        <h2>Staged Edges</h2>
+        <div id="edge-list" class="edge-list"></div>
+      </section>
+
+      <section class="block">
+        <h2>Status</h2>
+        <div id="status" class="status">idle</div>
+      </section>
+    </aside>
   </main>
+
   <script>
     const statusEl = document.getElementById('status');
+    const edgeListEl = document.getElementById('edge-list');
+    const nodesEl = document.getElementById('nodes');
+    const linksEl = document.getElementById('links');
+    const graphWrapEl = document.getElementById('graph-wrap');
+
     const configPath = '/api/rootfs/config.staging.txt';
     const realConfigPath = '/api/rootfs/config.txt';
+    const routingPath = '/api/rootfs/routing.staging.txt';
+    const realRoutingPath = '/api/rootfs/routing.txt';
+
+    const state = {
+      nodes: [],
+      edges: [],
+      selectedOut: null,
+      positions: {},
+      generation: 1,
+    };
+
+    function setStatus(text, kind = '') {
+      statusEl.textContent = text;
+      statusEl.className = `status ${kind}`.trim();
+    }
 
     function getConfigFromForm() {
       return {
@@ -200,7 +461,7 @@
     }
 
     async function loadConfig() {
-      statusEl.textContent = 'loading config...';
+      setStatus('loading config...');
       try {
         let res = await fetch(configPath, { method: 'GET' });
         let txt = await res.text();
@@ -208,21 +469,24 @@
           res = await fetch(realConfigPath, { method: 'GET' });
           txt = await res.text();
           if (!res.ok) {
-            statusEl.textContent = `config load failed: ${res.status} ${txt.trim()}`;
-            return;
+            setStatus(`config load failed: ${res.status} ${txt.trim()}`, 'warn');
+            return null;
           }
         }
-        setFormFromConfig(parseConfigText(txt));
-        statusEl.textContent = 'config loaded';
+        const cfg = parseConfigText(txt);
+        setFormFromConfig(cfg);
+        setStatus('config loaded', 'ok');
+        return cfg;
       } catch (err) {
-        statusEl.textContent = `config load error: ${err}`;
+        setStatus(`config load error: ${err}`, 'warn');
+        return null;
       }
     }
 
     async function saveConfig() {
       const cfg = getConfigFromForm();
       const payload = formatConfigText(cfg);
-      statusEl.textContent = 'saving config...';
+      setStatus('saving config...');
       try {
         const res = await fetch(configPath, {
           method: 'PUT',
@@ -231,56 +495,399 @@
         });
         const txt = await res.text();
         if (!res.ok) {
-          statusEl.textContent = `config save failed: ${res.status} ${txt.trim()}`;
-          return;
+          setStatus(`config save failed: ${res.status} ${txt.trim()}`, 'warn');
+          return false;
         }
-        statusEl.textContent = 'config saved';
+        setStatus('config saved', 'ok');
+        return true;
       } catch (err) {
-        statusEl.textContent = `config save error: ${err}`;
+        setStatus(`config save error: ${err}`, 'warn');
+        return false;
       }
     }
 
     async function reloadConfig() {
-      statusEl.textContent = 'reloading config...';
+      setStatus('reloading config...');
       try {
         const res = await fetch('/api/config/reload', { method: 'POST' });
         const txt = await res.text();
         if (!res.ok) {
-          statusEl.textContent = `reload failed: ${res.status} ${txt.trim()}`;
-          return;
+          setStatus(`reload failed: ${res.status} ${txt.trim()}`, 'warn');
+          return false;
         }
-        statusEl.textContent = txt.trim() || 'config reloaded';
+        setStatus(txt.trim() || 'config reloaded', 'ok');
+        return true;
       } catch (err) {
-        statusEl.textContent = `reload error: ${err}`;
+        setStatus(`reload error: ${err}`, 'warn');
+        return false;
       }
     }
 
     async function triggerSlot(slot) {
-      statusEl.textContent = `triggering slot ${slot}...`;
+      setStatus(`triggering slot ${slot}...`);
       try {
         const res = await fetch(`/api/soundboard/trigger/${slot}`, { method: 'POST' });
         const txt = await res.text();
         if (!res.ok) {
-          statusEl.textContent = `error: ${res.status} ${txt.trim()}`;
+          setStatus(`error: ${res.status} ${txt.trim()}`, 'warn');
           return;
         }
-        statusEl.textContent = txt.trim() || `triggered slot ${slot}`;
+        setStatus(txt.trim() || `triggered slot ${slot}`, 'ok');
       } catch (err) {
-        statusEl.textContent = `request failed: ${err}`;
+        setStatus(`request failed: ${err}`, 'warn');
       }
     }
 
-    document.querySelectorAll('button[data-slot]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        triggerSlot(btn.dataset.slot);
+    function buildNodesFromConfig(cfg) {
+      const playback = Math.max(1, Math.min(16, Number(cfg.usb_playback_channels || 2)));
+      const capture = Math.max(1, Math.min(16, Number(cfg.usb_capture_channels || 2)));
+      state.nodes = [
+        { id: 'usb_mic_in', label: 'USB Mic In', kind: 'input', channels: capture },
+        { id: 'soundboard_out', label: 'Soundboard Out', kind: 'virtual', channels: 2 },
+        { id: 'fx_slot_0', label: 'FX Slot 0', kind: 'effect', channels: 2 },
+        { id: 'usb_gadget_out', label: 'USB Gadget Out', kind: 'output', channels: playback },
+        { id: 'soundboard_virtual_out', label: 'Soundboard Virtual Out', kind: 'virtual', channels: 2 },
+      ];
+
+      state.positions = {
+        usb_mic_in: { x: 20, y: 20 },
+        soundboard_out: { x: 20, y: 250 },
+        fx_slot_0: { x: 330, y: 140 },
+        usb_gadget_out: { x: 650, y: 20 },
+        soundboard_virtual_out: { x: 650, y: 250 },
+      };
+    }
+
+    function clearOutputSelection() {
+      state.selectedOut = null;
+      document.querySelectorAll('.port.out').forEach((el) => el.classList.remove('active'));
+    }
+
+    function edgeKey(edge) {
+      return `${edge.src}|${edge.dst}|${edge.srcChannel}|${edge.dstChannel}`;
+    }
+
+    function hasEdge(edge) {
+      const key = edgeKey(edge);
+      return state.edges.some((e) => edgeKey(e) === key);
+    }
+
+    function addEdge(edge) {
+      if (hasEdge(edge)) {
+        setStatus('edge already staged', 'warn');
+        return;
+      }
+      state.edges.push(edge);
+      renderGraph();
+      setStatus('edge staged', 'ok');
+    }
+
+    function removeEdge(index) {
+      state.edges.splice(index, 1);
+      renderGraph();
+      setStatus('edge removed', 'ok');
+    }
+
+    function parseRoutingText(text) {
+      const edges = [];
+      for (const rawLine of text.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('#')) continue;
+        if (!line.startsWith('edge=')) continue;
+
+        const fields = line.slice(5).split(',').map((s) => s.trim());
+        if (fields.length !== 4) continue;
+
+        const srcChannel = Number(fields[2]);
+        const dstChannel = Number(fields[3]);
+        if (Number.isNaN(srcChannel) || Number.isNaN(dstChannel) || srcChannel < 0 || dstChannel < 0) {
+          continue;
+        }
+
+        edges.push({
+          src: fields[0],
+          dst: fields[1],
+          srcChannel,
+          dstChannel,
+        });
+      }
+      return edges;
+    }
+
+    function formatRoutingText() {
+      const out = ['# audiox routing v1'];
+      for (const edge of state.edges) {
+        out.push(`edge=${edge.src},${edge.dst},${edge.srcChannel},${edge.dstChannel}`);
+      }
+      out.push('');
+      return out.join('\n');
+    }
+
+    function buildDefaultEdges() {
+      const mic = state.nodes.find((n) => n.id === 'usb_mic_in');
+      const sb = state.nodes.find((n) => n.id === 'soundboard_out');
+      const gadget = state.nodes.find((n) => n.id === 'usb_gadget_out');
+      const virt = state.nodes.find((n) => n.id === 'soundboard_virtual_out');
+      const next = [];
+
+      if (mic && gadget) {
+        const c = Math.min(mic.channels, gadget.channels);
+        for (let i = 0; i < c; i += 1) {
+          next.push({ src: mic.id, dst: gadget.id, srcChannel: i, dstChannel: i });
+        }
+      }
+
+      if (sb && gadget) {
+        const c = Math.min(sb.channels, gadget.channels);
+        for (let i = 0; i < c; i += 1) {
+          next.push({ src: sb.id, dst: gadget.id, srcChannel: i, dstChannel: i });
+        }
+      }
+
+      if (sb && virt) {
+        const c = Math.min(sb.channels, virt.channels);
+        for (let i = 0; i < c; i += 1) {
+          next.push({ src: sb.id, dst: virt.id, srcChannel: i, dstChannel: i });
+        }
+      }
+
+      state.edges = next;
+      renderGraph();
+      setStatus('staged routing reset to defaults', 'ok');
+    }
+
+    function nodeAcceptsInput(node) {
+      return node.kind === 'output' || node.kind === 'effect';
+    }
+
+    function nodeProvidesOutput(node) {
+      return node.kind !== 'output';
+    }
+
+    function portLocator(nodeId, dir, ch) {
+      return `[data-port="${nodeId}:${dir}:${ch}"]`;
+    }
+
+    function renderEdgesList() {
+      edgeListEl.innerHTML = '';
+      if (!state.edges.length) {
+        edgeListEl.textContent = 'no staged edges';
+        return;
+      }
+
+      state.edges.forEach((edge, idx) => {
+        const row = document.createElement('div');
+        row.className = 'edge-item';
+
+        const txt = document.createElement('div');
+        txt.textContent = `${edge.src}[${edge.srcChannel}] -> ${edge.dst}[${edge.dstChannel}]`;
+
+        const btn = document.createElement('button');
+        btn.textContent = 'remove';
+        btn.addEventListener('click', () => removeEdge(idx));
+
+        row.appendChild(txt);
+        row.appendChild(btn);
+        edgeListEl.appendChild(row);
       });
+    }
+
+    function renderNodes() {
+      nodesEl.innerHTML = '';
+
+      for (const node of state.nodes) {
+        const wrap = document.createElement('div');
+        wrap.className = 'node';
+        const pos = state.positions[node.id] || { x: 20, y: 20 };
+        wrap.style.left = `${pos.x}px`;
+        wrap.style.top = `${pos.y}px`;
+
+        const head = document.createElement('div');
+        head.className = 'headbar';
+        head.innerHTML = `<strong>${node.label}</strong><span class="kind">${node.kind}</span>`;
+
+        const ports = document.createElement('div');
+        ports.className = 'ports';
+
+        const inCol = document.createElement('div');
+        inCol.className = 'col';
+        const outCol = document.createElement('div');
+        outCol.className = 'col';
+
+        for (let ch = 0; ch < node.channels; ch += 1) {
+          if (nodeAcceptsInput(node)) {
+            const pin = document.createElement('div');
+            pin.className = 'port in';
+            pin.dataset.port = `${node.id}:in:${ch}`;
+            pin.innerHTML = `<span class="dot in"></span><span>in ${ch + 1}</span>`;
+            pin.addEventListener('click', () => {
+              if (!state.selectedOut) return;
+              addEdge({
+                src: state.selectedOut.nodeId,
+                dst: node.id,
+                srcChannel: state.selectedOut.channel,
+                dstChannel: ch,
+              });
+              clearOutputSelection();
+            });
+            inCol.appendChild(pin);
+          }
+
+          if (nodeProvidesOutput(node)) {
+            const pout = document.createElement('div');
+            pout.className = 'port out';
+            pout.dataset.port = `${node.id}:out:${ch}`;
+            pout.innerHTML = `<span>out ${ch + 1}</span><span class="dot out"></span>`;
+            pout.addEventListener('click', () => {
+              clearOutputSelection();
+              state.selectedOut = { nodeId: node.id, channel: ch };
+              pout.classList.add('active');
+            });
+            outCol.appendChild(pout);
+          }
+        }
+
+        ports.appendChild(inCol);
+        ports.appendChild(outCol);
+
+        wrap.appendChild(head);
+        wrap.appendChild(ports);
+        nodesEl.appendChild(wrap);
+      }
+    }
+
+    function getPortCenter(nodeId, dir, ch) {
+      const el = document.querySelector(portLocator(nodeId, dir, ch));
+      if (!el) return null;
+      const wrapRect = graphWrapEl.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      return {
+        x: (r.left - wrapRect.left) + (r.width / 2),
+        y: (r.top - wrapRect.top) + (r.height / 2),
+      };
+    }
+
+    function renderLinks() {
+      linksEl.innerHTML = '';
+      for (const edge of state.edges) {
+        const a = getPortCenter(edge.src, 'out', edge.srcChannel);
+        const b = getPortCenter(edge.dst, 'in', edge.dstChannel);
+        if (!a || !b) continue;
+
+        const c = Math.max(60, Math.abs(b.x - a.x) * 0.4);
+        const d = `M ${a.x},${a.y} C ${a.x + c},${a.y} ${b.x - c},${b.y} ${b.x},${b.y}`;
+
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d', d);
+        path.setAttribute('stroke', 'var(--line)');
+        path.setAttribute('stroke-width', '2.2');
+        path.setAttribute('fill', 'none');
+        path.setAttribute('stroke-linecap', 'round');
+        linksEl.appendChild(path);
+      }
+    }
+
+    function renderGraph() {
+      renderNodes();
+      renderEdgesList();
+      renderLinks();
+    }
+
+    async function loadRoutingFile() {
+      setStatus('loading routing file...');
+      try {
+        let res = await fetch(routingPath, { method: 'GET' });
+        let txt = await res.text();
+        if (!res.ok) {
+          res = await fetch(realRoutingPath, { method: 'GET' });
+          txt = await res.text();
+          if (!res.ok) {
+            buildDefaultEdges();
+            setStatus('routing file missing, defaults staged', 'warn');
+            return;
+          }
+        }
+
+        state.edges = parseRoutingText(txt);
+        if (!state.edges.length) {
+          buildDefaultEdges();
+          setStatus('routing file empty, defaults staged', 'warn');
+          return;
+        }
+
+        renderGraph();
+        setStatus('routing file loaded', 'ok');
+      } catch (err) {
+        setStatus(`routing load error: ${err}`, 'warn');
+      }
+    }
+
+    async function saveRoutingFile() {
+      setStatus('saving routing file...');
+      try {
+        const res = await fetch(routingPath, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'text/plain' },
+          body: formatRoutingText(),
+        });
+        const txt = await res.text();
+        if (!res.ok) {
+          setStatus(`routing save failed: ${res.status} ${txt.trim()}`, 'warn');
+          return false;
+        }
+        setStatus('routing file saved', 'ok');
+        return true;
+      } catch (err) {
+        setStatus(`routing save error: ${err}`, 'warn');
+        return false;
+      }
+    }
+
+    async function applyRoutingReload() {
+      const saved = await saveRoutingFile();
+      if (!saved) return;
+      const reloaded = await reloadConfig();
+      if (!reloaded) return;
+      await loadRoutingFile();
+      setStatus('routing saved and reload sent', 'ok');
+    }
+
+    async function initializeGraphFromConfig() {
+      const cfg = (await loadConfig()) || getConfigFromForm();
+      buildNodesFromConfig(cfg);
+      await loadRoutingFile();
+      renderGraph();
+    }
+
+    document.querySelectorAll('button[data-slot]').forEach((btn) => {
+      btn.addEventListener('click', () => triggerSlot(btn.dataset.slot));
     });
 
-    document.getElementById('btn-load').addEventListener('click', loadConfig);
-    document.getElementById('btn-save').addEventListener('click', saveConfig);
-    document.getElementById('btn-reload').addEventListener('click', reloadConfig);
+    document.getElementById('btn-load').addEventListener('click', async () => {
+      const cfg = await loadConfig();
+      if (cfg) {
+        buildNodesFromConfig(cfg);
+        renderGraph();
+      }
+    });
 
-    loadConfig();
+    document.getElementById('btn-save').addEventListener('click', async () => {
+      const ok = await saveConfig();
+      if (ok) {
+        buildNodesFromConfig(getConfigFromForm());
+        renderGraph();
+      }
+    });
+
+    document.getElementById('btn-reload').addEventListener('click', reloadConfig);
+    document.getElementById('btn-route-load').addEventListener('click', loadRoutingFile);
+    document.getElementById('btn-route-save').addEventListener('click', saveRoutingFile);
+    document.getElementById('btn-route-apply').addEventListener('click', applyRoutingReload);
+    document.getElementById('btn-route-reset').addEventListener('click', buildDefaultEdges);
+
+    window.addEventListener('resize', renderLinks);
+
+    initializeGraphFromConfig();
   </script>
 </body>
 </html>

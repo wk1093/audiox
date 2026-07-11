@@ -12,6 +12,7 @@
 #define AUDIO_CAPTURE_PERIOD_FRAMES 256U
 #define AUDIO_CAPTURE_PERIODS 4U
 #define AUDIO_INPUT_MAX_CAPTURE_FRAMES ((((BUFFER_FRAMES) * (AUDIO_INPUT_FALLBACK_RATE)) / (SAMPLE_RATE)) + 16U)
+#define AUDIO_INPUT_WAIT_POLL_THRESHOLD 200U
 
 typedef struct audio_pcm_candidate {
     char path[PATH_MAX];
@@ -413,6 +414,9 @@ static inline void audio_close_input_device(audio_ctx_t *ctx, const char *reason
     ctx->input_last_mono_sample = 0;
     ctx->input_have_last_sample = 0;
     ctx->input_probe_ticks = AUDIO_INPUT_PROBE_BLOCKS;
+    ctx->input_waiting_for_host = 0;
+    ctx->input_wait_notice_ticks = 0;
+    ctx->input_empty_polls = 0;
     audio_input_ring_reset(ctx);
 }
 
@@ -458,12 +462,18 @@ static inline int audio_try_open_input_candidate(audio_ctx_t *ctx, const char *p
                                rate_attempts[rate_idx],
                                sizeof(int16_t));
                 ctx->input_probe_ticks = 0;
+                  ctx->input_waiting_for_host = 1;
+                  ctx->input_wait_notice_ticks = 0;
+                                ctx->input_empty_polls = 0;
                   printf("[INIT] Audio input connected: %s (%uch, %u Hz, period=%u periods=%u)\n",
                        ctx->input_pcm_path,
                        (unsigned)ctx->input_channels,
                       (unsigned)ctx->input_sample_rate,
                       (unsigned)AUDIO_CAPTURE_PERIOD_FRAMES,
                       (unsigned)AUDIO_CAPTURE_PERIODS);
+                  printf("[INIT] Audio input endpoint details: card=%d usb=%d\n",
+                      audio_pcm_card_index_from_path(path),
+                      audio_pcm_device_is_usb(node_name));
                 return 0;
             }
 
@@ -484,14 +494,61 @@ static inline int audio_try_open_input_device(audio_ctx_t *ctx) {
 
     audio_pcm_candidate_t candidates[AUDIO_MAX_PCM_CANDIDATES];
     int playback_card = audio_pcm_card_index_from_path(ctx->pcm_path);
-    size_t count = audio_collect_pcm_candidates('c', 1, playback_card, candidates, AUDIO_MAX_PCM_CANDIDATES);
+    uint8_t capture_mask = 0;
+    pthread_mutex_lock(&ctx->state_lock);
+    capture_mask = ctx->route_mix.capture_source_mask;
+    pthread_mutex_unlock(&ctx->state_lock);
+    if (capture_mask == 0) {
+        capture_mask = (uint8_t)(AUDIO_ROUTE_CAPTURE_SRC_USB_MIC | AUDIO_ROUTE_CAPTURE_SRC_USB_GADGET);
+    }
+    size_t count = audio_collect_pcm_candidates('c', 0, -1, candidates, AUDIO_MAX_PCM_CANDIDATES);
 
-    for (size_t i = 0; i < count; ++i) {
-        if (!candidates[i].is_usb) {
-            continue;
+    if ((capture_mask & AUDIO_ROUTE_CAPTURE_SRC_USB_GADGET) &&
+        !(capture_mask & AUDIO_ROUTE_CAPTURE_SRC_USB_MIC) &&
+        playback_card >= 0) {
+        for (size_t i = 0; i < count; ++i) {
+            if (candidates[i].card_index != playback_card) {
+                continue;
+            }
+            if (audio_try_open_input_candidate(ctx, candidates[i].path) == 0) {
+                return 0;
+            }
         }
-        if (audio_try_open_input_candidate(ctx, candidates[i].path) == 0) {
-            return 0;
+    }
+
+    if (capture_mask & AUDIO_ROUTE_CAPTURE_SRC_USB_MIC) {
+        for (size_t i = 0; i < count; ++i) {
+            if (!candidates[i].is_usb) {
+                continue;
+            }
+            if (audio_try_open_input_candidate(ctx, candidates[i].path) == 0) {
+                return 0;
+            }
+        }
+    }
+
+    if (capture_mask & AUDIO_ROUTE_CAPTURE_SRC_USB_GADGET) {
+        if (playback_card >= 0) {
+            for (size_t i = 0; i < count; ++i) {
+                if (candidates[i].card_index != playback_card) {
+                    continue;
+                }
+                if (audio_try_open_input_candidate(ctx, candidates[i].path) == 0) {
+                    return 0;
+                }
+            }
+        }
+
+        for (size_t i = 0; i < count; ++i) {
+            if (playback_card >= 0 && candidates[i].card_index == playback_card) {
+                continue;
+            }
+            if (candidates[i].is_usb) {
+                continue;
+            }
+            if (audio_try_open_input_candidate(ctx, candidates[i].path) == 0) {
+                return 0;
+            }
         }
     }
 
@@ -553,6 +610,14 @@ static inline int audio_capture_read_mix(audio_ctx_t *ctx, int16_t *mix_out, siz
         }
 
         if (frames_read > 0) {
+            if (ctx->input_waiting_for_host && ctx->input_empty_polls >= AUDIO_INPUT_WAIT_POLL_THRESHOLD) {
+                ctx->input_waiting_for_host = 0;
+                ctx->input_wait_notice_ticks = 0;
+                printf("[INIT] ALSA input stream resumed: %s\n", ctx->input_pcm_path);
+            }
+            ctx->input_empty_polls = 0;
+            ctx->input_waiting_for_host = 0;
+
             uint32_t input_rate = ctx->input_sample_rate ? ctx->input_sample_rate : SAMPLE_RATE;
 
             if (input_rate == SAMPLE_RATE) {
@@ -596,11 +661,34 @@ static inline int audio_capture_read_mix(audio_ctx_t *ctx, int16_t *mix_out, siz
         }
 
         if (frames_read == 0 || frames_read == -ENODEV || frames_read == -EBADFD) {
+            if (frames_read == 0) {
+                ++ctx->input_empty_polls;
+                if (ctx->input_empty_polls >= AUDIO_INPUT_WAIT_POLL_THRESHOLD) {
+                    if (!ctx->input_waiting_for_host) {
+                        ctx->input_waiting_for_host = 1;
+                        ctx->input_wait_notice_ticks = 0;
+                        printf("[INIT] ALSA input waiting for host stream: %s\n", ctx->input_pcm_path);
+                    } else if ((ctx->input_wait_notice_ticks++ % 2000U) == 0U) {
+                        printf("[INIT] ALSA input still waiting for host stream: %s\n", ctx->input_pcm_path);
+                    }
+                }
+                break;
+            }
             audio_close_input_device(ctx, "[INIT] Audio input disconnected");
             break;
         }
 
         if (frames_read == -EAGAIN || frames_read == -EWOULDBLOCK) {
+            ++ctx->input_empty_polls;
+            if (ctx->input_empty_polls >= AUDIO_INPUT_WAIT_POLL_THRESHOLD) {
+                if (!ctx->input_waiting_for_host) {
+                    ctx->input_waiting_for_host = 1;
+                    ctx->input_wait_notice_ticks = 0;
+                    printf("[INIT] ALSA input waiting for host stream: %s\n", ctx->input_pcm_path);
+                } else if ((ctx->input_wait_notice_ticks++ % 2000U) == 0U) {
+                    printf("[INIT] ALSA input still waiting for host stream: %s\n", ctx->input_pcm_path);
+                }
+            }
             break;
         }
 

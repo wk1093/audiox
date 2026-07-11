@@ -239,6 +239,8 @@ struct app_state {
     app_runtime_config_t runtime_cfg;
     audio_route_graph_t route_active;
     audio_route_mix_config_t route_mix_active;
+    char device_lines[UI_CONSOLE_MAX_DEVICE_LINES][UI_CONSOLE_DEVICE_LINE_MAX];
+    int device_line_count;
 };
 
 typedef struct app_ticks {
@@ -261,6 +263,249 @@ static void app_ticks_init(app_ticks_t *ticks) {
     tick_task_init(&ticks->periodic_sync, 5000);
 }
 
+static int app_alsa_card_name(int card_index, char *out, size_t out_sz) {
+    if (!out || out_sz == 0 || card_index < 0) {
+        return -1;
+    }
+
+    FILE *fp = fopen("/proc/asound/cards", "r");
+    if (!fp) {
+        return -1;
+    }
+
+    int found = 0;
+    char line[256];
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        int idx = -1;
+        if (sscanf(line, " %d [", &idx) != 1 || idx != card_index) {
+            continue;
+        }
+
+        const char *sep = strstr(line, " - ");
+        if (!sep) {
+            break;
+        }
+        sep += 3;
+
+        size_t n = strnlen(sep, out_sz - 1);
+        while (n > 0 && (sep[n - 1] == '\n' || sep[n - 1] == '\r' || sep[n - 1] == ' ' || sep[n - 1] == '\t')) {
+            --n;
+        }
+        memcpy(out, sep, n);
+        out[n] = '\0';
+        found = 1;
+        break;
+    }
+
+    fclose(fp);
+    return found ? 0 : -1;
+}
+
+static unsigned app_probe_pcm_channels_for_path(const char *path, int is_capture) {
+    if (!path || !path[0]) {
+        return 2;
+    }
+
+    const unsigned rates[] = {SAMPLE_RATE, AUDIO_INPUT_FALLBACK_RATE};
+    for (size_t r = 0; r < (sizeof(rates) / sizeof(rates[0])); ++r) {
+        for (unsigned ch = AUDIO_ROUTE_MAX_GADGET_CHANNELS; ch >= 1; --ch) {
+            int fd = open(path, is_capture ? (O_RDONLY | O_NONBLOCK) : (O_WRONLY | O_NONBLOCK));
+            if (fd < 0) {
+                return 2;
+            }
+
+            snd_pcm_uframes_t period = 0;
+            size_t frame_bytes = 0;
+            int ok = audio_pcm_configure_hw_fd(fd,
+                                               path,
+                                               rates[r],
+                                               ch,
+                                               is_capture ? AUDIO_CAPTURE_PERIOD_FRAMES : BUFFER_FRAMES,
+                                               is_capture ? AUDIO_CAPTURE_PERIODS : 2U,
+                                               &period,
+                                               &frame_bytes,
+                                               1,
+                                               0);
+            close(fd);
+            (void)period;
+            (void)frame_bytes;
+            if (ok == 0) {
+                return ch;
+            }
+        }
+    }
+
+    return 2;
+}
+
+static void app_route_graph_detected(app_state_t *app, audio_route_graph_t *graph) {
+    if (!app || !graph) {
+        return;
+    }
+
+    audio_route_graph_clear(graph);
+
+    int soundboard = audio_route_node_add_with_flags(graph,
+                                                     "soundboard_out",
+                                                     "Soundboard Out",
+                                                     AUDIO_ROUTE_NODE_VIRTUAL,
+                                                     2,
+                                                     AUDIO_ROUTE_NODE_FLAG_SOUNDBOARD_SOURCE);
+    int fx0 = audio_route_node_add_with_flags(graph,
+                                              "fx_slot_0",
+                                              "FX Slot 0",
+                                              AUDIO_ROUTE_NODE_EFFECT,
+                                              2,
+                                              0);
+    int virtual_out = audio_route_node_add_with_flags(graph,
+                                                      "soundboard_virtual_out",
+                                                      "Soundboard Virtual Out",
+                                                      AUDIO_ROUTE_NODE_VIRTUAL,
+                                                      2,
+                                                      AUDIO_ROUTE_NODE_FLAG_SOUND_VIRTUAL_SINK);
+
+    audio_pcm_candidate_t caps[AUDIO_MAX_PCM_CANDIDATES];
+    audio_pcm_candidate_t plays[AUDIO_MAX_PCM_CANDIDATES];
+    size_t cap_count = audio_collect_pcm_candidates('c', 1, -1, caps, AUDIO_MAX_PCM_CANDIDATES);
+    size_t play_count = audio_collect_pcm_candidates('p', 0, -1, plays, AUDIO_MAX_PCM_CANDIDATES);
+
+    typedef struct app_card_info {
+        int present;
+        int is_usb;
+        int card_index;
+        int has_capture;
+        int has_playback;
+        unsigned cap_channels;
+        unsigned play_channels;
+        char cap_path[PATH_MAX];
+        char play_path[PATH_MAX];
+        char name[96];
+    } app_card_info_t;
+
+    app_card_info_t cards[32];
+    memset(cards, 0, sizeof(cards));
+
+    for (size_t i = 0; i < cap_count; ++i) {
+        int ci = caps[i].card_index;
+        if (ci < 0 || ci >= (int)(sizeof(cards) / sizeof(cards[0]))) {
+            continue;
+        }
+        cards[ci].present = 1;
+        cards[ci].card_index = ci;
+        cards[ci].is_usb = caps[i].is_usb;
+        cards[ci].has_capture = 1;
+        if (!cards[ci].cap_path[0]) {
+            audio_copy_pcm_path(cards[ci].cap_path, sizeof(cards[ci].cap_path), caps[i].path);
+        }
+    }
+
+    for (size_t i = 0; i < play_count; ++i) {
+        int ci = plays[i].card_index;
+        if (ci < 0 || ci >= (int)(sizeof(cards) / sizeof(cards[0]))) {
+            continue;
+        }
+        cards[ci].present = 1;
+        cards[ci].card_index = ci;
+        cards[ci].is_usb = plays[i].is_usb;
+        cards[ci].has_playback = 1;
+        if (!cards[ci].play_path[0]) {
+            audio_copy_pcm_path(cards[ci].play_path, sizeof(cards[ci].play_path), plays[i].path);
+        }
+    }
+
+    int gadget_card = app->audio.playback_endpoint.card_index;
+    if (gadget_card < 0) {
+        for (int ci = 0; ci < (int)(sizeof(cards) / sizeof(cards[0])); ++ci) {
+            if (cards[ci].present && cards[ci].has_playback && !cards[ci].is_usb) {
+                gadget_card = ci;
+                break;
+            }
+        }
+    }
+
+    for (int ci = 0; ci < (int)(sizeof(cards) / sizeof(cards[0])); ++ci) {
+        if (!cards[ci].present) {
+            continue;
+        }
+
+        if (app_alsa_card_name(ci, cards[ci].name, sizeof(cards[ci].name)) < 0) {
+            (void)snprintf(cards[ci].name, sizeof(cards[ci].name), "Card %d", ci);
+        }
+
+        if (cards[ci].has_capture) {
+            cards[ci].cap_channels = app_probe_pcm_channels_for_path(cards[ci].cap_path, 1);
+        }
+        if (cards[ci].has_playback) {
+            cards[ci].play_channels = app_probe_pcm_channels_for_path(cards[ci].play_path, 0);
+        }
+
+        if (cards[ci].has_capture) {
+            char id[32];
+            char label[96];
+            (void)snprintf(id, sizeof(id), "alsa_card%d_in", ci);
+            (void)snprintf(label, sizeof(label), "%s In", cards[ci].name);
+            uint16_t flags = AUDIO_ROUTE_NODE_FLAG_CAPTURE_SOURCE;
+            if (ci == gadget_card) {
+                flags |= AUDIO_ROUTE_NODE_FLAG_CAPTURE_GADGET;
+            }
+            (void)audio_route_node_add_with_flags(graph,
+                                                  id,
+                                                  label,
+                                                  AUDIO_ROUTE_NODE_INPUT,
+                                                  (uint16_t)(cards[ci].cap_channels ? cards[ci].cap_channels : 2),
+                                                  flags);
+        }
+
+        if (cards[ci].has_playback) {
+            char id[32];
+            char label[96];
+            (void)snprintf(id, sizeof(id), "alsa_card%d_out", ci);
+            (void)snprintf(label, sizeof(label), "%s Out", cards[ci].name);
+            uint16_t flags = 0;
+            if (ci == gadget_card) {
+                flags |= AUDIO_ROUTE_NODE_FLAG_GADGET_OUTPUT_SINK;
+            }
+            (void)audio_route_node_add_with_flags(graph,
+                                                  id,
+                                                  label,
+                                                  AUDIO_ROUTE_NODE_OUTPUT,
+                                                  (uint16_t)(cards[ci].play_channels ? cards[ci].play_channels : 2),
+                                                  flags);
+        }
+    }
+
+    int gadget_out = -1;
+    for (uint16_t i = 0; i < graph->node_count; ++i) {
+        if (graph->nodes[i].flags & AUDIO_ROUTE_NODE_FLAG_GADGET_OUTPUT_SINK) {
+            gadget_out = (int)i;
+            break;
+        }
+    }
+
+    if (soundboard >= 0 && fx0 >= 0) {
+        uint16_t channels = audio_route_min_u16(graph->nodes[soundboard].channels, graph->nodes[fx0].channels);
+        for (uint16_t ch = 0; ch < channels; ++ch) {
+            (void)audio_route_edge_add(graph, soundboard, fx0, ch, ch, 32767u);
+        }
+    }
+
+    if (fx0 >= 0 && gadget_out >= 0) {
+        uint16_t channels = audio_route_min_u16(graph->nodes[fx0].channels, graph->nodes[gadget_out].channels);
+        for (uint16_t ch = 0; ch < channels; ++ch) {
+            (void)audio_route_edge_add(graph, fx0, gadget_out, ch, ch, 32767u);
+        }
+    }
+
+    if (fx0 >= 0 && virtual_out >= 0) {
+        uint16_t channels = audio_route_min_u16(graph->nodes[fx0].channels, graph->nodes[virtual_out].channels);
+        for (uint16_t ch = 0; ch < channels; ++ch) {
+            (void)audio_route_edge_add(graph, fx0, virtual_out, ch, ch, 32767u);
+        }
+    }
+
+    graph->generation = app->route_active.generation + 1;
+}
+
 static void app_state_init(app_state_t *app) {
     memset(app, 0, sizeof(*app));
     ui_log_init(&app->log);
@@ -273,9 +518,7 @@ static void app_state_init(app_state_t *app) {
                       CONFIG_REAL_FILE_PATH,
                       CONFIG_STAGING_FILE_PATH);
     app_runtime_config_defaults(&app->runtime_cfg);
-    audio_route_graph_default(&app->route_active,
-                              (uint16_t)app->runtime_cfg.usb_capture_channels,
-                              (uint16_t)app->runtime_cfg.usb_playback_channels);
+    app_route_graph_detected(app, &app->route_active);
     audio_route_mix_config_default(&app->route_mix_active,
                                    (uint16_t)app->runtime_cfg.usb_playback_channels);
     (void)audio_route_compile_mix(&app->route_active,
@@ -283,6 +526,96 @@ static void app_state_init(app_state_t *app) {
                                   (uint16_t)app->runtime_cfg.usb_playback_channels);
     app->active_tab = UI_TAB_SOUNDBOARD;
     app->log_filter_mask = UI_LOG_FILTER_ALL;
+}
+
+static void app_refresh_device_lines(app_state_t *app) {
+    if (!app) {
+        return;
+    }
+
+    app->device_line_count = 0;
+
+    audio_pcm_candidate_t caps[AUDIO_MAX_PCM_CANDIDATES];
+    audio_pcm_candidate_t plays[AUDIO_MAX_PCM_CANDIDATES];
+    size_t cap_count = audio_collect_pcm_candidates('c', 1, -1, caps, AUDIO_MAX_PCM_CANDIDATES);
+    size_t play_count = audio_collect_pcm_candidates('p', 0, -1, plays, AUDIO_MAX_PCM_CANDIDATES);
+
+    int shown[32];
+    memset(shown, 0, sizeof(shown));
+
+    for (size_t i = 0; i < cap_count && app->device_line_count < UI_CONSOLE_MAX_DEVICE_LINES; ++i) {
+        int ci = caps[i].card_index;
+        if (ci < 0 || ci >= (int)(sizeof(shown) / sizeof(shown[0]))) {
+            continue;
+        }
+        if (shown[ci]) {
+            continue;
+        }
+        shown[ci] = 1;
+
+        char name[64];
+        if (app_alsa_card_name(ci, name, sizeof(name)) < 0) {
+            (void)snprintf(name, sizeof(name), "Card %d", ci);
+        }
+        (void)snprintf(app->device_lines[app->device_line_count],
+                       UI_CONSOLE_DEVICE_LINE_MAX,
+                       "C%d %s cap=%s play=%s",
+                       ci,
+                       name,
+                       "yes",
+                       "no");
+        ++app->device_line_count;
+    }
+
+    for (size_t i = 0; i < play_count && app->device_line_count < UI_CONSOLE_MAX_DEVICE_LINES; ++i) {
+        int ci = plays[i].card_index;
+        if (ci < 0 || ci >= (int)(sizeof(shown) / sizeof(shown[0]))) {
+            continue;
+        }
+
+        char name[64];
+        if (app_alsa_card_name(ci, name, sizeof(name)) < 0) {
+            (void)snprintf(name, sizeof(name), "Card %d", ci);
+        }
+
+        if (shown[ci]) {
+            for (int j = 0; j < app->device_line_count; ++j) {
+                if (strstr(app->device_lines[j], "C") == app->device_lines[j]) {
+                    int cur = -1;
+                    if (sscanf(app->device_lines[j], "C%d ", &cur) == 1 && cur == ci) {
+                        char merged[UI_CONSOLE_DEVICE_LINE_MAX];
+                        (void)snprintf(merged,
+                                       sizeof(merged),
+                                       "C%d %s cap=%s play=%s",
+                                       ci,
+                                       name,
+                                       "yes",
+                                       "yes");
+                        size_t m = strnlen(merged, sizeof(merged) - 1);
+                        memcpy(app->device_lines[j], merged, m);
+                        app->device_lines[j][m] = '\0';
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
+        shown[ci] = 1;
+        (void)snprintf(app->device_lines[app->device_line_count],
+                       UI_CONSOLE_DEVICE_LINE_MAX,
+                       "C%d %s cap=%s play=%s",
+                       ci,
+                       name,
+                       "no",
+                       "yes");
+        ++app->device_line_count;
+    }
+
+    if (app->device_line_count == 0) {
+        (void)snprintf(app->device_lines[0], UI_CONSOLE_DEVICE_LINE_MAX, "No ALSA PCM devices found");
+        app->device_line_count = 1;
+    }
 }
 
 static int app_route_parse_edge_line(audio_route_graph_t *graph, const char *line) {
@@ -347,9 +680,7 @@ static int app_route_load_file(app_state_t *app,
     }
 
     audio_route_graph_t graph;
-    audio_route_graph_default(&graph,
-                              (uint16_t)app->runtime_cfg.usb_capture_channels,
-                              (uint16_t)app->runtime_cfg.usb_playback_channels);
+    app_route_graph_detected(app, &graph);
 
     FILE *fp = fopen(path, "r");
     if (!fp) {
@@ -375,9 +706,7 @@ static int app_route_load_file(app_state_t *app,
     fclose(fp);
 
     if (!parsed_any) {
-        audio_route_graph_default(&graph,
-                                  (uint16_t)app->runtime_cfg.usb_capture_channels,
-                                  (uint16_t)app->runtime_cfg.usb_playback_channels);
+        app_route_graph_detected(app, &graph);
     }
 
     graph.generation = app->route_active.generation + 1;
@@ -393,9 +722,7 @@ static int app_reload_routing_config(app_state_t *app) {
     audio_route_graph_t route_graph;
     int route_loaded = app_route_load_file(app, ROUTING_REAL_FILE_PATH, &route_graph);
     if (route_loaded < 0) {
-        audio_route_graph_default(&route_graph,
-                                  (uint16_t)app->runtime_cfg.usb_capture_channels,
-                                  (uint16_t)app->runtime_cfg.usb_playback_channels);
+        app_route_graph_detected(app, &route_graph);
         printf("[INIT] [WARN] Routing file not found or invalid (%s); using default routing.\n",
                ROUTING_REAL_FILE_PATH);
     }
@@ -410,6 +737,8 @@ static int app_reload_routing_config(app_state_t *app) {
 
     if (app->audio_started) {
         audio_set_route_mix_config(&app->audio, &app->route_mix_active);
+        audio_close_input_device(&app->audio, "[INIT] Re-selecting audio input for new routing");
+        (void)audio_try_open_input_device(&app->audio);
     }
 
     return 0;
@@ -803,19 +1132,21 @@ static int app_http_routing_things(void *ctx, char *out, size_t out_sz) {
     }
     off += (size_t)n;
 
+    audio_route_graph_t live_graph;
+    app_route_graph_detected(app, &live_graph);
+
     int first = 1;
-    for (uint16_t i = 0; i < app->route_active.node_count; ++i) {
-        const audio_route_node_t *node = &app->route_active.nodes[i];
+    for (uint16_t i = 0; i < live_graph.node_count; ++i) {
+        const audio_route_node_t *node = &live_graph.nodes[i];
         if (strcmp(node->id, "soundboard_virtual_out") == 0) {
             continue;
         }
 
         unsigned inputs = 0;
         unsigned outputs = 0;
-        if (strcmp(node->id, "usb_gadget_out") == 0) {
-            inputs = (unsigned)node->channels;
-            outputs = (unsigned)node->channels;
-        } else if (strcmp(node->id, "soundboard_out") == 0) {
+        const char *name = (node->label[0] ? node->label : node->id);
+
+        if (strcmp(node->id, "soundboard_out") == 0) {
             outputs = (unsigned)node->channels;
         } else if (node->kind == AUDIO_ROUTE_NODE_INPUT) {
             outputs = (unsigned)node->channels;
@@ -831,7 +1162,7 @@ static int app_http_routing_things(void *ctx, char *out, size_t out_sz) {
                      "%s{\"id\":\"%s\",\"name\":\"%s\",\"inputs\":%u,\"outputs\":%u}",
                      first ? "" : ",",
                      node->id,
-                     node->label[0] ? node->label : node->id,
+                     name,
                      inputs,
                      outputs);
         if (n < 0 || (size_t)n >= out_sz - off) {
@@ -1155,6 +1486,8 @@ int main(void) {
             continue;
         }
 
+        app_refresh_device_lines(&app);
+
         ui_console_model_t model = {
             .voice_enabled = app.voice_enabled,
             .voice_name = app.audio.voice_name,
@@ -1170,7 +1503,9 @@ int main(void) {
             .active_tab = app.active_tab,
             .log_filter_mask = app.log_filter_mask,
             .log = &app.log,
-            .boot_logo = &app.boot_logo
+            .boot_logo = &app.boot_logo,
+            .device_lines = app.device_lines,
+            .device_line_count = app.device_line_count
         };
         ui_console_io_t io;
 
@@ -1218,6 +1553,8 @@ int main(void) {
                 model.log_filter_mask = app.log_filter_mask;
                 model.log = &app.log;
                 model.boot_logo = &app.boot_logo;
+                model.device_lines = app.device_lines;
+                model.device_line_count = app.device_line_count;
 
                 if (redraw_mode == APP_REDRAW_FULL) {
                     fb_begin_frame(&app.fb);

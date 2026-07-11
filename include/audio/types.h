@@ -102,6 +102,9 @@ typedef struct audio_ctx {
     int16_t input_last_mono_sample;
     uint8_t input_have_last_sample;
     uint32_t input_probe_ticks;
+    int input_waiting_for_host;
+    uint32_t input_wait_notice_ticks;
+    uint32_t input_empty_polls;
     int16_t input_ring[AUDIO_INPUT_RING_FRAMES];
     uint32_t input_ring_head;
     uint32_t input_ring_tail;

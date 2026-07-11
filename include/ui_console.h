@@ -22,6 +22,8 @@
 #define UI_LOG_FILTER_WARN (1u << UI_LOG_WARN)
 #define UI_LOG_FILTER_ERROR (1u << UI_LOG_ERROR)
 #define UI_LOG_FILTER_ALL (UI_LOG_FILTER_INFO | UI_LOG_FILTER_WARN | UI_LOG_FILTER_ERROR)
+#define UI_CONSOLE_MAX_DEVICE_LINES 12
+#define UI_CONSOLE_DEVICE_LINE_MAX 96
 
 typedef struct ui_console_theme {
     ui_button_theme_t tab_theme;
@@ -56,6 +58,8 @@ typedef struct ui_console_model {
     uint8_t log_filter_mask;
     const ui_log_t *log;
     const ui_ppm_image_t *boot_logo;
+    const char (*device_lines)[UI_CONSOLE_DEVICE_LINE_MAX];
+    int device_line_count;
 } ui_console_model_t;
 
 typedef struct ui_console_io {
@@ -330,6 +334,28 @@ static inline void ui_console_draw_config_panel(const fb_ctx_t *fb,
              "USB SAMPLE SIZE: %u",
              model->usb_sample_size);
     ui_draw_text(fb, content->x + 8, info_y, line, theme->text, 1);
+
+    info_y += ui_text_height(1) + 8;
+    ui_draw_text(fb, content->x + 8, info_y, "DETECTED AUDIO DEVICES:", theme->header, 1);
+    info_y += ui_text_height(1) + 4;
+
+    int max_lines = (content->y + content->h - info_y - 6) / (ui_text_height(1) + 2);
+    if (max_lines < 0) {
+        max_lines = 0;
+    }
+    int lines = model->device_line_count;
+    if (lines > max_lines) {
+        lines = max_lines;
+    }
+
+    for (int i = 0; i < lines; ++i) {
+        ui_draw_text(fb,
+                     content->x + 8,
+                     info_y + i * (ui_text_height(1) + 2),
+                     model->device_lines[i],
+                     theme->text,
+                     1);
+    }
 }
 
 static inline void ui_console_draw_log_panel(const fb_ctx_t *fb,

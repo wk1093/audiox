@@ -13,6 +13,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #define HTTP_REQ_MAX 65536
@@ -1095,6 +1096,12 @@ static inline void *http_server_thread_main(void *arg) {
             }
             continue;
         }
+
+        struct timeval io_to;
+        io_to.tv_sec = 2;
+        io_to.tv_usec = 0;
+        (void)setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &io_to, sizeof(io_to));
+        (void)setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &io_to, sizeof(io_to));
 
         http_server_handle_client(srv, cfd);
         close(cfd);

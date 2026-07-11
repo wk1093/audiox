@@ -21,6 +21,9 @@ This is the rough plan for audiox. Not fancy. Just the stuff I need to get done 
 - [ ] Revisit temporary DHCP for better host plug-and-play on Linux
 - [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)
 - [ ] Expand web UI from test page into real config + soundboard control panel + soundboard upload + midi assignment to soundboard slots + routing view + status view + log view
+- [ ] Polish UI:
+  - [ ] Make svg connection nodes start at edge of device inside of under it, if a connection goes up or down it looks weird
+  - [ ] Make it so currently connected node channels are highlighted, and when selecting a node, anything it's connected to is highlighted extra/differently
 
 ## Audio refactor phases
 

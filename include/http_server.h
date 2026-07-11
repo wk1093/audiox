@@ -22,6 +22,7 @@
 #define HTTP_SOUNDBOARD_TRIGGER_PREFIX HTTP_API_PREFIX "soundboard/trigger/"
 #define HTTP_CONFIG_RELOAD_PATH HTTP_API_PREFIX "config/reload"
 #define HTTP_ROUTING_RELOAD_PATH HTTP_API_PREFIX "routing/reload"
+#define HTTP_ROUTING_THINGS_PATH HTTP_API_PREFIX "routing/things"
 #define HTTP_SYSTEM_SYNC_PATH HTTP_API_PREFIX "system/sync"
 #define HTTP_SYSTEM_RESTART_PATH HTTP_API_PREFIX "system/restart"
 #define HTTP_SYSTEM_SHUTDOWN_PATH HTTP_API_PREFIX "system/shutdown"
@@ -31,6 +32,7 @@
 typedef int (*http_soundboard_trigger_fn)(void *ctx, int slot);
 typedef int (*http_config_reload_fn)(void *ctx);
 typedef int (*http_routing_reload_fn)(void *ctx);
+typedef int (*http_routing_things_fn)(void *ctx, char *out, size_t out_sz);
 typedef int (*http_system_sync_fn)(void *ctx);
 typedef int (*http_system_restart_fn)(void *ctx);
 typedef int (*http_system_shutdown_fn)(void *ctx);
@@ -48,6 +50,8 @@ typedef struct http_server {
     void *config_reload_ctx;
     http_routing_reload_fn routing_reload;
     void *routing_reload_ctx;
+    http_routing_things_fn routing_things;
+    void *routing_things_ctx;
     http_system_sync_fn system_sync;
     void *system_sync_ctx;
     http_system_restart_fn system_restart;
@@ -748,6 +752,29 @@ static inline int http_handle_routing_reload(http_server_t *srv,
     return 0;
 }
 
+static inline int http_handle_routing_things(http_server_t *srv,
+                                             int cfd) {
+    if (!srv || !srv->routing_things) {
+        static const char err[] = "routing things not configured\n";
+        (void)http_send_response(cfd, "503 Service Unavailable", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+        return 0;
+    }
+
+    char out[HTTP_BODY_MAX];
+    int n = srv->routing_things(srv->routing_things_ctx, out, sizeof(out));
+    if (n < 0) {
+        static const char err[] = "routing things failed\n";
+        (void)http_send_response(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+        return 0;
+    }
+
+    if ((size_t)n >= sizeof(out)) {
+        n = (int)(sizeof(out) - 1);
+    }
+    (void)http_send_response(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+    return 0;
+}
+
 static inline int http_send_static_from_webroot(http_server_t *srv,
                                                 int cfd,
                                                 const char *path) {
@@ -953,6 +980,17 @@ static inline void http_server_handle_client(http_server_t *srv, int cfd) {
         return;
     }
 
+    if (strcmp(path, HTTP_ROUTING_THINGS_PATH) == 0) {
+        if (strcmp(method, "GET") == 0) {
+            (void)http_handle_routing_things(srv, cfd);
+            return;
+        }
+
+        static const char mna[] = "method not allowed\n";
+        (void)http_send_response(cfd, "405 Method Not Allowed", "text/plain; charset=utf-8", mna, sizeof(mna) - 1);
+        return;
+    }
+
     if (strcmp(path, HTTP_SYSTEM_SYNC_PATH) == 0) {
         if (strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0) {
             (void)http_handle_system_sync(srv, cfd);
@@ -1074,6 +1112,8 @@ static inline int http_server_start(http_server_t *srv,
                                     void *config_reload_ctx,
                                     http_routing_reload_fn routing_reload_fn,
                                     void *routing_reload_ctx,
+                                    http_routing_things_fn routing_things_fn,
+                                    void *routing_things_ctx,
                                     http_system_sync_fn system_sync_fn,
                                     void *system_sync_ctx,
                                     http_system_restart_fn system_restart_fn,
@@ -1093,6 +1133,8 @@ static inline int http_server_start(http_server_t *srv,
     srv->config_reload_ctx = config_reload_ctx;
     srv->routing_reload = routing_reload_fn;
     srv->routing_reload_ctx = routing_reload_ctx;
+    srv->routing_things = routing_things_fn;
+    srv->routing_things_ctx = routing_things_ctx;
     srv->system_sync = system_sync_fn;
     srv->system_sync_ctx = system_sync_ctx;
     srv->system_restart = system_restart_fn;

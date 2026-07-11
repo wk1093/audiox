@@ -790,6 +790,65 @@ static int app_http_reload_routing(void *ctx) {
     return 0;
 }
 
+static int app_http_routing_things(void *ctx, char *out, size_t out_sz) {
+    app_state_t *app = (app_state_t *)ctx;
+    if (!app || !out || out_sz < 32) {
+        return -1;
+    }
+
+    size_t off = 0;
+    int n = snprintf(out + off, out_sz - off, "{\"things\":[");
+    if (n < 0 || (size_t)n >= out_sz - off) {
+        return -1;
+    }
+    off += (size_t)n;
+
+    int first = 1;
+    for (uint16_t i = 0; i < app->route_active.node_count; ++i) {
+        const audio_route_node_t *node = &app->route_active.nodes[i];
+        if (strcmp(node->id, "soundboard_virtual_out") == 0) {
+            continue;
+        }
+
+        unsigned inputs = 0;
+        unsigned outputs = 0;
+        if (strcmp(node->id, "usb_gadget_out") == 0) {
+            inputs = (unsigned)node->channels;
+            outputs = (unsigned)node->channels;
+        } else if (strcmp(node->id, "soundboard_out") == 0) {
+            outputs = (unsigned)node->channels;
+        } else if (node->kind == AUDIO_ROUTE_NODE_INPUT) {
+            outputs = (unsigned)node->channels;
+        } else if (node->kind == AUDIO_ROUTE_NODE_OUTPUT) {
+            inputs = (unsigned)node->channels;
+        } else {
+            inputs = (unsigned)node->channels;
+            outputs = (unsigned)node->channels;
+        }
+
+        n = snprintf(out + off,
+                     out_sz - off,
+                     "%s{\"id\":\"%s\",\"name\":\"%s\",\"inputs\":%u,\"outputs\":%u}",
+                     first ? "" : ",",
+                     node->id,
+                     node->label[0] ? node->label : node->id,
+                     inputs,
+                     outputs);
+        if (n < 0 || (size_t)n >= out_sz - off) {
+            return -1;
+        }
+        off += (size_t)n;
+        first = 0;
+    }
+
+    n = snprintf(out + off, out_sz - off, "]}\n");
+    if (n < 0 || (size_t)n >= out_sz - off) {
+        return -1;
+    }
+    off += (size_t)n;
+    return (int)off;
+}
+
 static int app_http_system_sync(void *ctx) {
     app_state_t *app = (app_state_t *)ctx;
     if (!app) {
@@ -1002,6 +1061,8 @@ int main(void) {
                                       app_http_reload_config,
                                       &app,
                                       app_http_reload_routing,
+                                      &app,
+                                      app_http_routing_things,
                                       &app,
                                       app_http_system_sync,
                                       &app,

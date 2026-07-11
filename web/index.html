@@ -815,30 +815,77 @@
       }
     }
 
-    function buildNodesFromConfig(cfg) {
-      const playback = Math.max(1, Math.min(16, Number(cfg.usb_playback_channels || 2)));
-      const capture = Math.max(1, Math.min(16, Number(cfg.usb_capture_channels || 2)));
-      state.nodes = [
-        { id: 'usb_mic_in', label: 'USB Mic In', kind: 'input', channels: capture },
-        { id: 'soundboard_out', label: 'Soundboard Out', kind: 'virtual', channels: 2 },
-        { id: 'fx_slot_0', label: 'FX Slot 0', kind: 'effect', channels: 2 },
-        { id: 'usb_gadget_out', label: 'USB Gadget Out', kind: 'output', channels: playback },
-        { id: 'soundboard_virtual_out', label: 'Soundboard Virtual Out', kind: 'virtual', channels: 2 },
-      ];
+    function buildNodesFromThings(things) {
+      const previous = { ...state.positions };
+      state.nodes = [];
+      state.positions = {};
 
-      state.positions = {
+      const safeThings = Array.isArray(things) ? things : [];
+      const known = {
         usb_mic_in: { x: 20, y: 20 },
         soundboard_out: { x: 20, y: 250 },
         fx_slot_0: { x: 330, y: 140 },
-        usb_gadget_out: { x: 650, y: 20 },
-        soundboard_virtual_out: { x: 650, y: 250 },
+        usb_gadget_out: { x: 650, y: 80 },
       };
 
-      state.panX = 0;
-      state.panY = 0;
-      state.scale = 1;
-      applyViewportTransform();
-      updateZoomLabel();
+      let dynIdx = 0;
+      for (const raw of safeThings) {
+        if (!raw || typeof raw.id !== 'string' || !raw.id) {
+          continue;
+        }
+
+        const inputs = Math.max(0, Math.min(16, Number(raw.inputs) || 0));
+        const outputs = Math.max(0, Math.min(16, Number(raw.outputs) || 0));
+        state.nodes.push({
+          id: raw.id,
+          label: String(raw.name || raw.id),
+          inputs,
+          outputs,
+        });
+
+        if (previous[raw.id]) {
+          state.positions[raw.id] = previous[raw.id];
+          continue;
+        }
+        if (known[raw.id]) {
+          state.positions[raw.id] = known[raw.id];
+          continue;
+        }
+
+        const col = dynIdx % 3;
+        const row = Math.floor(dynIdx / 3);
+        state.positions[raw.id] = { x: 20 + (col * 300), y: 20 + (row * 220) };
+        dynIdx += 1;
+      }
+
+      if (!state.nodes.length) {
+        setStatus('no routing things from backend', 'warn');
+      }
+    }
+
+    async function loadRoutingThings() {
+      try {
+        const res = await fetch('/api/routing/things', { method: 'GET' });
+        const txt = await res.text();
+        if (!res.ok) {
+          setStatus(`things load failed: ${res.status} ${txt.trim()}`, 'warn');
+          return false;
+        }
+
+        let parsed = null;
+        try {
+          parsed = JSON.parse(txt);
+        } catch (err) {
+          setStatus(`things parse error: ${err}`, 'warn');
+          return false;
+        }
+
+        buildNodesFromThings(parsed?.things || []);
+        return true;
+      } catch (err) {
+        setStatus(`things load error: ${err}`, 'warn');
+        return false;
+      }
     }
 
     function clearOutputSelection() {
@@ -919,14 +966,6 @@
       }
       out.push('');
       return out.join('\n');
-    }
-
-    function nodeAcceptsInput(node) {
-      return node.kind === 'output' || node.kind === 'effect';
-    }
-
-    function nodeProvidesOutput(node) {
-      return node.kind !== 'output';
     }
 
     function portLocator(nodeId, dir, ch) {
@@ -1010,7 +1049,7 @@
 
         const head = document.createElement('div');
         head.className = 'headbar';
-        head.innerHTML = `<strong>${node.label}</strong><span class="kind">${node.kind}</span>`;
+        head.innerHTML = `<strong>${node.label}</strong><span class="kind">thing</span>`;
         head.addEventListener('mousedown', (ev) => beginNodeDrag(ev, node.id));
 
         const ports = document.createElement('div');
@@ -1021,37 +1060,35 @@
         const outCol = document.createElement('div');
         outCol.className = 'col';
 
-        for (let ch = 0; ch < node.channels; ch += 1) {
-          if (nodeAcceptsInput(node)) {
-            const pin = document.createElement('div');
-            pin.className = 'port in';
-            pin.dataset.port = `${node.id}:in:${ch}`;
-            pin.innerHTML = `<span class="dot in"></span><span>in ${ch + 1}</span>`;
-            pin.addEventListener('click', () => {
-              if (!state.selectedOut) return;
-              addEdge({
-                src: state.selectedOut.nodeId,
-                dst: node.id,
-                srcChannel: state.selectedOut.channel,
-                dstChannel: ch,
-              });
-              clearOutputSelection();
+        for (let ch = 0; ch < node.inputs; ch += 1) {
+          const pin = document.createElement('div');
+          pin.className = 'port in';
+          pin.dataset.port = `${node.id}:in:${ch}`;
+          pin.innerHTML = `<span class="dot in"></span><span>in ${ch + 1}</span>`;
+          pin.addEventListener('click', () => {
+            if (!state.selectedOut) return;
+            addEdge({
+              src: state.selectedOut.nodeId,
+              dst: node.id,
+              srcChannel: state.selectedOut.channel,
+              dstChannel: ch,
             });
-            inCol.appendChild(pin);
-          }
+            clearOutputSelection();
+          });
+          inCol.appendChild(pin);
+        }
 
-          if (nodeProvidesOutput(node)) {
-            const pout = document.createElement('div');
-            pout.className = 'port out';
-            pout.dataset.port = `${node.id}:out:${ch}`;
-            pout.innerHTML = `<span>out ${ch + 1}</span><span class="dot out"></span>`;
-            pout.addEventListener('click', () => {
-              clearOutputSelection();
-              state.selectedOut = { nodeId: node.id, channel: ch };
-              pout.classList.add('active');
-            });
-            outCol.appendChild(pout);
-          }
+        for (let ch = 0; ch < node.outputs; ch += 1) {
+          const pout = document.createElement('div');
+          pout.className = 'port out';
+          pout.dataset.port = `${node.id}:out:${ch}`;
+          pout.innerHTML = `<span>out ${ch + 1}</span><span class="dot out"></span>`;
+          pout.addEventListener('click', () => {
+            clearOutputSelection();
+            state.selectedOut = { nodeId: node.id, channel: ch };
+            pout.classList.add('active');
+          });
+          outCol.appendChild(pout);
         }
 
         ports.appendChild(inCol);
@@ -1287,8 +1324,8 @@
     }
 
     async function initializeGraphFromConfig() {
-      const cfg = (await loadConfig()) || getConfigFromForm();
-      buildNodesFromConfig(cfg);
+      await loadConfig();
+      await loadRoutingThings();
       await loadRoutingFile();
       renderGraph();
       updateZoomLabel();
@@ -1308,7 +1345,7 @@
     document.getElementById('btn-load').addEventListener('click', async () => {
       const cfg = await loadConfig();
       if (cfg) {
-        buildNodesFromConfig(cfg);
+        await loadRoutingThings();
         renderGraph();
       }
     });
@@ -1316,7 +1353,7 @@
     document.getElementById('btn-save').addEventListener('click', async () => {
       const ok = await saveConfig();
       if (ok) {
-        buildNodesFromConfig(getConfigFromForm());
+        await loadRoutingThings();
         await loadRoutingFile();
       }
     });
@@ -1324,7 +1361,7 @@
     document.getElementById('btn-reload').addEventListener('click', async () => {
       const ok = await reloadConfig();
       if (ok) {
-        buildNodesFromConfig(getConfigFromForm());
+        await loadRoutingThings();
         await loadRoutingFile();
       }
     });

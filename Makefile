@@ -23,6 +23,8 @@ SCRIPTS_DIR = $(CURDIR)/scripts
 DEP_FILE = $(CURDIR)/depmod.txt
 WAV_DIR ?= $(CURDIR)/wavs
 BOOT_LOGO_PPM ?= $(CURDIR)/logo_boot.ppm
+WEB_LOGO_SVG ?= $(CURDIR)/logo.svg
+WEB_LOGO_PNG ?= $(CURDIR)/logo.png
 WEB_INDEX_HTML ?= $(CURDIR)/web/index.html
 FIRMWARE_GIT_URL ?= https://github.com/raspberrypi/firmware.git
 
@@ -109,6 +111,14 @@ rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST)
 		cp "$(WEB_INDEX_HTML)" "$(ROOTFS_DIR)/etc/www/index.html"; \
 	else \
 		echo "Warning: web index file not found at $(WEB_INDEX_HTML)"; \
+	fi
+	@if [ -f "$(WEB_LOGO_SVG)" ]; then \
+		echo "Staging web logo svg from $(WEB_LOGO_SVG)..."; \
+		cp "$(WEB_LOGO_SVG)" "$(ROOTFS_DIR)/etc/www/logo.svg"; \
+	fi
+	@if [ -f "$(WEB_LOGO_PNG)" ]; then \
+		echo "Staging web logo png from $(WEB_LOGO_PNG)..."; \
+		cp "$(WEB_LOGO_PNG)" "$(ROOTFS_DIR)/etc/www/logo.png"; \
 	fi
 
 initramfs: rootfs

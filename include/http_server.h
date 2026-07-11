@@ -22,11 +22,18 @@
 #define HTTP_SOUNDBOARD_TRIGGER_PREFIX HTTP_API_PREFIX "soundboard/trigger/"
 #define HTTP_CONFIG_RELOAD_PATH HTTP_API_PREFIX "config/reload"
 #define HTTP_ROUTING_RELOAD_PATH HTTP_API_PREFIX "routing/reload"
+#define HTTP_SYSTEM_SYNC_PATH HTTP_API_PREFIX "system/sync"
+#define HTTP_SYSTEM_RESTART_PATH HTTP_API_PREFIX "system/restart"
+#define HTTP_SYSTEM_SHUTDOWN_PATH HTTP_API_PREFIX "system/shutdown"
+#define HTTP_VERSION_PATH HTTP_API_PREFIX "version"
 #define HTTP_FS_ROOT "/audiox/"
 
 typedef int (*http_soundboard_trigger_fn)(void *ctx, int slot);
 typedef int (*http_config_reload_fn)(void *ctx);
 typedef int (*http_routing_reload_fn)(void *ctx);
+typedef int (*http_system_sync_fn)(void *ctx);
+typedef int (*http_system_restart_fn)(void *ctx);
+typedef int (*http_system_shutdown_fn)(void *ctx);
 
 typedef struct http_server {
     int listen_fd;
@@ -41,6 +48,13 @@ typedef struct http_server {
     void *config_reload_ctx;
     http_routing_reload_fn routing_reload;
     void *routing_reload_ctx;
+    http_system_sync_fn system_sync;
+    void *system_sync_ctx;
+    http_system_restart_fn system_restart;
+    void *system_restart_ctx;
+    http_system_shutdown_fn system_shutdown;
+    void *system_shutdown_ctx;
+    char version_text[64];
 } http_server_t;
 
 static inline void http_server_load_body(http_server_t *srv, const char *html_path) {
@@ -288,8 +302,11 @@ static inline ssize_t http_parse_content_length(const char *buf, size_t header_l
 }
 
 static inline int http_safe_api_suffix(const char *suffix) {
-    if (!suffix || !suffix[0]) {
+    if (!suffix) {
         return 0;
+    }
+    if (!suffix[0]) {
+        return 1;
     }
     if (strstr(suffix, "..") != NULL) {
         return 0;
@@ -731,6 +748,130 @@ static inline int http_handle_routing_reload(http_server_t *srv,
     return 0;
 }
 
+static inline int http_send_static_from_webroot(http_server_t *srv,
+                                                int cfd,
+                                                const char *path) {
+    if (!srv || !path || !path[0]) {
+        return -1;
+    }
+    if (path[0] != '/') {
+        return -1;
+    }
+    if (strstr(path, "..") || strchr(path, '\\')) {
+        return -1;
+    }
+
+    char req_path[256];
+    size_t req_len = strnlen(path, sizeof(req_path) - 1);
+    memcpy(req_path, path, req_len);
+    req_path[req_len] = '\0';
+
+    char *q = strchr(req_path, '?');
+    if (q) {
+        *q = '\0';
+    }
+
+    char web_root[512];
+    size_t root_len = strnlen(srv->html_path, sizeof(web_root) - 1);
+    if (root_len == 0) {
+        return -1;
+    }
+    memcpy(web_root, srv->html_path, root_len);
+    web_root[root_len] = '\0';
+
+    char *slash = strrchr(web_root, '/');
+    if (!slash) {
+        return -1;
+    }
+    *slash = '\0';
+
+    if (!web_root[0]) {
+        return -1;
+    }
+
+    char full[768];
+    int n = snprintf(full, sizeof(full), "%s%s", web_root, req_path);
+    if (n <= 0 || (size_t)n >= sizeof(full)) {
+        return -1;
+    }
+
+    return http_send_file_path(cfd, full, NULL);
+}
+
+static inline int http_handle_system_sync(http_server_t *srv,
+                                          int cfd) {
+    if (!srv || !srv->system_sync) {
+        static const char err[] = "system sync not configured\n";
+        (void)http_send_response(cfd, "503 Service Unavailable", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+        return 0;
+    }
+
+    if (srv->system_sync(srv->system_sync_ctx) == 0) {
+        static const char out[] = "sync complete\n";
+        (void)http_send_response(cfd, "200 OK", "text/plain; charset=utf-8", out, sizeof(out) - 1);
+        return 0;
+    }
+
+    static const char err[] = "sync failed\n";
+    (void)http_send_response(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+    return 0;
+}
+
+static inline int http_handle_system_restart(http_server_t *srv,
+                                             int cfd) {
+    if (!srv || !srv->system_restart) {
+        static const char err[] = "system restart not configured\n";
+        (void)http_send_response(cfd, "503 Service Unavailable", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+        return 0;
+    }
+
+    if (srv->system_restart(srv->system_restart_ctx) == 0) {
+        static const char out[] = "restart requested\n";
+        (void)http_send_response(cfd, "200 OK", "text/plain; charset=utf-8", out, sizeof(out) - 1);
+        return 0;
+    }
+
+    static const char err[] = "restart failed\n";
+    (void)http_send_response(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+    return 0;
+}
+
+static inline int http_handle_system_shutdown(http_server_t *srv,
+                                              int cfd) {
+    if (!srv || !srv->system_shutdown) {
+        static const char err[] = "system shutdown not configured\n";
+        (void)http_send_response(cfd, "503 Service Unavailable", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+        return 0;
+    }
+
+    if (srv->system_shutdown(srv->system_shutdown_ctx) == 0) {
+        static const char out[] = "shutdown requested\n";
+        (void)http_send_response(cfd, "200 OK", "text/plain; charset=utf-8", out, sizeof(out) - 1);
+        return 0;
+    }
+
+    static const char err[] = "shutdown failed\n";
+    (void)http_send_response(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+    return 0;
+}
+
+static inline int http_handle_version(http_server_t *srv,
+                                      int cfd) {
+    if (!srv || !srv->version_text[0]) {
+        static const char unknown[] = "unknown\n";
+        (void)http_send_response(cfd, "200 OK", "text/plain; charset=utf-8", unknown, sizeof(unknown) - 1);
+        return 0;
+    }
+
+    char out[80];
+    int n = snprintf(out, sizeof(out), "%s\n", srv->version_text);
+    if (n < 0) {
+        n = 0;
+    }
+    (void)http_send_response(cfd, "200 OK", "text/plain; charset=utf-8", out, (size_t)n);
+    return 0;
+}
+
 static inline void http_server_handle_client(http_server_t *srv, int cfd) {
     char req[HTTP_REQ_MAX];
     size_t have = 0;
@@ -773,6 +914,12 @@ static inline void http_server_handle_client(http_server_t *srv, int cfd) {
         return;
     }
 
+    if (strcmp(method, "GET") == 0 && path[0] == '/' && strncmp(path, HTTP_API_PREFIX, strlen(HTTP_API_PREFIX)) != 0) {
+        if (http_send_static_from_webroot(srv, cfd, path) == 0) {
+            return;
+        }
+    }
+
     if (strncmp(path, HTTP_SOUNDBOARD_TRIGGER_PREFIX, strlen(HTTP_SOUNDBOARD_TRIGGER_PREFIX)) == 0) {
         if (strcmp(method, "GET") == 0 || strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0) {
             (void)http_handle_soundboard_trigger(srv, cfd, path);
@@ -798,6 +945,50 @@ static inline void http_server_handle_client(http_server_t *srv, int cfd) {
     if (strcmp(path, HTTP_ROUTING_RELOAD_PATH) == 0) {
         if (strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0) {
             (void)http_handle_routing_reload(srv, cfd);
+            return;
+        }
+
+        static const char mna[] = "method not allowed\n";
+        (void)http_send_response(cfd, "405 Method Not Allowed", "text/plain; charset=utf-8", mna, sizeof(mna) - 1);
+        return;
+    }
+
+    if (strcmp(path, HTTP_SYSTEM_SYNC_PATH) == 0) {
+        if (strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0) {
+            (void)http_handle_system_sync(srv, cfd);
+            return;
+        }
+
+        static const char mna[] = "method not allowed\n";
+        (void)http_send_response(cfd, "405 Method Not Allowed", "text/plain; charset=utf-8", mna, sizeof(mna) - 1);
+        return;
+    }
+
+    if (strcmp(path, HTTP_SYSTEM_RESTART_PATH) == 0) {
+        if (strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0) {
+            (void)http_handle_system_restart(srv, cfd);
+            return;
+        }
+
+        static const char mna[] = "method not allowed\n";
+        (void)http_send_response(cfd, "405 Method Not Allowed", "text/plain; charset=utf-8", mna, sizeof(mna) - 1);
+        return;
+    }
+
+    if (strcmp(path, HTTP_SYSTEM_SHUTDOWN_PATH) == 0) {
+        if (strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0) {
+            (void)http_handle_system_shutdown(srv, cfd);
+            return;
+        }
+
+        static const char mna[] = "method not allowed\n";
+        (void)http_send_response(cfd, "405 Method Not Allowed", "text/plain; charset=utf-8", mna, sizeof(mna) - 1);
+        return;
+    }
+
+    if (strcmp(path, HTTP_VERSION_PATH) == 0) {
+        if (strcmp(method, "GET") == 0) {
+            (void)http_handle_version(srv, cfd);
             return;
         }
 
@@ -882,7 +1073,14 @@ static inline int http_server_start(http_server_t *srv,
                                     http_config_reload_fn config_reload_fn,
                                     void *config_reload_ctx,
                                     http_routing_reload_fn routing_reload_fn,
-                                    void *routing_reload_ctx) {
+                                    void *routing_reload_ctx,
+                                    http_system_sync_fn system_sync_fn,
+                                    void *system_sync_ctx,
+                                    http_system_restart_fn system_restart_fn,
+                                    void *system_restart_ctx,
+                                    http_system_shutdown_fn system_shutdown_fn,
+                                    void *system_shutdown_ctx,
+                                    const char *version_text) {
     if (!srv) {
         return -1;
     }
@@ -895,6 +1093,18 @@ static inline int http_server_start(http_server_t *srv,
     srv->config_reload_ctx = config_reload_ctx;
     srv->routing_reload = routing_reload_fn;
     srv->routing_reload_ctx = routing_reload_ctx;
+    srv->system_sync = system_sync_fn;
+    srv->system_sync_ctx = system_sync_ctx;
+    srv->system_restart = system_restart_fn;
+    srv->system_restart_ctx = system_restart_ctx;
+    srv->system_shutdown = system_shutdown_fn;
+    srv->system_shutdown_ctx = system_shutdown_ctx;
+    srv->version_text[0] = '\0';
+    if (version_text && version_text[0]) {
+        size_t vn = strnlen(version_text, sizeof(srv->version_text) - 1);
+        memcpy(srv->version_text, version_text, vn);
+        srv->version_text[vn] = '\0';
+    }
 
     http_server_load_body(srv, html_path);
 

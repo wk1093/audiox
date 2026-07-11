@@ -26,6 +26,7 @@ static int app_printf_router(const char *fmt, ...);
 #include "ui_console.h"
 #include "ui_ppm.h"
 #include "usb_gadget.h"
+#include "version.h"
 
 #ifndef DEBUG_SHELL
 #define DEBUG_SHELL 0
@@ -789,6 +790,50 @@ static int app_http_reload_routing(void *ctx) {
     return 0;
 }
 
+static int app_http_system_sync(void *ctx) {
+    app_state_t *app = (app_state_t *)ctx;
+    if (!app) {
+        return -1;
+    }
+
+    sync();
+    ui_log_push(&app->log, "CONTROL: SYNC COMPLETE");
+    printf("[INIT] HTTP system sync completed.\n");
+    return 0;
+}
+
+static int app_http_system_restart(void *ctx) {
+    app_state_t *app = (app_state_t *)ctx;
+    if (!app) {
+        return -1;
+    }
+
+    ui_log_push(&app->log, "CONTROL: RESTART REQUESTED");
+    sync();
+    if (reboot(RB_AUTOBOOT) < 0) {
+        printf("[INIT] [ERR] reboot(RB_AUTOBOOT) failed: %s\n", strerror(errno));
+        ui_log_push(&app->log, "CONTROL: RESTART FAILED");
+        return -1;
+    }
+    return 0;
+}
+
+static int app_http_system_shutdown(void *ctx) {
+    app_state_t *app = (app_state_t *)ctx;
+    if (!app) {
+        return -1;
+    }
+
+    ui_log_push(&app->log, "CONTROL: SHUTDOWN REQUESTED");
+    sync();
+    if (reboot(RB_POWER_OFF) < 0) {
+        printf("[INIT] [ERR] reboot(RB_POWER_OFF) failed: %s\n", strerror(errno));
+        ui_log_push(&app->log, "CONTROL: SHUTDOWN FAILED");
+        return -1;
+    }
+    return 0;
+}
+
 static void app_boot_draw(app_state_t *app, const char *status_line) {
     if (!app || !app->fb_ready) {
         return;
@@ -957,7 +1002,14 @@ int main(void) {
                                       app_http_reload_config,
                                       &app,
                                       app_http_reload_routing,
-                                      &app) < 0) {
+                                      &app,
+                                      app_http_system_sync,
+                                      &app,
+                                      app_http_system_restart,
+                                      &app,
+                                      app_http_system_shutdown,
+                                      &app,
+                                      AUDIOX_VERSION_STR) < 0) {
                     printf("[INIT] [WARN] HTTP server failed to start. Continuing without web UI.\n");
                 } else {
                     app.http_ready = 1;

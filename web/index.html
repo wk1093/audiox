@@ -58,15 +58,28 @@
       flex-wrap: wrap;
     }
 
-    .title {
-      margin: 0;
-      font-size: 19px;
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
 
-    .sub {
+    .brand-stack {
+      display: grid;
+      gap: 4px;
+    }
+
+    .logo-img {
+      width: 170px;
+      max-width: 44vw;
+      height: auto;
+      display: block;
+    }
+
+    .version {
       color: var(--muted);
       font-size: 12px;
-      margin-top: 2px;
+      margin-left: 2px;
     }
 
     .tabs {
@@ -286,12 +299,31 @@
     }
 
     .edge-hit {
-      stroke: rgba(0, 0, 0, 0);
-      stroke-width: 18;
+      stroke: rgba(255, 255, 255, 0.001);
+      stroke-width: 30;
       fill: none;
       stroke-linecap: round;
       pointer-events: stroke;
       cursor: pointer;
+    }
+
+    .edge-del-btn {
+      fill: #4a2a27;
+      stroke: #ffbfad;
+      stroke-width: 1.2;
+      pointer-events: all;
+      cursor: pointer;
+      filter: drop-shadow(0 0 4px rgba(255, 161, 130, 0.45));
+    }
+
+    .edge-del-label {
+      fill: #ffd9cf;
+      font-size: 11px;
+      font-family: "IBM Plex Sans", "DejaVu Sans", sans-serif;
+      font-weight: 700;
+      text-anchor: middle;
+      dominant-baseline: central;
+      pointer-events: none;
     }
 
     .side-card {
@@ -382,6 +414,12 @@
       max-width: 760px;
     }
 
+    .control-actions {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+
     .mock-upload {
       display: grid;
       gap: 10px;
@@ -403,9 +441,11 @@
 <body>
   <main class="app panel">
     <header class="head">
-      <div>
-        <h1 class="title">audiox Web Control</h1>
-        <div class="sub">Minimal control surface for routing, config, status, and soundboard upload mock.</div>
+      <div class="brand">
+        <div class="brand-stack">
+          <img class="logo-img" src="/logo.svg" alt="audiox logo" onerror="this.onerror=null;this.src='/logo.png';">
+          <div class="version" id="app-version">version unknown</div>
+        </div>
       </div>
       <nav class="tabs" id="tabs">
         <button class="tab-btn active" data-tab="routing">Routing</button>
@@ -481,8 +521,11 @@
         </section>
         <section class="side-card">
           <h2>System Status</h2>
-          <div class="muted">Config and routing controls are available in their own tabs.</div>
-          <div class="muted">No log streaming by design.</div>
+          <div class="control-actions">
+            <button id="btn-system-sync">Sync Filesystem</button>
+            <button id="btn-system-restart" class="warn">Restart Device</button>
+            <button id="btn-system-shutdown" class="warn">Shutdown Device</button>
+          </div>
         </section>
       </div>
     </section>
@@ -517,6 +560,7 @@
     const graphWrapEl = document.getElementById('graph-wrap');
     const zoomLabelEl = document.getElementById('zoom-label');
     const tabsEl = document.getElementById('tabs');
+    const appVersionEl = document.getElementById('app-version');
 
     const configPath = '/api/rootfs/config.staging.txt';
     const realConfigPath = '/api/rootfs/config.txt';
@@ -645,6 +689,18 @@
       ].join('\n');
     }
 
+    async function loadVersion() {
+      try {
+        const res = await fetch('/api/version', { method: 'GET' });
+        const txt = (await res.text()).trim();
+        if (!res.ok || !txt) {
+          return;
+        }
+        appVersionEl.textContent = `version ${txt}`;
+      } catch (err) {
+      }
+    }
+
     async function loadConfig() {
       setStatus('loading config...');
       try {
@@ -742,6 +798,23 @@
       }
     }
 
+    async function runSystemAction(path, label) {
+      setStatus(`${label}...`);
+      try {
+        const res = await fetch(path, { method: 'POST' });
+        const txt = (await res.text()).trim();
+        if (!res.ok) {
+          setStatus(`${label} failed: ${res.status} ${txt}`, 'warn');
+          return false;
+        }
+        setStatus(txt || `${label} ok`, 'ok');
+        return true;
+      } catch (err) {
+        setStatus(`${label} error: ${err}`, 'warn');
+        return false;
+      }
+    }
+
     function buildNodesFromConfig(cfg) {
       const playback = Math.max(1, Math.min(16, Number(cfg.usb_playback_channels || 2)));
       const capture = Math.max(1, Math.min(16, Number(cfg.usb_capture_channels || 2)));
@@ -782,8 +855,20 @@
       return state.edges.some((e) => edgeKey(e) === key);
     }
 
+    function findEdgeIndex(edge) {
+      const key = edgeKey(edge);
+      return state.edges.findIndex((e) => edgeKey(e) === key);
+    }
+
     function addEdge(edge) {
-      if (hasEdge(edge)) {
+      const existingIdx = findEdgeIndex(edge);
+      if (existingIdx >= 0) {
+        if (state.edgeDeleteEnabled) {
+          removeEdge(existingIdx);
+          setStatus('existing route removed', 'ok');
+          clearOutputSelection();
+          return;
+        }
         setStatus('route already exists', 'warn');
         return;
       }
@@ -1009,6 +1094,33 @@
         hit.setAttribute('d', d);
         hit.setAttribute('class', 'edge-hit');
 
+        const p0x = a.x;
+        const p0y = a.y;
+        const p1x = a.x + c;
+        const p1y = a.y;
+        const p2x = b.x - c;
+        const p2y = b.y;
+        const p3x = b.x;
+        const p3y = b.y;
+        const t = 0.5;
+        const it = 1 - t;
+        const midX = (it * it * it * p0x) + (3 * it * it * t * p1x) + (3 * it * t * t * p2x) + (t * t * t * p3x);
+        const midY = (it * it * it * p0y) + (3 * it * it * t * p1y) + (3 * it * t * t * p2y) + (t * t * t * p3y);
+
+        const delBtn = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        delBtn.setAttribute('class', 'edge-del-btn');
+        delBtn.setAttribute('cx', String(midX));
+        delBtn.setAttribute('cy', String(midY));
+        delBtn.setAttribute('r', '8');
+        delBtn.style.display = state.edgeDeleteEnabled ? 'block' : 'none';
+
+        const delLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        delLabel.setAttribute('class', 'edge-del-label');
+        delLabel.setAttribute('x', String(midX));
+        delLabel.setAttribute('y', String(midY + 0.5));
+        delLabel.textContent = 'x';
+        delLabel.style.display = state.edgeDeleteEnabled ? 'block' : 'none';
+
         hit.addEventListener('mouseenter', () => {
           visual.classList.add('hot');
         });
@@ -1025,8 +1137,36 @@
           removeEdge(idx);
         });
 
+        hit.addEventListener('mousedown', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+        });
+
+        hit.addEventListener('pointerdown', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+        });
+
+        delBtn.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          removeEdge(idx);
+        });
+
+        delBtn.addEventListener('mousedown', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+        });
+
+        delBtn.addEventListener('pointerdown', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+        });
+
         linksEl.appendChild(visual);
         linksEl.appendChild(hit);
+        linksEl.appendChild(delBtn);
+        linksEl.appendChild(delLabel);
       });
     }
 
@@ -1084,7 +1224,18 @@
     }
 
     function beginPan(ev) {
-      if (ev.target.closest('.node') || ev.target.closest('.edge-hit') || ev.target.closest('button')) {
+      if (ev.button !== 0) {
+        return;
+      }
+
+      const target = ev.target;
+      if (target instanceof Element && (
+        target.closest('.node') ||
+        target.closest('.edge-hit') ||
+        target.closest('.edge-del-btn') ||
+        target.closest('.edge-line') ||
+        target.closest('button')
+      )) {
         return;
       }
       state.panning = true;
@@ -1132,6 +1283,7 @@
       btn.textContent = `Delete Lines: ${state.edgeDeleteEnabled ? 'ON' : 'OFF'}`;
       btn.classList.toggle('warn', state.edgeDeleteEnabled);
       btn.classList.toggle('primary', !state.edgeDeleteEnabled);
+      renderLinks();
     }
 
     async function initializeGraphFromConfig() {
@@ -1219,7 +1371,20 @@
       setStatus('mock upload form cleared');
     });
 
+    document.getElementById('btn-system-sync').addEventListener('click', async () => {
+      await runSystemAction('/api/system/sync', 'sync');
+    });
+
+    document.getElementById('btn-system-restart').addEventListener('click', async () => {
+      await runSystemAction('/api/system/restart', 'restart');
+    });
+
+    document.getElementById('btn-system-shutdown').addEventListener('click', async () => {
+      await runSystemAction('/api/system/shutdown', 'shutdown');
+    });
+
     initializeGraphFromConfig();
+    loadVersion();
   </script>
 </body>
 </html>

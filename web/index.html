@@ -513,12 +513,7 @@
       <div class="control-grid">
         <section class="side-card">
           <h2>Soundboard Triggers</h2>
-          <div class="grid2">
-            <button data-slot="0">Play Slot 0</button>
-            <button data-slot="1">Play Slot 1</button>
-            <button data-slot="2">Play Slot 2</button>
-            <button data-slot="3">Play Slot 3</button>
-          </div>
+          <div id="soundboard-trigger-list" class="grid2"></div>
         </section>
         <section class="side-card">
           <h2>System Status</h2>
@@ -598,6 +593,7 @@
     const tabsEl = document.getElementById('tabs');
     const appVersionEl = document.getElementById('app-version');
     const sfxListEl = document.getElementById('sfx-list');
+    const soundboardTriggerListEl = document.getElementById('soundboard-trigger-list');
     const mappingListEl = document.getElementById('mapping-list');
     const mappingSfxEl = document.getElementById('mapping_sfx');
     const mappingNoteEl = document.getElementById('mapping_note');
@@ -828,16 +824,21 @@
       }
     }
 
-    async function triggerSlot(slot) {
-      setStatus(`triggering slot ${slot}...`);
+    async function triggerSfx(fileName) {
+      if (!fileName) {
+        return;
+      }
+
+      setStatus(`triggering ${fileName}...`);
       try {
-        const res = await fetch(`/api/soundboard/trigger/${slot}`, { method: 'POST' });
+        const target = encodeURIComponent(fileName);
+        const res = await fetch(`/api/soundboard/trigger/${target}`, { method: 'POST' });
         const txt = await res.text();
         if (!res.ok) {
           setStatus(`error: ${res.status} ${txt.trim()}`, 'warn');
           return;
         }
-        setStatus(txt.trim() || `triggered slot ${slot}`, 'ok');
+        setStatus(txt.trim() || `triggered ${fileName}`, 'ok');
       } catch (err) {
         setStatus(`request failed: ${err}`, 'warn');
       }
@@ -887,6 +888,7 @@
         files.sort((a, b) => a.localeCompare(b));
         state.sfxFiles = files;
         renderSfxFiles();
+        renderSoundboardTriggers();
         renderMappingSfxSelect();
         return files;
       } catch (err) {
@@ -907,6 +909,24 @@
         row.className = 'edge-item';
         row.textContent = file;
         sfxListEl.appendChild(row);
+      }
+    }
+
+    function renderSoundboardTriggers() {
+      soundboardTriggerListEl.innerHTML = '';
+      if (!state.sfxFiles.length) {
+        const empty = document.createElement('div');
+        empty.className = 'muted';
+        empty.textContent = 'No SFX files uploaded yet.';
+        soundboardTriggerListEl.appendChild(empty);
+        return;
+      }
+
+      for (const file of state.sfxFiles) {
+        const btn = document.createElement('button');
+        btn.textContent = `Play ${file}`;
+        btn.addEventListener('click', () => triggerSfx(file));
+        soundboardTriggerListEl.appendChild(btn);
       }
     }
 
@@ -1632,10 +1652,6 @@
       btn.addEventListener('click', () => {
         setActiveTab(btn.dataset.tab);
       });
-    });
-
-    document.querySelectorAll('button[data-slot]').forEach((btn) => {
-      btn.addEventListener('click', () => triggerSlot(btn.dataset.slot));
     });
 
     document.getElementById('btn-load').addEventListener('click', async () => {

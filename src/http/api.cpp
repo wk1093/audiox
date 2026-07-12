@@ -32,6 +32,8 @@
 
 namespace {
 
+static int mapping_path_safe(const char *s);
+
 static int sendMethodNotAllowed(HttpServer *server, int cfd) {
 	static const char mna[] = "method not allowed\n";
 	return server->sendResponse(cfd, "405 Method Not Allowed", "text/plain; charset=utf-8", mna, sizeof(mna) - 1);
@@ -261,24 +263,53 @@ static int handleSoundboardTrigger(HttpServer *server,
 		return -1;
 	}
 
-	const char *slot_str = path + strlen(HTTP_SOUNDBOARD_TRIGGER_PREFIX);
-	if (!slot_str[0]) {
-		static const char bad[] = "missing slot\n";
+	const char *token = path + strlen(HTTP_SOUNDBOARD_TRIGGER_PREFIX);
+	if (!token[0]) {
+		static const char bad[] = "missing trigger target\n";
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
 	}
+
+	char decoded[MIDI_SFX_PATH_MAX];
+	size_t di = 0;
+	for (size_t i = 0; token[i] && di + 1 < sizeof(decoded); ++i) {
+		unsigned char c = (unsigned char)token[i];
+		if (c == '%') {
+			if (!isxdigit((unsigned char)token[i + 1]) || !isxdigit((unsigned char)token[i + 2])) {
+				static const char bad[] = "invalid url encoding\n";
+				return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+			}
+			char hex[3] = {token[i + 1], token[i + 2], '\0'};
+			decoded[di++] = (char)strtol(hex, NULL, 16);
+			i += 2;
+			continue;
+		}
+		if (c == '+') {
+			decoded[di++] = ' ';
+			continue;
+		}
+		decoded[di++] = (char)c;
+	}
+	decoded[di] = '\0';
 
 	char *endp = NULL;
-	long slot = strtol(slot_str, &endp, 10);
-	if (!endp || *endp != '\0' || slot < 0 || slot > 255) {
-		static const char bad[] = "invalid slot\n";
+	long slot = strtol(decoded, &endp, 10);
+	int is_numeric_slot = (endp && *endp == '\0' && slot >= 0 && slot <= 255) ? 1 : 0;
+
+	if (!is_numeric_slot && !mapping_path_safe(decoded)) {
+		static const char bad[] = "invalid trigger target\n";
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
 	}
 
-	char out[160];
-	int n = snprintf(out,
-					 sizeof(out),
-					 "soundboard slot %ld accepted (audio playback not wired yet)\n",
-					 slot);
+	char out[256];
+	int n = is_numeric_slot
+		? snprintf(out,
+				   sizeof(out),
+				   "soundboard slot %ld accepted (audio playback not wired yet)\n",
+				   slot)
+		: snprintf(out,
+				   sizeof(out),
+				   "soundboard file %s accepted (audio playback not wired yet)\n",
+				   decoded);
 	if (n < 0) {
 		n = 0;
 	}
@@ -694,11 +725,28 @@ static int handleVersion(HttpServer *server,
 						 int cfd,
 						 const char *method,
 						 const char *path) {
-	(void)server;
-	(void)cfd;
 	(void)method;
 	(void)path;
-	return RET_WARN;
+	if (!server) {
+		return -1;
+	}
+
+#if defined(AUDIOX_VERSION_MAJOR) && defined(AUDIOX_VERSION_MINOR) && defined(AUDIOX_VERSION_PATCH)
+	char out[64];
+	int n = snprintf(out,
+					 sizeof(out),
+					 "%d.%d.%d\n",
+					 AUDIOX_VERSION_MAJOR,
+					 AUDIOX_VERSION_MINOR,
+					 AUDIOX_VERSION_PATCH);
+	if (n < 0) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", out, (size_t)n);
+#else
+	static const char unknown[] = "unknown\n";
+	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", unknown, sizeof(unknown) - 1);
+#endif
 }
 
 } // namespace

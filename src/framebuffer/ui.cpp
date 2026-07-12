@@ -66,6 +66,8 @@ void FramebufferContext::bootStatus(const char *status) {
         return;
     }
 
+    printf("[INIT] [INFO] BOOT: %s\n", status);
+
     // draw boot logo
     drawBootLogo();
 

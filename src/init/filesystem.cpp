@@ -1,5 +1,6 @@
 #include "init.hpp"
 #include "context.hpp"
+#include "system.hpp"
 
 #include <stdio.h>
 #include <sys/mount.h>
@@ -7,21 +8,6 @@
 #include <errno.h>
 #include <string.h>
 
-static inline int mountIfNeeded(const char *src, const char *dst, const char *type) {
-    if (mount(src, dst, type, 0, NULL) < 0 && errno != EBUSY) {
-        printf("[INIT] [ERR] mount %s on %s failed: %s\n", src, dst, strerror(errno));
-        return RET_ERR;
-    }
-    return RET_OK;
-}
-
-static inline int ensureDir(const char *path, mode_t mode) {
-    if (mkdir(path, mode) < 0 && errno != EEXIST) {
-        printf("[INIT] [ERR] mkdir failed '%s': %s\n", path, strerror(errno));
-        return RET_ERR;
-    }
-    return RET_OK;
-}
 
 int mountFilesystems() {
     if (mountIfNeeded("sysfs", "/sys", "sysfs") != RET_OK) return RET_ERR;

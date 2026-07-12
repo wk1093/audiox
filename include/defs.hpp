@@ -33,3 +33,7 @@
 #define WARN_UNUSED __attribute__((warn_unused_result))
 
 #define ROOT_MOUNT_POINT "/audiox"
+
+#define USB_NET_IFACE "usb0"
+#define USB_NET_SERVER_IP "169.254.1.2"
+#define USB_NET_NETMASK "255.255.255.0"

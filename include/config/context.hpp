@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include "defs.hpp"
 #include "../context.hpp"
 
@@ -18,14 +19,22 @@ struct RouterConfig {
     void removeRoute(int index);
 };
 
+
+struct ConfigData {
+    uint32_t sampleRate;
+    uint32_t playbackChannels;
+    uint32_t captureChannels;
+    uint32_t sampleSize;
+};
+
 struct ConfigStore {
     // For interacting with the config files
     Audiox *app;
 
     ConfigStore(Audiox *context);
+    ConfigData readConfigFile() const;
+    int writeConfigFile(ConfigData *cfg);
 
-    int getSampleRate() const;
-    void setSampleRate(int rate);
     RouterConfig router() const; // no need for a setter, the router config manages itself, this is just a handy accessor.
 
 };

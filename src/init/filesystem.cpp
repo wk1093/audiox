@@ -1,6 +1,7 @@
 #include "init.hpp"
 #include "context.hpp"
 #include "system.hpp"
+#include "config/context.hpp"
 
 #include <stdio.h>
 #include <sys/mount.h>
@@ -29,6 +30,10 @@ int mountRootfs(void *_context) {
     if (ensureDir(ROOT_MOUNT_POINT, 0755) != RET_OK) return RET_ERR;
     if (mount(CONFIG_DEVICE_PATH, ROOT_MOUNT_POINT, "ext4", MS_NOATIME, NULL) < 0 && errno != EBUSY) {
         printf("[INIT] [ERR] mount %s -> %s failed: %s\n", CONFIG_DEVICE_PATH, ROOT_MOUNT_POINT, strerror(errno));
+        return RET_ERR;
+    }
+
+    if (ensureDir(SFX_ROOT_DIR, 0755) != RET_OK) {
         return RET_ERR;
     }
 

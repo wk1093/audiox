@@ -13,7 +13,6 @@
 #include "http/context.hpp"
 #include "http/network.hpp"
 
-
 #define HANDLE_ERROR(func) \
     do { \
         int ret = (func); \

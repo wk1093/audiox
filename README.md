@@ -19,6 +19,7 @@ Right now it boots straight into a custom `init` process, brings up a USB UAC2 g
 	- `GET /api/rootfs/<path>` -> reads `/audiox/<path>`
 	- `PUT /api/rootfs/<path>` -> writes `/audiox/<path>`
 - Exposes a web soundboard trigger endpoint so web and MIDI can both trigger voices
+- Supports MIDI note-to-SFX mappings from config stored in `/audiox/config.txt` and targeting files in `/audiox/sfx/`
 
 ## Build
 
@@ -76,6 +77,22 @@ usb_sample_size=2
 EOF
 curl -X POST http://169.254.1.2/api/config/reload
 ```
+
+MIDI mapping entries in `/audiox/config.txt`:
+
+```txt
+usb_sample_rate=44100
+usb_playback_channels=2
+usb_capture_channels=2
+usb_sample_size=2
+
+midi_map=36,kick.wav
+midi_map=38,snare.wav
+midi_map=42,hats/closed.wav
+```
+
+Each `midi_map` is `note_number,sfx_relative_path`.
+Relative paths resolve under `/audiox/sfx/`.
 
 
 ## Long-term vision

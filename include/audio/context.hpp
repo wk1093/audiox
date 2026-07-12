@@ -9,5 +9,6 @@ struct AudioContext {
     AudioContext(Audiox *context);
 
     int setupThreads() WARN_UNUSED;
+    int triggerSfx(const char *sfxPath) WARN_UNUSED;
     void poll();
 };

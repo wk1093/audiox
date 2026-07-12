@@ -38,7 +38,6 @@ MODULE_LOAD_BASE_LIST = $(OUT_DIR)/module-load.base.list
 MODULE_LOAD_NORMAL_LIST = $(OUT_DIR)/module-load.normal.list
 SCRIPTS_DIR = $(CURDIR)/scripts
 DEP_FILE = $(CURDIR)/depmod.txt
-WAV_DIR ?= $(CURDIR)/wavs
 BOOT_LOGO_PPM ?= $(CURDIR)/logo_boot.ppm
 WEB_LOGO_SVG ?= $(CURDIR)/logo.svg
 WEB_LOGO_PNG ?= $(CURDIR)/logo.png
@@ -92,7 +91,6 @@ rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE
 	@echo "Creating rootfs structure..."
 	mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/sbin $(ROOTFS_DIR)/etc
 	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev
-	mkdir -p $(ROOTFS_DIR)/etc/wavs
 	mkdir -p $(ROOTFS_DIR)/etc/www
 	mkdir -p $(ROOTFS_DIR)/lib/modules
 	
@@ -101,16 +99,6 @@ rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE
 	cp $(MODULE_LOAD_LIST) $(ROOTFS_DIR)/etc/module-load.list
 	cp $(MODULE_LOAD_BASE_LIST) $(ROOTFS_DIR)/etc/module-load.base.list
 	cp $(MODULE_LOAD_NORMAL_LIST) $(ROOTFS_DIR)/etc/module-load.normal.list
-	@if [ -f "$(WAV_DIR)/voice0.wav" ] && [ -f "$(WAV_DIR)/voice1.wav" ] && [ -f "$(WAV_DIR)/voice2.wav" ] && [ -f "$(WAV_DIR)/voice3.wav" ]; then \
-		echo "Staging WAV voices from $(WAV_DIR)..."; \
-		cp "$(WAV_DIR)/voice0.wav" "$(ROOTFS_DIR)/etc/wavs/"; \
-		cp "$(WAV_DIR)/voice1.wav" "$(ROOTFS_DIR)/etc/wavs/"; \
-		cp "$(WAV_DIR)/voice2.wav" "$(ROOTFS_DIR)/etc/wavs/"; \
-		cp "$(WAV_DIR)/voice3.wav" "$(ROOTFS_DIR)/etc/wavs/"; \
-	else \
-		echo "Warning: missing one or more required wav files in $(WAV_DIR) (voice0.wav..voice3.wav)."; \
-		 echo "Warning: audiox runtime init will fail until all 4 files are present."; \
-	fi
 	@if [ -f "$(BOOT_LOGO_PPM)" ]; then \
 		echo "Staging boot logo from $(BOOT_LOGO_PPM)..."; \
 		cp "$(BOOT_LOGO_PPM)" "$(ROOTFS_DIR)/etc/logo_boot.ppm"; \

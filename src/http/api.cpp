@@ -1,4 +1,8 @@
 #include "http/context.hpp"
+#include "config/context.hpp"
+#include "midi/context.hpp"
+
+#include <ctype.h>
 
 #include <dirent.h>
 #include <errno.h>
@@ -20,6 +24,10 @@
 #define HTTP_SYSTEM_RESTART_PATH HTTP_API_PREFIX "system/restart"
 #define HTTP_SYSTEM_SHUTDOWN_PATH HTTP_API_PREFIX "system/shutdown"
 #define HTTP_VERSION_PATH HTTP_API_PREFIX "version"
+#define HTTP_MIDI_LAST_NOTE_PATH HTTP_API_PREFIX "midi/last_note"
+#define HTTP_MIDI_MAPPINGS_PATH HTTP_API_PREFIX "midi/mappings"
+#define HTTP_MIDI_MAPPING_SET_PATH HTTP_API_PREFIX "midi/mapping/set"
+#define HTTP_MIDI_MAPPING_DELETE_PATH HTTP_API_PREFIX "midi/mapping/delete"
 #define HTTP_FS_ROOT ROOT_MOUNT_POINT "/"
 
 namespace {
@@ -249,11 +257,371 @@ static int handleSoundboardTrigger(HttpServer *server,
 								   int cfd,
 								   const char *method,
 								   const char *path) {
-	(void)server;
-	(void)cfd;
-	(void)method;
+	if (!server || !server->app || !method || !path) {
+		return -1;
+	}
+
+	const char *slot_str = path + strlen(HTTP_SOUNDBOARD_TRIGGER_PREFIX);
+	if (!slot_str[0]) {
+		static const char bad[] = "missing slot\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char *endp = NULL;
+	long slot = strtol(slot_str, &endp, 10);
+	if (!endp || *endp != '\0' || slot < 0 || slot > 255) {
+		static const char bad[] = "invalid slot\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char out[160];
+	int n = snprintf(out,
+					 sizeof(out),
+					 "soundboard slot %ld accepted (audio playback not wired yet)\n",
+					 slot);
+	if (n < 0) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", out, (size_t)n);
+}
+
+static void copy_bound(char *dst, size_t dst_sz, const char *src) {
+	if (!dst || dst_sz == 0) {
+		return;
+	}
+	if (!src) {
+		dst[0] = '\0';
+		return;
+	}
+	size_t n = strnlen(src, dst_sz - 1);
+	memcpy(dst, src, n);
+	dst[n] = '\0';
+}
+
+static void trim_space(char *s) {
+	if (!s) {
+		return;
+	}
+
+	while (*s && isspace((unsigned char)*s)) {
+		memmove(s, s + 1, strlen(s));
+	}
+
+	size_t n = strlen(s);
+	while (n > 0 && isspace((unsigned char)s[n - 1])) {
+		s[n - 1] = '\0';
+		--n;
+	}
+}
+
+static int body_get_value(const char *body,
+						  size_t body_len,
+						  const char *key,
+						  char *out,
+						  size_t out_sz) {
+	if (!body || !key || !out || out_sz == 0) {
+		return 0;
+	}
+
+	char buf[512];
+	if (body_len >= sizeof(buf)) {
+		return 0;
+	}
+	memcpy(buf, body, body_len);
+	buf[body_len] = '\0';
+
+	for (char *p = buf; *p; ++p) {
+		if (*p == '&') {
+			*p = '\n';
+		}
+	}
+
+	char *savep = NULL;
+	for (char *line = strtok_r(buf, "\n", &savep); line; line = strtok_r(NULL, "\n", &savep)) {
+		char *eq = strchr(line, '=');
+		if (!eq) {
+			continue;
+		}
+		*eq = '\0';
+		char *k = line;
+		char *v = eq + 1;
+		trim_space(k);
+		trim_space(v);
+		if (strcmp(k, key) != 0) {
+			continue;
+		}
+		copy_bound(out, out_sz, v);
+		return 1;
+	}
+
+	return 0;
+}
+
+static int mapping_path_safe(const char *s) {
+	if (!s || !s[0]) {
+		return 0;
+	}
+	if (strstr(s, "..") != NULL) {
+		return 0;
+	}
+	if (strchr(s, '\\') != NULL) {
+		return 0;
+	}
+	for (const char *p = s; *p; ++p) {
+		unsigned char c = (unsigned char)*p;
+		if ((c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') ||
+			c == '.' || c == '_' || c == '-' || c == '/') {
+			continue;
+		}
+		return 0;
+	}
+	return 1;
+}
+
+static int mapping_normalize_sfx(const char *raw, char *out, size_t out_sz) {
+	if (!raw || !out || out_sz == 0 || !mapping_path_safe(raw)) {
+		return RET_ERR;
+	}
+
+	if (strncmp(raw, SFX_ROOT_DIR "/", strlen(SFX_ROOT_DIR) + 1) == 0) {
+		copy_bound(out, out_sz, raw + strlen(SFX_ROOT_DIR) + 1);
+		return out[0] ? RET_OK : RET_ERR;
+	}
+
+	if (raw[0] == '/') {
+		return RET_ERR;
+	}
+
+	copy_bound(out, out_sz, raw);
+	return out[0] ? RET_OK : RET_ERR;
+}
+
+static int handleMidiLastNote(HttpServer *server,
+						   int cfd,
+						   const char *method,
+						   const char *path) {
 	(void)path;
-	return RET_WARN;
+	if (!server || !server->app || !method) {
+		return -1;
+	}
+
+	if (strcmp(method, "GET") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	MidiContext *midi = server->app->midi;
+	if (!midi) {
+		static const char none[] = "{\"connected\":false,\"device\":\"\",\"last_note\":-1,\"last_velocity\":0,\"last_seq\":0}\n";
+		return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", none, sizeof(none) - 1);
+	}
+
+	char out[512];
+	int n = snprintf(out,
+					 sizeof(out),
+					 "{\"connected\":%s,\"device\":\"%s\",\"last_note\":%d,\"last_velocity\":%u,\"last_seq\":%u}\n",
+					 midi->connected ? "true" : "false",
+					 midi->devPath,
+					 midi->lastNoteSeq ? (int)midi->lastNote : -1,
+					 (unsigned)midi->lastVelocity,
+					 (unsigned)midi->lastNoteSeq);
+	if (n < 0) {
+		n = 0;
+	}
+	if ((size_t)n >= sizeof(out)) {
+		n = (int)(sizeof(out) - 1);
+	}
+
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
+static int handleMidiMappings(HttpServer *server,
+					   int cfd,
+					   const char *method,
+					   const char *path) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method) {
+		return -1;
+	}
+
+	if (strcmp(method, "GET") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	ConfigData cfg = server->app->config->readConfigFile();
+	char out[HTTP_BODY_MAX];
+	size_t off = 0;
+
+	int n = snprintf(out + off, sizeof(out) - off, "{\"mapping_count\":%u,\"mappings\":[", (unsigned)cfg.mappingCount);
+	if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", "encode failed\n", 14);
+	}
+	off += (size_t)n;
+
+	uint32_t count = cfg.mappingCount;
+	if (count > MIDI_MAPPINGS_MAX) {
+		count = MIDI_MAPPINGS_MAX;
+	}
+	int first = 1;
+	for (uint32_t i = 0; i < count; ++i) {
+		if (!cfg.mappings[i].sfxPath[0]) {
+			continue;
+		}
+		n = snprintf(out + off,
+					 sizeof(out) - off,
+					 "%s{\"note\":%u,\"sfx\":\"%s\"}",
+					 first ? "" : ",",
+					 (unsigned)cfg.mappings[i].note,
+					 cfg.mappings[i].sfxPath);
+		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+			break;
+		}
+		off += (size_t)n;
+		first = 0;
+	}
+
+	n = snprintf(out + off, sizeof(out) - off, "]}\n");
+	if (n > 0 && (size_t)n < sizeof(out) - off) {
+		off += (size_t)n;
+	}
+
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, off);
+}
+
+static int handleMidiMappingSet(HttpServer *server,
+						 int cfd,
+						 const char *method,
+						 const char *path,
+						 const char *body,
+						 size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method || !body) {
+		return -1;
+	}
+
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char note_buf[32];
+	char sfx_buf[MIDI_SFX_PATH_MAX];
+	if (!body_get_value(body, body_len, "note", note_buf, sizeof(note_buf)) ||
+		!body_get_value(body, body_len, "sfx", sfx_buf, sizeof(sfx_buf))) {
+		static const char bad[] = "expected note and sfx\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char *endp = NULL;
+	long note = strtol(note_buf, &endp, 10);
+	if (!endp || *endp != '\0' || note < 0 || note > 127) {
+		static const char bad[] = "invalid note\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char normalized[MIDI_SFX_PATH_MAX];
+	if (mapping_normalize_sfx(sfx_buf, normalized, sizeof(normalized)) != RET_OK) {
+		static const char bad[] = "invalid sfx path\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	ConfigData cfg = server->app->config->readConfigFile();
+	uint32_t count = cfg.mappingCount;
+	if (count > MIDI_MAPPINGS_MAX) {
+		count = MIDI_MAPPINGS_MAX;
+	}
+
+	int found = -1;
+	for (uint32_t i = 0; i < count; ++i) {
+		if (cfg.mappings[i].note == (uint8_t)note) {
+			found = (int)i;
+			break;
+		}
+	}
+
+	if (found >= 0) {
+		cfg.mappings[found].note = (uint8_t)note;
+		copy_bound(cfg.mappings[found].sfxPath, sizeof(cfg.mappings[found].sfxPath), normalized);
+	} else {
+		if (count >= MIDI_MAPPINGS_MAX) {
+			static const char full[] = "mapping table full\n";
+			return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8", full, sizeof(full) - 1);
+		}
+		cfg.mappings[count].note = (uint8_t)note;
+		copy_bound(cfg.mappings[count].sfxPath, sizeof(cfg.mappings[count].sfxPath), normalized);
+		cfg.mappingCount = count + 1;
+	}
+
+	if (server->app->config->writeConfigFile(&cfg) < 0) {
+		static const char err[] = "failed to write config\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	static const char ok[] = "ok\n";
+	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
+}
+
+static int handleMidiMappingDelete(HttpServer *server,
+							int cfd,
+							const char *method,
+							const char *path,
+							const char *body,
+							size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method || !body) {
+		return -1;
+	}
+
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char note_buf[32];
+	if (!body_get_value(body, body_len, "note", note_buf, sizeof(note_buf))) {
+		static const char bad[] = "expected note\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char *endp = NULL;
+	long note = strtol(note_buf, &endp, 10);
+	if (!endp || *endp != '\0' || note < 0 || note > 127) {
+		static const char bad[] = "invalid note\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	ConfigData cfg = server->app->config->readConfigFile();
+	uint32_t count = cfg.mappingCount;
+	if (count > MIDI_MAPPINGS_MAX) {
+		count = MIDI_MAPPINGS_MAX;
+	}
+
+	int idx = -1;
+	for (uint32_t i = 0; i < count; ++i) {
+		if (cfg.mappings[i].note == (uint8_t)note) {
+			idx = (int)i;
+			break;
+		}
+	}
+
+	if (idx < 0) {
+		static const char missing[] = "mapping not found\n";
+		return server->sendResponse(cfd, "404 Not Found", "text/plain; charset=utf-8", missing, sizeof(missing) - 1);
+	}
+
+	for (uint32_t i = (uint32_t)idx; i + 1 < count; ++i) {
+		cfg.mappings[i] = cfg.mappings[i + 1];
+	}
+	if (count > 0) {
+		cfg.mappingCount = count - 1;
+	}
+
+	if (server->app->config->writeConfigFile(&cfg) < 0) {
+		static const char err[] = "failed to write config\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	static const char ok[] = "ok\n";
+	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
 }
 
 static int handleConfigReload(HttpServer *server,
@@ -431,6 +799,22 @@ int handleApiRequest(HttpServer *server,
 			return sendNotImplemented(server, cfd, "version");
 		}
 		return rc;
+	}
+
+	if (strcmp(path, HTTP_MIDI_LAST_NOTE_PATH) == 0) {
+		return handleMidiLastNote(server, cfd, method, path);
+	}
+
+	if (strcmp(path, HTTP_MIDI_MAPPINGS_PATH) == 0) {
+		return handleMidiMappings(server, cfd, method, path);
+	}
+
+	if (strcmp(path, HTTP_MIDI_MAPPING_SET_PATH) == 0) {
+		return handleMidiMappingSet(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_MIDI_MAPPING_DELETE_PATH) == 0) {
+		return handleMidiMappingDelete(server, cfd, method, path, body, body_len);
 	}
 
 	if (pathIsRootfs(path)) {

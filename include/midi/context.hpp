@@ -16,6 +16,9 @@ struct MidiContext {
     int dataNeed;
     uint64_t nextProbeMs;
     uint64_t nextConfigReloadMs;
+    uint32_t lastNoteSeq;
+    uint8_t lastNote;
+    uint8_t lastVelocity;
     ConfigData cachedConfig;
 
     MidiContext(Audiox *context);

@@ -262,6 +262,9 @@ MidiContext::MidiContext(Audiox *context)
       dataNeed(0),
       nextProbeMs(0),
       nextConfigReloadMs(0),
+    lastNoteSeq(0),
+    lastNote(0),
+    lastVelocity(0),
       cachedConfig() {
     if (app) {
         app->midi = this;
@@ -371,6 +374,10 @@ void MidiContext::poll() {
                 if (kind != 0x90 || d1 == 0) {
                     continue;
                 }
+
+                ++lastNoteSeq;
+                lastNote = d0;
+                lastVelocity = d1;
 
                 const ConfigData::MidiMapping *mapping = findMapping(&cachedConfig, d0);
                 if (!mapping) {

@@ -451,6 +451,7 @@
         <button class="tab-btn active" data-tab="routing">Routing</button>
         <button class="tab-btn" data-tab="config">Config</button>
         <button class="tab-btn" data-tab="control">Control/Status</button>
+        <button class="tab-btn" data-tab="mapping">MIDI Mapping</button>
         <button class="tab-btn" data-tab="upload">Soundboard Upload</button>
       </nav>
     </header>
@@ -532,20 +533,55 @@
 
     <section class="tab-page" data-page="upload">
       <div class="mock-upload">
-        <h2 style="margin:0; font-size:14px; text-transform:uppercase; letter-spacing:.06em;">Soundboard Upload (Mock)</h2>
+        <h2 style="margin:0; font-size:14px; text-transform:uppercase; letter-spacing:.06em;">Soundboard Upload</h2>
         <div class="cfg-row" style="margin-top:0;">
           <label for="upload_slot">Target Slot</label>
           <input id="upload_slot" type="number" min="0" max="31" value="0">
+        </div>
+        <div class="cfg-row">
+          <label for="upload_name">Target Filename (optional)</label>
+          <input id="upload_name" type="text" placeholder="kick.wav">
         </div>
         <div class="cfg-row" style="grid-template-columns: 1fr;">
           <label for="upload_file">Audio File</label>
           <input id="upload_file" type="file" accept="audio/*">
         </div>
         <div class="grid2" style="grid-template-columns: 1fr 1fr;">
-          <button id="btn-upload-mock" class="primary">Upload (Mock)</button>
+          <button id="btn-upload-real" class="primary">Upload To /audiox/sfx</button>
           <button id="btn-upload-clear">Clear</button>
         </div>
-        <div class="muted">This page is UI-only for now. No file transfer is sent.</div>
+        <div class="muted">Uploaded files are written to /audiox/sfx and appear below.</div>
+        <section class="side-card">
+          <h2>Available SFX Files</h2>
+          <div id="sfx-list" class="edge-list"></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="tab-page" data-page="mapping">
+      <div class="mock-upload">
+        <h2 style="margin:0; font-size:14px; text-transform:uppercase; letter-spacing:.06em;">MIDI Button Mapping</h2>
+        <div class="grid2" style="grid-template-columns: 1fr 1fr;">
+          <button id="btn-mapping-mode" class="warn">Mapping Mode: OFF</button>
+          <button id="btn-mapping-refresh">Refresh Mappings</button>
+        </div>
+        <div class="muted" id="mapping-capture-status">No MIDI note captured yet.</div>
+        <div class="cfg-row" style="margin-top:0;">
+          <label for="mapping_note">Captured MIDI Note</label>
+          <input id="mapping_note" type="number" min="0" max="127" value="0">
+        </div>
+        <div class="cfg-row" style="grid-template-columns: 1fr;">
+          <label for="mapping_sfx">Target Sound</label>
+          <select id="mapping_sfx" style="width:100%; border:1px solid #36566a; border-radius:8px; background:#10212c; color:var(--fg); padding:7px; font-size:13px;"></select>
+        </div>
+        <div class="grid2" style="grid-template-columns: 1fr 1fr;">
+          <button id="btn-mapping-save" class="primary">Save Mapping</button>
+          <button id="btn-mapping-delete" class="warn">Delete Mapping For Note</button>
+        </div>
+        <section class="side-card">
+          <h2>Current Mappings</h2>
+          <div id="mapping-list" class="edge-list"></div>
+        </section>
       </div>
     </section>
 
@@ -561,6 +597,11 @@
     const zoomLabelEl = document.getElementById('zoom-label');
     const tabsEl = document.getElementById('tabs');
     const appVersionEl = document.getElementById('app-version');
+    const sfxListEl = document.getElementById('sfx-list');
+    const mappingListEl = document.getElementById('mapping-list');
+    const mappingSfxEl = document.getElementById('mapping_sfx');
+    const mappingNoteEl = document.getElementById('mapping_note');
+    const mappingCaptureStatusEl = document.getElementById('mapping-capture-status');
 
     const configPath = '/api/rootfs/config.staging.txt';
     const realConfigPath = '/api/rootfs/config.txt';
@@ -584,6 +625,10 @@
       dragOffsetY: 0,
       edgeDeleteEnabled: true,
       activeTab: 'routing',
+      mappingMode: false,
+      mappingPollTimer: null,
+      mappingLastSeq: 0,
+      sfxFiles: [],
     };
 
     function setStatus(text, kind = '') {
@@ -812,6 +857,254 @@
       } catch (err) {
         setStatus(`${label} error: ${err}`, 'warn');
         return false;
+      }
+    }
+
+    function sanitizeSfxName(name) {
+      const raw = String(name || '').trim();
+      if (!raw) return '';
+      const base = raw.split('/').pop().split('\\').pop();
+      return base.replace(/[^a-zA-Z0-9._-]/g, '_');
+    }
+
+    async function listSfxFiles() {
+      try {
+        const res = await fetch('/api/rootfs/sfx/', { method: 'GET' });
+        const txt = await res.text();
+        if (!res.ok) {
+          sfxListEl.textContent = 'failed to list sfx files';
+          return [];
+        }
+
+        const files = [];
+        for (const line of txt.split(/\r?\n/)) {
+          const t = line.trim();
+          if (!t || t.startsWith('rootfs listing:')) continue;
+          if (t.endsWith('/')) continue;
+          files.push(t);
+        }
+
+        files.sort((a, b) => a.localeCompare(b));
+        state.sfxFiles = files;
+        renderSfxFiles();
+        renderMappingSfxSelect();
+        return files;
+      } catch (err) {
+        sfxListEl.textContent = `failed to list sfx files: ${err}`;
+        return [];
+      }
+    }
+
+    function renderSfxFiles() {
+      sfxListEl.innerHTML = '';
+      if (!state.sfxFiles.length) {
+        sfxListEl.textContent = 'no files in /audiox/sfx';
+        return;
+      }
+
+      for (const file of state.sfxFiles) {
+        const row = document.createElement('div');
+        row.className = 'edge-item';
+        row.textContent = file;
+        sfxListEl.appendChild(row);
+      }
+    }
+
+    function renderMappingSfxSelect() {
+      const prev = mappingSfxEl.value;
+      mappingSfxEl.innerHTML = '';
+      for (const file of state.sfxFiles) {
+        const opt = document.createElement('option');
+        opt.value = file;
+        opt.textContent = file;
+        mappingSfxEl.appendChild(opt);
+      }
+
+      if (prev && state.sfxFiles.includes(prev)) {
+        mappingSfxEl.value = prev;
+      }
+    }
+
+    async function uploadSfxFile() {
+      const slot = Number(document.getElementById('upload_slot').value || 0);
+      const file = document.getElementById('upload_file').files[0];
+      const manualName = document.getElementById('upload_name').value;
+      if (!file) {
+        setStatus('upload failed: pick a file first', 'warn');
+        return;
+      }
+
+      const targetName = sanitizeSfxName(manualName || file.name);
+      if (!targetName) {
+        setStatus('upload failed: invalid target name', 'warn');
+        return;
+      }
+
+      setStatus(`uploading ${targetName}...`);
+      try {
+        const buf = await file.arrayBuffer();
+        const res = await fetch(`/api/rootfs/sfx/${targetName}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: buf,
+        });
+        const txt = (await res.text()).trim();
+        if (!res.ok) {
+          setStatus(`upload failed: ${res.status} ${txt}`, 'warn');
+          return;
+        }
+
+        await listSfxFiles();
+        setStatus(`uploaded ${targetName} for slot ${slot}`, 'ok');
+      } catch (err) {
+        setStatus(`upload error: ${err}`, 'warn');
+      }
+    }
+
+    async function loadMappings() {
+      try {
+        const res = await fetch('/api/midi/mappings', { method: 'GET' });
+        const txt = await res.text();
+        if (!res.ok) {
+          mappingListEl.textContent = `failed to load mappings: ${res.status}`;
+          return;
+        }
+
+        const data = JSON.parse(txt);
+        const mappings = Array.isArray(data?.mappings) ? data.mappings : [];
+        mappingListEl.innerHTML = '';
+        if (!mappings.length) {
+          mappingListEl.textContent = 'no mappings yet';
+          return;
+        }
+
+        for (const map of mappings) {
+          const row = document.createElement('div');
+          row.className = 'edge-item';
+          row.textContent = `note ${map.note} -> ${map.sfx}`;
+          row.addEventListener('click', () => {
+            mappingNoteEl.value = String(map.note);
+            if (state.sfxFiles.includes(map.sfx)) {
+              mappingSfxEl.value = map.sfx;
+            }
+          });
+          mappingListEl.appendChild(row);
+        }
+      } catch (err) {
+        mappingListEl.textContent = `failed to load mappings: ${err}`;
+      }
+    }
+
+    async function saveMapping() {
+      const note = Number(mappingNoteEl.value);
+      const sfx = mappingSfxEl.value;
+      if (!Number.isFinite(note) || note < 0 || note > 127) {
+        setStatus('invalid midi note, expected 0-127', 'warn');
+        return;
+      }
+      if (!sfx) {
+        setStatus('select a target sound first', 'warn');
+        return;
+      }
+
+      setStatus(`saving mapping note ${note} -> ${sfx}...`);
+      try {
+        const body = `note=${note}&sfx=${sfx}`;
+        const res = await fetch('/api/midi/mapping/set', {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body,
+        });
+        const txt = (await res.text()).trim();
+        if (!res.ok) {
+          setStatus(`mapping save failed: ${res.status} ${txt}`, 'warn');
+          return;
+        }
+
+        await loadMappings();
+        setStatus(`mapping saved note ${note} -> ${sfx}`, 'ok');
+      } catch (err) {
+        setStatus(`mapping save error: ${err}`, 'warn');
+      }
+    }
+
+    async function deleteMapping() {
+      const note = Number(mappingNoteEl.value);
+      if (!Number.isFinite(note) || note < 0 || note > 127) {
+        setStatus('invalid midi note, expected 0-127', 'warn');
+        return;
+      }
+
+      setStatus(`deleting mapping for note ${note}...`);
+      try {
+        const res = await fetch('/api/midi/mapping/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: `note=${note}`,
+        });
+        const txt = (await res.text()).trim();
+        if (!res.ok) {
+          setStatus(`mapping delete failed: ${res.status} ${txt}`, 'warn');
+          return;
+        }
+
+        await loadMappings();
+        setStatus(`mapping deleted for note ${note}`, 'ok');
+      } catch (err) {
+        setStatus(`mapping delete error: ${err}`, 'warn');
+      }
+    }
+
+    async function pollMappingCapture() {
+      if (!state.mappingMode) {
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/midi/last_note', { method: 'GET' });
+        const txt = await res.text();
+        if (!res.ok) {
+          return;
+        }
+
+        const data = JSON.parse(txt);
+        const connected = !!data.connected;
+        const seq = Number(data.last_seq || 0);
+        const note = Number(data.last_note);
+        const velocity = Number(data.last_velocity || 0);
+
+        if (!connected) {
+          mappingCaptureStatusEl.textContent = 'Mapping mode ON - waiting for MIDI device...';
+          return;
+        }
+
+        if (seq > state.mappingLastSeq && note >= 0 && note <= 127) {
+          state.mappingLastSeq = seq;
+          mappingNoteEl.value = String(note);
+          mappingCaptureStatusEl.textContent = `Captured note ${note} (velocity ${velocity})`;
+          setStatus(`captured midi note ${note}`, 'ok');
+        }
+      } catch (err) {
+      }
+    }
+
+    function setMappingMode(enabled) {
+      state.mappingMode = !!enabled;
+      const btn = document.getElementById('btn-mapping-mode');
+      btn.textContent = `Mapping Mode: ${state.mappingMode ? 'ON' : 'OFF'}`;
+      btn.classList.toggle('primary', state.mappingMode);
+      btn.classList.toggle('warn', !state.mappingMode);
+
+      if (state.mappingPollTimer) {
+        clearInterval(state.mappingPollTimer);
+        state.mappingPollTimer = null;
+      }
+
+      if (state.mappingMode) {
+        mappingCaptureStatusEl.textContent = 'Mapping mode ON - press a MIDI button to capture note.';
+        state.mappingPollTimer = setInterval(pollMappingCapture, 220);
+      } else {
+        mappingCaptureStatusEl.textContent = 'Mapping mode OFF.';
       }
     }
 
@@ -1325,11 +1618,14 @@
 
     async function initializeGraphFromConfig() {
       await loadConfig();
+      await listSfxFiles();
+      await loadMappings();
       await loadRoutingThings();
       await loadRoutingFile();
       renderGraph();
       updateZoomLabel();
       setEdgeDeleteMode(true);
+      setMappingMode(false);
     }
 
     tabsEl.querySelectorAll('.tab-btn').forEach((btn) => {
@@ -1392,21 +1688,27 @@
 
     window.addEventListener('resize', renderLinks);
 
-    document.getElementById('btn-upload-mock').addEventListener('click', () => {
-      const slot = Number(document.getElementById('upload_slot').value || 0);
-      const file = document.getElementById('upload_file').files[0];
-      if (!file) {
-        setStatus('mock upload: pick a file first', 'warn');
-        return;
-      }
-      setStatus(`mock upload ready for slot ${slot}: ${file.name}`, 'ok');
-    });
+    document.getElementById('btn-upload-real').addEventListener('click', uploadSfxFile);
 
     document.getElementById('btn-upload-clear').addEventListener('click', () => {
       document.getElementById('upload_slot').value = '0';
+      document.getElementById('upload_name').value = '';
       document.getElementById('upload_file').value = '';
-      setStatus('mock upload form cleared');
+      setStatus('upload form cleared');
     });
+
+    document.getElementById('btn-mapping-mode').addEventListener('click', () => {
+      setMappingMode(!state.mappingMode);
+    });
+
+    document.getElementById('btn-mapping-refresh').addEventListener('click', async () => {
+      await listSfxFiles();
+      await loadMappings();
+      setStatus('mapping data refreshed', 'ok');
+    });
+
+    document.getElementById('btn-mapping-save').addEventListener('click', saveMapping);
+    document.getElementById('btn-mapping-delete').addEventListener('click', deleteMapping);
 
     document.getElementById('btn-system-sync').addEventListener('click', async () => {
       await runSystemAction('/api/system/sync', 'sync');

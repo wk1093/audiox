@@ -11,8 +11,23 @@ static void *audioProcessingThreadMain(void *arg) {
         return nullptr;
     }
 
+    uint32_t lastGraphGeneration = 0;
+
     while (ctx->processingThreadRun) {
-        // No DSP graph yet; hotplug and routing polling still run in main poll loop.
+        {
+            std::lock_guard<std::mutex> lock(ctx->routingGraphMutex);
+            if (ctx->routingGraph.generation != lastGraphGeneration) {
+                lastGraphGeneration = ctx->routingGraph.generation;
+                if (lastGraphGeneration > 0) {
+                    printf("[AUDIO] [INFO] processing thread observed graph generation %u (%u thing(s), %u edge(s))\n",
+                           (unsigned)lastGraphGeneration,
+                           (unsigned)ctx->routingGraph.thingCount,
+                           (unsigned)ctx->routingGraph.edgeCount);
+                }
+            }
+        }
+
+        // DSP graph execution comes next; for now the thread tracks the compiled graph state.
         usleep(2000);
     }
 
@@ -26,6 +41,11 @@ int AudioContext::setupThreads() {
         return RET_OK;
     }
 
+    int initGraphRc = forceRescan();
+    if (initGraphRc == RET_ERR) {
+        return RET_ERR;
+    }
+
     processingThreadRun = 1;
     if (pthread_create(&processingThread, nullptr, audioProcessingThreadMain, this) != 0) {
         processingThreadRun = 0;
@@ -33,5 +53,5 @@ int AudioContext::setupThreads() {
     }
 
     processingThreadStarted = 1;
-    return RET_OK;
+    return (initGraphRc == RET_WARN) ? RET_WARN : RET_OK;
 }

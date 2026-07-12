@@ -36,28 +36,6 @@
 
 namespace {
 
-static void sortAudioDeviceInfos(AudioDeviceInfo *infos, size_t count) {
-	for (size_t i = 1; i < count; ++i) {
-		AudioDeviceInfo key = infos[i];
-		size_t j = i;
-		while (j > 0) {
-			const AudioDeviceInfo &prev = infos[j - 1];
-			bool shouldSwap = false;
-			if (prev.cardIndex > key.cardIndex) {
-				shouldSwap = true;
-			} else if (prev.cardIndex == key.cardIndex && prev.deviceIndex > key.deviceIndex) {
-				shouldSwap = true;
-			}
-			if (!shouldSwap) {
-				break;
-			}
-			infos[j] = infos[j - 1];
-			--j;
-		}
-		infos[j] = key;
-	}
-}
-
 static int mapping_path_safe(const char *s);
 
 static int sendMethodNotAllowed(HttpServer *server, int cfd) {
@@ -818,11 +796,28 @@ static int handleRoutingReload(HttpServer *server,
 							   int cfd,
 							   const char *method,
 							   const char *path) {
-	(void)server;
-	(void)cfd;
-	(void)method;
 	(void)path;
-	return RET_WARN;
+	if (!server || !server->app || !server->app->audio || !method) {
+		return -1;
+	}
+
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	int rc = server->app->audio->reloadRoutingGraph();
+	if (rc == RET_ERR) {
+		static const char err[] = "{\"ok\":false,\"error\":\"routing graph reload failed\"}\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "application/json; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	char out[512];
+	if (server->app->audio->buildRoutingGraphJson(out, sizeof(out)) != RET_OK) {
+		static const char err[] = "{\"ok\":false,\"error\":\"routing graph encode failed\"}\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "application/json; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
 }
 
 static int handleRoutingThings(HttpServer *server,
@@ -843,24 +838,10 @@ static int handleRoutingThings(HttpServer *server,
 		cfg = server->app->config->readConfigFile();
 	}
 
-	AudioDeviceInfo infos[32];
-	size_t deviceCount = 0;
-	int haveGadgetPlayback = 0;
-	int haveGadgetCapture = 0;
+	AudioGraphThingInfo things[AUDIO_GRAPH_MAX_THINGS];
+	size_t thingCount = 0;
 	if (server->app->audio) {
-		deviceCount = server->app->audio->copyDeviceInfos(infos, 32);
-		sortAudioDeviceInfos(infos, deviceCount);
-		for (size_t i = 0; i < deviceCount; ++i) {
-			if (!infos[i].isGadget) {
-				continue;
-			}
-			if (infos[i].hasPlayback) {
-				haveGadgetPlayback = 1;
-			}
-			if (infos[i].hasCapture) {
-				haveGadgetCapture = 1;
-			}
-		}
+		thingCount = server->app->audio->copyRoutingThings(things, AUDIO_GRAPH_MAX_THINGS);
 	}
 
 	char out[HTTP_BODY_MAX];
@@ -885,37 +866,11 @@ static int handleRoutingThings(HttpServer *server,
 		first = 0; \
 	} while (0)
 
-	APPEND_THING("soundboard_out", "Soundboard Out", 0, 2);
-	APPEND_THING("fx_slot_0", "FX Slot 0", 2, 2);
-	APPEND_THING("soundboard_virtual_out", "Soundboard Virtual Out", 2, 0);
-	if (!haveGadgetPlayback) {
-		APPEND_THING("usb_gadget_out", "USB Gadget Out", cfg.playbackChannels, 0);
-	}
-	if (!haveGadgetCapture) {
-		APPEND_THING("usb_gadget_in", "USB Gadget In", 0, cfg.captureChannels);
-	}
-
-	for (size_t i = 0; i < deviceCount; ++i) {
-		char id[48];
-		char label[160];
-		if (infos[i].hasCapture) {
-			snprintf(id,
-					 sizeof(id),
-					 "alsa_card%u_dev%u_in",
-					 (unsigned)infos[i].cardIndex,
-					 (unsigned)infos[i].deviceIndex);
-			snprintf(label, sizeof(label), "%s In", infos[i].displayName);
-			APPEND_THING(id, label, 0, infos[i].captureChannels ? infos[i].captureChannels : 2);
-		}
-		if (infos[i].hasPlayback) {
-			snprintf(id,
-					 sizeof(id),
-					 "alsa_card%u_dev%u_out",
-					 (unsigned)infos[i].cardIndex,
-					 (unsigned)infos[i].deviceIndex);
-			snprintf(label, sizeof(label), "%s Out", infos[i].displayName);
-			APPEND_THING(id, label, infos[i].playbackChannels ? infos[i].playbackChannels : 2, 0);
-		}
+	for (size_t i = 0; i < thingCount; ++i) {
+		APPEND_THING(things[i].id,
+					 things[i].name,
+					 things[i].inputs,
+					 things[i].outputs);
 	}
 
 #undef APPEND_THING

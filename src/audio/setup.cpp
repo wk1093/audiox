@@ -31,6 +31,7 @@ AudioContext::AudioContext(Audiox *context) : app(context) {
     nextHotplugScanMs = 0;
     nextHandle = 1;
     deviceGeneration = 0;
+    memset(&routingGraph, 0, sizeof(routingGraph));
 }
 
 AudioContext::~AudioContext() {
@@ -70,5 +71,13 @@ void AudioContext::poll() {
 
 int AudioContext::forceRescan() {
     nextHotplugScanMs = 0;
-    return rescanDevices();
+    int rc = rescanDevices();
+    int graphRc = reloadRoutingGraph();
+    if (rc == RET_ERR || graphRc == RET_ERR) {
+        return RET_ERR;
+    }
+    if (rc == RET_WARN || graphRc == RET_WARN) {
+        return RET_WARN;
+    }
+    return RET_OK;
 }

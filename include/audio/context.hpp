@@ -11,6 +11,34 @@
 #include <unordered_map>
 #include <mutex>
 
+#define AUDIO_GRAPH_MAX_THINGS 64
+#define AUDIO_GRAPH_MAX_EDGES 128
+
+struct AudioGraphThingInfo {
+    char id[64];
+    char name[128];
+    uint8_t inputs;
+    uint8_t outputs;
+};
+
+struct AudioGraphEdgeInfo {
+    char src[64];
+    char dst[64];
+    uint8_t srcChannel;
+    uint8_t dstChannel;
+};
+
+struct AudioGraphState {
+    uint32_t generation;
+    uint32_t topologyGeneration;
+    uint16_t thingCount;
+    uint16_t edgeCount;
+    uint16_t skippedEdgeCount;
+    char status[160];
+    AudioGraphThingInfo things[AUDIO_GRAPH_MAX_THINGS];
+    AudioGraphEdgeInfo edges[AUDIO_GRAPH_MAX_EDGES];
+};
+
 struct AudioThing {
     virtual uint32_t getInputChCount() const = 0;
     virtual uint32_t getOutputChCount() const = 0;
@@ -93,6 +121,8 @@ struct AudioContext {
     std::unordered_map<std::string, AudioHandle> pathToHandle;
     std::unordered_map<AudioHandle, AudioDeviceInfo> devices;
     mutable std::mutex devicesMutex;
+    AudioGraphState routingGraph;
+    mutable std::mutex routingGraphMutex;
 
     AudioContext(Audiox *context);
     ~AudioContext();
@@ -103,6 +133,9 @@ struct AudioContext {
     int forceRescan() WARN_UNUSED;
     size_t copyDeviceInfos(AudioDeviceInfo *out, size_t cap) const;
     int buildDevicesJson(char *out, size_t out_sz) const WARN_UNUSED;
+    size_t copyRoutingThings(AudioGraphThingInfo *out, size_t cap) const;
+    int reloadRoutingGraph() WARN_UNUSED;
+    int buildRoutingGraphJson(char *out, size_t out_sz) const WARN_UNUSED;
 
     void poll();
 

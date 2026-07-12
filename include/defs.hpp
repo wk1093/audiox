@@ -36,4 +36,4 @@
 
 #define USB_NET_IFACE "usb0"
 #define USB_NET_SERVER_IP "169.254.1.2"
-#define USB_NET_NETMASK "255.255.255.0"
+#define USB_NET_NETMASK "255.255.0.0"

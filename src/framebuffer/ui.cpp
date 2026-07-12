@@ -85,6 +85,8 @@ void FramebufferContext::bootStatus(const char *status) {
 
     printf("[INIT] [INFO] BOOT: %s\n", status);
 
+    beginFrame();
+
     // draw boot logo
     drawBootLogo();
 
@@ -106,6 +108,8 @@ void FramebufferContext::bootStatus(const char *status) {
     int y = calculateTextY(height, text_h, _calculatedLogoHeight);
 
     drawText(x, y, status, 150, 188, 228, 1);
+
+    present();
 
 }
 
@@ -180,6 +184,8 @@ void FramebufferContext::drawMain(TouchState *touchState) {
         return;
     }
 
+    beginFrame();
+
     // draw background
     drawRect(0, 0, width, height, 8, 11, 16);
 
@@ -194,4 +200,6 @@ void FramebufferContext::drawMain(TouchState *touchState) {
     if (buttonPressed) {
         drawText(button_x + 10, button_y + button_h + 10, "Button Pressed!", 255, 255, 255, 1);
     }
+
+    present();
 }

@@ -12,7 +12,9 @@ struct FramebufferContext {
     Audiox *app;
     int fd;
     uint8_t *buffer;
+    uint8_t *stagingBuffer;
     size_t bufferSize;
+    size_t stagingBufferSize;
     uint32_t width;
     uint32_t height;
     uint32_t bpp;

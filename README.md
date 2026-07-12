@@ -39,6 +39,7 @@ Useful targets:
 
 - Put `voice0.wav` ... `voice3.wav` in `wavs/`
 - Module seeds live in `depmod.txt`: use `base:` for early boot/UI-critical modules and `normal:` (or no prefix) for the rest
+- Default boot graphics stay on FKMS (`vc4-fkms-v3d-pi4`); framebuffer rendering now stages into an off-screen buffer before presenting so visible tearing from direct pixel writes is reduced without switching the display stack
 - This project is still rough around the edges, but it is usable for bring-up and iteration
 
 Network currently requires this on linux host (sometimes, only tested on one machine):

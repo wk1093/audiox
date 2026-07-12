@@ -5,6 +5,8 @@
 #include <sys/ioctl.h>
 #include <cstdint>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include "font8x8_basic.h"
 
 static inline uint32_t packColor(const FramebufferContext *fb, uint8_t r, uint8_t g, uint8_t b) {
@@ -20,13 +22,17 @@ void FramebufferContext::drawPixel(int x, int y, unsigned char r, unsigned char 
         return;
     }
 
+    if (!stagingBuffer) {
+        return;
+    }
+
     if (x < 0 || x >= (int)width || y < 0 || y >= (int)height) {
         return;
     }
 
     uint32_t color = packColor(this, r, g, b);
 
-    uint8_t *row = buffer + draw_offset + y * line_length;
+    uint8_t *row = stagingBuffer + y * line_length;
     if (bpp == 16) {
         ((uint16_t *)row)[x] = (uint16_t)color;
     } else if (bpp == 24) {
@@ -117,6 +123,13 @@ void FramebufferContext::present() {
         return;
     }
 
+    if (!stagingBuffer) {
+        return;
+    }
+
+    uint8_t *target = buffer + draw_offset;
+    memcpy(target, stagingBuffer, page_len);
+
     if (!pageflip_enabled) {
         return;
     }
@@ -148,5 +161,9 @@ void FramebufferContext::beginFrame() {
     } else {
         draw_page = 0;
         draw_offset = 0;
+    }
+
+    if (stagingBuffer) {
+        memset(stagingBuffer, 0, page_len);
     }
 }

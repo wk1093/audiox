@@ -49,6 +49,11 @@ void initFramebuffer(FramebufferContext *fb) {
 
         fb->fd = fd;
         fb->buffer = map;
+        if (!fb->stagingBuffer || fb->stagingBufferSize != (size_t)finfo.line_length * (size_t)vinfo.yres) {
+            delete[] fb->stagingBuffer;
+            fb->stagingBuffer = new uint8_t[(size_t)finfo.line_length * (size_t)vinfo.yres];
+            fb->stagingBufferSize = (size_t)finfo.line_length * (size_t)vinfo.yres;
+        }
         fb->bufferSize = finfo.smem_len;
         fb->width = vinfo.xres;
         fb->height = vinfo.yres;
@@ -98,6 +103,7 @@ void initFramebuffer(FramebufferContext *fb) {
             memset(fb->buffer, 0, fb->page_len);
             printf("[INIT] framebuffer %s page flipping not available\n", path);
         }
+        memset(fb->stagingBuffer, 0, fb->page_len);
         return;
     }
     printf("[INIT] [WARN] No usable framebuffer found in /dev/fb0..3.\n");
@@ -108,7 +114,9 @@ FramebufferContext::FramebufferContext(Audiox *context) {
 
     fd = -1;
     buffer = nullptr;
+    stagingBuffer = nullptr;
     bufferSize = 0;
+    stagingBufferSize = 0;
     width = 0;
     height = 0;
     bpp = 0;

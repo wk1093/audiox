@@ -168,6 +168,17 @@ static void formatGraphStatus(char *out,
     }
 }
 
+static void publishRoutingGraph(AudioContext *ctx, const AudioGraphState &graph) {
+    if (!ctx) {
+        return;
+    }
+
+    uint32_t seq = ctx->routingGraphSeq.load(std::memory_order_relaxed);
+    ctx->routingGraphSeq.store(seq + 1, std::memory_order_release);
+    ctx->routingGraphPublished = graph;
+    ctx->routingGraphSeq.store(seq + 2, std::memory_order_release);
+}
+
 } // namespace
 
 size_t AudioContext::copyRoutingThings(AudioGraphThingInfo *out, size_t cap) const {
@@ -329,6 +340,7 @@ int AudioContext::reloadRoutingGraph() {
                               next.skippedEdgeCount);
         }
         routingGraph = next;
+        publishRoutingGraph(this, routingGraph);
     }
 
     printf("[AUDIO] [INFO] %s\n", next.status);

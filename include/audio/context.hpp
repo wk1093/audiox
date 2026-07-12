@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <pthread.h>
+#include <atomic>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -117,11 +118,14 @@ struct AudioContext {
     uint64_t nextHotplugScanMs;
     AudioHandle nextHandle;
     uint32_t deviceGeneration;
+    std::atomic<uint32_t> pendingSfxTriggers;
 
     std::unordered_map<std::string, AudioHandle> pathToHandle;
     std::unordered_map<AudioHandle, AudioDeviceInfo> devices;
     mutable std::mutex devicesMutex;
     AudioGraphState routingGraph;
+    AudioGraphState routingGraphPublished;
+    std::atomic<uint32_t> routingGraphSeq;
     mutable std::mutex routingGraphMutex;
 
     AudioContext(Audiox *context);

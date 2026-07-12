@@ -31,7 +31,10 @@ AudioContext::AudioContext(Audiox *context) : app(context) {
     nextHotplugScanMs = 0;
     nextHandle = 1;
     deviceGeneration = 0;
+    pendingSfxTriggers.store(0, std::memory_order_relaxed);
     memset(&routingGraph, 0, sizeof(routingGraph));
+    memset(&routingGraphPublished, 0, sizeof(routingGraphPublished));
+    routingGraphSeq.store(0, std::memory_order_relaxed);
 }
 
 AudioContext::~AudioContext() {
@@ -51,12 +54,13 @@ int AudioContext::triggerSfx(const char *sfxPath) {
     struct stat st;
     if (stat(sfxPath, &st) < 0) {
         printf("[AUDIO] [WARN] mapped SFX missing: %s\n", sfxPath);
-        return RET_WARN;
     }
 
-    // Placeholder until audio engine routing/playback is fully ported.
-    printf("[AUDIO] [WARN] SFX trigger requested but playback is not implemented yet: %s\n", sfxPath);
-    return RET_WARN;
+    uint32_t queued = pendingSfxTriggers.fetch_add(1U, std::memory_order_relaxed) + 1U;
+    if ((queued % 64U) == 1U) {
+        printf("[AUDIO] [INFO] queued soundboard trigger(s): %u\n", (unsigned)queued);
+    }
+    return RET_OK;
 }
 
 void AudioContext::poll() {

@@ -16,7 +16,6 @@ namespace {
 constexpr uint32_t kMaxChannelsPerThing = 16;
 constexpr float kTwoPi = 6.28318530717958647692f;
 constexpr float kSourceToneHz = 220.0f;
-constexpr float kSourceAmp = 0.18f;
 constexpr float kSrcRatioMin = 0.97f;
 constexpr float kSrcRatioMax = 1.03f;
 constexpr float kSrcP = 0.035f;
@@ -27,6 +26,7 @@ constexpr uint32_t kCaptureRingFrames = BUFFER_FRAMES * 16U;
 constexpr uint32_t kReopenRetryBlocks = 200;
 constexpr uint32_t kSoundboardBurstSamples = SAMPLE_RATE / 3U;
 constexpr uint32_t kSoundboardBurstMax = SAMPLE_RATE * 3U;
+constexpr float kSoundboardClipGain = 0.35f;
 
 struct AdaptiveSrcController {
     float ratio;
@@ -68,6 +68,7 @@ struct RuntimeGraph {
         uint32_t ringCount;
         float readFrac;
         AdaptiveSrcController src;
+        float lastSample[kMaxChannelsPerThing];
         char path[64];
         int16_t ioBlock[BUFFER_FRAMES * kMaxChannelsPerThing];
         int16_t ring[kCaptureRingFrames * kMaxChannelsPerThing];
@@ -105,6 +106,12 @@ struct RuntimeGraph {
     float soundboardPhase;
     float soundboardEnv;
     uint32_t soundboardBurstRemaining;
+    uint32_t activeClipSlot;
+    uint32_t activeClipFrames;
+    uint32_t activeClipRate;
+    uint8_t activeClipChannels;
+    uint32_t activeClipPos;
+    float activeClipFrac;
     int16_t nodeToCaptureStream[AUDIO_GRAPH_MAX_THINGS];
     int16_t nodeToPlaybackStream[AUDIO_GRAPH_MAX_THINGS];
     int16_t soundboardNodeIndex;
@@ -277,6 +284,7 @@ static void captureRingReset(RuntimeGraph::AlsaCaptureStream *s) {
     s->ringTail = 0;
     s->ringCount = 0;
     s->readFrac = 0.0f;
+    memset(s->lastSample, 0, sizeof(s->lastSample));
 }
 
 static void captureRingPush(RuntimeGraph::AlsaCaptureStream *s, const int16_t *in, uint32_t frames) {
@@ -335,6 +343,16 @@ static bool openCaptureStream(RuntimeGraph::AlsaCaptureStream *s) {
         return false;
     }
 
+    static const struct {
+        unsigned periodFrames;
+        unsigned periods;
+    } profiles[] = {
+        {512U, 4U},
+        {256U, 4U},
+        {BUFFER_FRAMES, 4U},
+        {BUFFER_FRAMES, 2U},
+    };
+
     const unsigned rates[] = {SAMPLE_RATE, AUDIO_INPUT_FALLBACK_RATE};
     uint8_t chAttempts[3] = {};
     size_t chCount = 0;
@@ -356,39 +374,43 @@ static bool openCaptureStream(RuntimeGraph::AlsaCaptureStream *s) {
                 continue;
             }
 
-            int fd = open(s->path, O_RDONLY | O_NONBLOCK);
-            if (fd < 0) {
-                return false;
-            }
+            for (size_t p = 0; p < (sizeof(profiles) / sizeof(profiles[0])); ++p) {
+                int fd = open(s->path, O_RDONLY | O_NONBLOCK);
+                if (fd < 0) {
+                    return false;
+                }
 
-            snd_pcm_uframes_t period = 0;
-            size_t frameBytes = 0;
-            if (audio_pcm_configure_hw_fd(fd,
-                                          s->path,
-                                          rates[r],
-                                          ch,
-                                          AUDIO_CAPTURE_PERIOD_FRAMES,
-                                          AUDIO_CAPTURE_PERIODS,
-                                          &period,
-                                          &frameBytes,
-                                          1,
-                                          0) != 0) {
-                close(fd);
-                continue;
-            }
+                snd_pcm_uframes_t period = 0;
+                size_t frameBytes = 0;
+                if (audio_pcm_configure_hw_fd(fd,
+                                              s->path,
+                                              rates[r],
+                                              ch,
+                                              profiles[p].periodFrames,
+                                              profiles[p].periods,
+                                              &period,
+                                              &frameBytes,
+                                              1,
+                                              0) != 0) {
+                    close(fd);
+                    continue;
+                }
 
-            s->fd = fd;
-            s->channels = ch;
-            s->sampleRate = rates[r];
-            s->reopenRetryBlocks = 0;
-            captureRingReset(s);
-            float baseRatio = (float)s->sampleRate / (float)SAMPLE_RATE;
-            initAdaptiveSrc(&s->src, 0.5f, baseRatio);
-            printf("[AUDIO] [INFO] capture stream opened %s (%uch, %u Hz)\n",
-                   s->path,
-                   (unsigned)s->channels,
-                   (unsigned)s->sampleRate);
-            return true;
+                s->fd = fd;
+                s->channels = ch;
+                s->sampleRate = rates[r];
+                s->reopenRetryBlocks = 0;
+                captureRingReset(s);
+                float baseRatio = (float)s->sampleRate / (float)SAMPLE_RATE;
+                initAdaptiveSrc(&s->src, 0.65f, baseRatio);
+                printf("[AUDIO] [INFO] capture stream opened %s (%uch, %u Hz, period=%u periods=%u)\n",
+                       s->path,
+                       (unsigned)s->channels,
+                       (unsigned)s->sampleRate,
+                       profiles[p].periodFrames,
+                       profiles[p].periods);
+                return true;
+            }
         }
     }
 
@@ -406,10 +428,10 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
         unsigned periods;
         int configureTiming;
     } profiles[] = {
-        {BUFFER_FRAMES, 2U, 1},
-        {256U, 2U, 1},
-        {256U, 4U, 1},
         {512U, 4U, 1},
+        {256U, 4U, 1},
+        {BUFFER_FRAMES, 4U, 1},
+        {BUFFER_FRAMES, 2U, 1},
         {BUFFER_FRAMES, 2U, 0},
     };
 
@@ -581,25 +603,10 @@ static void servicePlaybackIo(RuntimeGraph *rt) {
                 continue;
             }
 
-            int monitorActive = 0;
-            if (rt->soundboardNodeIndex >= 0 &&
-                (rt->soundboardBurstRemaining > 0U || rt->soundboardEnv > 0.0005f)) {
-                monitorActive = 1;
-            }
-
             for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
                 for (uint8_t ch = 0; ch < s.channels; ++ch) {
                     uint8_t srcCh = (ch < inChannels) ? ch : (uint8_t)(inChannels - 1);
                     float v = rt->inputs[s.nodeIndex][srcCh][frame];
-
-                    if (monitorActive) {
-                        const AudioGraphThingInfo &sbThing = rt->snapshot.things[(uint16_t)rt->soundboardNodeIndex];
-                        uint8_t sbOut = sbThing.outputs;
-                        if (sbOut > 0 && sbOut <= kMaxChannelsPerThing) {
-                            uint8_t sbCh = (ch < sbOut) ? ch : 0;
-                            v += rt->outputs[(uint16_t)rt->soundboardNodeIndex][sbCh][frame] * 3.0f;
-                        }
-                    }
 
                     if (v > 1.0f) {
                         v = 1.0f;
@@ -695,6 +702,15 @@ static void consumeSoundboardTriggers(AudioContext *ctx, RuntimeGraph *rt) {
         return;
     }
 
+    uint32_t activeSlot = ctx->sfxActiveSlot.load(std::memory_order_acquire) & 1U;
+    const AudioSfxClipSlot &clip = ctx->sfxSlots[activeSlot];
+    rt->activeClipSlot = activeSlot;
+    rt->activeClipFrames = clip.frames;
+    rt->activeClipRate = clip.sampleRate;
+    rt->activeClipChannels = clip.channels;
+    rt->activeClipPos = 0;
+    rt->activeClipFrac = 0.0f;
+
     uint64_t add = (uint64_t)pending * (uint64_t)kSoundboardBurstSamples;
     uint64_t total = (uint64_t)rt->soundboardBurstRemaining + add;
     if (total > kSoundboardBurstMax) {
@@ -782,6 +798,27 @@ static int findThingIndex(const AudioGraphState &graph, const char *id) {
     return -1;
 }
 
+static bool sameThingLayout(const AudioGraphState &a, const AudioGraphState &b) {
+    if (a.thingCount != b.thingCount) {
+        return false;
+    }
+
+    for (uint16_t i = 0; i < a.thingCount; ++i) {
+        const AudioGraphThingInfo &ta = a.things[i];
+        int j = findThingIndex(b, ta.id);
+        if (j < 0) {
+            return false;
+        }
+
+        const AudioGraphThingInfo &tb = b.things[(uint16_t)j];
+        if (ta.inputs != tb.inputs || ta.outputs != tb.outputs) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static bool compileRoute(RuntimeGraph *rt,
                          const AudioGraphEdgeInfo &edge,
                          RuntimeGraph::CompiledRoute *out) {
@@ -843,8 +880,8 @@ static void clearRuntimeBuffers(RuntimeGraph *rt) {
     }
 }
 
-static void renderSourceNode(RuntimeGraph *rt, uint16_t nodeIndex) {
-    if (!rt || nodeIndex >= rt->snapshot.thingCount) {
+static void renderSourceNode(const AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex) {
+    if (!ctx || !rt || nodeIndex >= rt->snapshot.thingCount) {
         return;
     }
 
@@ -863,7 +900,9 @@ static void renderSourceNode(RuntimeGraph *rt, uint16_t nodeIndex) {
         for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
             if (s.ringCount == 0) {
                 for (uint8_t ch = 0; ch < outChannels; ++ch) {
-                    rt->outputs[nodeIndex][ch][frame] = 0.0f;
+                    uint8_t srcCh = (ch < s.channels) ? ch : 0;
+                    s.lastSample[srcCh] *= 0.995f;
+                    rt->outputs[nodeIndex][ch][frame] = s.lastSample[srcCh];
                 }
             } else {
                 uint32_t aFrame = s.ringTail;
@@ -873,7 +912,9 @@ static void renderSourceNode(RuntimeGraph *rt, uint16_t nodeIndex) {
                     uint8_t srcCh = (ch < s.channels) ? ch : (uint8_t)(s.channels - 1U);
                     float a = (float)captureRingSample(s, aFrame, srcCh) / 32768.0f;
                     float b = (float)captureRingSample(s, bFrame, srcCh) / 32768.0f;
-                    rt->outputs[nodeIndex][ch][frame] = a + ((b - a) * s.readFrac);
+                    float out = a + ((b - a) * s.readFrac);
+                    rt->outputs[nodeIndex][ch][frame] = out;
+                    s.lastSample[srcCh] = out;
                 }
 
                 s.readFrac += srcRatio;
@@ -894,6 +935,11 @@ static void renderSourceNode(RuntimeGraph *rt, uint16_t nodeIndex) {
         float phase = rt->soundboardPhase;
         float inc = (kTwoPi * kSourceToneHz) / (float)SAMPLE_RATE;
         float env = rt->soundboardEnv;
+        uint32_t clipFrames = rt->activeClipFrames;
+        uint32_t clipRate = rt->activeClipRate;
+        uint8_t clipChannels = rt->activeClipChannels;
+        const AudioSfxClipSlot &clip = ctx->sfxSlots[rt->activeClipSlot & 1U];
+
         for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
             float target = (rt->soundboardBurstRemaining > 0U) ? 1.0f : 0.0f;
             if (target > env) {
@@ -908,7 +954,34 @@ static void renderSourceNode(RuntimeGraph *rt, uint16_t nodeIndex) {
                 }
             }
 
-            float s = sinf(phase) * kSourceAmp * env;
+            float s = 0.0f;
+
+            if (rt->soundboardBurstRemaining > 0U &&
+                clipFrames > 0U &&
+                clipRate > 0U &&
+                (clipChannels == 1U || clipChannels == 2U) &&
+                rt->activeClipPos < clipFrames) {
+                uint32_t posA = rt->activeClipPos;
+                uint32_t posB = (posA + 1U < clipFrames) ? (posA + 1U) : posA;
+                uint8_t ch0 = 0;
+                float a = (float)clip.pcm[posA * clipChannels + ch0] / 32768.0f;
+                float b = (float)clip.pcm[posB * clipChannels + ch0] / 32768.0f;
+                s = (a + ((b - a) * rt->activeClipFrac)) * env * kSoundboardClipGain;
+                if (s > 0.98f) {
+                    s = 0.98f;
+                }
+                if (s < -0.98f) {
+                    s = -0.98f;
+                }
+
+                float clipStep = (float)clipRate / (float)SAMPLE_RATE;
+                rt->activeClipFrac += clipStep;
+                while (rt->activeClipFrac >= 1.0f && rt->activeClipPos < clipFrames) {
+                    ++rt->activeClipPos;
+                    rt->activeClipFrac -= 1.0f;
+                }
+            }
+
             for (uint8_t ch = 0; ch < outChannels; ++ch) {
                 rt->outputs[nodeIndex][ch][frame] = s;
             }
@@ -980,21 +1053,25 @@ static void rebuildRuntimeGraph(RuntimeGraph *rt, const AudioGraphState &graph) 
         return;
     }
 
+    bool topologyChanged = !sameThingLayout(graph, rt->snapshot);
+
     rt->snapshot = graph;
     rt->sourceNodeCount = 0;
     rt->processNodeCount = 0;
     rt->sinkNodeCount = 0;
     rt->sourceRouteCount = 0;
     rt->processRouteCount = 0;
-    rt->captureCount = 0;
-    rt->playbackCount = 0;
     rt->soundboardNodeIndex = -1;
 
-    closeAllStreams(rt);
+    if (topologyChanged) {
+        closeAllStreams(rt);
+        rt->captureCount = 0;
+        rt->playbackCount = 0;
 
-    for (uint16_t i = 0; i < AUDIO_GRAPH_MAX_THINGS; ++i) {
-        rt->nodeToCaptureStream[i] = -1;
-        rt->nodeToPlaybackStream[i] = -1;
+        for (uint16_t i = 0; i < AUDIO_GRAPH_MAX_THINGS; ++i) {
+            rt->nodeToCaptureStream[i] = -1;
+            rt->nodeToPlaybackStream[i] = -1;
+        }
     }
 
     for (uint16_t i = 0; i < rt->snapshot.thingCount; ++i) {
@@ -1014,52 +1091,90 @@ static void rebuildRuntimeGraph(RuntimeGraph *rt, const AudioGraphState &graph) 
         }
     }
 
-    for (uint16_t i = 0; i < rt->snapshot.thingCount; ++i) {
-        const AudioGraphThingInfo &thing = rt->snapshot.things[i];
+    if (topologyChanged) {
+        for (uint16_t i = 0; i < rt->snapshot.thingCount; ++i) {
+            const AudioGraphThingInfo &thing = rt->snapshot.things[i];
 
-        if (rt->nodeKind[i] == NODE_SOURCE && rt->captureCount < kMaxCaptureStreams) {
-            uint32_t card = 0;
-            uint32_t device = 0;
-            if (parseCaptureThing(thing.id, &card, &device)) {
-                RuntimeGraph::AlsaCaptureStream &s = rt->capture[rt->captureCount];
-                memset(&s, 0, sizeof(s));
-                s.active = 1;
-                s.fd = -1;
-                s.nodeIndex = i;
-                s.card = card;
-                s.device = device;
-                s.sampleRate = SAMPLE_RATE;
-                s.channels = (thing.outputs == 0) ? 1U : ((thing.outputs > kMaxChannelsPerThing) ? kMaxChannelsPerThing : thing.outputs);
-                snprintf(s.path, sizeof(s.path), "/dev/snd/pcmC%uD%uc", (unsigned)card, (unsigned)device);
-                initAdaptiveSrc(&s.src, 0.5f, 1.0f);
-                captureRingReset(&s);
-                if (!openCaptureStream(&s)) {
-                    s.reopenRetryBlocks = kReopenRetryBlocks;
+            if (rt->nodeKind[i] == NODE_SOURCE && rt->captureCount < kMaxCaptureStreams) {
+                uint32_t card = 0;
+                uint32_t device = 0;
+                if (parseCaptureThing(thing.id, &card, &device)) {
+                    RuntimeGraph::AlsaCaptureStream &s = rt->capture[rt->captureCount];
+                    memset(&s, 0, sizeof(s));
+                    s.active = 1;
+                    s.fd = -1;
+                    s.nodeIndex = i;
+                    s.card = card;
+                    s.device = device;
+                    s.sampleRate = SAMPLE_RATE;
+                    s.channels = (thing.outputs == 0) ? 1U : ((thing.outputs > kMaxChannelsPerThing) ? kMaxChannelsPerThing : thing.outputs);
+                    snprintf(s.path, sizeof(s.path), "/dev/snd/pcmC%uD%uc", (unsigned)card, (unsigned)device);
+                    initAdaptiveSrc(&s.src, 0.5f, 1.0f);
+                    captureRingReset(&s);
+                    if (!openCaptureStream(&s)) {
+                        s.reopenRetryBlocks = kReopenRetryBlocks;
+                    }
+                    rt->nodeToCaptureStream[i] = (int16_t)rt->captureCount;
+                    ++rt->captureCount;
                 }
-                rt->nodeToCaptureStream[i] = (int16_t)rt->captureCount;
-                ++rt->captureCount;
+            }
+
+            if (rt->nodeKind[i] == NODE_SINK && rt->playbackCount < kMaxPlaybackStreams) {
+                uint32_t card = 0;
+                uint32_t device = 0;
+                if (parsePlaybackThing(thing.id, &card, &device)) {
+                    RuntimeGraph::AlsaPlaybackStream &s = rt->playback[rt->playbackCount];
+                    memset(&s, 0, sizeof(s));
+                    s.active = 1;
+                    s.fd = -1;
+                    s.nodeIndex = i;
+                    s.card = card;
+                    s.device = device;
+                    s.sampleRate = SAMPLE_RATE;
+                    s.channels = (thing.inputs == 0) ? 1U : ((thing.inputs > kMaxChannelsPerThing) ? kMaxChannelsPerThing : thing.inputs);
+                    snprintf(s.path, sizeof(s.path), "/dev/snd/pcmC%uD%up", (unsigned)card, (unsigned)device);
+                    if (!openPlaybackStream(&s)) {
+                        s.reopenRetryBlocks = kReopenRetryBlocks;
+                    }
+                    rt->nodeToPlaybackStream[i] = (int16_t)rt->playbackCount;
+                    ++rt->playbackCount;
+                }
             }
         }
-
-        if (rt->nodeKind[i] == NODE_SINK && rt->playbackCount < kMaxPlaybackStreams) {
-            uint32_t card = 0;
-            uint32_t device = 0;
-            if (parsePlaybackThing(thing.id, &card, &device)) {
-                RuntimeGraph::AlsaPlaybackStream &s = rt->playback[rt->playbackCount];
-                memset(&s, 0, sizeof(s));
-                s.active = 1;
-                s.fd = -1;
-                s.nodeIndex = i;
-                s.card = card;
-                s.device = device;
-                s.sampleRate = SAMPLE_RATE;
-                s.channels = (thing.inputs == 0) ? 1U : ((thing.inputs > kMaxChannelsPerThing) ? kMaxChannelsPerThing : thing.inputs);
-                snprintf(s.path, sizeof(s.path), "/dev/snd/pcmC%uD%up", (unsigned)card, (unsigned)device);
-                if (!openPlaybackStream(&s)) {
-                    s.reopenRetryBlocks = kReopenRetryBlocks;
+    } else {
+        for (uint16_t i = 0; i < AUDIO_GRAPH_MAX_THINGS; ++i) {
+            rt->nodeToCaptureStream[i] = -1;
+            rt->nodeToPlaybackStream[i] = -1;
+        }
+        for (uint16_t node = 0; node < rt->snapshot.thingCount; ++node) {
+            const AudioGraphThingInfo &thing = rt->snapshot.things[node];
+            if (rt->nodeKind[node] == NODE_SOURCE) {
+                uint32_t card = 0;
+                uint32_t device = 0;
+                if (parseCaptureThing(thing.id, &card, &device)) {
+                    for (uint16_t i = 0; i < rt->captureCount; ++i) {
+                        RuntimeGraph::AlsaCaptureStream &s = rt->capture[i];
+                        if (s.active && s.card == card && s.device == device) {
+                            s.nodeIndex = node;
+                            rt->nodeToCaptureStream[node] = (int16_t)i;
+                            break;
+                        }
+                    }
                 }
-                rt->nodeToPlaybackStream[i] = (int16_t)rt->playbackCount;
-                ++rt->playbackCount;
+            }
+            if (rt->nodeKind[node] == NODE_SINK) {
+                uint32_t card = 0;
+                uint32_t device = 0;
+                if (parsePlaybackThing(thing.id, &card, &device)) {
+                    for (uint16_t i = 0; i < rt->playbackCount; ++i) {
+                        RuntimeGraph::AlsaPlaybackStream &s = rt->playback[i];
+                        if (s.active && s.card == card && s.device == device) {
+                            s.nodeIndex = node;
+                            rt->nodeToPlaybackStream[node] = (int16_t)i;
+                            break;
+                        }
+                    }
+                }
             }
         }
     }
@@ -1095,7 +1210,7 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
 
     // First pass: render all source nodes.
     for (uint16_t i = 0; i < rt->sourceNodeCount; ++i) {
-        renderSourceNode(rt, rt->sourceNodes[i]);
+        renderSourceNode(ctx, rt, rt->sourceNodes[i]);
     }
 
     // Route source output into downstream node inputs.

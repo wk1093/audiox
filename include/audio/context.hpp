@@ -14,6 +14,7 @@
 
 #define AUDIO_GRAPH_MAX_THINGS 64
 #define AUDIO_GRAPH_MAX_EDGES 128
+#define AUDIO_SFX_MAX_FRAMES (SAMPLE_RATE * 8)
 
 struct AudioGraphThingInfo {
     char id[64];
@@ -107,6 +108,13 @@ struct AudioRegistry {
     }
 };
 
+struct AudioSfxClipSlot {
+    uint32_t frames;
+    uint32_t sampleRate;
+    uint8_t channels;
+    int16_t pcm[AUDIO_SFX_MAX_FRAMES * 2];
+};
+
 struct AudioContext {
     Audiox *app;
     AudioRegistry registry;
@@ -119,6 +127,8 @@ struct AudioContext {
     AudioHandle nextHandle;
     uint32_t deviceGeneration;
     std::atomic<uint32_t> pendingSfxTriggers;
+    AudioSfxClipSlot sfxSlots[2];
+    std::atomic<uint32_t> sfxActiveSlot;
 
     std::unordered_map<std::string, AudioHandle> pathToHandle;
     std::unordered_map<AudioHandle, AudioDeviceInfo> devices;

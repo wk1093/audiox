@@ -329,6 +329,15 @@ int AudioContext::reloadRoutingGraph() {
 
     next.skippedEdgeCount = (uint16_t)skipped;
 
+    if (routeCount > 0 && next.edgeCount == 0 && skipped > 0) {
+        snprintf(next.status,
+                 sizeof(next.status),
+                 "routing update rejected: no valid edges (%d invalid)",
+                 skipped);
+        printf("[AUDIO] [WARN] %s\n", next.status);
+        return RET_WARN;
+    }
+
     {
         std::lock_guard<std::mutex> lock(routingGraphMutex);
         next.generation = routingGraph.generation + 1;

@@ -528,7 +528,9 @@ void HttpServer::poll() {
             return;
         }
 
-        (void)setSocketTimeouts(cfd, 50, 50);
+        // Allow enough time for browser PUT/POST bodies to arrive without
+        // tripping a socket timeout that appears as NetworkError in fetch().
+        (void)setSocketTimeouts(cfd, 1500, 1500);
 
         handleClient(this, cfd);
         close(cfd);

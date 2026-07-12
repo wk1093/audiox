@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <stdint.h>
 
 #include "config/context.hpp"
 
@@ -15,6 +16,124 @@ static uint64_t audioMonotonicMs() {
         return 0;
     }
     return ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);
+}
+
+static uint32_t le32(const uint8_t *p) {
+    return (uint32_t)p[0] |
+           ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
+static uint16_t le16(const uint8_t *p) {
+    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+static int loadPcm16WavIntoSlot(const char *path, AudioSfxClipSlot *slot) {
+    if (!path || !slot) {
+        return RET_ERR;
+    }
+
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        return RET_WARN;
+    }
+
+    uint8_t header[12];
+    if (fread(header, 1, sizeof(header), fp) != sizeof(header)) {
+        fclose(fp);
+        return RET_ERR;
+    }
+
+    if (memcmp(header, "RIFF", 4) != 0 || memcmp(header + 8, "WAVE", 4) != 0) {
+        fclose(fp);
+        return RET_ERR;
+    }
+
+    uint16_t fmtTag = 0;
+    uint16_t channels = 0;
+    uint32_t sampleRate = 0;
+    uint16_t bitsPerSample = 0;
+    uint32_t dataSize = 0;
+    long dataOffset = -1;
+
+    while (1) {
+        uint8_t chunkHdr[8];
+        if (fread(chunkHdr, 1, sizeof(chunkHdr), fp) != sizeof(chunkHdr)) {
+            break;
+        }
+        uint32_t chunkSize = le32(chunkHdr + 4);
+
+        if (memcmp(chunkHdr, "fmt ", 4) == 0) {
+            uint8_t fmt[40];
+            uint32_t readSize = (chunkSize > sizeof(fmt)) ? sizeof(fmt) : chunkSize;
+            if (fread(fmt, 1, readSize, fp) != readSize) {
+                fclose(fp);
+                return RET_ERR;
+            }
+            if (chunkSize > readSize) {
+                if (fseek(fp, (long)(chunkSize - readSize), SEEK_CUR) != 0) {
+                    fclose(fp);
+                    return RET_ERR;
+                }
+            }
+
+            if (readSize >= 16) {
+                fmtTag = le16(fmt + 0);
+                channels = le16(fmt + 2);
+                sampleRate = le32(fmt + 4);
+                bitsPerSample = le16(fmt + 14);
+            }
+        } else if (memcmp(chunkHdr, "data", 4) == 0) {
+            dataSize = chunkSize;
+            dataOffset = ftell(fp);
+            if (fseek(fp, (long)chunkSize, SEEK_CUR) != 0) {
+                fclose(fp);
+                return RET_ERR;
+            }
+        } else {
+            if (fseek(fp, (long)chunkSize, SEEK_CUR) != 0) {
+                fclose(fp);
+                return RET_ERR;
+            }
+        }
+
+        if ((chunkSize & 1U) != 0U) {
+            if (fseek(fp, 1, SEEK_CUR) != 0) {
+                fclose(fp);
+                return RET_ERR;
+            }
+        }
+    }
+
+    if (fmtTag != 1 || (channels != 1 && channels != 2) || bitsPerSample != 16 || sampleRate == 0 || dataOffset < 0 || dataSize == 0) {
+        fclose(fp);
+        return RET_ERR;
+    }
+
+    uint32_t bytesPerFrame = (uint32_t)channels * 2U;
+    uint32_t frames = dataSize / bytesPerFrame;
+    if (frames > AUDIO_SFX_MAX_FRAMES) {
+        frames = AUDIO_SFX_MAX_FRAMES;
+    }
+
+    if (fseek(fp, dataOffset, SEEK_SET) != 0) {
+        fclose(fp);
+        return RET_ERR;
+    }
+
+    size_t needSamples = (size_t)frames * (size_t)channels;
+    if (fread(slot->pcm, sizeof(int16_t), needSamples, fp) != needSamples) {
+        fclose(fp);
+        return RET_ERR;
+    }
+
+    fclose(fp);
+
+    slot->frames = frames;
+    slot->channels = (uint8_t)channels;
+    slot->sampleRate = sampleRate;
+    return RET_OK;
 }
 
 }
@@ -32,6 +151,8 @@ AudioContext::AudioContext(Audiox *context) : app(context) {
     nextHandle = 1;
     deviceGeneration = 0;
     pendingSfxTriggers.store(0, std::memory_order_relaxed);
+    memset(&sfxSlots, 0, sizeof(sfxSlots));
+    sfxActiveSlot.store(0, std::memory_order_relaxed);
     memset(&routingGraph, 0, sizeof(routingGraph));
     memset(&routingGraphPublished, 0, sizeof(routingGraphPublished));
     routingGraphSeq.store(0, std::memory_order_relaxed);
@@ -51,9 +172,15 @@ int AudioContext::triggerSfx(const char *sfxPath) {
         return RET_ERR;
     }
 
-    struct stat st;
-    if (stat(sfxPath, &st) < 0) {
+    uint32_t active = sfxActiveSlot.load(std::memory_order_relaxed) & 1U;
+    uint32_t inactive = active ^ 1U;
+    int loadRc = loadPcm16WavIntoSlot(sfxPath, &sfxSlots[inactive]);
+    if (loadRc == RET_OK) {
+        sfxActiveSlot.store(inactive, std::memory_order_release);
+    } else if (loadRc == RET_WARN) {
         printf("[AUDIO] [WARN] mapped SFX missing: %s\n", sfxPath);
+    } else {
+        printf("[AUDIO] [WARN] failed to load WAV clip: %s\n", sfxPath);
     }
 
     uint32_t queued = pendingSfxTriggers.fetch_add(1U, std::memory_order_relaxed) + 1U;

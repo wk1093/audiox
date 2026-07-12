@@ -1,20 +1,40 @@
 #include "audio/context.hpp"
 
+#include <time.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 
 #include "config/context.hpp"
 
+namespace {
+
+static uint64_t audioMonotonicMs() {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);
+}
+
+}
+
 AudioContext::AudioContext(Audiox *context) : app(context) {
     if (app) {
         app->audio = this;
     }
+
+    processingThread = (pthread_t)0;
+    processingThreadStarted = 0;
+    processingThreadRun = 0;
+
+    nextHotplugScanMs = 0;
+    nextHandle = 1;
+    deviceGeneration = 0;
 }
 
-int AudioContext::setupThreads() {
-    // TODO
-    return RET_WARN;
+AudioContext::~AudioContext() {
+    processingThreadRun = 0;
 }
 
 int AudioContext::triggerSfx(const char *sfxPath) {
@@ -39,5 +59,16 @@ int AudioContext::triggerSfx(const char *sfxPath) {
 }
 
 void AudioContext::poll() {
-    // TODO
+    uint64_t now = audioMonotonicMs();
+    if (now < nextHotplugScanMs) {
+        return;
+    }
+
+    nextHotplugScanMs = now + 1000ULL;
+    (void)rescanDevices();
+}
+
+int AudioContext::forceRescan() {
+    nextHotplugScanMs = 0;
+    return rescanDevices();
 }

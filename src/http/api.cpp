@@ -1,4 +1,5 @@
 #include "http/context.hpp"
+#include "audio/context.hpp"
 #include "config/context.hpp"
 #include "midi/context.hpp"
 
@@ -28,6 +29,8 @@
 #define HTTP_MIDI_MAPPINGS_PATH HTTP_API_PREFIX "midi/mappings"
 #define HTTP_MIDI_MAPPING_SET_PATH HTTP_API_PREFIX "midi/mapping/set"
 #define HTTP_MIDI_MAPPING_DELETE_PATH HTTP_API_PREFIX "midi/mapping/delete"
+#define HTTP_AUDIO_DEVICES_PATH HTTP_API_PREFIX "audio/devices"
+#define HTTP_AUDIO_RESCAN_PATH HTTP_API_PREFIX "audio/rescan"
 #define HTTP_FS_ROOT ROOT_MOUNT_POINT "/"
 
 namespace {
@@ -300,20 +303,104 @@ static int handleSoundboardTrigger(HttpServer *server,
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
 	}
 
-	char out[256];
-	int n = is_numeric_slot
-		? snprintf(out,
-				   sizeof(out),
-				   "soundboard slot %ld accepted (audio playback not wired yet)\n",
-				   slot)
-		: snprintf(out,
-				   sizeof(out),
-				   "soundboard file %s accepted (audio playback not wired yet)\n",
-				   decoded);
-	if (n < 0) {
-		n = 0;
+	if (!server->app || !server->app->audio) {
+		static const char err[] = "audio subsystem unavailable\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "text/plain; charset=utf-8", err, sizeof(err) - 1);
 	}
-	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", out, (size_t)n);
+
+	char triggerPath[256];
+	if (is_numeric_slot) {
+		int pn = snprintf(triggerPath, sizeof(triggerPath), "%s/%ld.wav", SFX_ROOT_DIR, slot);
+		if (pn <= 0 || (size_t)pn >= sizeof(triggerPath)) {
+			static const char bad[] = "trigger path too long\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+		}
+	} else if (strncmp(decoded, SFX_ROOT_DIR "/", strlen(SFX_ROOT_DIR) + 1) == 0) {
+		int pn = snprintf(triggerPath, sizeof(triggerPath), "%s", decoded);
+		if (pn <= 0 || (size_t)pn >= sizeof(triggerPath)) {
+			static const char bad[] = "trigger path too long\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+		}
+	} else {
+		int pn = snprintf(triggerPath, sizeof(triggerPath), "%s/%s", SFX_ROOT_DIR, decoded);
+		if (pn <= 0 || (size_t)pn >= sizeof(triggerPath)) {
+			static const char bad[] = "trigger path too long\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+		}
+	}
+
+	int rc = server->app->audio->triggerSfx(triggerPath);
+	if (rc == RET_ERR) {
+		static const char err[] = "trigger failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (rc == RET_WARN) {
+		static const char missing[] = "sfx file not found\n";
+		return server->sendResponse(cfd, "404 Not Found", "text/plain; charset=utf-8", missing, sizeof(missing) - 1);
+	}
+
+	static const char ok[] = "ok\n";
+	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
+}
+
+static int handleAudioDevices(HttpServer *server,
+						 int cfd,
+						 const char *method,
+						 const char *path) {
+	(void)path;
+	if (!server || !server->app || !method) {
+		return -1;
+	}
+
+	if (strcmp(method, "GET") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	if (!server->app->audio) {
+		static const char err[] = "{\"ok\":false,\"error\":\"audio unavailable\"}\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "application/json; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	char out[HTTP_BODY_MAX];
+	if (server->app->audio->buildDevicesJson(out, sizeof(out)) != RET_OK) {
+		static const char err[] = "{\"ok\":false,\"error\":\"encode failed\"}\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "application/json; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
+}
+
+static int handleAudioRescan(HttpServer *server,
+						int cfd,
+						const char *method,
+						const char *path) {
+	(void)path;
+	if (!server || !server->app || !method) {
+		return -1;
+	}
+
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	if (!server->app->audio) {
+		static const char err[] = "{\"ok\":false,\"error\":\"audio unavailable\"}\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "application/json; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	int rc = server->app->audio->forceRescan();
+	if (rc == RET_ERR) {
+		static const char err[] = "{\"ok\":false,\"error\":\"rescan failed\"}\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "application/json; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	char out[HTTP_BODY_MAX];
+	if (server->app->audio->buildDevicesJson(out, sizeof(out)) != RET_OK) {
+		static const char err[] = "{\"ok\":false,\"error\":\"encode failed\"}\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "application/json; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
 }
 
 static void copy_bound(char *dst, size_t dst_sz, const char *src) {
@@ -863,6 +950,14 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_MIDI_MAPPING_DELETE_PATH) == 0) {
 		return handleMidiMappingDelete(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_AUDIO_DEVICES_PATH) == 0) {
+		return handleAudioDevices(server, cfd, method, path);
+	}
+
+	if (strcmp(path, HTTP_AUDIO_RESCAN_PATH) == 0) {
+		return handleAudioRescan(server, cfd, method, path);
 	}
 
 	if (pathIsRootfs(path)) {

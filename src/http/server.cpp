@@ -1,25 +1,229 @@
 #include "http/context.hpp"
+#include "system.hpp"
 
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <sys/reboot.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/time.h>
 #include <unistd.h>
 
 #define HTTP_REQ_MAX 65536
 #define HTTP_BODY_MAX 49152
+#define HTTP_INITRAM_PATH "/api/initram"
+#define HTTP_INITRAM_MAX (64u * 1024u * 1024u)
+#define HTTP_INITRAM_RCV_TIMEOUT_SEC 10
 
 #define HTTP_API_PREFIX "/api/"
 #define HTTP_DEFAULT_HTML_PATH "/etc/www/index.html"
 
+#define HTTP_STAGE_DIR ROOT_MOUNT_POINT "/staging"
+#define HTTP_STAGE_INITRAMFS_PATH PROGRAM_STAGED_PATH
+#define HTTP_STAGE_INITRAMFS_PART_PATH PROGRAM_STAGED_PATH ".part"
+
 namespace {
+
+static int setSocketTimeouts(int fd, long recv_ms, long send_ms) {
+    if (fd < 0) {
+        return -1;
+    }
+
+    struct timeval recv_to;
+    recv_to.tv_sec = recv_ms / 1000;
+    recv_to.tv_usec = (recv_ms % 1000) * 1000;
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &recv_to, sizeof(recv_to)) < 0) {
+        return -1;
+    }
+
+    struct timeval send_to;
+    send_to.tv_sec = send_ms / 1000;
+    send_to.tv_usec = (send_ms % 1000) * 1000;
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &send_to, sizeof(send_to)) < 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int sendErrnoResponse(HttpServer *server,
+                             int cfd,
+                             const char *status,
+                             const char *prefix,
+                             int saved_errno) {
+    char body[256];
+    int n = snprintf(body,
+                     sizeof(body),
+                     "%s: %s\n",
+                     prefix ? prefix : "request failed",
+                     strerror(saved_errno));
+    if (n < 0) {
+        n = 0;
+    }
+    if ((size_t)n >= sizeof(body)) {
+        n = (int)(sizeof(body) - 1);
+    }
+    return server->sendResponse(cfd,
+                                status ? status : "500 Internal Server Error",
+                                "text/plain; charset=utf-8",
+                                body,
+                                (size_t)n);
+}
+
+static int checkStageCapacity(HttpServer *server, int cfd, size_t content_length) {
+    struct statvfs st;
+    if (statvfs(ROOT_MOUNT_POINT, &st) < 0) {
+        return 0;
+    }
+
+    unsigned long long free_bytes = (unsigned long long)st.f_bavail * (unsigned long long)st.f_frsize;
+    if (free_bytes >= (unsigned long long)content_length) {
+        return 0;
+    }
+
+    char body[256];
+    int n = snprintf(body,
+                     sizeof(body),
+                     "insufficient storage: need %lu bytes, have %llu bytes free on %s\n",
+                     (unsigned long)content_length,
+                     free_bytes,
+                     ROOT_MOUNT_POINT);
+    if (n < 0) {
+        n = 0;
+    }
+    if ((size_t)n >= sizeof(body)) {
+        n = (int)(sizeof(body) - 1);
+    }
+    (void)server->sendResponse(cfd,
+                               "507 Insufficient Storage",
+                               "text/plain; charset=utf-8",
+                               body,
+                               (size_t)n);
+    return -1;
+}
+
+static int writeAllToFd(int fd, const void *buf, size_t len) {
+    const char *p = (const char *)buf;
+    size_t written = 0;
+    while (written < len) {
+        ssize_t nw = write(fd, p + written, len - written);
+        if (nw < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        if (nw == 0) {
+            return -1;
+        }
+        written += (size_t)nw;
+    }
+    return 0;
+}
+
+static int handleInitramUpload(HttpServer *server,
+                               int cfd,
+                               const char *initial_body,
+                               size_t initial_body_len,
+                               size_t content_length) {
+    if (!server) {
+        return -1;
+    }
+
+    if (content_length == 0) {
+        static const char bad[] = "missing body\n";
+        return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+    }
+
+    if (checkStageCapacity(server, cfd, content_length) < 0) {
+        return 0;
+    }
+
+    if (ensureDir(HTTP_STAGE_DIR, 0755) != RET_OK) {
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "staging mkdir failed", errno);
+    }
+
+    int fd = open(HTTP_STAGE_INITRAMFS_PART_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "staging open failed", errno);
+    }
+
+    size_t written = 0;
+    size_t initial_write = initial_body_len;
+    if (initial_write > content_length) {
+        initial_write = content_length;
+    }
+    if (initial_write > 0 && writeAllToFd(fd, initial_body, initial_write) < 0) {
+        int saved_errno = errno;
+        close(fd);
+        unlink(HTTP_STAGE_INITRAMFS_PART_PATH);
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "staging write failed", saved_errno);
+    }
+    written = initial_write;
+
+    char buf[16384];
+    while (written < content_length) {
+        size_t want = content_length - written;
+        if (want > sizeof(buf)) {
+            want = sizeof(buf);
+        }
+
+        ssize_t nr = recv(cfd, buf, want, 0);
+        if (nr < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            int saved_errno = errno;
+            close(fd);
+            unlink(HTTP_STAGE_INITRAMFS_PART_PATH);
+            return sendErrnoResponse(server, cfd, "500 Internal Server Error", "upload read failed", saved_errno);
+        }
+        if (nr == 0) {
+            close(fd);
+            unlink(HTTP_STAGE_INITRAMFS_PART_PATH);
+            static const char err[] = "incomplete upload\n";
+            return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+        }
+        if (writeAllToFd(fd, buf, (size_t)nr) < 0) {
+            int saved_errno = errno;
+            close(fd);
+            unlink(HTTP_STAGE_INITRAMFS_PART_PATH);
+            return sendErrnoResponse(server, cfd, "500 Internal Server Error", "staging write failed", saved_errno);
+        }
+        written += (size_t)nr;
+    }
+
+    if (fsync(fd) < 0) {
+        int saved_errno = errno;
+        close(fd);
+        unlink(HTTP_STAGE_INITRAMFS_PART_PATH);
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "staging fsync failed", saved_errno);
+    }
+
+    close(fd);
+
+    if (rename(HTTP_STAGE_INITRAMFS_PART_PATH, HTTP_STAGE_INITRAMFS_PATH) < 0) {
+        int saved_errno = errno;
+        unlink(HTTP_STAGE_INITRAMFS_PART_PATH);
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "staging finalize failed", saved_errno);
+    }
+
+    static const char ok[] = "ok staged rebooting\n";
+    (void)server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
+    sync();
+    usleep(200000);
+    if (reboot(RB_AUTOBOOT) < 0) {
+        printf("[INIT] [ERR] HTTP initram reboot failed: %s\n", strerror(errno));
+    }
+    return 0;
+}
 
 static ssize_t findHeaderEnd(const char *buf, size_t len) {
     if (!buf || len < 4) {
@@ -145,17 +349,57 @@ static void handleClient(HttpServer *server, int cfd) {
         return;
     }
 
+    char method[8];
+    char path[256];
+    method[0] = '\0';
+    path[0] = '\0';
+    if (sscanf(req, "%7s %255s", method, path) != 2) {
+        static const char bad[] = "bad request line\n";
+        (void)server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+        return;
+    }
+
+    char *query = strchr(path, '?');
+    if (query) {
+        *query = '\0';
+    }
+
     ssize_t content_length = parseContentLength(req, (size_t)header_end);
     if (content_length < 0) {
         content_length = 0;
     }
+
+    size_t body_off = (size_t)header_end;
+    size_t initial_body_len = have > body_off ? have - body_off : 0;
+
+    if (strcmp(path, HTTP_INITRAM_PATH) == 0) {
+        if (strcmp(method, "PUT") != 0) {
+            static const char mna[] = "method not allowed\n";
+            (void)server->sendResponse(cfd, "405 Method Not Allowed", "text/plain; charset=utf-8", mna, sizeof(mna) - 1);
+            return;
+        }
+        if ((size_t)content_length > HTTP_INITRAM_MAX) {
+            static const char too_large[] = "payload too large\n";
+            (void)server->sendResponse(cfd, "413 Payload Too Large", "text/plain; charset=utf-8", too_large, sizeof(too_large) - 1);
+            return;
+        }
+        if (setSocketTimeouts(cfd, HTTP_INITRAM_RCV_TIMEOUT_SEC * 1000, 5000) < 0) {
+            printf("[INIT] [WARN] failed to extend upload socket timeout: %s\n", strerror(errno));
+        }
+        (void)handleInitramUpload(server,
+                                  cfd,
+                                  req + body_off,
+                                  initial_body_len,
+                                  (size_t)content_length);
+        return;
+    }
+
     if ((size_t)content_length > HTTP_BODY_MAX) {
         static const char too_large[] = "payload too large\n";
         (void)server->sendResponse(cfd, "413 Payload Too Large", "text/plain; charset=utf-8", too_large, sizeof(too_large) - 1);
         return;
     }
 
-    size_t body_off = (size_t)header_end;
     while ((have - body_off) < (size_t)content_length && have + 1 < sizeof(req)) {
         ssize_t n = recv(cfd, req + have, sizeof(req) - have - 1, 0);
         if (n < 0) {
@@ -175,21 +419,6 @@ static void handleClient(HttpServer *server, int cfd) {
         static const char bad[] = "incomplete body\n";
         (void)server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
         return;
-    }
-
-    char method[8];
-    char path[256];
-    method[0] = '\0';
-    path[0] = '\0';
-    if (sscanf(req, "%7s %255s", method, path) != 2) {
-        static const char bad[] = "bad request line\n";
-        (void)server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
-        return;
-    }
-
-    char *query = strchr(path, '?');
-    if (query) {
-        *query = '\0';
     }
 
     const char *body = req + body_off;
@@ -299,11 +528,7 @@ void HttpServer::poll() {
             return;
         }
 
-        struct timeval io_to;
-        io_to.tv_sec = 0;
-        io_to.tv_usec = 50000;
-        (void)setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &io_to, sizeof(io_to));
-        (void)setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &io_to, sizeof(io_to));
+        (void)setSocketTimeouts(cfd, 50, 50);
 
         handleClient(this, cfd);
         close(cfd);

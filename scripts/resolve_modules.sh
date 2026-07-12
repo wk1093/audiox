@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-KV="${1:?usage: resolve_modules.sh <kernel_version> <out_dir> <dep_file>}"
-OUT_DIR="${2:?usage: resolve_modules.sh <kernel_version> <out_dir> <dep_file>}"
-DEP_FILE="${3:?usage: resolve_modules.sh <kernel_version> <out_dir> <dep_file>}"
+KV="${1:?usage: resolve_modules.sh <kernel_version> <out_dir> <dep_file> [list_prefix] [stage_dir_name]>}"
+OUT_DIR="${2:?usage: resolve_modules.sh <kernel_version> <out_dir> <dep_file> [list_prefix] [stage_dir_name]>}"
+DEP_FILE="${3:?usage: resolve_modules.sh <kernel_version> <out_dir> <dep_file> [list_prefix] [stage_dir_name]>}"
+LIST_PREFIX="${4:-module-load}"
+STAGE_DIR_NAME="${5:-modules_staging}"
 
 FIRMWARE_DIR="${OUT_DIR}/firmware"
 MOD_TREE_DIR="${FIRMWARE_DIR}/modules/${KV}"
 SRC_KERNEL_DIR="${MOD_TREE_DIR}/kernel"
-STAGE_BASE_DIR="${OUT_DIR}/modules_staging/${KV}"
+STAGE_BASE_DIR="${OUT_DIR}/${STAGE_DIR_NAME}/${KV}"
 STAGE_KERNEL_DIR="${STAGE_BASE_DIR}/kernel"
-BASE_LOAD_LIST_FILE="${OUT_DIR}/module-load.base.list"
-NORMAL_LOAD_LIST_FILE="${OUT_DIR}/module-load.normal.list"
-LOAD_LIST_FILE="${OUT_DIR}/module-load.list"
-SUMMARY_FILE="${OUT_DIR}/module-load.summary.txt"
+BASE_LOAD_LIST_FILE="${OUT_DIR}/${LIST_PREFIX}.base.list"
+NORMAL_LOAD_LIST_FILE="${OUT_DIR}/${LIST_PREFIX}.normal.list"
+LOAD_LIST_FILE="${OUT_DIR}/${LIST_PREFIX}.list"
+SUMMARY_FILE="${OUT_DIR}/${LIST_PREFIX}.summary.txt"
 
 if [[ ! -d "${SRC_KERNEL_DIR}" ]]; then
     echo "[resolve_modules] ERROR: module tree not found: ${SRC_KERNEL_DIR}" >&2
@@ -56,6 +58,7 @@ declare -A STATE=()
 declare -A IS_BASE_SEED=()
 declare -A IS_NORMAL_SEED=()
 declare -A IS_SEED=()
+declare -A IS_BUILTIN=()
 ORDER=()
 SEEDS=()
 BASE_SEEDS=()
@@ -70,9 +73,8 @@ normalize_rel() {
     echo "${rel}"
 }
 
-register_module_file() {
-    local full_path="$1"
-    local rel="${full_path#${SRC_KERNEL_DIR}/}"
+register_module_rel() {
+    local rel="$1"
     local rel_no_ext
     rel_no_ext="$(normalize_rel "${rel}")"
     local base="${rel_no_ext##*/}"
@@ -92,9 +94,24 @@ register_module_file() {
     fi
 }
 
+register_module_file() {
+    local full_path="$1"
+    local rel="${full_path#${SRC_KERNEL_DIR}/}"
+    register_module_rel "${rel}"
+}
+
 while IFS= read -r -d '' mod_file; do
     register_module_file "${mod_file}"
 done < <(find "${SRC_KERNEL_DIR}" -type f \( -name '*.ko' -o -name '*.ko.xz' \) -print0)
+
+if [[ -f "${MOD_TREE_DIR}/modules.builtin" ]]; then
+    while IFS= read -r builtin_rel; do
+        [[ -z "${builtin_rel}" ]] && continue
+        builtin_rel="${builtin_rel#kernel/}"
+        register_module_rel "${builtin_rel}"
+        IS_BUILTIN["$(normalize_rel "${builtin_rel}")"]=1
+    done < "${MOD_TREE_DIR}/modules.builtin"
+fi
 
 resolve_source_file() {
     local rel
@@ -160,6 +177,11 @@ visit_module() {
 
     if [[ "${STATE[${rel}]:-}" == "visiting" ]]; then
         echo "[resolve_modules] WARN: dependency cycle around ${rel}; continuing" >&2
+        return 0
+    fi
+
+    if [[ -n "${IS_BUILTIN[${rel}]:-}" ]]; then
+        STATE["${rel}"]="done"
         return 0
     fi
 

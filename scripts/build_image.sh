@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-IMG_FILE="${1:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <initramfs> <vc4_overlay> [dsi_overlay>}"
-IMG_SIZE_MB="${2:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <initramfs> <vc4_overlay> [dsi_overlay>}"
-OUT_DIR="${3:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <initramfs> <vc4_overlay> [dsi_overlay>}"
-INITRAMFS="${4:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <initramfs> <vc4_overlay> [dsi_overlay>}"
-VC4_OVERLAY="${5:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <initramfs> <vc4_overlay> [dsi_overlay>}"
-DSI_TOUCH_OVERLAY="${6:-}"
+IMG_FILE="${1:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <bootloader_initramfs> <program_initramfs> <vc4_overlay> [dsi_overlay>}"
+IMG_SIZE_MB="${2:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <bootloader_initramfs> <program_initramfs> <vc4_overlay> [dsi_overlay>}"
+OUT_DIR="${3:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <bootloader_initramfs> <program_initramfs> <vc4_overlay> [dsi_overlay>}"
+INITRAMFS="${4:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <bootloader_initramfs> <program_initramfs> <vc4_overlay> [dsi_overlay>}"
+PROGRAM_INITRAMFS="${5:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <bootloader_initramfs> <program_initramfs> <vc4_overlay> [dsi_overlay>}"
+VC4_OVERLAY="${6:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <bootloader_initramfs> <program_initramfs> <vc4_overlay> [dsi_overlay>}"
+DSI_TOUCH_OVERLAY="${7:-}"
 
 MNT_BOOT="${OUT_DIR}/mnt_boot"
 
@@ -42,7 +43,8 @@ sudo mount "${LOOP_DEV}p1" "${MNT_BOOT}"
 echo "Writing distribution files..."
 sudo cp -r "${OUT_DIR}/bootfiles/." "${MNT_BOOT}/"
 sudo cp "${INITRAMFS}" "${MNT_BOOT}/initramfs.cpio.gz"
-sudo sh -c "echo 'initramfs initramfs.cpio.gz followkernel' > '${MNT_BOOT}/config.txt'"
+sudo cp "${PROGRAM_INITRAMFS}" "${MNT_BOOT}/program.cpio.gz"
+sudo sh -c "echo 'initramfs initramfs.cpio.gz,program.cpio.gz followkernel' > '${MNT_BOOT}/config.txt'"
 sudo sh -c "echo 'dtoverlay=${VC4_OVERLAY}' >> '${MNT_BOOT}/config.txt'"
 if [[ -n "${DSI_TOUCH_OVERLAY}" ]]; then
     sudo sh -c "echo 'dtoverlay=${DSI_TOUCH_OVERLAY}' >> '${MNT_BOOT}/config.txt'"

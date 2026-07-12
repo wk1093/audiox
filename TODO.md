@@ -6,6 +6,7 @@ This is the rough plan for audiox. Not fancy. Just the stuff I need to get done 
 
 - Rewrite the entire codebase to be modular and maintainable, using C++/C with classes (NO MODERN C++ features, just classes)
 - Implement a "developer mode" toggle in the makefile that adds an http endpoint "/api/initram" PUT to upload a new initramfs to the Pi and reboot it automatically, so I don't have to keep swapping SD cards (and probably wearing out the Pi's SD card slot). How did I not think of this sooner. and add a "make dev" target that builds the initramfs and copies it to the Pi over the http server, then reboots the Pi. This is going to be a huge time saver.
+- framebuffer UI element for RAM and CPU usage, so I can see if the Pi is struggling
 - Add a static ffmpeg build to the initramfs so that uploaded audio files can be converted to wav (which I can easily parse and play)
 - Clean up the audio path so it is actually ready for routing instead of just playing one-off voices
 - Keep the hot path tight: fixed buffers, no dumb allocations, no weird locks if I can avoid them

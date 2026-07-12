@@ -205,7 +205,9 @@ static float adaptiveSrcStep(AdaptiveSrcController *src, float fillNow) {
         return 1.0f;
     }
 
-    float error = src->targetFill - fillNow;
+    // Positive error means ring is healthier than target, so we can read a bit faster.
+    // Negative error means ring is low, so we must read slower to avoid underruns.
+    float error = fillNow - src->targetFill;
     src->integral += error;
     if (src->integral > 1.0f) {
         src->integral = 1.0f;

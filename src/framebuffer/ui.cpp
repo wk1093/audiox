@@ -1,23 +1,47 @@
 #include "framebuffer/context.hpp"
 
+#include "audio/context.hpp"
+#include "config/context.hpp"
 #include "touch/context.hpp"
 
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 #include <stdio.h>
 #include <time.h>
 #include <cmath>
 
 static uint8_t* boot_logo_data = nullptr;
 static constexpr int kButtonDragThresholdPx = 12;
+static constexpr int kMaxUiDevices = 32;
+static constexpr int kChannelMeterMax = 16;
 
-// Audio level bar state for placeholder visualization
-struct AudioLevelState {
-    float levels[2]{0.0f, 0.0f};  // stereo levels
-    float targetLevels[2]{0.0f, 0.0f};
-    float decayRate = 0.92f;
-    int animationCounter = 0;
+struct SystemMetricsState {
+    uint64_t lastUpdateMs{0};
+    uint64_t prevTotalTicks{0};
+    uint64_t prevIdleTicks{0};
+    uint64_t memTotalKb{0};
+    uint64_t memUsedKb{0};
+    float cpuUsage{0.0f};
+    float ramUsage{0.0f};
+    bool hasCpuSample{false};
 };
 
-static AudioLevelState audioLevelState;
+struct ScrollAreaState {
+    bool wasTouchDown{false};
+    bool tracking{false};
+    bool dragged{false};
+    int startX{0};
+    int startY{0};
+    int lastX{0};
+    int lastY{0};
+    int startOffset{0};
+    int offset{0};
+};
+
+static SystemMetricsState systemMetricsState;
+static ScrollAreaState deviceListScrollState;
+static int _calculatedLogoHeight = 0;
 
 static inline int calculateLogoY(int screenHeight, int logoHeight) {
     const int textHeight = 8;
@@ -25,34 +49,77 @@ static inline int calculateLogoY(int screenHeight, int logoHeight) {
 }
 
 static inline int calculateTextY(int screenHeight, int textHeight, int logoHeight) {
+    (void)textHeight;
     return calculateLogoY(screenHeight, logoHeight) + logoHeight + 16;
 }
-
-static int _calculatedLogoHeight = 0;
 
 static inline bool pointInRect(int px, int py, int x, int y, int w, int h) {
     return px >= x && px < x + w && py >= y && py < y + h;
 }
 
-static inline void drawLine(FramebufferContext *fb, int x1, int y1, int x2, int y2, 
-                            unsigned char r, unsigned char g, unsigned char b) {
-    // Simple line drawing using Bresenham-like approach
+static inline int clampInt(int value, int minValue, int maxValue) {
+    if (value < minValue) {
+        return minValue;
+    }
+    if (value > maxValue) {
+        return maxValue;
+    }
+    return value;
+}
+
+static inline float clampFloat(float value, float minValue, float maxValue) {
+    if (value < minValue) {
+        return minValue;
+    }
+    if (value > maxValue) {
+        return maxValue;
+    }
+    return value;
+}
+
+static inline uint64_t uiMonotonicMs() {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+
+    return ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);
+}
+
+static inline void drawLine(FramebufferContext *fb,
+                            int x1,
+                            int y1,
+                            int x2,
+                            int y2,
+                            unsigned char r,
+                            unsigned char g,
+                            unsigned char b) {
     int dx = x2 - x1;
     int dy = y2 - y1;
-    int steps = (dx > dy) ? dx : dy;
-    if (steps < 1) steps = 1;
-    
-    for (int i = 0; i <= steps; i++) {
+    int absDx = dx < 0 ? -dx : dx;
+    int absDy = dy < 0 ? -dy : dy;
+    int steps = absDx > absDy ? absDx : absDy;
+    if (steps < 1) {
+        steps = 1;
+    }
+
+    for (int i = 0; i <= steps; ++i) {
         int x = x1 + (dx * i) / steps;
         int y = y1 + (dy * i) / steps;
         fb->drawPixel(x, y, r, g, b);
     }
 }
 
-static inline void drawRectBorder(FramebufferContext *fb, int x, int y, int w, int h,
-                                   unsigned char r, unsigned char g, unsigned char b, int thickness = 1) {
-    // Draw filled rectangle first for simplicity
-    for (int i = 0; i < thickness; i++) {
+static inline void drawRectBorder(FramebufferContext *fb,
+                                  int x,
+                                  int y,
+                                  int w,
+                                  int h,
+                                  unsigned char r,
+                                  unsigned char g,
+                                  unsigned char b,
+                                  int thickness = 1) {
+    for (int i = 0; i < thickness; ++i) {
         drawLine(fb, x + i, y + i, x + w - i, y + i, r, g, b);
         drawLine(fb, x + i, y + h - i - 1, x + w - i, y + h - i - 1, r, g, b);
         drawLine(fb, x + i, y + i, x + i, y + h - i, r, g, b);
@@ -60,26 +127,281 @@ static inline void drawRectBorder(FramebufferContext *fb, int x, int y, int w, i
     }
 }
 
-static inline void updateAudioLevels() {
-    // Placeholder audio level animation - simulates meter decay and random peaks
-    audioLevelState.animationCounter++;
-    
-    // Every few frames, generate a new target
-    if (audioLevelState.animationCounter % 100 == 0) {
-        audioLevelState.targetLevels[0] = 0.2f + (float)(rand() % 80) / 100.0f;
-        audioLevelState.targetLevels[1] = 0.2f + (float)(rand() % 80) / 100.0f;
+static inline void drawMeterFill(FramebufferContext *fb, int x, int y, int w, int h, float level) {
+    float clamped = clampFloat(level, 0.0f, 1.0f);
+    int fillW = (int)((float)w * clamped);
+    if (fillW <= 0) {
+        return;
     }
-    
-    // Smooth approach to target, then decay
-    for (int i = 0; i < 2; i++) {
-        if (audioLevelState.levels[i] < audioLevelState.targetLevels[i]) {
-            audioLevelState.levels[i] += 
-                (audioLevelState.targetLevels[i] - audioLevelState.levels[i]) * 0.15f;
-        } else {
-            audioLevelState.levels[i] *= audioLevelState.decayRate;
+
+    unsigned char r = 64;
+    unsigned char g = 190;
+    unsigned char b = 80;
+    if (clamped >= 0.80f) {
+        r = 235;
+        g = 72;
+        b = 60;
+    } else if (clamped >= 0.60f) {
+        r = 220;
+        g = 174;
+        b = 44;
+    }
+
+    fb->drawRect(x, y, fillW, h, r, g, b);
+}
+
+static inline void drawMeterFillColor(FramebufferContext *fb,
+                                      int x,
+                                      int y,
+                                      int w,
+                                      int h,
+                                      float level,
+                                      unsigned char r,
+                                      unsigned char g,
+                                      unsigned char b) {
+    float clamped = clampFloat(level, 0.0f, 1.0f);
+    int fillW = (int)((float)w * clamped);
+    if (fillW <= 0) {
+        return;
+    }
+
+    fb->drawRect(x, y, fillW, h, r, g, b);
+}
+
+static inline void trimLabelToWidth(const char *src, char *dst, size_t dstSize, int maxChars) {
+    if (!dst || dstSize == 0) {
+        return;
+    }
+
+    dst[0] = '\0';
+    if (!src || maxChars <= 0) {
+        return;
+    }
+
+    int srcLen = (int)strnlen(src, dstSize - 1);
+    if (srcLen <= maxChars) {
+        snprintf(dst, dstSize, "%s", src);
+        return;
+    }
+
+    int copyChars = maxChars;
+    if (copyChars > (int)dstSize - 1) {
+        copyChars = (int)dstSize - 1;
+    }
+    if (copyChars <= 3) {
+        copyChars = 0;
+    } else {
+        copyChars -= 3;
+    }
+
+    if (copyChars > 0) {
+        memcpy(dst, src, (size_t)copyChars);
+    }
+    dst[copyChars] = '\0';
+    snprintf(dst + copyChars, dstSize - (size_t)copyChars, "...");
+}
+
+static inline void sortDeviceInfos(AudioDeviceInfo *infos, size_t count) {
+    for (size_t i = 1; i < count; ++i) {
+        AudioDeviceInfo key = infos[i];
+        size_t j = i;
+        while (j > 0) {
+            const AudioDeviceInfo &prev = infos[j - 1];
+            bool shouldSwap = false;
+            if (prev.cardIndex > key.cardIndex) {
+                shouldSwap = true;
+            } else if (prev.cardIndex == key.cardIndex && prev.deviceIndex > key.deviceIndex) {
+                shouldSwap = true;
+            }
+            if (!shouldSwap) {
+                break;
+            }
+            infos[j] = infos[j - 1];
+            --j;
         }
-        if (audioLevelState.levels[i] < 0.01f) audioLevelState.levels[i] = 0.0f;
+        infos[j] = key;
     }
+}
+
+static inline int channelCountForUi(uint8_t channels, uint8_t hasDirection) {
+    if (!hasDirection) {
+        return 0;
+    }
+    int count = channels > 0 ? (int)channels : 2;
+    if (count > kChannelMeterMax) {
+        count = kChannelMeterMax;
+    }
+    return count;
+}
+
+static inline int deviceRowHeight(const AudioDeviceInfo &info) {
+    const int meterLabelH = 8;
+    const int meterBarH = 2;
+    const int meterGap = 2;
+    int playbackCount = channelCountForUi(info.playbackChannels, info.hasPlayback);
+    int captureCount = channelCountForUi(info.captureChannels, info.hasCapture);
+    int maxChannels = playbackCount > captureCount ? playbackCount : captureCount;
+    int meterHeight = 0;
+    if (maxChannels > 0) {
+        meterHeight = meterLabelH + 3 + (maxChannels * meterBarH) + ((maxChannels - 1) * meterGap);
+    }
+    int textHeight = 24;
+    int innerHeight = meterHeight > textHeight ? meterHeight : textHeight;
+    return innerHeight + 8;
+}
+
+static inline float placeholderChannelLevel(AudioHandle handle,
+                                            int deviceIndex,
+                                            int channelIndex,
+                                            int isCapture,
+                                            uint64_t nowMs) {
+    const float phase = ((float)(nowMs % 6000ULL) / 6000.0f) * 6.2831853f;
+    const float offset = ((float)handle * 0.37f) + ((float)deviceIndex * 0.19f) + ((float)channelIndex * 0.61f);
+    const float dirOffset = isCapture ? 1.4f : 0.25f;
+    const float pulse = 0.5f + (0.5f * sinf(phase + offset + dirOffset));
+    const float spread = (float)((channelIndex % 4) + 1) * 0.05f;
+    return clampFloat(0.10f + spread + (pulse * 0.58f), 0.0f, 0.96f);
+}
+
+static inline void drawChannelMeterGroup(FramebufferContext *fb,
+                                         int x,
+                                         int y,
+                                         int w,
+                                         int channelCount,
+                                         const char *label,
+                                         AudioHandle handle,
+                                         int deviceIndex,
+                                         int isCapture,
+                                         uint64_t nowMs,
+                                         unsigned char fillR,
+                                         unsigned char fillG,
+                                         unsigned char fillB) {
+    if (channelCount <= 0) {
+        return;
+    }
+
+    const int meterBarH = 2;
+    const int meterGap = 2;
+    fb->drawText(x, y, label, 150, 188, 228, 1);
+    int barsY = y + 11;
+    for (int ch = 0; ch < channelCount; ++ch) {
+        int barY = barsY + (ch * (meterBarH + meterGap));
+        fb->drawRect(x, barY, w, meterBarH, 42, 52, 68);
+        float level = placeholderChannelLevel(handle, deviceIndex, ch, isCapture, nowMs);
+        drawMeterFillColor(fb, x, barY, w, meterBarH, level, fillR, fillG, fillB);
+    }
+}
+
+static inline void refreshSystemMetrics() {
+    uint64_t nowMs = uiMonotonicMs();
+    if (systemMetricsState.lastUpdateMs != 0 && (nowMs - systemMetricsState.lastUpdateMs) < 250ULL) {
+        return;
+    }
+    systemMetricsState.lastUpdateMs = nowMs;
+
+    FILE *statFile = fopen("/proc/stat", "r");
+    if (statFile) {
+        char line[256];
+        if (fgets(line, sizeof(line), statFile)) {
+            unsigned long long user = 0;
+            unsigned long long nice = 0;
+            unsigned long long system = 0;
+            unsigned long long idle = 0;
+            unsigned long long iowait = 0;
+            unsigned long long irq = 0;
+            unsigned long long softirq = 0;
+            unsigned long long steal = 0;
+            if (sscanf(line,
+                       "cpu %llu %llu %llu %llu %llu %llu %llu %llu",
+                       &user,
+                       &nice,
+                       &system,
+                       &idle,
+                       &iowait,
+                       &irq,
+                       &softirq,
+                       &steal) >= 4) {
+                uint64_t idleTicks = idle + iowait;
+                uint64_t totalTicks = user + nice + system + idle + iowait + irq + softirq + steal;
+                if (systemMetricsState.hasCpuSample && totalTicks > systemMetricsState.prevTotalTicks) {
+                    uint64_t deltaTotal = totalTicks - systemMetricsState.prevTotalTicks;
+                    uint64_t deltaIdle = 0;
+                    if (idleTicks > systemMetricsState.prevIdleTicks) {
+                        deltaIdle = idleTicks - systemMetricsState.prevIdleTicks;
+                    }
+
+                    if (deltaTotal > 0 && deltaIdle <= deltaTotal) {
+                        float busy = (float)(deltaTotal - deltaIdle) / (float)deltaTotal;
+                        systemMetricsState.cpuUsage = clampFloat(busy, 0.0f, 1.0f);
+                    }
+                }
+                systemMetricsState.prevIdleTicks = idleTicks;
+                systemMetricsState.prevTotalTicks = totalTicks;
+                systemMetricsState.hasCpuSample = true;
+            }
+        }
+        fclose(statFile);
+    }
+
+    FILE *memFile = fopen("/proc/meminfo", "r");
+    if (memFile) {
+        char line[256];
+        uint64_t memTotalKb = 0;
+        uint64_t memAvailableKb = 0;
+        uint64_t memFreeKb = 0;
+        while (fgets(line, sizeof(line), memFile)) {
+            unsigned long long value = 0;
+            if (sscanf(line, "MemTotal: %llu kB", &value) == 1) {
+                memTotalKb = value;
+            } else if (sscanf(line, "MemAvailable: %llu kB", &value) == 1) {
+                memAvailableKb = value;
+            } else if (sscanf(line, "MemFree: %llu kB", &value) == 1) {
+                memFreeKb = value;
+            }
+        }
+        fclose(memFile);
+
+        if (memTotalKb > 0) {
+            uint64_t availableKb = memAvailableKb > 0 ? memAvailableKb : memFreeKb;
+            if (availableKb > memTotalKb) {
+                availableKb = memTotalKb;
+            }
+            systemMetricsState.memTotalKb = memTotalKb;
+            systemMetricsState.memUsedKb = memTotalKb - availableKb;
+            systemMetricsState.ramUsage = clampFloat((float)systemMetricsState.memUsedKb / (float)memTotalKb, 0.0f, 1.0f);
+        }
+    }
+}
+
+static inline void updateScrollArea(ScrollAreaState &state, TouchState *touch, int x, int y, int w, int h, int maxOffset) {
+    const bool touchDown = touch && touch->is_pressed;
+    const int touchX = touch ? touch->x : state.lastX;
+    const int touchY = touch ? touch->y : state.lastY;
+
+    if (touchDown) {
+        state.lastX = touchX;
+        state.lastY = touchY;
+    }
+
+    if (touchDown && !state.wasTouchDown && pointInRect(touchX, touchY, x, y, w, h)) {
+        state.tracking = true;
+        state.dragged = false;
+        state.startX = touchX;
+        state.startY = touchY;
+        state.startOffset = state.offset;
+    } else if (touchDown && state.tracking) {
+        int dy = touchY - state.startY;
+        if (dy > 4 || dy < -4) {
+            state.dragged = true;
+        }
+        state.offset = clampInt(state.startOffset - dy, 0, maxOffset);
+    } else if (!touchDown && state.wasTouchDown) {
+        state.tracking = false;
+        state.dragged = false;
+    }
+
+    state.wasTouchDown = touchDown;
+    state.offset = clampInt(state.offset, 0, maxOffset);
 }
 
 void FramebufferContext::drawBootLogo() {
@@ -176,7 +498,7 @@ struct ButtonState {
 
 static ButtonState buttonStates[10];
 
-static inline int imuiButton(FramebufferContext *fb, int buttonId, int x, int y, int w, int h, 
+static inline int imuiButton(FramebufferContext *fb, int buttonId, int x, int y, int w, int h,
                               const char *label, TouchState *touch) {
     if (buttonId >= 10) return 0;
     
@@ -242,87 +564,230 @@ static inline int imuiButton(FramebufferContext *fb, int buttonId, int x, int y,
     return activated ? 1 : 0;
 }
 
-
-
 void FramebufferContext::drawMain(TouchState *touchState) {
     if (!isReady()) {
         return;
     }
 
-    updateAudioLevels();
+    refreshSystemMetrics();
     beginFrame();
 
-    // Background
     drawRect(0, 0, width, height, 15, 20, 30);
 
-    int padding = 10;
-    int statusHeight = 60;
-    int levelBarHeight = 100;
-    int buttonHeight = 45;
-    int buttonCount = 3;
+    const int padding = 10;
+    const int panelWidth = (int)width - (2 * padding);
+    const int statusHeight = 60;
+    const int metricsHeight = 74;
+    const int buttonHeight = 45;
+    const int buttonCount = 3;
+    const int gap = 10;
+    const int buttonsY = (int)height - padding - buttonHeight;
+    const int metricsY = padding + statusHeight + gap;
+    const int listY = metricsY + metricsHeight + gap;
+    const int listHeight = buttonsY - gap - listY;
+    const int headerHeight = 18;
 
-    // Status panel - top
-    drawRect(padding, padding, width - 2*padding, statusHeight, 30, 40, 60);
-    drawRectBorder(this, padding, padding, width - 2*padding, statusHeight, 100, 140, 180, 1);
+    AudioDeviceInfo deviceInfos[kMaxUiDevices];
+    size_t deviceCount = 0;
+    ConfigData liveCfg = {};
+    ConfigData stagedCfg = {};
+    int hasStagedCfg = RET_WARN;
+    if (app && app->audio) {
+        deviceCount = app->audio->copyDeviceInfos(deviceInfos, kMaxUiDevices);
+        sortDeviceInfos(deviceInfos, deviceCount);
+    }
+    if (app && app->config) {
+        liveCfg = app->config->readConfigFile();
+        hasStagedCfg = app->config->readStagingConfigFile(&stagedCfg);
+    }
 
-    drawText(padding + 5, padding + 5, "Audio:", 150, 188, 228, 1);
-    drawText(padding + 5, padding + 20, "44.1kHz | Ready", 200, 220, 255, 1);
+    int contentHeight = headerHeight + 8;
+    for (size_t i = 0; i < deviceCount; ++i) {
+        contentHeight += deviceRowHeight(deviceInfos[i]);
+    }
+    int maxScroll = 0;
+    if (contentHeight > listHeight) {
+        maxScroll = contentHeight - listHeight;
+    }
+    updateScrollArea(deviceListScrollState, touchState, padding, listY, panelWidth, listHeight, maxScroll);
 
-    // Audio level bars - middle
-    int levelAreaY = padding + statusHeight + 15;
-    int levelAreaHeight = levelBarHeight;
-    
-    drawRect(padding, levelAreaY, width - 2*padding, levelAreaHeight, 25, 35, 50);
-    drawRectBorder(this, padding, levelAreaY, width - 2*padding, levelAreaHeight, 80, 120, 160, 1);
+    drawRect(padding, padding, panelWidth, statusHeight, 30, 40, 60);
+    drawRectBorder(this, padding, padding, panelWidth, statusHeight, 100, 140, 180, 1);
+    drawText(padding + 8, padding + 6, "audiox fbui", 210, 225, 240, 1);
 
-    // Draw level labels
-    drawText(padding + 5, levelAreaY + 5, "Level", 150, 188, 228, 1);
+    char statusLine[96];
+    snprintf(statusLine,
+             sizeof(statusLine),
+             "devices %u | usb p%u c%u | touch %s",
+             (unsigned)deviceCount,
+             (unsigned)liveCfg.playbackChannels,
+             (unsigned)liveCfg.captureChannels,
+             (touchState && touchState->is_pressed) ? "down" : "idle");
+    drawText(padding + 8, padding + 22, statusLine, 150, 188, 228, 1);
 
-    // Draw stereo level bars
-    int barY = levelAreaY + 20;
-    int barH = 15;
-    int barSpacing = 5;
-    
-    for (int ch = 0; ch < 2; ch++) {
-        int barX = padding + 10;
-        int barMaxW = width - 2*padding - 20;
-        
-        // Channel label
-        if (ch == 0) drawText(barX - 5, barY - 2, "L", 150, 188, 228, 1);
-        else drawText(barX - 5, barY + barH + barSpacing - 2, "R", 150, 188, 228, 1);
-        
-        // Background bar
-        drawRect(barX, barY + ch * (barH + barSpacing), barMaxW, barH, 40, 50, 70);
-        drawRectBorder(this, barX, barY + ch * (barH + barSpacing), barMaxW, barH, 80, 100, 120, 1);
-        
-        // Level indicator
-        int levelW = (int)(barMaxW * audioLevelState.levels[ch]);
-        if (levelW > 0) {
-            // Color gradient: green -> yellow -> red based on level
-            unsigned char r, g, b;
-            float level = audioLevelState.levels[ch];
-            if (level < 0.5f) {
-                r = (unsigned char)(level * 2 * 100);
-                g = 200;
-                b = (unsigned char)(level * 2 * 50);
-            } else if (level < 0.8f) {
-                r = 200;
-                g = (unsigned char)(200 - (level - 0.5f) * 2 * 100);
-                b = 0;
-            } else {
-                r = 255;
-                g = (unsigned char)(100 - (level - 0.8f) * 5 * 100);
-                b = 0;
-            }
-            drawRect(barX, barY + ch * (barH + barSpacing), levelW, barH, r, g, b);
+    char configLine[96];
+    if (hasStagedCfg == RET_OK) {
+        snprintf(configLine,
+                 sizeof(configLine),
+                 "staged p%u c%u rate %u",
+                 (unsigned)stagedCfg.playbackChannels,
+                 (unsigned)stagedCfg.captureChannels,
+                 (unsigned)stagedCfg.sampleRate);
+        drawText(padding + 8, padding + 38, configLine, 255, 198, 132, 1);
+    } else {
+        snprintf(configLine,
+                 sizeof(configLine),
+                 "live rate %u size %u",
+                 (unsigned)liveCfg.sampleRate,
+                 (unsigned)liveCfg.sampleSize);
+        drawText(padding + 8, padding + 38, configLine, 140, 164, 186, 1);
+    }
+
+    drawRect(padding, metricsY, panelWidth, metricsHeight, 25, 35, 50);
+    drawRectBorder(this, padding, metricsY, panelWidth, metricsHeight, 80, 120, 160, 1);
+    drawText(padding + 8, metricsY + 6, "system", 150, 188, 228, 1);
+
+    const int metricBarX = padding + 52;
+    const int metricBarW = panelWidth - 120;
+    const int cpuBarY = metricsY + 18;
+    const int ramBarY = metricsY + 43;
+    drawText(padding + 8, cpuBarY, "cpu", 200, 220, 255, 1);
+    drawText(padding + 8, ramBarY, "ram", 200, 220, 255, 1);
+    drawRect(metricBarX, cpuBarY, metricBarW, 12, 40, 50, 70);
+    drawRect(metricBarX, ramBarY, metricBarW, 12, 40, 50, 70);
+    drawRectBorder(this, metricBarX, cpuBarY, metricBarW, 12, 80, 100, 120, 1);
+    drawRectBorder(this, metricBarX, ramBarY, metricBarW, 12, 80, 100, 120, 1);
+    drawMeterFill(this, metricBarX, cpuBarY, metricBarW, 12, systemMetricsState.cpuUsage);
+    drawMeterFill(this, metricBarX, ramBarY, metricBarW, 12, systemMetricsState.ramUsage);
+
+    char cpuLabel[32];
+    char ramLabel[48];
+    snprintf(cpuLabel, sizeof(cpuLabel), "%3d%%", (int)(systemMetricsState.cpuUsage * 100.0f + 0.5f));
+    snprintf(ramLabel,
+             sizeof(ramLabel),
+             "%3d%% %lluM",
+             (int)(systemMetricsState.ramUsage * 100.0f + 0.5f),
+             (unsigned long long)(systemMetricsState.memUsedKb / 1024ULL));
+    drawText(metricBarX + metricBarW + 6, cpuBarY, cpuLabel, 210, 225, 240, 1);
+    drawText(metricBarX + metricBarW + 6, ramBarY, ramLabel, 210, 225, 240, 1);
+
+    drawRect(padding, listY, panelWidth, listHeight, 24, 31, 44);
+    drawRectBorder(this, padding, listY, panelWidth, listHeight, 80, 120, 160, 1);
+    drawText(padding + 8, listY + 6, "devices", 150, 188, 228, 1);
+
+    const int listInnerX = padding + 8;
+    const int listInnerY = listY + headerHeight;
+    const int listInnerW = panelWidth - 16;
+    const int meterW = 132;
+    const int rowTextW = listInnerW - meterW - 16;
+    const int maxNameChars = rowTextW / 8;
+    const uint64_t nowMs = uiMonotonicMs();
+
+    if (deviceCount == 0) {
+        drawText(listInnerX, listInnerY + 10, "No audio devices found.", 190, 205, 220, 1);
+    }
+
+    int rowCursorY = listInnerY - deviceListScrollState.offset;
+    for (size_t i = 0; i < deviceCount; ++i) {
+        int rowHeight = deviceRowHeight(deviceInfos[i]);
+        int rowY = rowCursorY;
+        rowCursorY += rowHeight;
+        if (rowY < listInnerY || (rowY + rowHeight - 2) > (listY + listHeight - 2)) {
+            continue;
+        }
+
+        unsigned char rowShade = (i % 2 == 0) ? 34 : 29;
+        drawRect(listInnerX, rowY, listInnerW, rowHeight - 2, rowShade, rowShade + 8, rowShade + 20);
+        drawRectBorder(this, listInnerX, rowY, listInnerW, rowHeight - 2, 60, 86, 112, 1);
+
+        char nameLabel[64];
+        char detailLabel[64];
+        trimLabelToWidth(deviceInfos[i].displayName, nameLabel, sizeof(nameLabel), maxNameChars);
+        snprintf(detailLabel,
+                 sizeof(detailLabel),
+                 "c%u d%u %s p%u c%u",
+                 (unsigned)deviceInfos[i].cardIndex,
+                 (unsigned)deviceInfos[i].deviceIndex,
+                 deviceInfos[i].isUsb ? "usb" : "local",
+                 (unsigned)channelCountForUi(deviceInfos[i].playbackChannels, deviceInfos[i].hasPlayback),
+                 (unsigned)channelCountForUi(deviceInfos[i].captureChannels, deviceInfos[i].hasCapture));
+
+        drawText(listInnerX + 6, rowY + 4, nameLabel, 220, 232, 240, 1);
+        drawText(listInnerX + 6, rowY + 16, detailLabel, 150, 170, 190, 1);
+
+        const int meterX = listInnerX + listInnerW - meterW - 8;
+        const int meterY = rowY + 4;
+        const int meterH = rowHeight - 8;
+        drawRect(meterX, meterY, meterW, meterH, 40, 50, 70);
+        drawRectBorder(this, meterX, meterY, meterW, meterH, 72, 92, 118, 1);
+
+        int playbackCount = channelCountForUi(deviceInfos[i].playbackChannels, deviceInfos[i].hasPlayback);
+        int captureCount = channelCountForUi(deviceInfos[i].captureChannels, deviceInfos[i].hasCapture);
+        int sectionGap = 6;
+        int sectionCount = 0;
+        if (playbackCount > 0) {
+            sectionCount++;
+        }
+        if (captureCount > 0) {
+            sectionCount++;
+        }
+        int sectionW = meterW - 10;
+        if (sectionCount == 2) {
+            sectionW = (meterW - 16 - sectionGap) / 2;
+        }
+        int sectionX = meterX + 5;
+        if (playbackCount > 0) {
+            drawChannelMeterGroup(this,
+                                  sectionX,
+                                  meterY + 3,
+                                  sectionW,
+                                  playbackCount,
+                                  captureCount > 0 ? "out" : "play",
+                                  deviceInfos[i].handle,
+                                  (int)i,
+                                  0,
+                                  nowMs,
+                                  230,
+                                  148,
+                                  58);
+            sectionX += sectionW + sectionGap;
+        }
+        if (captureCount > 0) {
+            drawChannelMeterGroup(this,
+                                  sectionX,
+                                  meterY + 3,
+                                  sectionW,
+                                  captureCount,
+                                  playbackCount > 0 ? "in" : "cap",
+                                  deviceInfos[i].handle,
+                                  (int)i,
+                                  1,
+                                  nowMs,
+                                  66,
+                                  190,
+                                  180);
         }
     }
 
-    // Control buttons - bottom
-    int buttonsY = height - padding - buttonHeight - 5;
-    int buttonW = (width - 4*padding) / buttonCount;
-    
+    if (maxScroll > 0 && listHeight > 0) {
+        const int trackX = padding + panelWidth - 6;
+        const int trackY = listY + headerHeight + 2;
+        const int trackH = listHeight - headerHeight - 4;
+        int thumbH = (trackH * listHeight) / contentHeight;
+        if (thumbH < 18) {
+            thumbH = 18;
+        }
+        int thumbTravel = trackH - thumbH;
+        int thumbY = trackY;
+        if (thumbTravel > 0) {
+            thumbY += (thumbTravel * deviceListScrollState.offset) / maxScroll;
+        }
+        drawRect(trackX, trackY, 3, trackH, 42, 52, 68);
+        drawRect(trackX, thumbY, 3, thumbH, 112, 152, 194);
+    }
+
     for (int i = 0; i < buttonCount; i++) {
+        int buttonW = (panelWidth - ((buttonCount - 1) * padding)) / buttonCount;
         int btnX = padding + i * (buttonW + padding);
         const char *btnLabel = nullptr;
         

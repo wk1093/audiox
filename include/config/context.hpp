@@ -42,6 +42,7 @@ struct ConfigStore {
 
     ConfigStore(Audiox *context);
     ConfigData readConfigFile() const;
+    int readStagingConfigFile(ConfigData *out) const;
     int writeConfigFile(ConfigData *cfg);
     int findMidiMapping(uint8_t note, ConfigData::MidiMapping *out) const;
 

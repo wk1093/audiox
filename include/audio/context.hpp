@@ -46,6 +46,9 @@ struct AudioDeviceInfo {
     uint8_t hasPlayback;
     uint8_t hasCapture;
     uint8_t isUsb;
+    uint8_t isGadget;
+    uint8_t playbackChannels;
+    uint8_t captureChannels;
     char nodeName[64];
     char devPath[128];
     char displayName[128];

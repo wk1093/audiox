@@ -1,6 +1,7 @@
 #include "http/context.hpp"
 #include "audio/context.hpp"
 #include "config/context.hpp"
+#include "init.hpp"
 #include "midi/context.hpp"
 
 #include <ctype.h>
@@ -34,6 +35,28 @@
 #define HTTP_FS_ROOT ROOT_MOUNT_POINT "/"
 
 namespace {
+
+static void sortAudioDeviceInfos(AudioDeviceInfo *infos, size_t count) {
+	for (size_t i = 1; i < count; ++i) {
+		AudioDeviceInfo key = infos[i];
+		size_t j = i;
+		while (j > 0) {
+			const AudioDeviceInfo &prev = infos[j - 1];
+			bool shouldSwap = false;
+			if (prev.cardIndex > key.cardIndex) {
+				shouldSwap = true;
+			} else if (prev.cardIndex == key.cardIndex && prev.deviceIndex > key.deviceIndex) {
+				shouldSwap = true;
+			}
+			if (!shouldSwap) {
+				break;
+			}
+			infos[j] = infos[j - 1];
+			--j;
+		}
+		infos[j] = key;
+	}
+}
 
 static int mapping_path_safe(const char *s);
 
@@ -746,11 +769,49 @@ static int handleConfigReload(HttpServer *server,
 							  int cfd,
 							  const char *method,
 							  const char *path) {
-	(void)server;
-	(void)cfd;
-	(void)method;
 	(void)path;
-	return RET_WARN;
+	if (!server || !server->app || !server->app->config || !method) {
+		return -1;
+	}
+
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	int reloadRc = reloadAudioGadget(server->app);
+	if (reloadRc == RET_ERR) {
+		static const char err[] = "usb audio gadget reload failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (reloadRc == RET_WARN) {
+		static const char warn[] = "usb audio gadget reload rejected by config\n";
+		return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8", warn, sizeof(warn) - 1);
+	}
+
+	if (server->app->audio) {
+		usleep(50000);
+		int rescanRc = server->app->audio->forceRescan();
+		if (rescanRc == RET_ERR) {
+			printf("[HTTP] [WARN] audio rescan failed after USB gadget reload\n");
+		}
+	}
+
+	ConfigData cfg = server->app->config->readConfigFile();
+	char out[256];
+	int n = snprintf(out,
+				 sizeof(out),
+				 "{\"ok\":true,\"sampleRate\":%u,\"playbackChannels\":%u,\"captureChannels\":%u,\"sampleSize\":%u,\"source\":\"real\"}\n",
+				 (unsigned)cfg.sampleRate,
+				 (unsigned)cfg.playbackChannels,
+				 (unsigned)cfg.captureChannels,
+				 (unsigned)cfg.sampleSize);
+	if (n < 0) {
+		n = 0;
+	}
+	if ((size_t)n >= sizeof(out)) {
+		n = (int)(sizeof(out) - 1);
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
 }
 
 static int handleRoutingReload(HttpServer *server,
@@ -768,11 +829,105 @@ static int handleRoutingThings(HttpServer *server,
 							   int cfd,
 							   const char *method,
 							   const char *path) {
-	(void)server;
-	(void)cfd;
-	(void)method;
 	(void)path;
-	return RET_WARN;
+	if (!server || !server->app || !method) {
+		return -1;
+	}
+
+	if (strcmp(method, "GET") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	ConfigData cfg = {};
+	if (server->app->config) {
+		cfg = server->app->config->readConfigFile();
+	}
+
+	AudioDeviceInfo infos[32];
+	size_t deviceCount = 0;
+	int haveGadgetPlayback = 0;
+	int haveGadgetCapture = 0;
+	if (server->app->audio) {
+		deviceCount = server->app->audio->copyDeviceInfos(infos, 32);
+		sortAudioDeviceInfos(infos, deviceCount);
+		for (size_t i = 0; i < deviceCount; ++i) {
+			if (!infos[i].isGadget) {
+				continue;
+			}
+			if (infos[i].hasPlayback) {
+				haveGadgetPlayback = 1;
+			}
+			if (infos[i].hasCapture) {
+				haveGadgetCapture = 1;
+			}
+		}
+	}
+
+	char out[HTTP_BODY_MAX];
+	size_t used = 0;
+	int n = snprintf(out + used, sizeof(out) - used, "{\"ok\":true,\"things\":[");
+	if (n < 0 || (size_t)n >= sizeof(out) - used) {
+		static const char err[] = "encode failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	used += (size_t)n;
+
+	int first = 1;
+#define APPEND_THING(ID, NAME, INPUTS, OUTPUTS) \
+	do { \
+		n = snprintf(out + used, sizeof(out) - used, "%s{\"id\":\"%s\",\"name\":\"%s\",\"inputs\":%u,\"outputs\":%u}", \
+			first ? "" : ",", ID, NAME, (unsigned)(INPUTS), (unsigned)(OUTPUTS)); \
+		if (n < 0 || (size_t)n >= sizeof(out) - used) { \
+			static const char err[] = "encode failed\n"; \
+			return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1); \
+		} \
+		used += (size_t)n; \
+		first = 0; \
+	} while (0)
+
+	APPEND_THING("soundboard_out", "Soundboard Out", 0, 2);
+	APPEND_THING("fx_slot_0", "FX Slot 0", 2, 2);
+	APPEND_THING("soundboard_virtual_out", "Soundboard Virtual Out", 2, 0);
+	if (!haveGadgetPlayback) {
+		APPEND_THING("usb_gadget_out", "USB Gadget Out", cfg.playbackChannels, 0);
+	}
+	if (!haveGadgetCapture) {
+		APPEND_THING("usb_gadget_in", "USB Gadget In", 0, cfg.captureChannels);
+	}
+
+	for (size_t i = 0; i < deviceCount; ++i) {
+		char id[48];
+		char label[160];
+		if (infos[i].hasCapture) {
+			snprintf(id,
+					 sizeof(id),
+					 "alsa_card%u_dev%u_in",
+					 (unsigned)infos[i].cardIndex,
+					 (unsigned)infos[i].deviceIndex);
+			snprintf(label, sizeof(label), "%s In", infos[i].displayName);
+			APPEND_THING(id, label, 0, infos[i].captureChannels ? infos[i].captureChannels : 2);
+		}
+		if (infos[i].hasPlayback) {
+			snprintf(id,
+					 sizeof(id),
+					 "alsa_card%u_dev%u_out",
+					 (unsigned)infos[i].cardIndex,
+					 (unsigned)infos[i].deviceIndex);
+			snprintf(label, sizeof(label), "%s Out", infos[i].displayName);
+			APPEND_THING(id, label, infos[i].playbackChannels ? infos[i].playbackChannels : 2, 0);
+		}
+	}
+
+#undef APPEND_THING
+
+	n = snprintf(out + used, sizeof(out) - used, "]}\n");
+	if (n < 0 || (size_t)n >= sizeof(out) - used) {
+		static const char err[] = "encode failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	used += (size_t)n;
+
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, used);
 }
 
 static int handleSystemSync(HttpServer *server,

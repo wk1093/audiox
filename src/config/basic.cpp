@@ -9,6 +9,28 @@
 
 namespace {
 
+static inline void normalizeConfig(ConfigData *cfg) {
+    if (!cfg) {
+        return;
+    }
+
+    if (cfg->sampleRate == 0) {
+        cfg->sampleRate = SAMPLE_RATE;
+    }
+    if (cfg->playbackChannels == 0) {
+        cfg->playbackChannels = 2;
+    }
+    if (cfg->captureChannels == 0) {
+        cfg->captureChannels = 2;
+    }
+    if (cfg->sampleSize == 0) {
+        cfg->sampleSize = 2;
+    }
+    if (cfg->mappingCount > MIDI_MAPPINGS_MAX) {
+        cfg->mappingCount = MIDI_MAPPINGS_MAX;
+    }
+}
+
 static inline char *trimLeft(char *s) {
     while (s && *s == ' ') {
         ++s;
@@ -83,17 +105,18 @@ static int parseMidiMapLine(const char *value,
     return RET_OK;
 }
 
-} // namespace
+static int readConfigPath(const char *path, ConfigData *out, int warnIfMissing) {
+    if (!path || !out) {
+        return RET_ERR;
+    }
 
-
-ConfigData ConfigStore::readConfigFile() const {
     ConfigData cfg = {};
-    FILE *fp = fopen(CONFIG_REAL_FILE_PATH, "r");
+    FILE *fp = fopen(path, "r");
     if (!fp) {
-        if (errno != ENOENT) {
-            printf("[CONFIG] [WARN] failed to open %s for reading: %s\n", CONFIG_REAL_FILE_PATH, strerror(errno));
+        if (errno != ENOENT || warnIfMissing) {
+            printf("[CONFIG] [WARN] failed to open %s for reading: %s\n", path, strerror(errno));
         }
-        return cfg;
+        return (errno == ENOENT) ? RET_WARN : RET_ERR;
     }
 
     char line[256];
@@ -131,16 +154,36 @@ ConfigData ConfigStore::readConfigFile() const {
     }
 
     if (ferror(fp)) {
-        printf("[CONFIG] [WARN] failed while reading %s: %s\n", CONFIG_REAL_FILE_PATH, strerror(errno));
+        printf("[CONFIG] [WARN] failed while reading %s: %s\n", path, strerror(errno));
+        fclose(fp);
+        return RET_ERR;
     }
     fclose(fp);
+
+    normalizeConfig(&cfg);
+    *out = cfg;
+    return RET_OK;
+}
+
+} // namespace
+
+
+ConfigData ConfigStore::readConfigFile() const {
+    ConfigData cfg = {};
+    (void)readConfigPath(CONFIG_REAL_FILE_PATH, &cfg, 0);
     return cfg;
+}
+
+int ConfigStore::readStagingConfigFile(ConfigData *out) const {
+    return readConfigPath(CONFIG_STAGING_FILE_PATH, out, 0);
 }
 
 int ConfigStore::writeConfigFile(ConfigData *cfg) {
     if (!cfg) {
         return -1;
     }
+
+    normalizeConfig(cfg);
 
     int fd = open(CONFIG_REAL_FILE_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
@@ -169,22 +212,6 @@ ConfigStore::ConfigStore(Audiox *context) : app(context) {
     }
 
     ConfigData cfg = readConfigFile();
-    if (cfg.sampleRate == 0) {
-        cfg.sampleRate = SAMPLE_RATE;
-    }
-    if (cfg.playbackChannels == 0) {
-        cfg.playbackChannels = 2;
-    }
-    if (cfg.captureChannels == 0) {
-        cfg.captureChannels = 2;
-    }
-    if (cfg.sampleSize == 0) {
-        cfg.sampleSize = 2;
-    }
-    if (cfg.mappingCount > MIDI_MAPPINGS_MAX) {
-        cfg.mappingCount = MIDI_MAPPINGS_MAX;
-    }
-
     writeConfigFile(&cfg);
 }
 

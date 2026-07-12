@@ -4,6 +4,8 @@ This is the rough plan for audiox. Not fancy. Just the stuff I need to get done 
 
 ## Right now
 
+- Rewrite the entire codebase to be modular and maintainable, using C++/C with classes (NO MODERN C++ features, just classes)
+- Add a static ffmpeg build to the initramfs so that uploaded audio files can be converted to wav (which I can easily parse and play)
 - Clean up the audio path so it is actually ready for routing instead of just playing one-off voices
 - Keep the hot path tight: fixed buffers, no dumb allocations, no weird locks if I can avoid them
 - Add a real internal routing model so "virtual wires" are not a future panic attack

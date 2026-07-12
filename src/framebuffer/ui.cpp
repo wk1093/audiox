@@ -1,8 +1,11 @@
 #include "framebuffer/context.hpp"
 
+#include "touch/context.hpp"
+
 #include <stdio.h>
 
 static uint8_t* boot_logo_data = nullptr;
+static constexpr int kButtonDragThresholdPx = 12;
 
 static inline int calculateLogoY(int screenHeight, int logoHeight) {
     const int textHeight = 8;
@@ -14,6 +17,20 @@ static inline int calculateTextY(int screenHeight, int textHeight, int logoHeigh
 }
 
 static int _calculatedLogoHeight = 0;
+
+struct ButtonInteractionState {
+    bool wasTouchDown{false};
+    bool tracking{false};
+    bool dragged{false};
+    int startX{0};
+    int startY{0};
+    int lastX{0};
+    int lastY{0};
+};
+
+static inline bool pointInRect(int px, int py, int x, int y, int w, int h) {
+    return px >= x && px < x + w && py >= y && py < y + h;
+}
 
 void FramebufferContext::drawBootLogo() {
     if (!isReady()) {
@@ -92,7 +109,89 @@ void FramebufferContext::bootStatus(const char *status) {
 
 }
 
-void FramebufferContext::drawMain(TouchEvent *touchEvent) {
-    // TODO
-    drawText(10, 10, "AUDIOX", 120, 230, 170, 3);
+// IMUI implementation
+
+static inline bool imuiButton(FramebufferContext *fb, int x, int y, int w, int h, const char *label, TouchState *touch) {
+    static ButtonInteractionState interaction;
+
+    const bool touchDown = touch && touch->is_pressed;
+    const int touchX = touch ? touch->x : interaction.lastX;
+    const int touchY = touch ? touch->y : interaction.lastY;
+    bool activated = false;
+
+    if (touchDown) {
+        interaction.lastX = touchX;
+        interaction.lastY = touchY;
+    }
+
+    if (touchDown && !interaction.wasTouchDown && pointInRect(touchX, touchY, x, y, w, h)) {
+        interaction.tracking = true;
+        interaction.dragged = false;
+        interaction.startX = touchX;
+        interaction.startY = touchY;
+    } else if (touchDown && interaction.tracking) {
+        const int dx = touchX - interaction.startX;
+        const int dy = touchY - interaction.startY;
+        if ((dx * dx) + (dy * dy) > (kButtonDragThresholdPx * kButtonDragThresholdPx) ||
+            !pointInRect(touchX, touchY, x, y, w, h)) {
+            interaction.dragged = true;
+        }
+    } else if (!touchDown && interaction.wasTouchDown) {
+        if (interaction.tracking && !interaction.dragged &&
+            pointInRect(interaction.lastX, interaction.lastY, x, y, w, h)) {
+            activated = true;
+        }
+        interaction.tracking = false;
+        interaction.dragged = false;
+    }
+
+    interaction.wasTouchDown = touchDown;
+
+    const bool isPressed = touchDown && interaction.tracking && !interaction.dragged;
+
+    // draw button
+    if (isPressed) {
+        fb->drawRect(x, y, w, h, 100, 100, 100);
+    } else {
+        fb->drawRect(x, y, w, h, 200, 200, 200);
+    }
+
+    // draw label centered
+    int text_w = 0;
+    for (const char *p = label; *p; ++p) {
+        unsigned char c = (unsigned char)(*p);
+        if (c >= 128) {
+            continue;
+        }
+        text_w += 8;
+    }
+    int text_x = x + (w - text_w) / 2;
+    int text_y = y + (h - 8) / 2;
+
+    fb->drawText(text_x, text_y, label, 0, 0, 0, 1);
+
+    return activated;
+}
+
+
+
+void FramebufferContext::drawMain(TouchState *touchState) {
+    if (!isReady()) {
+        return;
+    }
+
+    // draw background
+    drawRect(0, 0, width, height, 8, 11, 16);
+
+    // draw a button in the center of the screen
+    int button_w = 200;
+    int button_h = 50;
+    int button_x = (width - button_w) / 2;
+    int button_y = (height - button_h) / 2;
+
+    bool buttonPressed = imuiButton(this, button_x, button_y, button_w, button_h, "Click Me", touchState);
+
+    if (buttonPressed) {
+        drawText(button_x + 10, button_y + button_h + 10, "Button Pressed!", 255, 255, 255, 1);
+    }
 }

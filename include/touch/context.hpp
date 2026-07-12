@@ -4,28 +4,35 @@
 
 #define TOUCH_MAX_POINTS 10
 
-struct TouchEvent {
-    int x;
-    int y;
-    bool pressed;
+struct TouchState {
+    bool is_pressed{false};
+    int x{0};
+    int y{0};
 };
 
 struct TouchContext {
     Audiox *app;
-    int fd;
-    int supports_mt_slots;
-    int max_slots;
-    int current_slot;
-    int slot_active[TOUCH_MAX_POINTS];
-    int slot_x[TOUCH_MAX_POINTS];
-    int slot_y[TOUCH_MAX_POINTS];
-    int min_x;
-    int max_x;
-    int min_y;
-    int max_y;
-    int has_range;
+    int fd{-1};
+    int supports_mt_slots{0};
+    int max_slots{TOUCH_MAX_POINTS};
+    int current_slot{0};
+    int slot_active[TOUCH_MAX_POINTS]{0};
+    int slot_x[TOUCH_MAX_POINTS]{0};
+    int slot_y[TOUCH_MAX_POINTS]{0};
+    int min_x{0};
+    int max_x{0};
+    int min_y{0};
+    int max_y{0};
+    int has_range{0};
+    TouchState state{};
 
     TouchContext(Audiox *context);
 
-    void poll(TouchEvent *event);
+    void poll();
+
+    inline bool isReady() const {
+        return fd >= 0;
+    }
+
+    void checkForDevice();
 };

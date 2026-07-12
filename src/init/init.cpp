@@ -112,7 +112,6 @@ int main() {
     sleep(1);
     mainContext.setReady();
     flushLogs();
-    TouchEvent touchEvent;
     int logFlushCounter = 0;
     while (1) {
         if (++logFlushCounter >= 100) {
@@ -120,14 +119,17 @@ int main() {
             logFlushCounter = 0;
         }
         mainContext.eventLoop();
-        touch.poll(&touchEvent);
-        fb.drawMain(&touchEvent);
+        touch.poll();
+        fb.drawMain(&touch.state);
         http.poll();
         audio.poll(); // no audio processing, only hotplug/talking to config for device/routing settings.
         midi.poll();
         if (!fb.isReady()) {
             fb.checkForFramebuffer();
-        }        
+        }
+        if (!touch.isReady()) {
+            touch.checkForDevice();
+        }
     }
 
 }

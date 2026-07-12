@@ -6,7 +6,7 @@
 #include "../context.hpp"
 #include <linux/fb.h>
 
-struct TouchEvent;
+struct TouchState;
 
 struct FramebufferContext {
     Audiox *app;
@@ -44,5 +44,5 @@ struct FramebufferContext {
     // High-level drawing functions
     void drawBootLogo();
     void bootStatus(const char *status);
-    void drawMain(TouchEvent *touchEvent);
+    void drawMain(TouchState *touchState);
 };

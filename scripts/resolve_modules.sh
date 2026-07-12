@@ -10,6 +10,8 @@ MOD_TREE_DIR="${FIRMWARE_DIR}/modules/${KV}"
 SRC_KERNEL_DIR="${MOD_TREE_DIR}/kernel"
 STAGE_BASE_DIR="${OUT_DIR}/modules_staging/${KV}"
 STAGE_KERNEL_DIR="${STAGE_BASE_DIR}/kernel"
+BASE_LOAD_LIST_FILE="${OUT_DIR}/module-load.base.list"
+NORMAL_LOAD_LIST_FILE="${OUT_DIR}/module-load.normal.list"
 LOAD_LIST_FILE="${OUT_DIR}/module-load.list"
 SUMMARY_FILE="${OUT_DIR}/module-load.summary.txt"
 
@@ -51,9 +53,13 @@ done
 
 declare -A NAME_TO_REL=()
 declare -A STATE=()
+declare -A IS_BASE_SEED=()
+declare -A IS_NORMAL_SEED=()
 declare -A IS_SEED=()
 ORDER=()
 SEEDS=()
+BASE_SEEDS=()
+NORMAL_SEEDS=()
 
 normalize_rel() {
     local rel="$1"
@@ -192,19 +198,56 @@ while IFS= read -r raw_line; do
     line="${line%${line##*[![:space:]]}}"
     [[ -z "${line}" ]] && continue
 
+    seed_class="normal"
+    if [[ "${line}" == base:* ]]; then
+        seed_class="base"
+        line="${line#base:}"
+        line="${line#${line%%[![:space:]]*}}"
+    elif [[ "${line}" == normal:* ]]; then
+        line="${line#normal:}"
+        line="${line#${line%%[![:space:]]*}}"
+    fi
+
+    [[ -z "${line}" ]] && continue
+
     normalized_seed="$(normalize_rel "${line}")"
     if [[ -n "${IS_SEED[${normalized_seed}]:-}" ]]; then
+        if [[ "${seed_class}" == "base" && -z "${IS_BASE_SEED[${normalized_seed}]:-}" ]]; then
+            IS_BASE_SEED["${normalized_seed}"]=1
+            BASE_SEEDS+=("${normalized_seed}")
+        fi
         continue
     fi
+
     IS_SEED["${normalized_seed}"]=1
     SEEDS+=("${normalized_seed}")
 
-    visit_module "${normalized_seed}"
+    if [[ "${seed_class}" == "base" ]]; then
+        IS_BASE_SEED["${normalized_seed}"]=1
+        BASE_SEEDS+=("${normalized_seed}")
+    else
+        IS_NORMAL_SEED["${normalized_seed}"]=1
+        NORMAL_SEEDS+=("${normalized_seed}")
+    fi
+
 done < "${DEP_FILE}"
 
+for base_seed in "${BASE_SEEDS[@]}"; do
+    visit_module "${base_seed}"
+done
+
+BASE_ORDER_COUNT="${#ORDER[@]}"
+
+for normal_seed in "${NORMAL_SEEDS[@]}"; do
+    visit_module "${normal_seed}"
+done
+
+: > "${BASE_LOAD_LIST_FILE}"
+: > "${NORMAL_LOAD_LIST_FILE}"
 : > "${LOAD_LIST_FILE}"
 
-for rel in "${ORDER[@]}"; do
+for idx in "${!ORDER[@]}"; do
+    rel="${ORDER[${idx}]}"
     src_file="$(resolve_source_file "${rel}")"
     dst_file="${STAGE_KERNEL_DIR}/${rel}.ko"
     mkdir -p "$(dirname "${dst_file}")"
@@ -215,29 +258,57 @@ for rel in "${ORDER[@]}"; do
         install -m 0644 "${src_file}" "${dst_file}"
     fi
 
-    echo "/lib/modules/${KV}/kernel/${rel}.ko" >> "${LOAD_LIST_FILE}"
+    module_path="/lib/modules/${KV}/kernel/${rel}.ko"
+
+    if (( idx < BASE_ORDER_COUNT )); then
+        echo "${module_path}" >> "${BASE_LOAD_LIST_FILE}"
+    else
+        echo "${module_path}" >> "${NORMAL_LOAD_LIST_FILE}"
+    fi
+
+    echo "${module_path}" >> "${LOAD_LIST_FILE}"
 done
 
 {
     echo "Kernel Version: ${KV}"
     echo "Seed Count: ${#SEEDS[@]}"
+    echo "Base Seed Count: ${#BASE_SEEDS[@]}"
+    echo "Normal Seed Count: ${#NORMAL_SEEDS[@]}"
     echo "Resolved Module Count: ${#ORDER[@]}"
+    echo "Base Load Count: ${BASE_ORDER_COUNT}"
+    echo "Normal Load Count: $((${#ORDER[@]} - BASE_ORDER_COUNT))"
     echo
-    echo "Seed Modules:"
-    for seed in "${SEEDS[@]}"; do
+    echo "Base Seed Modules:"
+    for seed in "${BASE_SEEDS[@]}"; do
+        echo "  ${seed}"
+    done
+    echo
+    echo "Normal Seed Modules:"
+    for seed in "${NORMAL_SEEDS[@]}"; do
         echo "  ${seed}"
     done
     echo
     echo "Resolved Load Order:"
-    for rel in "${ORDER[@]}"; do
-        if [[ -n "${IS_SEED[${rel}]:-}" ]]; then
-            echo "  [seed] ${rel}"
+    for idx in "${!ORDER[@]}"; do
+        rel="${ORDER[${idx}]}"
+        if (( idx < BASE_ORDER_COUNT )); then
+            if [[ -n "${IS_BASE_SEED[${rel}]:-}" ]]; then
+                echo "  [base-seed ] ${rel}"
+            else
+                echo "  [base-dep  ] ${rel}"
+            fi
         else
-            echo "  [dep ] ${rel}"
+            if [[ -n "${IS_NORMAL_SEED[${rel}]:-}" ]]; then
+                echo "  [normal-seed] ${rel}"
+            else
+                echo "  [normal-dep ] ${rel}"
+            fi
         fi
     done
 } > "${SUMMARY_FILE}"
 
 echo "[resolve_modules] Staged ${#ORDER[@]} modules from ${#SEEDS[@]} seeds"
+echo "[resolve_modules] Base list: ${BASE_LOAD_LIST_FILE}"
+echo "[resolve_modules] Normal list: ${NORMAL_LOAD_LIST_FILE}"
 echo "[resolve_modules] Module load list: ${LOAD_LIST_FILE}"
 echo "[resolve_modules] Summary report: ${SUMMARY_FILE}"

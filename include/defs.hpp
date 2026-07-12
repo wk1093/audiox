@@ -1,7 +1,6 @@
-#ifndef INIT_DEFS_H
-#define INIT_DEFS_H
+#pragma once
 
-#include <stddef.h>
+#include <cstddef>
 
 #ifndef KERNEL_VERSION
 #define KERNEL_VERSION "6.18.36-v8+"
@@ -14,6 +13,8 @@
 #define BUFFER_FRAMES 128
 
 #define MODULE_LOAD_LIST_FILE "/etc/module-load.list"
+#define MODULE_LOAD_BASE_LIST_FILE "/etc/module-load.base.list"
+#define MODULE_LOAD_NORMAL_LIST_FILE "/etc/module-load.normal.list"
 #define BOOT_LOGO_PPM_PATH "/etc/logo_boot.ppm"
 
 #define GADGET_ROOT "/sys/kernel/config/usb_gadget/g1"
@@ -25,4 +26,10 @@
 #define GADGET_UDC_NAME "fe980000.usb\n"
 #define CONFIG_DEVICE_PATH "/dev/mmcblk0p2"
 
-#endif
+#define RET_OK 0 // do nothing extra
+#define RET_ERR -1 // fatal error, halt
+#define RET_WARN 1 // non-fatal warning, continue but log it
+
+#define WARN_UNUSED __attribute__((warn_unused_result))
+
+#define ROOT_MOUNT_POINT "/audiox"

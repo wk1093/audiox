@@ -6,7 +6,8 @@ Right now it boots straight into a custom `init` process, brings up a USB UAC2 g
 
 ## What it does
 
-- Loads the required kernel modules from `/etc/module-load.list`
+- Loads boot-critical modules first from `/etc/module-load.base.list`, then normal modules from `/etc/module-load.normal.list`
+- Keeps a compatibility combined list at `/etc/module-load.list`
 - Configures a USB audio gadget through ConfigFS
 - Configures a USB NCM network gadget (`usb0`) for host<->Pi control traffic
 - Starts audio playback in a dedicated audio thread
@@ -15,8 +16,8 @@ Right now it boots straight into a custom `init` process, brings up a USB UAC2 g
 - Runs a basic HTTP server on port 80 for early web tooling
 - Serves a static page from `/etc/www/index.html`
 - Exposes basic rootfs file APIs over HTTP:
-	- `GET /main/rootfs/<path>` -> reads `/audiox/<path>`
-	- `PUT /main/rootfs/<path>` -> writes `/audiox/<path>`
+	- `GET /api/rootfs/<path>` -> reads `/audiox/<path>`
+	- `PUT /api/rootfs/<path>` -> writes `/audiox/<path>`
 - Exposes a web soundboard trigger endpoint so web and MIDI can both trigger voices
 
 ## Build
@@ -33,11 +34,11 @@ Useful targets:
 - `make qemu` - boot in QEMU (aarch64) // doesn't work because qemu raspi support is very minimal (no gui, no USB, no audio)
 - `make fancyexport` - wait for SD mount and export build artifacts
 - `make image` - create a flashable image file
-- `make debug` - native x86_64 debug boot in QEMU // probably doesn't work anymore because of raspi-specific code
 
 ## Notes
 
 - Put `voice0.wav` ... `voice3.wav` in `wavs/`
+- Module seeds live in `depmod.txt`: use `base:` for early boot/UI-critical modules and `normal:` (or no prefix) for the rest
 - This project is still rough around the edges, but it is usable for bring-up and iteration
 
 Network currently requires this on linux host (sometimes, only tested on one machine):
@@ -59,8 +60,8 @@ Quick endpoint examples (replace IP if needed):
 curl http://169.254.1.2/
 
 # read/write config files via HTTP API
-curl http://169.254.1.2/main/rootfs/config.txt
-curl -X PUT --data-binary '1\n' http://169.254.1.2/main/rootfs/config.txt
+curl http://169.254.1.2/api/rootfs/config.txt
+curl -X PUT --data-binary '1\n' http://169.254.1.2/api/rootfs/config.txt
 
 # trigger soundboard slot 0 from web/API
 curl http://169.254.1.2/api/soundboard/trigger/0

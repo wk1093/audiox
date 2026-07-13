@@ -137,6 +137,8 @@ struct AudioContext {
     AudioGraphState routingGraphPublished;
     std::atomic<uint32_t> routingGraphSeq;
     mutable std::mutex routingGraphMutex;
+    float nodeChannelLevels[AUDIO_GRAPH_MAX_THINGS][16];
+    mutable std::mutex levelsMutex;
 
     AudioContext(Audiox *context);
     ~AudioContext();
@@ -154,4 +156,5 @@ struct AudioContext {
     void poll();
 
     int rescanDevices();
+    float getChannelLevel(AudioHandle handle, int channelIndex, bool isCapture) const;
 };

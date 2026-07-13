@@ -121,6 +121,7 @@ struct RuntimeGraph {
     uint16_t playbackCount;
     uint64_t blocksProcessed;
     uint64_t nextStatsBlock;
+    std::atomic<float> channelLevels[AUDIO_GRAPH_MAX_THINGS][kMaxChannelsPerThing];
 };
 
 static uint64_t monotonicMs() {
@@ -882,6 +883,31 @@ static void clearRuntimeBuffers(RuntimeGraph *rt) {
     }
 }
 
+static void updateChannelLevels(AudioContext *ctx, RuntimeGraph *rt) {
+    if (!ctx || !rt) {
+        return;
+    }
+
+    for (uint16_t node = 0; node < rt->snapshot.thingCount; ++node) {
+        uint8_t channels = rt->snapshot.things[node].outputs;
+        if (channels > kMaxChannelsPerThing) {
+            channels = kMaxChannelsPerThing;
+        }
+
+        for (uint8_t ch = 0; ch < channels; ++ch) {
+            float peak = 0.0f;
+            for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+                float sample = fabsf(rt->outputs[node][ch][frame]);
+                if (sample > peak) {
+                    peak = sample;
+                }
+            }
+            rt->channelLevels[node][ch].store(peak, std::memory_order_relaxed);
+            ctx->nodeChannelLevels[node][ch] = peak;
+        }
+    }
+}
+
 static void renderSourceNode(const AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex) {
     if (!ctx || !rt || nodeIndex >= rt->snapshot.thingCount) {
         return;
@@ -1231,6 +1257,7 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
     }
 
     rt->blocksProcessed++;
+    updateChannelLevels(ctx, rt);
 
     servicePlaybackIo(rt);
 }

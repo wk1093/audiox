@@ -250,17 +250,15 @@ static inline int deviceRowHeight(const AudioDeviceInfo &info) {
     return innerHeight + 8;
 }
 
-static inline float placeholderChannelLevel(AudioHandle handle,
-                                            int deviceIndex,
-                                            int channelIndex,
-                                            int isCapture,
-                                            uint64_t nowMs) {
-    const float phase = ((float)(nowMs % 6000ULL) / 6000.0f) * 6.2831853f;
-    const float offset = ((float)handle * 0.37f) + ((float)deviceIndex * 0.19f) + ((float)channelIndex * 0.61f);
-    const float dirOffset = isCapture ? 1.4f : 0.25f;
-    const float pulse = 0.5f + (0.5f * sinf(phase + offset + dirOffset));
-    const float spread = (float)((channelIndex % 4) + 1) * 0.05f;
-    return clampFloat(0.10f + spread + (pulse * 0.58f), 0.0f, 0.96f);
+static inline float getAudioChannelLevel(FramebufferContext *fb,
+                                         AudioHandle handle,
+                                         int channelIndex,
+                                         int isCapture) {
+    if (!fb || !fb->app || !fb->app->audio) {
+        return 0.0f;
+    }
+    
+    return fb->app->audio->getChannelLevel(handle, channelIndex, isCapture);
 }
 
 static inline void drawChannelMeterGroup(FramebufferContext *fb,
@@ -287,7 +285,7 @@ static inline void drawChannelMeterGroup(FramebufferContext *fb,
     for (int ch = 0; ch < channelCount; ++ch) {
         int barY = barsY + (ch * (meterBarH + meterGap));
         fb->drawRect(x, barY, w, meterBarH, 42, 52, 68);
-        float level = placeholderChannelLevel(handle, deviceIndex, ch, isCapture, nowMs);
+        float level = getAudioChannelLevel(fb, handle, ch, isCapture);
         drawMeterFillColor(fb, x, barY, w, meterBarH, level, fillR, fillG, fillB);
     }
 }

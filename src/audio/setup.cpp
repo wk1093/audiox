@@ -156,6 +156,7 @@ AudioContext::AudioContext(Audiox *context) : app(context) {
     memset(&routingGraph, 0, sizeof(routingGraph));
     memset(&routingGraphPublished, 0, sizeof(routingGraphPublished));
     routingGraphSeq.store(0, std::memory_order_relaxed);
+    memset(&nodeChannelLevels, 0, sizeof(nodeChannelLevels));
 }
 
 AudioContext::~AudioContext() {
@@ -211,4 +212,37 @@ int AudioContext::forceRescan() {
         return RET_WARN;
     }
     return RET_OK;
+}
+
+float AudioContext::getChannelLevel(AudioHandle handle, int channelIndex, bool isCapture) const {
+    std::lock_guard<std::mutex> lock(devicesMutex);
+    
+    auto it = devices.find(handle);
+    if (it == devices.end()) {
+        return 0.0f;
+    }
+    
+    const AudioDeviceInfo &info = it->second;
+    
+    char thingId[64];
+    if (isCapture) {
+        snprintf(thingId, sizeof(thingId), "alsa_card%u_dev%u_in",
+                 (unsigned)info.cardIndex, (unsigned)info.deviceIndex);
+    } else {
+        snprintf(thingId, sizeof(thingId), "alsa_card%u_dev%u_out",
+                 (unsigned)info.cardIndex, (unsigned)info.deviceIndex);
+    }
+    
+    std::lock_guard<std::mutex> graphLock(routingGraphMutex);
+    
+    for (uint16_t i = 0; i < routingGraphPublished.thingCount; ++i) {
+        if (strcmp(routingGraphPublished.things[i].id, thingId) == 0) {
+            if (channelIndex >= 0 && channelIndex < 16) {
+                return nodeChannelLevels[i][channelIndex];
+            }
+            break;
+        }
+    }
+    
+    return 0.0f;
 }

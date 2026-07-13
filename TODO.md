@@ -4,10 +4,8 @@ This is the rough plan for audiox. Not fancy. Just the stuff I need to get done 
 
 ## Right now
 
-- Rewrite the entire codebase to be modular and maintainable, using C++/C with classes (NO MODERN C++ features, just classes)
-- framebuffer UI element for RAM and CPU usage, so I can see if the Pi is struggling
 - Add a static ffmpeg build to the initramfs so that uploaded audio files can be converted to wav (which I can easily parse and play)
-- AUDIO CRACKLING FIX: drift-aware resampling (adaptive SRC based on ring fill level)
+- Implement sync, restart, and shutdown commands in the HTTP API
 
 ## Network + web control status
 

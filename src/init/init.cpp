@@ -55,6 +55,9 @@ int main() {
 
     fb.waitForFramebuffer(1); // wait max of 1 second for framebuffer to be ready.
 
+    // disable cursor
+    fprintf(stdout, "\e[?25l");
+
     fb.drawBootLogo();
 
     fb.bootStatus("Loading kernel modules...");

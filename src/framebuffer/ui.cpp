@@ -15,6 +15,10 @@ static uint8_t* boot_logo_data = nullptr;
 static constexpr int kButtonDragThresholdPx = 12;
 static constexpr int kMaxUiDevices = 32;
 static constexpr int kChannelMeterMax = 16;
+static constexpr int kMeterSmoothingSlots = kMaxUiDevices * kChannelMeterMax * 2;
+static constexpr float kMeterAttackTauMs = 45.0f;
+static constexpr float kMeterReleaseTauMs = 180.0f;
+static constexpr uint64_t kMeterSlotStaleMs = 3000ULL;
 
 struct SystemMetricsState {
     uint64_t lastUpdateMs{0};
@@ -39,8 +43,19 @@ struct ScrollAreaState {
     int offset{0};
 };
 
+struct MeterSmoothingState {
+    AudioHandle handle{0};
+    uint8_t channelIndex{0};
+    uint8_t isCapture{0};
+    float level{0.0f};
+    uint64_t lastUpdateMs{0};
+    uint64_t lastSeenMs{0};
+    bool active{false};
+};
+
 static SystemMetricsState systemMetricsState;
 static ScrollAreaState deviceListScrollState;
+static MeterSmoothingState meterSmoothingState[kMeterSmoothingSlots];
 static int _calculatedLogoHeight = 0;
 
 static inline int calculateLogoY(int screenHeight, int logoHeight) {
@@ -261,6 +276,81 @@ static inline float getAudioChannelLevel(FramebufferContext *fb,
     return fb->app->audio->getChannelLevel(handle, channelIndex, isCapture);
 }
 
+static inline MeterSmoothingState *findMeterSmoothingState(AudioHandle handle,
+                                                           int channelIndex,
+                                                           int isCapture,
+                                                           uint64_t nowMs) {
+    MeterSmoothingState *reuse = nullptr;
+    uint64_t oldestSeenMs = UINT64_MAX;
+
+    for (int i = 0; i < kMeterSmoothingSlots; ++i) {
+        MeterSmoothingState *state = &meterSmoothingState[i];
+        if (state->active &&
+            state->handle == handle &&
+            state->channelIndex == (uint8_t)channelIndex &&
+            state->isCapture == (uint8_t)(isCapture ? 1 : 0)) {
+            return state;
+        }
+
+        if (!reuse) {
+            if (!state->active) {
+                reuse = state;
+                continue;
+            }
+            if ((nowMs - state->lastSeenMs) > kMeterSlotStaleMs) {
+                reuse = state;
+                continue;
+            }
+        }
+
+        if (state->lastSeenMs < oldestSeenMs) {
+            oldestSeenMs = state->lastSeenMs;
+            if (!reuse) {
+                reuse = state;
+            }
+        }
+    }
+
+    if (!reuse) {
+        return nullptr;
+    }
+
+    reuse->handle = handle;
+    reuse->channelIndex = (uint8_t)channelIndex;
+    reuse->isCapture = (uint8_t)(isCapture ? 1 : 0);
+    reuse->level = 0.0f;
+    reuse->lastUpdateMs = 0;
+    reuse->lastSeenMs = nowMs;
+    reuse->active = true;
+    return reuse;
+}
+
+static inline float smoothMeterLevel(AudioHandle handle,
+                                     int channelIndex,
+                                     int isCapture,
+                                     float targetLevel,
+                                     uint64_t nowMs) {
+    MeterSmoothingState *state = findMeterSmoothingState(handle, channelIndex, isCapture, nowMs);
+    float clampedTarget = clampFloat(targetLevel, 0.0f, 1.0f);
+    if (!state) {
+        return clampedTarget;
+    }
+
+    if (state->lastUpdateMs == 0 || nowMs <= state->lastUpdateMs) {
+        state->level = clampedTarget;
+    } else {
+        float dtMs = (float)(nowMs - state->lastUpdateMs);
+        float tauMs = clampedTarget >= state->level ? kMeterAttackTauMs : kMeterReleaseTauMs;
+        float alpha = 1.0f - expf(-dtMs / tauMs);
+        state->level += (clampedTarget - state->level) * alpha;
+    }
+
+    state->level = clampFloat(state->level, 0.0f, 1.0f);
+    state->lastUpdateMs = nowMs;
+    state->lastSeenMs = nowMs;
+    return state->level;
+}
+
 static inline void drawChannelMeterGroup(FramebufferContext *fb,
                                          int x,
                                          int y,
@@ -269,6 +359,7 @@ static inline void drawChannelMeterGroup(FramebufferContext *fb,
                                          const char *label,
                                          AudioHandle handle,
                                          int isCapture,
+                                         uint64_t nowMs,
                                          unsigned char fillR,
                                          unsigned char fillG,
                                          unsigned char fillB) {
@@ -284,6 +375,7 @@ static inline void drawChannelMeterGroup(FramebufferContext *fb,
         int barY = barsY + (ch * (meterBarH + meterGap));
         fb->drawRect(x, barY, w, meterBarH, 42, 52, 68);
         float level = getAudioChannelLevel(fb, handle, ch, isCapture);
+        level = smoothMeterLevel(handle, ch, isCapture, level, nowMs);
         drawMeterFillColor(fb, x, barY, w, meterBarH, level, fillR, fillG, fillB);
     }
 }
@@ -673,6 +765,7 @@ void FramebufferContext::drawMain(TouchState *touchState) {
     const int meterW = 132;
     const int rowTextW = listInnerW - meterW - 16;
     const int maxNameChars = rowTextW / 8;
+    const uint64_t nowMs = uiMonotonicMs();
 
     if (deviceCount == 0) {
         drawText(listInnerX, listInnerY + 10, "No audio devices found.", 190, 205, 220, 1);
@@ -736,6 +829,7 @@ void FramebufferContext::drawMain(TouchState *touchState) {
                                   captureCount > 0 ? "out" : "play",
                                   deviceInfos[i].handle,
                                   0,
+                                  nowMs,
                                   230,
                                   148,
                                   58);
@@ -750,6 +844,7 @@ void FramebufferContext::drawMain(TouchState *touchState) {
                                   playbackCount > 0 ? "in" : "cap",
                                   deviceInfos[i].handle,
                                   1,
+                                  nowMs,
                                   66,
                                   190,
                                   180);

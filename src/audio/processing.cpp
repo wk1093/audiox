@@ -405,7 +405,7 @@ static bool openCaptureStream(RuntimeGraph::AlsaCaptureStream *s) {
                 s->reopenRetryBlocks = 0;
                 captureRingReset(s);
                 float baseRatio = (float)s->sampleRate / (float)SAMPLE_RATE;
-                initAdaptiveSrc(&s->src, 0.65f, baseRatio);
+                initAdaptiveSrc(&s->src, 0.50f, baseRatio);
                 printf("[AUDIO] [INFO] capture stream opened %s (%uch, %u Hz, period=%u periods=%u)\n",
                        s->path,
                        (unsigned)s->channels,
@@ -894,16 +894,34 @@ static void updateChannelLevels(AudioContext *ctx, RuntimeGraph *rt) {
             channels = kMaxChannelsPerThing;
         }
 
-        for (uint8_t ch = 0; ch < channels; ++ch) {
-            float peak = 0.0f;
-            for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
-                float sample = fabsf(rt->outputs[node][ch][frame]);
-                if (sample > peak) {
-                    peak = sample;
-                }
+        if (channels == 0) {
+            channels = rt->snapshot.things[node].inputs;
+            if (channels > kMaxChannelsPerThing) {
+                channels = kMaxChannelsPerThing;
             }
-            rt->channelLevels[node][ch].store(peak, std::memory_order_relaxed);
-            ctx->nodeChannelLevels[node][ch] = peak;
+            for (uint8_t ch = 0; ch < channels; ++ch) {
+                float peak = 0.0f;
+                for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+                    float sample = fabsf(rt->inputs[node][ch][frame]);
+                    if (sample > peak) {
+                        peak = sample;
+                    }
+                }
+                rt->channelLevels[node][ch].store(peak, std::memory_order_relaxed);
+                ctx->nodeChannelLevels[node][ch] = peak;
+            }
+        } else {
+            for (uint8_t ch = 0; ch < channels; ++ch) {
+                float peak = 0.0f;
+                for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+                    float sample = fabsf(rt->outputs[node][ch][frame]);
+                    if (sample > peak) {
+                        peak = sample;
+                    }
+                }
+                rt->channelLevels[node][ch].store(peak, std::memory_order_relaxed);
+                ctx->nodeChannelLevels[node][ch] = peak;
+            }
         }
     }
 }
@@ -929,7 +947,6 @@ static void renderSourceNode(const AudioContext *ctx, RuntimeGraph *rt, uint16_t
             if (s.ringCount == 0) {
                 for (uint8_t ch = 0; ch < outChannels; ++ch) {
                     uint8_t srcCh = (ch < s.channels) ? ch : 0;
-                    s.lastSample[srcCh] *= 0.995f;
                     rt->outputs[nodeIndex][ch][frame] = s.lastSample[srcCh];
                 }
             } else {

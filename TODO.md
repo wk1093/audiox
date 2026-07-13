@@ -4,8 +4,9 @@ This is the rough plan for audiox. Not fancy. Just the stuff I need to get done 
 
 ## Right now
 
-- Add a static ffmpeg build to the initramfs so that uploaded audio files can be converted to wav (which I can easily parse and play)
+- Fix fbui cpu and ram displays to align the text properly, and make it so the ram number isn't partially off the panel on the right sideq
 - Implement sync, restart, and shutdown commands in the HTTP API
+- Add a static ffmpeg build to the initramfs so that uploaded audio files can be converted to wav (which I can easily parse and play)
 
 ## Network + web control status
 

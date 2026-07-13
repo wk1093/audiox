@@ -947,7 +947,10 @@ static void renderSourceNode(const AudioContext *ctx, RuntimeGraph *rt, uint16_t
             if (s.ringCount == 0) {
                 for (uint8_t ch = 0; ch < outChannels; ++ch) {
                     uint8_t srcCh = (ch < s.channels) ? ch : 0;
-                    rt->outputs[nodeIndex][ch][frame] = s.lastSample[srcCh];
+                    float out = s.lastSample[srcCh] * 5.0f;
+                    if (out > 1.0f) out = 1.0f;
+                    if (out < -1.0f) out = -1.0f;
+                    rt->outputs[nodeIndex][ch][frame] = out;
                 }
             } else {
                 uint32_t aFrame = s.ringTail;
@@ -957,7 +960,9 @@ static void renderSourceNode(const AudioContext *ctx, RuntimeGraph *rt, uint16_t
                     uint8_t srcCh = (ch < s.channels) ? ch : (uint8_t)(s.channels - 1U);
                     float a = (float)captureRingSample(s, aFrame, srcCh) / 32768.0f;
                     float b = (float)captureRingSample(s, bFrame, srcCh) / 32768.0f;
-                    float out = a + ((b - a) * s.readFrac);
+                    float out = (a + ((b - a) * s.readFrac)) * 5.0f;
+                    if (out > 1.0f) out = 1.0f;
+                    if (out < -1.0f) out = -1.0f;
                     rt->outputs[nodeIndex][ch][frame] = out;
                     s.lastSample[srcCh] = out;
                 }

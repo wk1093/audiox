@@ -111,6 +111,7 @@ static int applyAudioConfig(const ConfigData *cfg) {
     return RET_OK;
 }
 
+
 static int readCurrentAudioConfig(ConfigData *cfg) {
     if (!cfg) {
         return RET_ERR;

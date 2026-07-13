@@ -1,12 +1,31 @@
 # TODO
 
-This is the rough plan for audiox. Not fancy. Just the stuff I need to get done before the good part starts working.
+Roadmap for future audiox development.
 
-## Right now
+## v1.0.0 - Complete ✓
 
-- Fix fbui cpu and ram displays to align the text properly, and make it so the ram number isn't partially off the panel on the right sideq
-- Implement sync, restart, and shutdown commands in the HTTP API
+- [x] Real-time audio engine with ALSA capture/playback
+- [x] USB UAC2 gadget (bidirectional audio)
+- [x] Framebuffer UI with touch + MIDI input + level metering
+- [x] HTTP API (config, routing, file upload, sync/restart/shutdown)
+- [x] MIDI note-to-SFX mapping
+- [x] Soundboard with file-based clip slots
+- [x] USB microphone input support
+- [x] Gadget audio I/O with proper gain control
+- [x] CPU/RAM metrics display on fbui
+
+## Next Steps - v1.1+
+
+- Improve soundboard UI to be more usable and less confusing
+- Make soundboard MIDI mapping more flexible
+- Make soundboard able to output midi as well to display lights on a connected controller
+- Volume sliders for all devices, with proper gain control for USB gadget input
+
+## Later - v1.2+
+
+- Add audio effects (reverb, delay, etc) to the audio engine, and make it so they can be routed to any output, and have their parameters controlled via the HTTP API as well as bindable MIDI CCs and buttons (for toggling effects on/off)
 - Add a static ffmpeg build to the initramfs so that uploaded audio files can be converted to wav (which I can easily parse and play)
+- Allow controlling routes with MIDI CCs and buttons
 
 ## Network + web control status
 

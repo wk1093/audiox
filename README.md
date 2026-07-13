@@ -1,8 +1,8 @@
-# audiox
+# audiox - v1.0.0
 
 `audiox` is a custom Raspberry Pi audio workstation project that combines a low-level initramfs software stack with a long-term plan for purpose-built audio hardware.
 
-Right now it boots through a tiny custom bootloader initramfs into a separate runtime initramfs, brings up a USB UAC2 gadget, plays local WAV voices, and renders touchscreen + MIDI control; long term the same software will drive multiple reverse-HAT board variants with patchable analog/digital routing, effects, and persistent user configuration.
+Right now it boots through a tiny custom bootloader initramfs into a separate runtime initramfs, brings up a USB UAC2 gadget, plays local WAV voices, routes audio with real-time metering, and renders touchscreen + MIDI control with a responsive framebuffer UI; long term the same software will drive multiple reverse-HAT board variants with patchable analog/digital routing, effects, and persistent user configuration.
 
 ## What it does
 
@@ -10,17 +10,22 @@ Right now it boots through a tiny custom bootloader initramfs into a separate ru
 - Keeps a compatibility combined list at `/etc/module-load.list`
 - Uses a two-stage ramfs layout: `initramfs.cpio.gz` bootloader plus `program.cpio.gz` runtime
 - Bootloader stages its own storage/filesystem modules from `bootmod.txt`
-- Configures a USB audio gadget through ConfigFS
+- Configures a USB audio gadget through ConfigFS with bidirectional capture/playback
 - Configures a USB NCM network gadget (`usb0`) for host<->Pi control traffic
-- Starts audio playback in a dedicated audio thread
-- Polls touch + MIDI input and renders a framebuffer UI
-- Stores a simple config flag at `/audiox/config.txt`
-- Runs a basic HTTP server on port 80 for early web tooling
+- Dedicates a real-time audio thread (SCHED_FIFO) for low-latency capture/playback processing
+- Routes audio between capture devices, effects, and playback sinks with live-metering
+- Polls touch + MIDI input and renders a responsive framebuffer UI with CPU/RAM metrics
+- Stores config at `/audiox/config.txt`
+- Runs a basic HTTP server on port 80 for web tooling
 - Serves a static page from `/etc/www/index.html`
 - Accepts firmware updates with `PUT /api/initram`, stages a new `program.cpio.gz`, reboots into the bootloader, promotes the staged image to the boot partition, and reboots again
 - Exposes basic rootfs file APIs over HTTP:
 	- `GET /api/rootfs/<path>` -> reads `/audiox/<path>`
 	- `PUT /api/rootfs/<path>` -> writes `/audiox/<path>`
+- Exposes system control endpoints:
+	- `POST /api/system/sync` - flushes filesystem
+	- `POST /api/system/restart` - reboots
+	- `POST /api/system/shutdown` - powers off
 - Exposes a web soundboard trigger endpoint so web and MIDI can both trigger voices
 - Supports MIDI note-to-SFX mappings from config stored in `/audiox/config.txt` and targeting files in `/audiox/sfx/`
 
@@ -50,8 +55,8 @@ Useful targets:
 - Put `voice0.wav` ... `voice3.wav` in `wavs/`
 - Module seeds live in `depmod.txt`: use `base:` for early boot/UI-critical modules and `normal:` (or no prefix) for the rest
 - Bootloader-only storage/filesystem module seeds live in `bootmod.txt`
-- Default boot graphics stay on FKMS (`vc4-fkms-v3d-pi4`); framebuffer rendering now stages into an off-screen buffer before presenting so visible tearing from direct pixel writes is reduced without switching the display stack
-- This project is still rough around the edges, but it is usable for bring-up and iteration
+- Default boot graphics stay on FKMS (`vc4-fkms-v3d-pi4`); framebuffer rendering stages into an off-screen buffer before presenting to reduce visual tearing without switching the display stack
+- v1.0.0 is a stable, working release with real-time audio processing, touchscreen UI, and HTTP control; the long-term vision includes hardware expansion and effects support
 
 Network currently requires this on linux host (sometimes, only tested on one machine):
 Either this on every time you plugin the Pi:

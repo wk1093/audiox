@@ -24,9 +24,9 @@ BOOTLOADER_COMPILER := $(CXX)
 BOOTLOADER_FLAGS := $(CXXFLAGS)
 
 # Version information
-AUDIOX_VERSION_MAJOR = 0
-AUDIOX_VERSION_MINOR = 2
-AUDIOX_VERSION_PATCH = 1
+AUDIOX_VERSION_MAJOR = 1
+AUDIOX_VERSION_MINOR = 0
+AUDIOX_VERSION_PATCH = 0
 
 # Auto-detected from firmware after fetch_deps runs.
 KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")

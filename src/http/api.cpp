@@ -1,0 +1,1096 @@
+#include "http/context.hpp"
+#include "audio/context.hpp"
+#include "config/context.hpp"
+#include "init.hpp"
+#include "midi/context.hpp"
+
+#include <ctype.h>
+
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/reboot.h>
+#include <unistd.h>
+
+#define HTTP_BODY_MAX 49152
+#define HTTP_API_PREFIX "/api/"
+#define HTTP_ROOTFS_PREFIX HTTP_API_PREFIX "rootfs/"
+#define HTTP_SOUNDBOARD_TRIGGER_PREFIX HTTP_API_PREFIX "soundboard/trigger/"
+#define HTTP_CONFIG_RELOAD_PATH HTTP_API_PREFIX "config/reload"
+#define HTTP_ROUTING_RELOAD_PATH HTTP_API_PREFIX "routing/reload"
+#define HTTP_ROUTING_THINGS_PATH HTTP_API_PREFIX "routing/things"
+#define HTTP_SYSTEM_SYNC_PATH HTTP_API_PREFIX "system/sync"
+#define HTTP_SYSTEM_RESTART_PATH HTTP_API_PREFIX "system/restart"
+#define HTTP_SYSTEM_SHUTDOWN_PATH HTTP_API_PREFIX "system/shutdown"
+#define HTTP_VERSION_PATH HTTP_API_PREFIX "version"
+#define HTTP_MIDI_LAST_NOTE_PATH HTTP_API_PREFIX "midi/last_note"
+#define HTTP_MIDI_MAPPINGS_PATH HTTP_API_PREFIX "midi/mappings"
+#define HTTP_MIDI_MAPPING_SET_PATH HTTP_API_PREFIX "midi/mapping/set"
+#define HTTP_MIDI_MAPPING_DELETE_PATH HTTP_API_PREFIX "midi/mapping/delete"
+#define HTTP_AUDIO_DEVICES_PATH HTTP_API_PREFIX "audio/devices"
+#define HTTP_AUDIO_RESCAN_PATH HTTP_API_PREFIX "audio/rescan"
+#define HTTP_FS_ROOT ROOT_MOUNT_POINT "/"
+
+namespace {
+
+static int mapping_path_safe(const char *s);
+
+static int sendMethodNotAllowed(HttpServer *server, int cfd) {
+	static const char mna[] = "method not allowed\n";
+	return server->sendResponse(cfd, "405 Method Not Allowed", "text/plain; charset=utf-8", mna, sizeof(mna) - 1);
+}
+
+static int sendNotImplemented(HttpServer *server, int cfd, const char *name) {
+	char out[128];
+	int n = snprintf(out, sizeof(out), "%s not implemented\n", name ? name : "endpoint");
+	if (n < 0) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "501 Not Implemented", "text/plain; charset=utf-8", out, (size_t)n);
+}
+
+static int safeApiSuffix(const char *suffix) {
+	if (!suffix) {
+		return 0;
+	}
+	if (!suffix[0]) {
+		return 1;
+	}
+	if (strstr(suffix, "..") != NULL) {
+		return 0;
+	}
+	if (strchr(suffix, '\\') != NULL) {
+		return 0;
+	}
+	return 1;
+}
+
+static int pathIsRootfs(const char *path) {
+	if (!path) {
+		return 0;
+	}
+	if (strcmp(path, "/api/rootfs") == 0) {
+		return 1;
+	}
+	return strncmp(path, HTTP_ROOTFS_PREFIX, strlen(HTTP_ROOTFS_PREFIX)) == 0;
+}
+
+static const char *rootfsSuffix(const char *path) {
+	if (!path) {
+		return NULL;
+	}
+	if (strcmp(path, "/api/rootfs") == 0) {
+		return "";
+	}
+	if (strncmp(path, HTTP_ROOTFS_PREFIX, strlen(HTTP_ROOTFS_PREFIX)) == 0) {
+		return path + strlen(HTTP_ROOTFS_PREFIX);
+	}
+	return NULL;
+}
+
+static int ensureParentDirs(const char *path) {
+	if (!path || !path[0]) {
+		return -1;
+	}
+
+	char tmp[512];
+	size_t n = strnlen(path, sizeof(tmp) - 1);
+	if (n == 0 || n >= sizeof(tmp) - 1) {
+		return -1;
+	}
+	memcpy(tmp, path, n);
+	tmp[n] = '\0';
+
+	for (char *p = tmp + 1; *p; ++p) {
+		if (*p != '/') {
+			continue;
+		}
+		*p = '\0';
+		if (mkdir(tmp, 0755) < 0 && errno != EEXIST) {
+			return -1;
+		}
+		*p = '/';
+	}
+
+	return 0;
+}
+
+static int sendRootfsDirListing(HttpServer *server,
+								int cfd,
+								const char *api_path,
+								const char *fs_path) {
+	DIR *dir = opendir(fs_path);
+	if (!dir) {
+		static const char err[] = "opendir failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	char body[HTTP_BODY_MAX];
+	size_t off = 0;
+	int n = snprintf(body,
+					 sizeof(body),
+					 "rootfs listing: %s\n",
+					 api_path ? api_path : "/api/rootfs");
+	if (n > 0) {
+		off = (size_t)n;
+	}
+
+	struct dirent *ent;
+	while ((ent = readdir(dir)) != NULL) {
+		if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+			continue;
+		}
+
+		char full[512];
+		int fn = snprintf(full, sizeof(full), "%s/%s", fs_path, ent->d_name);
+		if (fn <= 0 || (size_t)fn >= sizeof(full)) {
+			continue;
+		}
+
+		struct stat st;
+		int is_dir = (stat(full, &st) == 0 && S_ISDIR(st.st_mode)) ? 1 : 0;
+		n = snprintf(body + off,
+					 sizeof(body) - off,
+					 "%s%s\n",
+					 ent->d_name,
+					 is_dir ? "/" : "");
+		if (n <= 0 || (size_t)n >= sizeof(body) - off) {
+			break;
+		}
+		off += (size_t)n;
+	}
+
+	closedir(dir);
+	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", body, off);
+}
+
+static int handleApiGetRootfs(HttpServer *server, int cfd, const char *path) {
+	const char *suffix = rootfsSuffix(path);
+	if (!suffix || !safeApiSuffix(suffix)) {
+		static const char bad[] = "bad path\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char fs_path[512];
+	int pn = snprintf(fs_path, sizeof(fs_path), "%s%s", HTTP_FS_ROOT, suffix);
+	if (pn <= 0 || (size_t)pn >= sizeof(fs_path)) {
+		static const char bad[] = "path too long\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	struct stat st;
+	if (stat(fs_path, &st) < 0) {
+		static const char nf[] = "not found\n";
+		return server->sendResponse(cfd, "404 Not Found", "text/plain; charset=utf-8", nf, sizeof(nf) - 1);
+	}
+
+	if (S_ISDIR(st.st_mode)) {
+		return sendRootfsDirListing(server, cfd, path, fs_path);
+	}
+
+	if (server->sendFilePath(cfd, fs_path, NULL) < 0) {
+		static const char err[] = "read failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	return 0;
+}
+
+static int handleApiPutRootfs(HttpServer *server,
+							  int cfd,
+							  const char *path,
+							  const char *body,
+							  size_t body_len) {
+	const char *suffix = rootfsSuffix(path);
+	if (!suffix || !safeApiSuffix(suffix)) {
+		static const char bad[] = "bad path\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+	if (!suffix[0] || suffix[strlen(suffix) - 1] == '/') {
+		static const char bad[] = "bad file path\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char fs_path[512];
+	int pn = snprintf(fs_path, sizeof(fs_path), "%s%s", HTTP_FS_ROOT, suffix);
+	if (pn <= 0 || (size_t)pn >= sizeof(fs_path)) {
+		static const char bad[] = "path too long\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	if (ensureParentDirs(fs_path) < 0) {
+		static const char err[] = "mkdir failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	int fd = open(fs_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd < 0) {
+		static const char err[] = "open failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	size_t written = 0;
+	while (written < body_len) {
+		ssize_t nw = write(fd, body + written, body_len - written);
+		if (nw < 0) {
+			if (errno == EINTR) {
+				continue;
+			}
+			close(fd);
+			static const char err[] = "write failed\n";
+			return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+		}
+		if (nw == 0) {
+			break;
+		}
+		written += (size_t)nw;
+	}
+	close(fd);
+
+	if (written != body_len) {
+		static const char err[] = "write failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	static const char ok[] = "ok\n";
+	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
+}
+
+static int handleSoundboardTrigger(HttpServer *server,
+								   int cfd,
+								   const char *method,
+								   const char *path) {
+	if (!server || !server->app || !method || !path) {
+		return -1;
+	}
+
+	const char *token = path + strlen(HTTP_SOUNDBOARD_TRIGGER_PREFIX);
+	if (!token[0]) {
+		static const char bad[] = "missing trigger target\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char decoded[MIDI_SFX_PATH_MAX];
+	size_t di = 0;
+	for (size_t i = 0; token[i] && di + 1 < sizeof(decoded); ++i) {
+		unsigned char c = (unsigned char)token[i];
+		if (c == '%') {
+			if (!isxdigit((unsigned char)token[i + 1]) || !isxdigit((unsigned char)token[i + 2])) {
+				static const char bad[] = "invalid url encoding\n";
+				return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+			}
+			char hex[3] = {token[i + 1], token[i + 2], '\0'};
+			decoded[di++] = (char)strtol(hex, NULL, 16);
+			i += 2;
+			continue;
+		}
+		if (c == '+') {
+			decoded[di++] = ' ';
+			continue;
+		}
+		decoded[di++] = (char)c;
+	}
+	decoded[di] = '\0';
+
+	char *endp = NULL;
+	long slot = strtol(decoded, &endp, 10);
+	int is_numeric_slot = (endp && *endp == '\0' && slot >= 0 && slot <= 255) ? 1 : 0;
+
+	if (!is_numeric_slot && !mapping_path_safe(decoded)) {
+		static const char bad[] = "invalid trigger target\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	if (!server->app || !server->app->audio) {
+		static const char err[] = "audio subsystem unavailable\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	char triggerPath[256];
+	if (is_numeric_slot) {
+		int pn = snprintf(triggerPath, sizeof(triggerPath), "%s/%ld.wav", SFX_ROOT_DIR, slot);
+		if (pn <= 0 || (size_t)pn >= sizeof(triggerPath)) {
+			static const char bad[] = "trigger path too long\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+		}
+	} else if (strncmp(decoded, SFX_ROOT_DIR "/", strlen(SFX_ROOT_DIR) + 1) == 0) {
+		int pn = snprintf(triggerPath, sizeof(triggerPath), "%s", decoded);
+		if (pn <= 0 || (size_t)pn >= sizeof(triggerPath)) {
+			static const char bad[] = "trigger path too long\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+		}
+	} else {
+		int pn = snprintf(triggerPath, sizeof(triggerPath), "%s/%s", SFX_ROOT_DIR, decoded);
+		if (pn <= 0 || (size_t)pn >= sizeof(triggerPath)) {
+			static const char bad[] = "trigger path too long\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+		}
+	}
+
+	int rc = server->app->audio->triggerSfx(triggerPath);
+	if (rc == RET_ERR) {
+		static const char err[] = "trigger failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (rc == RET_WARN) {
+		static const char missing[] = "sfx file not found\n";
+		return server->sendResponse(cfd, "404 Not Found", "text/plain; charset=utf-8", missing, sizeof(missing) - 1);
+	}
+
+	static const char ok[] = "ok\n";
+	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
+}
+
+static int handleAudioDevices(HttpServer *server,
+						 int cfd,
+						 const char *method,
+						 const char *path) {
+	(void)path;
+	if (!server || !server->app || !method) {
+		return -1;
+	}
+
+	if (strcmp(method, "GET") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	if (!server->app->audio) {
+		static const char err[] = "{\"ok\":false,\"error\":\"audio unavailable\"}\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "application/json; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	char out[HTTP_BODY_MAX];
+	if (server->app->audio->buildDevicesJson(out, sizeof(out)) != RET_OK) {
+		static const char err[] = "{\"ok\":false,\"error\":\"encode failed\"}\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "application/json; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
+}
+
+static int handleAudioRescan(HttpServer *server,
+						int cfd,
+						const char *method,
+						const char *path) {
+	(void)path;
+	if (!server || !server->app || !method) {
+		return -1;
+	}
+
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	if (!server->app->audio) {
+		static const char err[] = "{\"ok\":false,\"error\":\"audio unavailable\"}\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "application/json; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	int rc = server->app->audio->forceRescan();
+	if (rc == RET_ERR) {
+		static const char err[] = "{\"ok\":false,\"error\":\"rescan failed\"}\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "application/json; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	char out[HTTP_BODY_MAX];
+	if (server->app->audio->buildDevicesJson(out, sizeof(out)) != RET_OK) {
+		static const char err[] = "{\"ok\":false,\"error\":\"encode failed\"}\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "application/json; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
+}
+
+static void copy_bound(char *dst, size_t dst_sz, const char *src) {
+	if (!dst || dst_sz == 0) {
+		return;
+	}
+	if (!src) {
+		dst[0] = '\0';
+		return;
+	}
+	size_t n = strnlen(src, dst_sz - 1);
+	memcpy(dst, src, n);
+	dst[n] = '\0';
+}
+
+static void trim_space(char *s) {
+	if (!s) {
+		return;
+	}
+
+	while (*s && isspace((unsigned char)*s)) {
+		memmove(s, s + 1, strlen(s));
+	}
+
+	size_t n = strlen(s);
+	while (n > 0 && isspace((unsigned char)s[n - 1])) {
+		s[n - 1] = '\0';
+		--n;
+	}
+}
+
+static int body_get_value(const char *body,
+						  size_t body_len,
+						  const char *key,
+						  char *out,
+						  size_t out_sz) {
+	if (!body || !key || !out || out_sz == 0) {
+		return 0;
+	}
+
+	char buf[512];
+	if (body_len >= sizeof(buf)) {
+		return 0;
+	}
+	memcpy(buf, body, body_len);
+	buf[body_len] = '\0';
+
+	for (char *p = buf; *p; ++p) {
+		if (*p == '&') {
+			*p = '\n';
+		}
+	}
+
+	char *savep = NULL;
+	for (char *line = strtok_r(buf, "\n", &savep); line; line = strtok_r(NULL, "\n", &savep)) {
+		char *eq = strchr(line, '=');
+		if (!eq) {
+			continue;
+		}
+		*eq = '\0';
+		char *k = line;
+		char *v = eq + 1;
+		trim_space(k);
+		trim_space(v);
+		if (strcmp(k, key) != 0) {
+			continue;
+		}
+		copy_bound(out, out_sz, v);
+		return 1;
+	}
+
+	return 0;
+}
+
+static int mapping_path_safe(const char *s) {
+	if (!s || !s[0]) {
+		return 0;
+	}
+	if (strstr(s, "..") != NULL) {
+		return 0;
+	}
+	if (strchr(s, '\\') != NULL) {
+		return 0;
+	}
+	for (const char *p = s; *p; ++p) {
+		unsigned char c = (unsigned char)*p;
+		if ((c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') ||
+			c == '.' || c == '_' || c == '-' || c == '/') {
+			continue;
+		}
+		return 0;
+	}
+	return 1;
+}
+
+static int mapping_normalize_sfx(const char *raw, char *out, size_t out_sz) {
+	if (!raw || !out || out_sz == 0 || !mapping_path_safe(raw)) {
+		return RET_ERR;
+	}
+
+	if (strncmp(raw, SFX_ROOT_DIR "/", strlen(SFX_ROOT_DIR) + 1) == 0) {
+		copy_bound(out, out_sz, raw + strlen(SFX_ROOT_DIR) + 1);
+		return out[0] ? RET_OK : RET_ERR;
+	}
+
+	if (raw[0] == '/') {
+		return RET_ERR;
+	}
+
+	copy_bound(out, out_sz, raw);
+	return out[0] ? RET_OK : RET_ERR;
+}
+
+static int handleMidiLastNote(HttpServer *server,
+						   int cfd,
+						   const char *method,
+						   const char *path) {
+	(void)path;
+	if (!server || !server->app || !method) {
+		return -1;
+	}
+
+	if (strcmp(method, "GET") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	MidiContext *midi = server->app->midi;
+	if (!midi) {
+		static const char none[] = "{\"connected\":false,\"device\":\"\",\"last_note\":-1,\"last_velocity\":0,\"last_seq\":0}\n";
+		return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", none, sizeof(none) - 1);
+	}
+
+	char out[512];
+	int n = snprintf(out,
+					 sizeof(out),
+					 "{\"connected\":%s,\"device\":\"%s\",\"last_note\":%d,\"last_velocity\":%u,\"last_seq\":%u}\n",
+					 midi->connected ? "true" : "false",
+					 midi->devPath,
+					 midi->lastNoteSeq ? (int)midi->lastNote : -1,
+					 (unsigned)midi->lastVelocity,
+					 (unsigned)midi->lastNoteSeq);
+	if (n < 0) {
+		n = 0;
+	}
+	if ((size_t)n >= sizeof(out)) {
+		n = (int)(sizeof(out) - 1);
+	}
+
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
+static int handleMidiMappings(HttpServer *server,
+					   int cfd,
+					   const char *method,
+					   const char *path) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method) {
+		return -1;
+	}
+
+	if (strcmp(method, "GET") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	ConfigData cfg = server->app->config->readConfigFile();
+	char out[HTTP_BODY_MAX];
+	size_t off = 0;
+
+	int n = snprintf(out + off, sizeof(out) - off, "{\"mapping_count\":%u,\"mappings\":[", (unsigned)cfg.mappingCount);
+	if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", "encode failed\n", 14);
+	}
+	off += (size_t)n;
+
+	uint32_t count = cfg.mappingCount;
+	if (count > MIDI_MAPPINGS_MAX) {
+		count = MIDI_MAPPINGS_MAX;
+	}
+	int first = 1;
+	for (uint32_t i = 0; i < count; ++i) {
+		if (!cfg.mappings[i].sfxPath[0]) {
+			continue;
+		}
+		n = snprintf(out + off,
+					 sizeof(out) - off,
+					 "%s{\"note\":%u,\"sfx\":\"%s\"}",
+					 first ? "" : ",",
+					 (unsigned)cfg.mappings[i].note,
+					 cfg.mappings[i].sfxPath);
+		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+			break;
+		}
+		off += (size_t)n;
+		first = 0;
+	}
+
+	n = snprintf(out + off, sizeof(out) - off, "]}\n");
+	if (n > 0 && (size_t)n < sizeof(out) - off) {
+		off += (size_t)n;
+	}
+
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, off);
+}
+
+static int handleMidiMappingSet(HttpServer *server,
+						 int cfd,
+						 const char *method,
+						 const char *path,
+						 const char *body,
+						 size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method || !body) {
+		return -1;
+	}
+
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char note_buf[32];
+	char sfx_buf[MIDI_SFX_PATH_MAX];
+	if (!body_get_value(body, body_len, "note", note_buf, sizeof(note_buf)) ||
+		!body_get_value(body, body_len, "sfx", sfx_buf, sizeof(sfx_buf))) {
+		static const char bad[] = "expected note and sfx\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char *endp = NULL;
+	long note = strtol(note_buf, &endp, 10);
+	if (!endp || *endp != '\0' || note < 0 || note > 127) {
+		static const char bad[] = "invalid note\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char normalized[MIDI_SFX_PATH_MAX];
+	if (mapping_normalize_sfx(sfx_buf, normalized, sizeof(normalized)) != RET_OK) {
+		static const char bad[] = "invalid sfx path\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	ConfigData cfg = server->app->config->readConfigFile();
+	uint32_t count = cfg.mappingCount;
+	if (count > MIDI_MAPPINGS_MAX) {
+		count = MIDI_MAPPINGS_MAX;
+	}
+
+	int found = -1;
+	for (uint32_t i = 0; i < count; ++i) {
+		if (cfg.mappings[i].note == (uint8_t)note) {
+			found = (int)i;
+			break;
+		}
+	}
+
+	if (found >= 0) {
+		cfg.mappings[found].note = (uint8_t)note;
+		copy_bound(cfg.mappings[found].sfxPath, sizeof(cfg.mappings[found].sfxPath), normalized);
+	} else {
+		if (count >= MIDI_MAPPINGS_MAX) {
+			static const char full[] = "mapping table full\n";
+			return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8", full, sizeof(full) - 1);
+		}
+		cfg.mappings[count].note = (uint8_t)note;
+		copy_bound(cfg.mappings[count].sfxPath, sizeof(cfg.mappings[count].sfxPath), normalized);
+		cfg.mappingCount = count + 1;
+	}
+
+	if (server->app->config->writeConfigFile(&cfg) < 0) {
+		static const char err[] = "failed to write config\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	static const char ok[] = "ok\n";
+	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
+}
+
+static int handleMidiMappingDelete(HttpServer *server,
+							int cfd,
+							const char *method,
+							const char *path,
+							const char *body,
+							size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method || !body) {
+		return -1;
+	}
+
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char note_buf[32];
+	if (!body_get_value(body, body_len, "note", note_buf, sizeof(note_buf))) {
+		static const char bad[] = "expected note\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char *endp = NULL;
+	long note = strtol(note_buf, &endp, 10);
+	if (!endp || *endp != '\0' || note < 0 || note > 127) {
+		static const char bad[] = "invalid note\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	ConfigData cfg = server->app->config->readConfigFile();
+	uint32_t count = cfg.mappingCount;
+	if (count > MIDI_MAPPINGS_MAX) {
+		count = MIDI_MAPPINGS_MAX;
+	}
+
+	int idx = -1;
+	for (uint32_t i = 0; i < count; ++i) {
+		if (cfg.mappings[i].note == (uint8_t)note) {
+			idx = (int)i;
+			break;
+		}
+	}
+
+	if (idx < 0) {
+		static const char missing[] = "mapping not found\n";
+		return server->sendResponse(cfd, "404 Not Found", "text/plain; charset=utf-8", missing, sizeof(missing) - 1);
+	}
+
+	for (uint32_t i = (uint32_t)idx; i + 1 < count; ++i) {
+		cfg.mappings[i] = cfg.mappings[i + 1];
+	}
+	if (count > 0) {
+		cfg.mappingCount = count - 1;
+	}
+
+	if (server->app->config->writeConfigFile(&cfg) < 0) {
+		static const char err[] = "failed to write config\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	static const char ok[] = "ok\n";
+	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
+}
+
+static int handleConfigReload(HttpServer *server,
+							  int cfd,
+							  const char *method,
+							  const char *path) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method) {
+		return -1;
+	}
+
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	int reloadRc = reloadAudioGadget(server->app);
+	if (reloadRc == RET_ERR) {
+		static const char err[] = "usb audio gadget reload failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (reloadRc == RET_WARN) {
+		static const char warn[] = "usb audio gadget reload rejected by config\n";
+		return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8", warn, sizeof(warn) - 1);
+	}
+
+	if (server->app->audio) {
+		usleep(50000);
+		int rescanRc = server->app->audio->forceRescan();
+		if (rescanRc == RET_ERR) {
+			printf("[HTTP] [WARN] audio rescan failed after USB gadget reload\n");
+		}
+	}
+
+	ConfigData cfg = server->app->config->readConfigFile();
+	char out[256];
+	int n = snprintf(out,
+				 sizeof(out),
+				 "{\"ok\":true,\"sampleRate\":%u,\"playbackChannels\":%u,\"captureChannels\":%u,\"sampleSize\":%u,\"source\":\"real\"}\n",
+				 (unsigned)cfg.sampleRate,
+				 (unsigned)cfg.playbackChannels,
+				 (unsigned)cfg.captureChannels,
+				 (unsigned)cfg.sampleSize);
+	if (n < 0) {
+		n = 0;
+	}
+	if ((size_t)n >= sizeof(out)) {
+		n = (int)(sizeof(out) - 1);
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
+static int handleRoutingReload(HttpServer *server,
+							   int cfd,
+							   const char *method,
+							   const char *path) {
+	(void)path;
+	if (!server || !server->app || !server->app->audio || !method) {
+		return -1;
+	}
+
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	int rc = server->app->audio->reloadRoutingGraph();
+	if (rc == RET_ERR) {
+		static const char err[] = "{\"ok\":false,\"error\":\"routing graph reload failed\"}\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "application/json; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	char out[512];
+	if (server->app->audio->buildRoutingGraphJson(out, sizeof(out)) != RET_OK) {
+		static const char err[] = "{\"ok\":false,\"error\":\"routing graph encode failed\"}\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "application/json; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
+}
+
+static int handleRoutingThings(HttpServer *server,
+							   int cfd,
+							   const char *method,
+							   const char *path) {
+	(void)path;
+	if (!server || !server->app || !method) {
+		return -1;
+	}
+
+	if (strcmp(method, "GET") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	ConfigData cfg = {};
+	if (server->app->config) {
+		cfg = server->app->config->readConfigFile();
+	}
+
+	AudioGraphThingInfo things[AUDIO_GRAPH_MAX_THINGS];
+	size_t thingCount = 0;
+	if (server->app->audio) {
+		thingCount = server->app->audio->copyRoutingThings(things, AUDIO_GRAPH_MAX_THINGS);
+	}
+
+	char out[HTTP_BODY_MAX];
+	size_t used = 0;
+	int n = snprintf(out + used, sizeof(out) - used, "{\"ok\":true,\"things\":[");
+	if (n < 0 || (size_t)n >= sizeof(out) - used) {
+		static const char err[] = "encode failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	used += (size_t)n;
+
+	int first = 1;
+#define APPEND_THING(ID, NAME, INPUTS, OUTPUTS) \
+	do { \
+		n = snprintf(out + used, sizeof(out) - used, "%s{\"id\":\"%s\",\"name\":\"%s\",\"inputs\":%u,\"outputs\":%u}", \
+			first ? "" : ",", ID, NAME, (unsigned)(INPUTS), (unsigned)(OUTPUTS)); \
+		if (n < 0 || (size_t)n >= sizeof(out) - used) { \
+			static const char err[] = "encode failed\n"; \
+			return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1); \
+		} \
+		used += (size_t)n; \
+		first = 0; \
+	} while (0)
+
+	for (size_t i = 0; i < thingCount; ++i) {
+		APPEND_THING(things[i].id,
+					 things[i].name,
+					 things[i].inputs,
+					 things[i].outputs);
+	}
+
+#undef APPEND_THING
+
+	n = snprintf(out + used, sizeof(out) - used, "]}\n");
+	if (n < 0 || (size_t)n >= sizeof(out) - used) {
+		static const char err[] = "encode failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	used += (size_t)n;
+
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, used);
+}
+
+static int handleSystemSync(HttpServer *server,
+							int cfd,
+							const char *method,
+							const char *path) {
+	(void)method;
+	(void)path;
+	sync();
+	static const char ok[] = "{\"status\":\"synced\"}\n";
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
+}
+
+static int handleSystemRestart(HttpServer *server,
+							   int cfd,
+							   const char *method,
+							   const char *path) {
+	(void)method;
+	(void)path;
+	static const char ok[] = "{\"status\":\"restarting\"}\n";
+	int ret = server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
+	sync();
+	sleep(1);
+	reboot(RB_AUTOBOOT);
+	return ret;
+}
+
+static int handleSystemShutdown(HttpServer *server,
+								int cfd,
+								const char *method,
+								const char *path) {
+	(void)method;
+	(void)path;
+	static const char ok[] = "{\"status\":\"shutting down\"}\n";
+	int ret = server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
+	sync();
+	sleep(1);
+	reboot(RB_POWER_OFF);
+	return ret;
+}
+
+static int handleVersion(HttpServer *server,
+						 int cfd,
+						 const char *method,
+						 const char *path) {
+	(void)method;
+	(void)path;
+	if (!server) {
+		return -1;
+	}
+
+#if defined(AUDIOX_VERSION_MAJOR) && defined(AUDIOX_VERSION_MINOR) && defined(AUDIOX_VERSION_PATCH)
+	char out[64];
+	int n = snprintf(out,
+					 sizeof(out),
+					 "%d.%d.%d\n",
+					 AUDIOX_VERSION_MAJOR,
+					 AUDIOX_VERSION_MINOR,
+					 AUDIOX_VERSION_PATCH);
+	if (n < 0) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", out, (size_t)n);
+#else
+	static const char unknown[] = "unknown\n";
+	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", unknown, sizeof(unknown) - 1);
+#endif
+}
+
+} // namespace
+
+int handleApiRequest(HttpServer *server,
+					 int cfd,
+					 const char *method,
+					 const char *path,
+					 const char *body,
+					 size_t body_len) {
+	if (!server || cfd < 0 || !method || !path) {
+		return -1;
+	}
+
+	if (strncmp(path, HTTP_SOUNDBOARD_TRIGGER_PREFIX, strlen(HTTP_SOUNDBOARD_TRIGGER_PREFIX)) == 0) {
+		if (strcmp(method, "GET") != 0 && strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+			return sendMethodNotAllowed(server, cfd);
+		}
+		int rc = handleSoundboardTrigger(server, cfd, method, path);
+		if (rc == RET_WARN) {
+			return sendNotImplemented(server, cfd, "soundboard trigger");
+		}
+		return rc;
+	}
+
+	if (strcmp(path, HTTP_CONFIG_RELOAD_PATH) == 0) {
+		if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+			return sendMethodNotAllowed(server, cfd);
+		}
+		int rc = handleConfigReload(server, cfd, method, path);
+		if (rc == RET_WARN) {
+			return sendNotImplemented(server, cfd, "config reload");
+		}
+		return rc;
+	}
+
+	if (strcmp(path, HTTP_ROUTING_RELOAD_PATH) == 0) {
+		if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+			return sendMethodNotAllowed(server, cfd);
+		}
+		int rc = handleRoutingReload(server, cfd, method, path);
+		if (rc == RET_WARN) {
+			return sendNotImplemented(server, cfd, "routing reload");
+		}
+		return rc;
+	}
+
+	if (strcmp(path, HTTP_ROUTING_THINGS_PATH) == 0) {
+		if (strcmp(method, "GET") != 0) {
+			return sendMethodNotAllowed(server, cfd);
+		}
+		int rc = handleRoutingThings(server, cfd, method, path);
+		if (rc == RET_WARN) {
+			return sendNotImplemented(server, cfd, "routing things");
+		}
+		return rc;
+	}
+
+	if (strcmp(path, HTTP_SYSTEM_SYNC_PATH) == 0) {
+		if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+			return sendMethodNotAllowed(server, cfd);
+		}
+		int rc = handleSystemSync(server, cfd, method, path);
+		if (rc == RET_WARN) {
+			return sendNotImplemented(server, cfd, "system sync");
+		}
+		return rc;
+	}
+
+	if (strcmp(path, HTTP_SYSTEM_RESTART_PATH) == 0) {
+		if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+			return sendMethodNotAllowed(server, cfd);
+		}
+		int rc = handleSystemRestart(server, cfd, method, path);
+		if (rc == RET_WARN) {
+			return sendNotImplemented(server, cfd, "system restart");
+		}
+		return rc;
+	}
+
+	if (strcmp(path, HTTP_SYSTEM_SHUTDOWN_PATH) == 0) {
+		if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+			return sendMethodNotAllowed(server, cfd);
+		}
+		int rc = handleSystemShutdown(server, cfd, method, path);
+		if (rc == RET_WARN) {
+			return sendNotImplemented(server, cfd, "system shutdown");
+		}
+		return rc;
+	}
+
+	if (strcmp(path, HTTP_VERSION_PATH) == 0) {
+		if (strcmp(method, "GET") != 0) {
+			return sendMethodNotAllowed(server, cfd);
+		}
+		int rc = handleVersion(server, cfd, method, path);
+		if (rc == RET_WARN) {
+			return sendNotImplemented(server, cfd, "version");
+		}
+		return rc;
+	}
+
+	if (strcmp(path, HTTP_MIDI_LAST_NOTE_PATH) == 0) {
+		return handleMidiLastNote(server, cfd, method, path);
+	}
+
+	if (strcmp(path, HTTP_MIDI_MAPPINGS_PATH) == 0) {
+		return handleMidiMappings(server, cfd, method, path);
+	}
+
+	if (strcmp(path, HTTP_MIDI_MAPPING_SET_PATH) == 0) {
+		return handleMidiMappingSet(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_MIDI_MAPPING_DELETE_PATH) == 0) {
+		return handleMidiMappingDelete(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_AUDIO_DEVICES_PATH) == 0) {
+		return handleAudioDevices(server, cfd, method, path);
+	}
+
+	if (strcmp(path, HTTP_AUDIO_RESCAN_PATH) == 0) {
+		return handleAudioRescan(server, cfd, method, path);
+	}
+
+	if (pathIsRootfs(path)) {
+		if (strcmp(method, "GET") == 0) {
+			return handleApiGetRootfs(server, cfd, path);
+		}
+		if (strcmp(method, "PUT") == 0) {
+			return handleApiPutRootfs(server, cfd, path, body, body_len);
+		}
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	static const char not_found[] = "404 Not Found\n";
+	return server->sendResponse(cfd,
+								"404 Not Found",
+								"text/plain; charset=utf-8",
+								not_found,
+								sizeof(not_found) - 1);
+}

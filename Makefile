@@ -1,11 +1,25 @@
 CC = aarch64-linux-gnu-gcc
-CFLAGS = -static -O3 -Iinclude -Wall -Wextra -Werror -Wno-error=format-truncation -pthread
+CFLAGS = -static -O2 -Wall -Wextra -Werror -Wno-error=format-truncation -pthread -std=gnu11
+CXX = aarch64-linux-gnu-g++
+CXXFLAGS = -static -O3 -Iinclude -Wall -Wextra -Werror -Wno-error=format-truncation -Wno-error=unused-parameter -pthread -fno-exceptions -fno-rtti -std=c++17
 LIBS = -lm -pthread
 
+# Recursive source discovery for upcoming C++ port.
+CPP_SRCS := $(shell find src -type f -name '*.cpp' 2>/dev/null)
+BOOTLOADER_SRC := src/init/bootloader.cpp
+RUNTIME_CPP_SRCS := $(filter-out $(BOOTLOADER_SRC),$(CPP_SRCS))
+RUNTIME_SRCS := $(RUNTIME_CPP_SRCS)
+RUNTIME_COMPILER := $(CXX)
+RUNTIME_FLAGS := $(CXXFLAGS)
+
+BOOTLOADER_SRCS := $(BOOTLOADER_SRC)
+BOOTLOADER_COMPILER := $(CXX)
+BOOTLOADER_FLAGS := $(CXXFLAGS)
+
 # Version information
-AUDIOX_VERSION_MAJOR = 0
-AUDIOX_VERSION_MINOR = 1
-AUDIOX_VERSION_PATCH = 1
+AUDIOX_VERSION_MAJOR = 1
+AUDIOX_VERSION_MINOR = 0
+AUDIOX_VERSION_PATCH = 0
 
 # Auto-detected from firmware after fetch_deps runs.
 KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")
@@ -16,30 +30,35 @@ DEBUG_SHELL ?= 0
 # Paths
 ARCH ?= aarch64
 OUT_DIR = $(CURDIR)/out
-ROOTFS_DIR = $(OUT_DIR)/rootfs
+BOOTLOADER_ROOTFS_DIR = $(OUT_DIR)/bootloader_rootfs
+ROOTFS_DIR = $(OUT_DIR)/program_rootfs
+PROGRAM_STAGE_DIR = $(OUT_DIR)/program_stage
 INITRAMFS = $(OUT_DIR)/initramfs.cpio.gz
+PROGRAM_INITRAMFS = $(OUT_DIR)/program.cpio.gz
+COMBINED_INITRAMFS = $(OUT_DIR)/combined-initramfs.cpio.gz
 MODULE_LOAD_LIST = $(OUT_DIR)/module-load.list
+MODULE_LOAD_BASE_LIST = $(OUT_DIR)/module-load.base.list
+MODULE_LOAD_NORMAL_LIST = $(OUT_DIR)/module-load.normal.list
+BOOT_DEP_FILE = $(CURDIR)/bootmod.txt
+BOOT_MODULE_LOAD_LIST = $(OUT_DIR)/bootmodule-load.list
+BOOT_MODULE_LOAD_BASE_LIST = $(OUT_DIR)/bootmodule-load.base.list
+BOOT_MODULE_LOAD_NORMAL_LIST = $(OUT_DIR)/bootmodule-load.normal.list
 SCRIPTS_DIR = $(CURDIR)/scripts
 DEP_FILE = $(CURDIR)/depmod.txt
-WAV_DIR ?= $(CURDIR)/wavs
 BOOT_LOGO_PPM ?= $(CURDIR)/logo_boot.ppm
+WEB_LOGO_SVG ?= $(CURDIR)/logo.svg
+WEB_LOGO_PNG ?= $(CURDIR)/logo.png
 WEB_INDEX_HTML ?= $(CURDIR)/web/index.html
 FIRMWARE_GIT_URL ?= https://github.com/raspberrypi/firmware.git
+PI_HOST ?= 169.254.1.2
+PI_PORT ?= 80
 
 SD_MOUNT_BOOT ?= /run/media/$(USER)/bootfs
 
 IMG_FILE = $(OUT_DIR)/audiox.img
 IMG_SIZE_MB = 128
 
-# Native x86_64 debug build (qemu-system-x86_64)
-DEBUG_CC     = gcc
-DEBUG_CFLAGS = -static -O0 -g -Iinclude -Wall -Wextra -Werror -pthread
-DEBUG_OUT    = $(OUT_DIR)/debug
-DEBUG_ROOTFS = $(DEBUG_OUT)/rootfs
-DEBUG_INITRAMFS = $(DEBUG_OUT)/initramfs.cpio.gz
-DEBUG_KERNEL ?= $(firstword $(wildcard /boot/vmlinuz-linux /boot/vmlinuz /boot/vmlinuz-generic))
-
-.PHONY: all clean rootfs initramfs fetch_deps fetch_modules show_modules show_kernel qemu fancyexport export image debug debug_rootfs debug_initramfs FORCE
+.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev FORCE
 
 all: initramfs
 
@@ -49,6 +68,9 @@ fetch_deps:
 
 fetch_modules: fetch_deps
 	@$(SCRIPTS_DIR)/resolve_modules.sh "$(KV)" "$(OUT_DIR)" "$(DEP_FILE)"
+
+fetch_boot_modules: fetch_deps
+	@$(SCRIPTS_DIR)/resolve_modules.sh "$(KV)" "$(OUT_DIR)" "$(BOOT_DEP_FILE)" "bootmodule-load" "bootmodules_staging"
 
 show_modules: fetch_modules
 	@cat $(OUT_DIR)/module-load.summary.txt
@@ -63,41 +85,51 @@ show_kernel:
 		echo "(using default; fetch_deps not yet run or file not found)"; \
 	fi
 
-$(MODULE_LOAD_LIST): fetch_modules
+$(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST): fetch_modules
 	@:
 
-$(ROOTFS_DIR)/init: fetch_deps FORCE src/init.c
-	@echo "Compiling system architecture init binary..."
+$(BOOT_MODULE_LOAD_LIST) $(BOOT_MODULE_LOAD_BASE_LIST) $(BOOT_MODULE_LOAD_NORMAL_LIST): fetch_boot_modules
+	@:
+
+
+$(BOOTLOADER_ROOTFS_DIR)/init: FORCE $(BOOTLOADER_SRCS)
+	@echo "Compiling bootloader init..."
+	mkdir -p $(BOOTLOADER_ROOTFS_DIR)
+	$(BOOTLOADER_COMPILER) $(BOOTLOADER_FLAGS) \
+		-DKERNEL_VERSION='"$(KV)"' \
+		-o $(BOOTLOADER_ROOTFS_DIR)/init $(BOOTLOADER_SRCS) $(LIBS)
+
+$(ROOTFS_DIR)/init: fetch_deps FORCE $(RUNTIME_SRCS)
+	@echo "Compiling runtime init..."
 	mkdir -p $(ROOTFS_DIR)
-	$(CC) $(CFLAGS) \
+	$(RUNTIME_COMPILER) $(RUNTIME_FLAGS) \
 		-DKERNEL_VERSION='"$(KV)"' \
 		-DAUDIOX_VERSION_MAJOR=$(AUDIOX_VERSION_MAJOR) \
 		-DAUDIOX_VERSION_MINOR=$(AUDIOX_VERSION_MINOR) \
 		-DAUDIOX_VERSION_PATCH=$(AUDIOX_VERSION_PATCH) \
 		-DDEBUG_SHELL=$(DEBUG_SHELL) \
-		-o $(ROOTFS_DIR)/init src/init.c $(LIBS)
+		-o $(ROOTFS_DIR)/init $(RUNTIME_SRCS) $(LIBS)
 
-rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST)
-	@echo "Creating rootfs structure..."
+bootloader_rootfs: $(BOOTLOADER_ROOTFS_DIR)/init $(BOOT_MODULE_LOAD_LIST) $(BOOT_MODULE_LOAD_BASE_LIST)
+	@echo "Creating bootloader rootfs structure..."
+	mkdir -p $(BOOTLOADER_ROOTFS_DIR)/etc $(BOOTLOADER_ROOTFS_DIR)/lib/modules
+	mkdir -p $(BOOTLOADER_ROOTFS_DIR)/proc $(BOOTLOADER_ROOTFS_DIR)/sys $(BOOTLOADER_ROOTFS_DIR)/dev
+	mkdir -p $(BOOTLOADER_ROOTFS_DIR)/mnt/boot $(BOOTLOADER_ROOTFS_DIR)/mnt/rootfs
+	cp -r $(OUT_DIR)/bootmodules_staging/* $(BOOTLOADER_ROOTFS_DIR)/lib/modules/
+	cp $(BOOT_MODULE_LOAD_BASE_LIST) $(BOOTLOADER_ROOTFS_DIR)/etc/bootmodule-load.list
+
+rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST)
+	@echo "Creating runtime rootfs structure..."
 	mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/sbin $(ROOTFS_DIR)/etc
 	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev
-	mkdir -p $(ROOTFS_DIR)/etc/wavs
 	mkdir -p $(ROOTFS_DIR)/etc/www
 	mkdir -p $(ROOTFS_DIR)/lib/modules
 	
 	@echo "Staging kernel objects into target lib tree..."
 	cp -r $(OUT_DIR)/modules_staging/* $(ROOTFS_DIR)/lib/modules/
 	cp $(MODULE_LOAD_LIST) $(ROOTFS_DIR)/etc/module-load.list
-	@if [ -f "$(WAV_DIR)/voice0.wav" ] && [ -f "$(WAV_DIR)/voice1.wav" ] && [ -f "$(WAV_DIR)/voice2.wav" ] && [ -f "$(WAV_DIR)/voice3.wav" ]; then \
-		echo "Staging WAV voices from $(WAV_DIR)..."; \
-		cp "$(WAV_DIR)/voice0.wav" "$(ROOTFS_DIR)/etc/wavs/"; \
-		cp "$(WAV_DIR)/voice1.wav" "$(ROOTFS_DIR)/etc/wavs/"; \
-		cp "$(WAV_DIR)/voice2.wav" "$(ROOTFS_DIR)/etc/wavs/"; \
-		cp "$(WAV_DIR)/voice3.wav" "$(ROOTFS_DIR)/etc/wavs/"; \
-	else \
-		echo "Warning: missing one or more required wav files in $(WAV_DIR) (voice0.wav..voice3.wav)."; \
-		 echo "Warning: audiox runtime init will fail until all 4 files are present."; \
-	fi
+	cp $(MODULE_LOAD_BASE_LIST) $(ROOTFS_DIR)/etc/module-load.base.list
+	cp $(MODULE_LOAD_NORMAL_LIST) $(ROOTFS_DIR)/etc/module-load.normal.list
 	@if [ -f "$(BOOT_LOGO_PPM)" ]; then \
 		echo "Staging boot logo from $(BOOT_LOGO_PPM)..."; \
 		cp "$(BOOT_LOGO_PPM)" "$(ROOTFS_DIR)/etc/logo_boot.ppm"; \
@@ -110,21 +142,43 @@ rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST)
 	else \
 		echo "Warning: web index file not found at $(WEB_INDEX_HTML)"; \
 	fi
+	@if [ -f "$(WEB_LOGO_SVG)" ]; then \
+		echo "Staging web logo svg from $(WEB_LOGO_SVG)..."; \
+		cp "$(WEB_LOGO_SVG)" "$(ROOTFS_DIR)/etc/www/logo.svg"; \
+	fi
+	@if [ -f "$(WEB_LOGO_PNG)" ]; then \
+		echo "Staging web logo png from $(WEB_LOGO_PNG)..."; \
+		cp "$(WEB_LOGO_PNG)" "$(ROOTFS_DIR)/etc/www/logo.png"; \
+	fi
 
-initramfs: rootfs
-	@echo "Packaging initramfs..."
-	cd $(ROOTFS_DIR) && \
+bootloader_initramfs: bootloader_rootfs
+	@echo "Packaging bootloader initramfs..."
+	cd $(BOOTLOADER_ROOTFS_DIR) && \
 	find . -print0 | cpio --null --create --format=newc | gzip -9 > $(INITRAMFS)
-	@echo "Success! audiox initramfs built at: $(INITRAMFS)"
 
-qemu: initramfs
+program_initramfs: rootfs
+	@echo "Packaging runtime initramfs..."
+	rm -rf $(PROGRAM_STAGE_DIR)
+	mkdir -p $(PROGRAM_STAGE_DIR)/program
+	cp -a $(ROOTFS_DIR)/. $(PROGRAM_STAGE_DIR)/program/
+	cd $(PROGRAM_STAGE_DIR) && \
+	find . -print0 | cpio --null --create --format=newc | gzip -9 > $(PROGRAM_INITRAMFS)
+
+initramfs: bootloader_initramfs program_initramfs
+	@echo "Success! audiox bootloader built at: $(INITRAMFS)"
+	@echo "Success! audiox runtime built at: $(PROGRAM_INITRAMFS)"
+
+$(COMBINED_INITRAMFS): initramfs
+	cat $(INITRAMFS) $(PROGRAM_INITRAMFS) > $(COMBINED_INITRAMFS)
+
+qemu: $(COMBINED_INITRAMFS)
 	@echo "Launching QEMU in Raspberry Pi 4 Mode..."
 	qemu-system-aarch64 \
 		-M raspi4b \
 		-m 2048 \
 		-kernel $(OUT_DIR)/bootfiles/kernel8.img \
 		-dtb $(OUT_DIR)/bootfiles/bcm2711-rpi-4-b.dtb \
-		-initrd $(INITRAMFS) \
+		-initrd $(COMBINED_INITRAMFS) \
 		-append "console=fbcon console=tty1 quiet loglevel=3 rdinit=/init" \
 		-display sdl,gl=on
 
@@ -139,7 +193,8 @@ export: initramfs
 	@echo "Exporting build files to SD card..."
 	cp $(OUT_DIR)/bootfiles/* $(SD_MOUNT_BOOT)/ -r
 	cp $(INITRAMFS) $(SD_MOUNT_BOOT)/initramfs.cpio.gz
-	@echo "initramfs initramfs.cpio.gz followkernel" > $(SD_MOUNT_BOOT)/config.txt
+	cp $(PROGRAM_INITRAMFS) $(SD_MOUNT_BOOT)/program.cpio.gz
+	@echo "initramfs initramfs.cpio.gz,program.cpio.gz followkernel" > $(SD_MOUNT_BOOT)/config.txt
 	@echo "dtoverlay=$(VC4_OVERLAY)" >> $(SD_MOUNT_BOOT)/config.txt
 	@if [ -n "$(DSI_TOUCH_OVERLAY)" ]; then \
 		echo "dtoverlay=$(DSI_TOUCH_OVERLAY)" >> $(SD_MOUNT_BOOT)/config.txt; \
@@ -149,67 +204,18 @@ export: initramfs
 	sync
 	@echo "SD Card Flashed and ready for hardware execution!"
 
-image: initramfs
-	@$(SCRIPTS_DIR)/build_image.sh "$(IMG_FILE)" "$(IMG_SIZE_MB)" "$(OUT_DIR)" "$(INITRAMFS)" "$(VC4_OVERLAY)" "$(DSI_TOUCH_OVERLAY)"
-
-$(DEBUG_ROOTFS)/init: FORCE src/init.c
-	@echo "Compiling debug init binary (x86_64)..."
-	mkdir -p $(DEBUG_ROOTFS)
-	$(DEBUG_CC) $(DEBUG_CFLAGS) \
-		-DAUDIOX_VERSION_MAJOR=$(AUDIOX_VERSION_MAJOR) \
-		-DAUDIOX_VERSION_MINOR=$(AUDIOX_VERSION_MINOR) \
-		-DAUDIOX_VERSION_PATCH=$(AUDIOX_VERSION_PATCH) \
-		-DDEBUG_SHELL=$(DEBUG_SHELL) \
-		-o $(DEBUG_ROOTFS)/init src/init.c $(LIBS)
-
-debug_rootfs: $(DEBUG_ROOTFS)/init
-	@echo "Creating debug rootfs structure..."
-	mkdir -p $(DEBUG_ROOTFS)/bin $(DEBUG_ROOTFS)/sbin $(DEBUG_ROOTFS)/etc
-	mkdir -p $(DEBUG_ROOTFS)/proc $(DEBUG_ROOTFS)/sys $(DEBUG_ROOTFS)/dev
-	mkdir -p $(DEBUG_ROOTFS)/etc/wavs
-	mkdir -p $(DEBUG_ROOTFS)/etc/www
-	@if [ -f "$(WAV_DIR)/voice0.wav" ] && [ -f "$(WAV_DIR)/voice1.wav" ] && [ -f "$(WAV_DIR)/voice2.wav" ] && [ -f "$(WAV_DIR)/voice3.wav" ]; then \
-		echo "Staging WAV voices from $(WAV_DIR) into debug rootfs..."; \
-		cp "$(WAV_DIR)/voice0.wav" "$(DEBUG_ROOTFS)/etc/wavs/"; \
-		cp "$(WAV_DIR)/voice1.wav" "$(DEBUG_ROOTFS)/etc/wavs/"; \
-		cp "$(WAV_DIR)/voice2.wav" "$(DEBUG_ROOTFS)/etc/wavs/"; \
-		cp "$(WAV_DIR)/voice3.wav" "$(DEBUG_ROOTFS)/etc/wavs/"; \
-	else \
-		echo "Warning: missing one or more required wav files in $(WAV_DIR) (voice0.wav..voice3.wav)."; \
-		echo "Warning: debug runtime audio init will fail until all 4 files are present."; \
-	fi
-	@if [ -f "$(BOOT_LOGO_PPM)" ]; then \
-		echo "Staging boot logo from $(BOOT_LOGO_PPM) into debug rootfs..."; \
-		cp "$(BOOT_LOGO_PPM)" "$(DEBUG_ROOTFS)/etc/logo_boot.ppm"; \
-	else \
-		echo "Warning: boot logo file not found at $(BOOT_LOGO_PPM)"; \
-	fi
-	@if [ -f "$(WEB_INDEX_HTML)" ]; then \
-		echo "Staging web index from $(WEB_INDEX_HTML) into debug rootfs..."; \
-		cp "$(WEB_INDEX_HTML)" "$(DEBUG_ROOTFS)/etc/www/index.html"; \
-	else \
-		echo "Warning: web index file not found at $(WEB_INDEX_HTML)"; \
-	fi
-
-debug_initramfs: debug_rootfs
-	@echo "Packaging debug initramfs..."
-	cd $(DEBUG_ROOTFS) && \
-	find . -print0 | cpio --null --create --format=newc | gzip -9 > $(DEBUG_INITRAMFS)
-	@echo "Debug initramfs built at: $(DEBUG_INITRAMFS)"
-
-debug: debug_initramfs
-	@if [ -z "$(DEBUG_KERNEL)" ]; then \
-		echo "Error: no kernel found. Set DEBUG_KERNEL=/path/to/bzImage"; \
+dev: program_initramfs
+	@echo "Uploading initramfs to http://$(PI_HOST):$(PI_PORT)/api/initram ..."
+	@status=$$(curl --silent --show-error --output $(OUT_DIR)/dev-upload.response --write-out "%{http_code}" -X PUT --data-binary @$(PROGRAM_INITRAMFS) http://$(PI_HOST):$(PI_PORT)/api/initram); \
+	cat $(OUT_DIR)/dev-upload.response; \
+	if [ "$$status" -lt 200 ] || [ "$$status" -ge 300 ]; then \
+		echo "HTTP $$status"; \
 		exit 1; \
 	fi
-	@echo "Launching QEMU x86_64 debug session..."
-	qemu-system-x86_64 \
-		-M pc \
-		-m 512 \
-		-kernel $(DEBUG_KERNEL) \
-		-initrd $(DEBUG_INITRAMFS) \
-		-append "console=tty1 vga=0x343 rdinit=/init quiet loglevel=0 fbcon=map:0" \
-		-display sdl
+	@echo "Upload complete. Device will reboot once to install the staged runtime, then reboot into the new image."
+
+image: initramfs
+	@$(SCRIPTS_DIR)/build_image.sh "$(IMG_FILE)" "$(IMG_SIZE_MB)" "$(OUT_DIR)" "$(INITRAMFS)" "$(PROGRAM_INITRAMFS)" "$(VC4_OVERLAY)" "$(DSI_TOUCH_OVERLAY)"
 
 clean:
 	rm -rf $(OUT_DIR)

@@ -6,151 +6,681 @@
   <title>audiox web</title>
   <style>
     :root {
-      --bg: #0f1419;
-      --fg: #e8f1ff;
-      --muted: #9bb0cc;
-      --accent: #4ad3a8;
+      --bg0: #091019;
+      --bg1: #102130;
+      --card: rgba(14, 27, 38, 0.84);
+      --border: #28465a;
+      --fg: #e6f2ff;
+      --muted: #95afc3;
+      --ok: #6fdaa0;
+      --warn: #ff9f84;
+      --line: #7ac8ff;
+      --line-hot: #ffc684;
+      --accent: #5fb2ff;
+      --accent2: #92d46e;
     }
+
+    * { box-sizing: border-box; }
+
     body {
       margin: 0;
       font-family: "IBM Plex Sans", "DejaVu Sans", sans-serif;
-      background: radial-gradient(circle at 20% 10%, #1a2531, var(--bg));
       color: var(--fg);
+      background:
+        radial-gradient(1000px 460px at 0% 0%, #163447 0%, transparent 58%),
+        radial-gradient(920px 540px at 100% 100%, #142433 0%, transparent 60%),
+        linear-gradient(138deg, var(--bg0), var(--bg1));
       min-height: 100vh;
-      display: grid;
-      place-items: center;
     }
-    .card {
-      width: min(92vw, 560px);
-      border: 1px solid #2a3544;
+
+    .app {
+      width: min(1240px, 96vw);
+      margin: 14px auto;
+      display: grid;
+      gap: 12px;
+    }
+
+    .panel {
+      border: 1px solid var(--border);
       border-radius: 12px;
-      padding: 24px;
-      background: rgba(13, 19, 26, 0.72);
+      background: var(--card);
       backdrop-filter: blur(2px);
+      box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
     }
-    h1 {
-      margin: 0 0 8px;
-      font-size: 28px;
-    }
-    p {
-      margin: 0;
-      color: var(--muted);
-      line-height: 1.5;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+
+    .head {
+      padding: 11px 14px;
+      border-bottom: 1px solid #223f52;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
       gap: 10px;
-      margin-top: 16px;
+      flex-wrap: wrap;
     }
-    .cfg {
-      margin-top: 18px;
-      border-top: 1px solid #253241;
-      padding-top: 14px;
-    }
-    .cfg h2 {
-      margin: 0 0 8px;
-      font-size: 17px;
-    }
-    .row {
-      display: grid;
-      grid-template-columns: 1fr 100px;
+
+    .brand {
+      display: flex;
+      align-items: center;
       gap: 8px;
+    }
+
+    .brand-stack {
+      display: grid;
+      gap: 4px;
+    }
+
+    .logo-img {
+      width: 170px;
+      max-width: 44vw;
+      height: auto;
+      display: block;
+    }
+
+    .version {
+      color: var(--muted);
+      font-size: 12px;
+      margin-left: 2px;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .tab-btn {
+      border: 1px solid #355f79;
+      border-radius: 9px;
+      background: #133246;
+      color: var(--fg);
+      padding: 8px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .tab-btn.active {
+      border-color: #6ca1be;
+      background: #1b4258;
+      box-shadow: 0 0 0 1px rgba(108, 161, 190, 0.3) inset;
+    }
+
+    button {
+      border: 1px solid #39647d;
+      border-radius: 8px;
+      background: #143446;
+      color: var(--fg);
+      padding: 9px 11px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    button.primary {
+      border-color: #5f8f5e;
+      background: #234329;
+      color: #d8ffe2;
+    }
+
+    button.warn {
+      border-color: #865a4e;
+      background: #442921;
+      color: #ffd9cf;
+    }
+
+    .tab-page {
+      display: none;
+      padding: 12px;
+    }
+
+    .tab-page.active {
+      display: block;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 13px;
+      min-height: 1.2em;
+      padding: 0 12px 12px;
+    }
+
+    .status.ok { color: var(--ok); }
+    .status.warn { color: var(--warn); }
+
+    .routing-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 12px;
+    }
+
+    .graph-shell {
+      border: 1px solid #223f51;
+      border-radius: 10px;
+      overflow: hidden;
+      background:
+        linear-gradient(rgba(122, 200, 255, 0.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(122, 200, 255, 0.08) 1px, transparent 1px),
+        #0e1a24;
+      background-size: 30px 30px;
+      position: relative;
+    }
+
+    .graph-toolbar {
+      border-bottom: 1px solid #234357;
+      padding: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(10, 24, 35, 0.75);
+    }
+
+    .graph-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .graph-hint {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .graph-wrap {
+      position: relative;
+      height: min(66vh, 700px);
+      overflow: hidden;
+      cursor: grab;
+    }
+
+    .graph-wrap.panning {
+      cursor: grabbing;
+    }
+
+    svg#links {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: auto;
+    }
+
+    #nodes {
+      position: absolute;
+      inset: 0;
+      padding: 10px;
+      transform-origin: 0 0;
+    }
+
+    .node {
+      position: absolute;
+      width: 250px;
+      border: 1px solid #3d6880;
+      border-radius: 10px;
+      background: linear-gradient(180deg, #112535, #0d1d2a);
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.26);
+    }
+
+    .node .headbar {
+      padding: 7px 9px;
+      border-bottom: 1px solid #2c4f64;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      cursor: move;
+      user-select: none;
+    }
+
+    .kind {
+      color: var(--muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .ports {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      padding: 8px;
+    }
+
+    .col { display: grid; gap: 5px; }
+
+    .port {
+      border: 1px solid #345c73;
+      border-radius: 6px;
+      padding: 4px 6px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      background: #132735;
+      user-select: none;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .port.in { border-color: #2d607f; }
+    .port.out { border-color: #5f7c34; }
+
+    .port.active {
+      outline: 1px solid #f0c26e;
+      box-shadow: 0 0 0 1px rgba(240, 194, 110, 0.35) inset;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 100px;
+      flex: 0 0 auto;
+    }
+
+    .dot.in { background: #79c2ff; }
+    .dot.out { background: #9ad968; }
+
+    .edge-line {
+      stroke: var(--line);
+      stroke-width: 2.4;
+      fill: none;
+      stroke-linecap: round;
+      pointer-events: none;
+      transition: stroke 100ms ease, filter 100ms ease;
+    }
+
+    .edge-line.hot {
+      stroke: var(--line-hot);
+      filter: drop-shadow(0 0 5px rgba(255, 186, 110, 0.95));
+    }
+
+    .edge-hit {
+      stroke: rgba(255, 255, 255, 0.001);
+      stroke-width: 30;
+      fill: none;
+      stroke-linecap: round;
+      pointer-events: stroke;
+      cursor: pointer;
+    }
+
+    .edge-del-btn {
+      fill: #4a2a27;
+      stroke: #ffbfad;
+      stroke-width: 1.2;
+      pointer-events: all;
+      cursor: pointer;
+      filter: drop-shadow(0 0 4px rgba(255, 161, 130, 0.45));
+    }
+
+    .edge-del-label {
+      fill: #ffd9cf;
+      font-size: 11px;
+      font-family: "IBM Plex Sans", "DejaVu Sans", sans-serif;
+      font-weight: 700;
+      text-anchor: middle;
+      dominant-baseline: central;
+      pointer-events: none;
+    }
+
+    .side-card {
+      border: 1px solid #264759;
+      border-radius: 10px;
+      background: #0f1e29;
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+      align-content: start;
+    }
+
+    .side-card h2 {
+      margin: 0;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .edge-list {
+      display: grid;
+      gap: 5px;
+      max-height: 250px;
+      overflow: auto;
+      font-size: 12px;
+    }
+
+    .edge-item {
+      border: 1px solid #33576c;
+      border-radius: 6px;
+      padding: 5px 6px;
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .cfg-wrap {
+      max-width: 700px;
+      border: 1px solid #264759;
+      border-radius: 10px;
+      background: #0f1e29;
+      padding: 12px;
+    }
+
+    .cfg-row {
+      display: grid;
+      grid-template-columns: 1fr 110px;
+      gap: 10px;
       margin-top: 8px;
       align-items: center;
     }
-    .row label {
+
+    .cfg-row label {
       color: var(--muted);
-      font-size: 14px;
+      font-size: 13px;
     }
-    input[type="number"], select {
-      border: 1px solid #31465d;
-      background: #101a24;
-      color: var(--fg);
-      border-radius: 8px;
-      padding: 8px;
-      font-size: 14px;
+
+    input[type="number"],
+    input[type="text"],
+    input[type="file"] {
       width: 100%;
-      box-sizing: border-box;
+      border: 1px solid #36566a;
+      border-radius: 8px;
+      background: #10212c;
+      color: var(--fg);
+      padding: 7px;
+      font-size: 13px;
     }
-    .actions {
+
+    .cfg-actions {
+      margin-top: 12px;
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 8px;
-      margin-top: 12px;
     }
-    button {
-      border: 1px solid #2f7f6a;
-      background: #173328;
-      color: var(--fg);
-      border-radius: 8px;
+
+    .control-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      max-width: 760px;
+    }
+
+    .control-actions {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+
+    .mock-upload {
+      display: grid;
+      gap: 10px;
+      max-width: 760px;
+      border: 1px solid #264759;
+      border-radius: 10px;
+      background: #0f1e29;
       padding: 12px;
-      font-size: 15px;
-      cursor: pointer;
     }
-    button:active {
-      transform: translateY(1px);
-    }
-    .status {
-      margin-top: 12px;
-      min-height: 1.2em;
-      color: var(--muted);
-      font-size: 14px;
-    }
-    .dot {
-      display: inline-block;
-      width: 10px;
-      height: 10px;
-      border-radius: 999px;
-      background: var(--accent);
-      margin-right: 8px;
-      box-shadow: 0 0 14px var(--accent);
-      vertical-align: middle;
+
+    .muted { color: var(--muted); font-size: 12px; }
+
+    @media (max-width: 1020px) {
+      .routing-grid { grid-template-columns: 1fr; }
+      .graph-wrap { height: 58vh; }
     }
   </style>
 </head>
 <body>
-  <main class="card">
-    <h1><span class="dot"></span>audiox</h1>
-    <p>Basic HTTP endpoint is live. Test soundboard trigger over web:</p>
-    <div class="grid">
-      <button data-slot="0">Play Slot 0</button>
-      <button data-slot="1">Play Slot 1</button>
-      <button data-slot="2">Play Slot 2</button>
-      <button data-slot="3">Play Slot 3</button>
-    </div>
+  <main class="app panel">
+    <header class="head">
+      <div class="brand">
+        <div class="brand-stack">
+          <img class="logo-img" src="/logo.svg" alt="audiox logo" onerror="this.onerror=null;this.src='/logo.png';">
+          <div class="version" id="app-version">version unknown</div>
+        </div>
+      </div>
+      <nav class="tabs" id="tabs">
+        <button class="tab-btn active" data-tab="routing">Routing</button>
+        <button class="tab-btn" data-tab="config">Config</button>
+        <button class="tab-btn" data-tab="control">Control/Status</button>
+        <button class="tab-btn" data-tab="mapping">MIDI Mapping</button>
+        <button class="tab-btn" data-tab="upload">Soundboard Upload</button>
+      </nav>
+    </header>
 
-    <section class="cfg">
-      <h2>Runtime Config</h2>
-      <div class="row">
-        <label for="usb_playback_channels">USB Playback Channels</label>
-        <input id="usb_playback_channels" type="number" min="1" max="16" step="1" value="2">
-      </div>
-      <div class="row">
-        <label for="usb_capture_channels">USB Capture Channels</label>
-        <input id="usb_capture_channels" type="number" min="1" max="16" step="1" value="2">
-      </div>
-      <div class="row">
-        <label for="usb_sample_rate">USB Sample Rate</label>
-        <input id="usb_sample_rate" type="number" min="8000" max="192000" step="1" value="44100">
-      </div>
-      <div class="row">
-        <label for="usb_sample_size">USB Sample Size (bytes)</label>
-        <input id="usb_sample_size" type="number" min="1" max="4" step="1" value="2">
-      </div>
-      <div class="actions">
-        <button id="btn-load">Load Config</button>
-        <button id="btn-save">Save Config</button>
-        <button id="btn-reload">Reload Config</button>
+    <section class="tab-page active" data-page="routing">
+      <div class="routing-grid">
+        <section class="graph-shell">
+          <div class="graph-toolbar">
+            <div class="graph-actions">
+              <button id="btn-route-save" class="primary">Save Routing</button>
+              <button id="btn-edge-delete-mode" class="warn">Delete Lines: ON</button>
+              <button id="btn-zoom-out">-</button>
+              <button id="btn-zoom-reset">100%</button>
+              <button id="btn-zoom-in">+</button>
+              <span class="graph-hint" id="zoom-label">zoom 100%</span>
+            </div>
+            <div class="graph-hint">Drag block header to move. Drag empty canvas to pan. Wheel to zoom.</div>
+          </div>
+          <div class="graph-wrap" id="graph-wrap">
+            <svg id="links"></svg>
+            <div id="nodes"></div>
+          </div>
+        </section>
+
+        <aside class="side-card">
+          <h2>Routes</h2>
+          <div id="edge-list" class="edge-list"></div>
+        </aside>
       </div>
     </section>
 
-    <div class="status" id="status">idle</div>
+    <section class="tab-page" data-page="config">
+      <div class="cfg-wrap">
+        <div class="cfg-row">
+          <label for="usb_playback_channels">USB Playback Channels</label>
+          <input id="usb_playback_channels" type="number" min="1" max="16" step="1" value="2">
+        </div>
+        <div class="cfg-row">
+          <label for="usb_capture_channels">USB Capture Channels</label>
+          <input id="usb_capture_channels" type="number" min="1" max="16" step="1" value="2">
+        </div>
+        <div class="cfg-row">
+          <label for="usb_sample_rate">USB Sample Rate</label>
+          <input id="usb_sample_rate" type="number" min="8000" max="192000" step="1" value="44100">
+        </div>
+        <div class="cfg-row">
+          <label for="usb_sample_size">USB Sample Size (bytes)</label>
+          <input id="usb_sample_size" type="number" min="1" max="4" step="1" value="2">
+        </div>
+        <div class="cfg-actions">
+          <button id="btn-load">Load Config</button>
+          <button id="btn-save">Save Config</button>
+          <button id="btn-reload">Reload Config</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-page" data-page="control">
+      <div class="control-grid">
+        <section class="side-card">
+          <h2>Soundboard Triggers</h2>
+          <div id="soundboard-trigger-list" class="grid2"></div>
+        </section>
+        <section class="side-card">
+          <h2>System Status</h2>
+          <div class="control-actions">
+            <button id="btn-system-sync">Sync Filesystem</button>
+            <button id="btn-system-restart" class="warn">Restart Device</button>
+            <button id="btn-system-shutdown" class="warn">Shutdown Device</button>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section class="tab-page" data-page="upload">
+      <div class="mock-upload">
+        <h2 style="margin:0; font-size:14px; text-transform:uppercase; letter-spacing:.06em;">Soundboard Upload</h2>
+        <div class="cfg-row" style="margin-top:0;">
+          <label for="upload_slot">Target Slot</label>
+          <input id="upload_slot" type="number" min="0" max="31" value="0">
+        </div>
+        <div class="cfg-row">
+          <label for="upload_name">Target Filename (optional)</label>
+          <input id="upload_name" type="text" placeholder="kick.wav">
+        </div>
+        <div class="cfg-row" style="grid-template-columns: 1fr;">
+          <label for="upload_file">Audio File</label>
+          <input id="upload_file" type="file" accept="audio/*">
+        </div>
+        <div class="grid2" style="grid-template-columns: 1fr 1fr;">
+          <button id="btn-upload-real" class="primary">Upload To /audiox/sfx</button>
+          <button id="btn-upload-clear">Clear</button>
+        </div>
+        <div class="muted">Uploaded files are written to /audiox/sfx and appear below.</div>
+        <section class="side-card">
+          <h2>Available SFX Files</h2>
+          <div id="sfx-list" class="edge-list"></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="tab-page" data-page="mapping">
+      <div class="mock-upload">
+        <h2 style="margin:0; font-size:14px; text-transform:uppercase; letter-spacing:.06em;">MIDI Button Mapping</h2>
+        <div class="grid2" style="grid-template-columns: 1fr 1fr;">
+          <button id="btn-mapping-mode" class="warn">Mapping Mode: OFF</button>
+          <button id="btn-mapping-refresh">Refresh Mappings</button>
+        </div>
+        <div class="muted" id="mapping-capture-status">No MIDI note captured yet.</div>
+        <div class="cfg-row" style="margin-top:0;">
+          <label for="mapping_note">Captured MIDI Note</label>
+          <input id="mapping_note" type="number" min="0" max="127" value="0">
+        </div>
+        <div class="cfg-row" style="grid-template-columns: 1fr;">
+          <label for="mapping_sfx">Target Sound</label>
+          <select id="mapping_sfx" style="width:100%; border:1px solid #36566a; border-radius:8px; background:#10212c; color:var(--fg); padding:7px; font-size:13px;"></select>
+        </div>
+        <div class="grid2" style="grid-template-columns: 1fr 1fr;">
+          <button id="btn-mapping-save" class="primary">Save Mapping</button>
+          <button id="btn-mapping-delete" class="warn">Delete Mapping For Note</button>
+        </div>
+        <section class="side-card">
+          <h2>Current Mappings</h2>
+          <div id="mapping-list" class="edge-list"></div>
+        </section>
+      </div>
+    </section>
+
+    <div id="status" class="status">idle</div>
   </main>
+
   <script>
     const statusEl = document.getElementById('status');
+    const edgeListEl = document.getElementById('edge-list');
+    const nodesEl = document.getElementById('nodes');
+    const linksEl = document.getElementById('links');
+    const graphWrapEl = document.getElementById('graph-wrap');
+    const zoomLabelEl = document.getElementById('zoom-label');
+    const tabsEl = document.getElementById('tabs');
+    const appVersionEl = document.getElementById('app-version');
+    const sfxListEl = document.getElementById('sfx-list');
+    const soundboardTriggerListEl = document.getElementById('soundboard-trigger-list');
+    const mappingListEl = document.getElementById('mapping-list');
+    const mappingSfxEl = document.getElementById('mapping_sfx');
+    const mappingNoteEl = document.getElementById('mapping_note');
+    const mappingCaptureStatusEl = document.getElementById('mapping-capture-status');
+
     const configPath = '/api/rootfs/config.staging.txt';
     const realConfigPath = '/api/rootfs/config.txt';
+    const routingPath = '/api/rootfs/routing.txt';
+
+    const state = {
+      nodes: [],
+      edges: [],
+      selectedOut: null,
+      positions: {},
+      panX: 0,
+      panY: 0,
+      scale: 1,
+      panning: false,
+      panStartX: 0,
+      panStartY: 0,
+      panOriginX: 0,
+      panOriginY: 0,
+      draggingNode: null,
+      dragOffsetX: 0,
+      dragOffsetY: 0,
+      edgeDeleteEnabled: true,
+      activeTab: 'routing',
+      mappingMode: false,
+      mappingPollTimer: null,
+      mappingLastSeq: 0,
+      sfxFiles: [],
+    };
+
+    function setStatus(text, kind = '') {
+      statusEl.textContent = text;
+      statusEl.className = `status ${kind}`.trim();
+    }
+
+    function setActiveTab(tab) {
+      state.activeTab = tab;
+      document.querySelectorAll('.tab-btn').forEach((el) => {
+        el.classList.toggle('active', el.dataset.tab === tab);
+      });
+      document.querySelectorAll('.tab-page').forEach((el) => {
+        el.classList.toggle('active', el.dataset.page === tab);
+      });
+      if (tab === 'routing') {
+        renderLinks();
+      }
+    }
+
+    function updateZoomLabel() {
+      zoomLabelEl.textContent = `zoom ${Math.round(state.scale * 100)}%`;
+      document.getElementById('btn-zoom-reset').textContent = `${Math.round(state.scale * 100)}%`;
+    }
+
+    function graphCoordsFromClient(clientX, clientY) {
+      const wrapRect = graphWrapEl.getBoundingClientRect();
+      return {
+        x: (clientX - wrapRect.left - state.panX) / state.scale,
+        y: (clientY - wrapRect.top - state.panY) / state.scale,
+      };
+    }
+
+    function setZoom(nextScale, anchorClientX = null, anchorClientY = null) {
+      const oldScale = state.scale;
+      const clamped = Math.max(0.35, Math.min(2.8, nextScale));
+      if (Math.abs(clamped - oldScale) < 0.0001) {
+        return;
+      }
+
+      const wrapRect = graphWrapEl.getBoundingClientRect();
+      const anchorX = anchorClientX == null ? wrapRect.left + (wrapRect.width * 0.5) : anchorClientX;
+      const anchorY = anchorClientY == null ? wrapRect.top + (wrapRect.height * 0.5) : anchorClientY;
+      const graphPoint = graphCoordsFromClient(anchorX, anchorY);
+
+      state.scale = clamped;
+      state.panX = (anchorX - wrapRect.left) - (graphPoint.x * state.scale);
+      state.panY = (anchorY - wrapRect.top) - (graphPoint.y * state.scale);
+      applyViewportTransform();
+      renderLinks();
+      updateZoomLabel();
+    }
+
+    function applyViewportTransform() {
+      nodesEl.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.scale})`;
+    }
 
     function getConfigFromForm() {
       return {
@@ -176,6 +706,7 @@
         usb_sample_rate: 44100,
         usb_sample_size: 2,
       };
+
       for (const rawLine of text.split(/\r?\n/)) {
         const line = rawLine.trim();
         if (!line || line.startsWith('#')) continue;
@@ -199,8 +730,20 @@
       ].join('\n');
     }
 
+    async function loadVersion() {
+      try {
+        const res = await fetch('/api/version', { method: 'GET' });
+        const txt = (await res.text()).trim();
+        if (!res.ok || !txt) {
+          return;
+        }
+        appVersionEl.textContent = `version ${txt}`;
+      } catch (err) {
+      }
+    }
+
     async function loadConfig() {
-      statusEl.textContent = 'loading config...';
+      setStatus('loading config...');
       try {
         let res = await fetch(configPath, { method: 'GET' });
         let txt = await res.text();
@@ -208,21 +751,26 @@
           res = await fetch(realConfigPath, { method: 'GET' });
           txt = await res.text();
           if (!res.ok) {
-            statusEl.textContent = `config load failed: ${res.status} ${txt.trim()}`;
-            return;
+            setStatus(`config load failed: ${res.status} ${txt.trim()}`, 'warn');
+            return null;
           }
         }
-        setFormFromConfig(parseConfigText(txt));
-        statusEl.textContent = 'config loaded';
+
+        const cfg = parseConfigText(txt);
+        setFormFromConfig(cfg);
+        setStatus('config loaded', 'ok');
+        return cfg;
       } catch (err) {
-        statusEl.textContent = `config load error: ${err}`;
+        setStatus(`config load error: ${err}`, 'warn');
+        return null;
       }
     }
 
     async function saveConfig() {
       const cfg = getConfigFromForm();
       const payload = formatConfigText(cfg);
-      statusEl.textContent = 'saving config...';
+      setStatus('saving config...');
+
       try {
         const res = await fetch(configPath, {
           method: 'PUT',
@@ -231,56 +779,967 @@
         });
         const txt = await res.text();
         if (!res.ok) {
-          statusEl.textContent = `config save failed: ${res.status} ${txt.trim()}`;
-          return;
+          setStatus(`config save failed: ${res.status} ${txt.trim()}`, 'warn');
+          return false;
         }
-        statusEl.textContent = 'config saved';
+
+        setStatus('config saved', 'ok');
+        return true;
       } catch (err) {
-        statusEl.textContent = `config save error: ${err}`;
+        setStatus(`config save error: ${err}`, 'warn');
+        return false;
       }
     }
 
     async function reloadConfig() {
-      statusEl.textContent = 'reloading config...';
+      setStatus('reloading config...');
       try {
         const res = await fetch('/api/config/reload', { method: 'POST' });
         const txt = await res.text();
         if (!res.ok) {
-          statusEl.textContent = `reload failed: ${res.status} ${txt.trim()}`;
-          return;
+          setStatus(`reload failed: ${res.status} ${txt.trim()}`, 'warn');
+          return false;
         }
-        statusEl.textContent = txt.trim() || 'config reloaded';
+
+        setStatus(txt.trim() || 'config reloaded', 'ok');
+        return true;
       } catch (err) {
-        statusEl.textContent = `reload error: ${err}`;
+        setStatus(`reload error: ${err}`, 'warn');
+        return false;
       }
     }
 
-    async function triggerSlot(slot) {
-      statusEl.textContent = `triggering slot ${slot}...`;
+    async function reloadRoutingFast() {
       try {
-        const res = await fetch(`/api/soundboard/trigger/${slot}`, { method: 'POST' });
+        const res = await fetch('/api/routing/reload', { method: 'POST' });
         const txt = await res.text();
         if (!res.ok) {
-          statusEl.textContent = `error: ${res.status} ${txt.trim()}`;
-          return;
+          setStatus(`routing reload failed: ${res.status} ${txt.trim()}`, 'warn');
+          return false;
         }
-        statusEl.textContent = txt.trim() || `triggered slot ${slot}`;
+        return true;
       } catch (err) {
-        statusEl.textContent = `request failed: ${err}`;
+        setStatus(`routing reload error: ${err}`, 'warn');
+        return false;
       }
     }
 
-    document.querySelectorAll('button[data-slot]').forEach((btn) => {
+    async function triggerSfx(fileName) {
+      if (!fileName) {
+        return;
+      }
+
+      setStatus(`triggering ${fileName}...`);
+      try {
+        const target = encodeURIComponent(fileName);
+        const res = await fetch(`/api/soundboard/trigger/${target}`, { method: 'POST' });
+        const txt = await res.text();
+        if (!res.ok) {
+          setStatus(`error: ${res.status} ${txt.trim()}`, 'warn');
+          return;
+        }
+        setStatus(txt.trim() || `triggered ${fileName}`, 'ok');
+      } catch (err) {
+        setStatus(`request failed: ${err}`, 'warn');
+      }
+    }
+
+    async function runSystemAction(path, label) {
+      setStatus(`${label}...`);
+      try {
+        const res = await fetch(path, { method: 'POST' });
+        const txt = (await res.text()).trim();
+        if (!res.ok) {
+          setStatus(`${label} failed: ${res.status} ${txt}`, 'warn');
+          return false;
+        }
+        setStatus(txt || `${label} ok`, 'ok');
+        return true;
+      } catch (err) {
+        setStatus(`${label} error: ${err}`, 'warn');
+        return false;
+      }
+    }
+
+    function sanitizeSfxName(name) {
+      const raw = String(name || '').trim();
+      if (!raw) return '';
+      const base = raw.split('/').pop().split('\\').pop();
+      return base.replace(/[^a-zA-Z0-9._-]/g, '_');
+    }
+
+    async function listSfxFiles() {
+      try {
+        const res = await fetch('/api/rootfs/sfx/', { method: 'GET' });
+        const txt = await res.text();
+        if (!res.ok) {
+          sfxListEl.textContent = 'failed to list sfx files';
+          return [];
+        }
+
+        const files = [];
+        for (const line of txt.split(/\r?\n/)) {
+          const t = line.trim();
+          if (!t || t.startsWith('rootfs listing:')) continue;
+          if (t.endsWith('/')) continue;
+          files.push(t);
+        }
+
+        files.sort((a, b) => a.localeCompare(b));
+        state.sfxFiles = files;
+        renderSfxFiles();
+        renderSoundboardTriggers();
+        renderMappingSfxSelect();
+        return files;
+      } catch (err) {
+        sfxListEl.textContent = `failed to list sfx files: ${err}`;
+        return [];
+      }
+    }
+
+    function renderSfxFiles() {
+      sfxListEl.innerHTML = '';
+      if (!state.sfxFiles.length) {
+        sfxListEl.textContent = 'no files in /audiox/sfx';
+        return;
+      }
+
+      for (const file of state.sfxFiles) {
+        const row = document.createElement('div');
+        row.className = 'edge-item';
+        row.textContent = file;
+        sfxListEl.appendChild(row);
+      }
+    }
+
+    function renderSoundboardTriggers() {
+      soundboardTriggerListEl.innerHTML = '';
+      if (!state.sfxFiles.length) {
+        const empty = document.createElement('div');
+        empty.className = 'muted';
+        empty.textContent = 'No SFX files uploaded yet.';
+        soundboardTriggerListEl.appendChild(empty);
+        return;
+      }
+
+      for (const file of state.sfxFiles) {
+        const btn = document.createElement('button');
+        btn.textContent = `Play ${file}`;
+        btn.addEventListener('click', () => triggerSfx(file));
+        soundboardTriggerListEl.appendChild(btn);
+      }
+    }
+
+    function renderMappingSfxSelect() {
+      const prev = mappingSfxEl.value;
+      mappingSfxEl.innerHTML = '';
+      for (const file of state.sfxFiles) {
+        const opt = document.createElement('option');
+        opt.value = file;
+        opt.textContent = file;
+        mappingSfxEl.appendChild(opt);
+      }
+
+      if (prev && state.sfxFiles.includes(prev)) {
+        mappingSfxEl.value = prev;
+      }
+    }
+
+    async function uploadSfxFile() {
+      const slot = Number(document.getElementById('upload_slot').value || 0);
+      const file = document.getElementById('upload_file').files[0];
+      const manualName = document.getElementById('upload_name').value;
+      if (!file) {
+        setStatus('upload failed: pick a file first', 'warn');
+        return;
+      }
+
+      const targetName = sanitizeSfxName(manualName || file.name);
+      if (!targetName) {
+        setStatus('upload failed: invalid target name', 'warn');
+        return;
+      }
+
+      setStatus(`uploading ${targetName}...`);
+      try {
+        const buf = await file.arrayBuffer();
+        const res = await fetch(`/api/rootfs/sfx/${targetName}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: buf,
+        });
+        const txt = (await res.text()).trim();
+        if (!res.ok) {
+          setStatus(`upload failed: ${res.status} ${txt}`, 'warn');
+          return;
+        }
+
+        await listSfxFiles();
+        setStatus(`uploaded ${targetName} for slot ${slot}`, 'ok');
+      } catch (err) {
+        setStatus(`upload error: ${err}`, 'warn');
+      }
+    }
+
+    async function loadMappings() {
+      try {
+        const res = await fetch('/api/midi/mappings', { method: 'GET' });
+        const txt = await res.text();
+        if (!res.ok) {
+          mappingListEl.textContent = `failed to load mappings: ${res.status}`;
+          return;
+        }
+
+        const data = JSON.parse(txt);
+        const mappings = Array.isArray(data?.mappings) ? data.mappings : [];
+        mappingListEl.innerHTML = '';
+        if (!mappings.length) {
+          mappingListEl.textContent = 'no mappings yet';
+          return;
+        }
+
+        for (const map of mappings) {
+          const row = document.createElement('div');
+          row.className = 'edge-item';
+          row.textContent = `note ${map.note} -> ${map.sfx}`;
+          row.addEventListener('click', () => {
+            mappingNoteEl.value = String(map.note);
+            if (state.sfxFiles.includes(map.sfx)) {
+              mappingSfxEl.value = map.sfx;
+            }
+          });
+          mappingListEl.appendChild(row);
+        }
+      } catch (err) {
+        mappingListEl.textContent = `failed to load mappings: ${err}`;
+      }
+    }
+
+    async function saveMapping() {
+      const note = Number(mappingNoteEl.value);
+      const sfx = mappingSfxEl.value;
+      if (!Number.isFinite(note) || note < 0 || note > 127) {
+        setStatus('invalid midi note, expected 0-127', 'warn');
+        return;
+      }
+      if (!sfx) {
+        setStatus('select a target sound first', 'warn');
+        return;
+      }
+
+      setStatus(`saving mapping note ${note} -> ${sfx}...`);
+      try {
+        const body = `note=${note}&sfx=${sfx}`;
+        const res = await fetch('/api/midi/mapping/set', {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body,
+        });
+        const txt = (await res.text()).trim();
+        if (!res.ok) {
+          setStatus(`mapping save failed: ${res.status} ${txt}`, 'warn');
+          return;
+        }
+
+        await loadMappings();
+        setStatus(`mapping saved note ${note} -> ${sfx}`, 'ok');
+      } catch (err) {
+        setStatus(`mapping save error: ${err}`, 'warn');
+      }
+    }
+
+    async function deleteMapping() {
+      const note = Number(mappingNoteEl.value);
+      if (!Number.isFinite(note) || note < 0 || note > 127) {
+        setStatus('invalid midi note, expected 0-127', 'warn');
+        return;
+      }
+
+      setStatus(`deleting mapping for note ${note}...`);
+      try {
+        const res = await fetch('/api/midi/mapping/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: `note=${note}`,
+        });
+        const txt = (await res.text()).trim();
+        if (!res.ok) {
+          setStatus(`mapping delete failed: ${res.status} ${txt}`, 'warn');
+          return;
+        }
+
+        await loadMappings();
+        setStatus(`mapping deleted for note ${note}`, 'ok');
+      } catch (err) {
+        setStatus(`mapping delete error: ${err}`, 'warn');
+      }
+    }
+
+    async function pollMappingCapture() {
+      if (!state.mappingMode) {
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/midi/last_note', { method: 'GET' });
+        const txt = await res.text();
+        if (!res.ok) {
+          return;
+        }
+
+        const data = JSON.parse(txt);
+        const connected = !!data.connected;
+        const seq = Number(data.last_seq || 0);
+        const note = Number(data.last_note);
+        const velocity = Number(data.last_velocity || 0);
+
+        if (!connected) {
+          mappingCaptureStatusEl.textContent = 'Mapping mode ON - waiting for MIDI device...';
+          return;
+        }
+
+        if (seq > state.mappingLastSeq && note >= 0 && note <= 127) {
+          state.mappingLastSeq = seq;
+          mappingNoteEl.value = String(note);
+          mappingCaptureStatusEl.textContent = `Captured note ${note} (velocity ${velocity})`;
+          setStatus(`captured midi note ${note}`, 'ok');
+        }
+      } catch (err) {
+      }
+    }
+
+    function setMappingMode(enabled) {
+      state.mappingMode = !!enabled;
+      const btn = document.getElementById('btn-mapping-mode');
+      btn.textContent = `Mapping Mode: ${state.mappingMode ? 'ON' : 'OFF'}`;
+      btn.classList.toggle('primary', state.mappingMode);
+      btn.classList.toggle('warn', !state.mappingMode);
+
+      if (state.mappingPollTimer) {
+        clearInterval(state.mappingPollTimer);
+        state.mappingPollTimer = null;
+      }
+
+      if (state.mappingMode) {
+        mappingCaptureStatusEl.textContent = 'Mapping mode ON - press a MIDI button to capture note.';
+        state.mappingPollTimer = setInterval(pollMappingCapture, 220);
+      } else {
+        mappingCaptureStatusEl.textContent = 'Mapping mode OFF.';
+      }
+    }
+
+    function buildNodesFromThings(things) {
+      const previous = { ...state.positions };
+      state.nodes = [];
+      state.positions = {};
+
+      const safeThings = Array.isArray(things) ? things : [];
+      const known = {
+        usb_mic_in: { x: 20, y: 20 },
+        soundboard_out: { x: 20, y: 250 },
+        fx_slot_0: { x: 330, y: 140 },
+        usb_gadget_out: { x: 650, y: 80 },
+      };
+
+      let dynIdx = 0;
+      for (const raw of safeThings) {
+        if (!raw || typeof raw.id !== 'string' || !raw.id) {
+          continue;
+        }
+
+        const inputs = Math.max(0, Math.min(16, Number(raw.inputs) || 0));
+        const outputs = Math.max(0, Math.min(16, Number(raw.outputs) || 0));
+        state.nodes.push({
+          id: raw.id,
+          label: String(raw.name || raw.id),
+          inputs,
+          outputs,
+        });
+
+        if (previous[raw.id]) {
+          state.positions[raw.id] = previous[raw.id];
+          continue;
+        }
+        if (known[raw.id]) {
+          state.positions[raw.id] = known[raw.id];
+          continue;
+        }
+
+        const col = dynIdx % 3;
+        const row = Math.floor(dynIdx / 3);
+        state.positions[raw.id] = { x: 20 + (col * 300), y: 20 + (row * 220) };
+        dynIdx += 1;
+      }
+
+      if (!state.nodes.length) {
+        setStatus('no routing things from backend', 'warn');
+      }
+    }
+
+    async function loadRoutingThings() {
+      try {
+        const res = await fetch('/api/routing/things', { method: 'GET' });
+        const txt = await res.text();
+        if (!res.ok) {
+          setStatus(`things load failed: ${res.status} ${txt.trim()}`, 'warn');
+          return false;
+        }
+
+        let parsed = null;
+        try {
+          parsed = JSON.parse(txt);
+        } catch (err) {
+          setStatus(`things parse error: ${err}`, 'warn');
+          return false;
+        }
+
+        buildNodesFromThings(parsed?.things || []);
+        return true;
+      } catch (err) {
+        setStatus(`things load error: ${err}`, 'warn');
+        return false;
+      }
+    }
+
+    function clearOutputSelection() {
+      state.selectedOut = null;
+      document.querySelectorAll('.port.out').forEach((el) => el.classList.remove('active'));
+    }
+
+    function edgeKey(edge) {
+      return `${edge.src}|${edge.dst}|${edge.srcChannel}|${edge.dstChannel}`;
+    }
+
+    function hasEdge(edge) {
+      const key = edgeKey(edge);
+      return state.edges.some((e) => edgeKey(e) === key);
+    }
+
+    function findEdgeIndex(edge) {
+      const key = edgeKey(edge);
+      return state.edges.findIndex((e) => edgeKey(e) === key);
+    }
+
+    function addEdge(edge) {
+      const existingIdx = findEdgeIndex(edge);
+      if (existingIdx >= 0) {
+        if (state.edgeDeleteEnabled) {
+          removeEdge(existingIdx);
+          setStatus('existing route removed', 'ok');
+          clearOutputSelection();
+          return;
+        }
+        setStatus('route already exists', 'warn');
+        return;
+      }
+      state.edges.push(edge);
+      renderGraph();
+      setStatus('route added (not saved yet)', 'ok');
+    }
+
+    function removeEdge(index) {
+      if (index < 0 || index >= state.edges.length) {
+        return;
+      }
+      state.edges.splice(index, 1);
+      renderGraph();
+      setStatus('route removed (not saved yet)', 'ok');
+    }
+
+    function parseRoutingText(text) {
+      const edges = [];
+      for (const rawLine of text.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('#')) continue;
+        if (!line.startsWith('edge=')) continue;
+
+        const fields = line.slice(5).split(',').map((s) => s.trim());
+        if (fields.length !== 4) continue;
+
+        const srcChannel = Number(fields[2]);
+        const dstChannel = Number(fields[3]);
+        if (Number.isNaN(srcChannel) || Number.isNaN(dstChannel) || srcChannel < 0 || dstChannel < 0) {
+          continue;
+        }
+
+        edges.push({
+          src: fields[0],
+          dst: fields[1],
+          srcChannel,
+          dstChannel,
+        });
+      }
+      return edges;
+    }
+
+    function formatRoutingText() {
+      const out = ['# audiox routing v1'];
+      for (const edge of state.edges) {
+        out.push(`edge=${edge.src},${edge.dst},${edge.srcChannel},${edge.dstChannel}`);
+      }
+      out.push('');
+      return out.join('\n');
+    }
+
+    function portLocator(nodeId, dir, ch) {
+      return `[data-port="${nodeId}:${dir}:${ch}"]`;
+    }
+
+    function renderEdgesList() {
+      edgeListEl.innerHTML = '';
+      if (!state.edges.length) {
+        edgeListEl.textContent = 'no routes';
+        return;
+      }
+
+      state.edges.forEach((edge, idx) => {
+        const row = document.createElement('div');
+        row.className = 'edge-item';
+
+        const txt = document.createElement('div');
+        txt.textContent = `${edge.src}[${edge.srcChannel}] -> ${edge.dst}[${edge.dstChannel}]`;
+
+        const btn = document.createElement('button');
+        btn.textContent = 'remove';
+        btn.addEventListener('click', () => removeEdge(idx));
+
+        row.appendChild(txt);
+        row.appendChild(btn);
+        edgeListEl.appendChild(row);
+      });
+    }
+
+    function beginNodeDrag(ev, nodeId) {
+      const pos = state.positions[nodeId];
+      if (!pos) {
+        return;
+      }
+
+      const graph = graphCoordsFromClient(ev.clientX, ev.clientY);
+      state.draggingNode = nodeId;
+      state.dragOffsetX = graph.x - pos.x;
+      state.dragOffsetY = graph.y - pos.y;
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+
+    function moveNodeDrag(ev) {
+      if (!state.draggingNode) {
+        return false;
+      }
+
+      const graph = graphCoordsFromClient(ev.clientX, ev.clientY);
+      const nodeId = state.draggingNode;
+      state.positions[nodeId] = {
+        x: Math.round(graph.x - state.dragOffsetX),
+        y: Math.round(graph.y - state.dragOffsetY),
+      };
+
+      const nodeEl = nodesEl.querySelector(`.node[data-node-id="${nodeId}"]`);
+      if (nodeEl) {
+        nodeEl.style.left = `${state.positions[nodeId].x}px`;
+        nodeEl.style.top = `${state.positions[nodeId].y}px`;
+      }
+
+      renderLinks();
+      return true;
+    }
+
+    function endNodeDrag() {
+      state.draggingNode = null;
+    }
+
+    function renderNodes() {
+      nodesEl.innerHTML = '';
+
+      for (const node of state.nodes) {
+        const wrap = document.createElement('div');
+        wrap.className = 'node';
+        wrap.dataset.nodeId = node.id;
+        const pos = state.positions[node.id] || { x: 20, y: 20 };
+        wrap.style.left = `${pos.x}px`;
+        wrap.style.top = `${pos.y}px`;
+
+        const head = document.createElement('div');
+        head.className = 'headbar';
+        head.innerHTML = `<strong>${node.label}</strong><span class="kind">thing</span>`;
+        head.addEventListener('mousedown', (ev) => beginNodeDrag(ev, node.id));
+
+        const ports = document.createElement('div');
+        ports.className = 'ports';
+
+        const inCol = document.createElement('div');
+        inCol.className = 'col';
+        const outCol = document.createElement('div');
+        outCol.className = 'col';
+
+        for (let ch = 0; ch < node.inputs; ch += 1) {
+          const pin = document.createElement('div');
+          pin.className = 'port in';
+          pin.dataset.port = `${node.id}:in:${ch}`;
+          pin.innerHTML = `<span class="dot in"></span><span>in ${ch + 1}</span>`;
+          pin.addEventListener('click', () => {
+            if (!state.selectedOut) return;
+            addEdge({
+              src: state.selectedOut.nodeId,
+              dst: node.id,
+              srcChannel: state.selectedOut.channel,
+              dstChannel: ch,
+            });
+            clearOutputSelection();
+          });
+          inCol.appendChild(pin);
+        }
+
+        for (let ch = 0; ch < node.outputs; ch += 1) {
+          const pout = document.createElement('div');
+          pout.className = 'port out';
+          pout.dataset.port = `${node.id}:out:${ch}`;
+          pout.innerHTML = `<span>out ${ch + 1}</span><span class="dot out"></span>`;
+          pout.addEventListener('click', () => {
+            clearOutputSelection();
+            state.selectedOut = { nodeId: node.id, channel: ch };
+            pout.classList.add('active');
+          });
+          outCol.appendChild(pout);
+        }
+
+        ports.appendChild(inCol);
+        ports.appendChild(outCol);
+        wrap.appendChild(head);
+        wrap.appendChild(ports);
+        nodesEl.appendChild(wrap);
+      }
+
+      applyViewportTransform();
+    }
+
+    function getPortCenter(nodeId, dir, ch) {
+      const el = document.querySelector(portLocator(nodeId, dir, ch));
+      if (!el) return null;
+      const wrapRect = graphWrapEl.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      return {
+        x: (r.left - wrapRect.left) + (r.width / 2),
+        y: (r.top - wrapRect.top) + (r.height / 2),
+      };
+    }
+
+    function renderLinks() {
+      linksEl.innerHTML = '';
+
+      state.edges.forEach((edge, idx) => {
+        const a = getPortCenter(edge.src, 'out', edge.srcChannel);
+        const b = getPortCenter(edge.dst, 'in', edge.dstChannel);
+        if (!a || !b) return;
+
+        const c = Math.max(60, Math.abs(b.x - a.x) * 0.4);
+        const d = `M ${a.x},${a.y} C ${a.x + c},${a.y} ${b.x - c},${b.y} ${b.x},${b.y}`;
+
+        const visual = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        visual.setAttribute('d', d);
+        visual.setAttribute('class', 'edge-line');
+
+        const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        hit.setAttribute('d', d);
+        hit.setAttribute('class', 'edge-hit');
+
+        const p0x = a.x;
+        const p0y = a.y;
+        const p1x = a.x + c;
+        const p1y = a.y;
+        const p2x = b.x - c;
+        const p2y = b.y;
+        const p3x = b.x;
+        const p3y = b.y;
+        const t = 0.5;
+        const it = 1 - t;
+        const midX = (it * it * it * p0x) + (3 * it * it * t * p1x) + (3 * it * t * t * p2x) + (t * t * t * p3x);
+        const midY = (it * it * it * p0y) + (3 * it * it * t * p1y) + (3 * it * t * t * p2y) + (t * t * t * p3y);
+
+        const delBtn = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        delBtn.setAttribute('class', 'edge-del-btn');
+        delBtn.setAttribute('cx', String(midX));
+        delBtn.setAttribute('cy', String(midY));
+        delBtn.setAttribute('r', '8');
+        delBtn.style.display = state.edgeDeleteEnabled ? 'block' : 'none';
+
+        const delLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        delLabel.setAttribute('class', 'edge-del-label');
+        delLabel.setAttribute('x', String(midX));
+        delLabel.setAttribute('y', String(midY + 0.5));
+        delLabel.textContent = 'x';
+        delLabel.style.display = state.edgeDeleteEnabled ? 'block' : 'none';
+
+        hit.addEventListener('mouseenter', () => {
+          visual.classList.add('hot');
+        });
+
+        hit.addEventListener('mouseleave', () => {
+          visual.classList.remove('hot');
+        });
+
+        hit.addEventListener('click', () => {
+          if (!state.edgeDeleteEnabled) {
+            setStatus('line delete is disabled. toggle Delete Lines to ON.', 'warn');
+            return;
+          }
+          removeEdge(idx);
+        });
+
+        hit.addEventListener('mousedown', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+        });
+
+        hit.addEventListener('pointerdown', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+        });
+
+        delBtn.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          removeEdge(idx);
+        });
+
+        delBtn.addEventListener('mousedown', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+        });
+
+        delBtn.addEventListener('pointerdown', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+        });
+
+        linksEl.appendChild(visual);
+        linksEl.appendChild(hit);
+        linksEl.appendChild(delBtn);
+        linksEl.appendChild(delLabel);
+      });
+    }
+
+    function renderGraph() {
+      renderNodes();
+      renderEdgesList();
+      renderLinks();
+    }
+
+    async function loadRoutingFile() {
+      setStatus('loading routing...');
+      try {
+        const res = await fetch(routingPath, { method: 'GET' });
+        const txt = await res.text();
+        if (!res.ok) {
+          state.edges = [];
+          renderGraph();
+          setStatus('routing file missing, starting empty', 'warn');
+          return;
+        }
+
+        state.edges = parseRoutingText(txt);
+        renderGraph();
+        setStatus('routing loaded', 'ok');
+      } catch (err) {
+        setStatus(`routing load error: ${err}`, 'warn');
+      }
+    }
+
+    async function saveRouting() {
+      setStatus('saving routing...');
+      try {
+        const res = await fetch(routingPath, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'text/plain' },
+          body: formatRoutingText(),
+        });
+        const txt = await res.text();
+        if (!res.ok) {
+          setStatus(`routing save failed: ${res.status} ${txt.trim()}`, 'warn');
+          return false;
+        }
+
+        const reloaded = await reloadRoutingFast();
+        if (!reloaded) {
+          return false;
+        }
+
+        setStatus('routing saved and reloaded', 'ok');
+        return true;
+      } catch (err) {
+        setStatus(`routing save error: ${err}`, 'warn');
+        return false;
+      }
+    }
+
+    function beginPan(ev) {
+      if (ev.button !== 0) {
+        return;
+      }
+
+      const target = ev.target;
+      if (target instanceof Element && (
+        target.closest('.node') ||
+        target.closest('.edge-hit') ||
+        target.closest('.edge-del-btn') ||
+        target.closest('.edge-line') ||
+        target.closest('button')
+      )) {
+        return;
+      }
+      state.panning = true;
+      graphWrapEl.classList.add('panning');
+      state.panStartX = ev.clientX;
+      state.panStartY = ev.clientY;
+      state.panOriginX = state.panX;
+      state.panOriginY = state.panY;
+      ev.preventDefault();
+    }
+
+    function movePan(ev) {
+      if (moveNodeDrag(ev)) {
+        return;
+      }
+      if (!state.panning) {
+        return;
+      }
+      const dx = ev.clientX - state.panStartX;
+      const dy = ev.clientY - state.panStartY;
+      state.panX = state.panOriginX + dx;
+      state.panY = state.panOriginY + dy;
+      applyViewportTransform();
+      renderLinks();
+    }
+
+    function endPan() {
+      endNodeDrag();
+      if (!state.panning) {
+        return;
+      }
+      state.panning = false;
+      graphWrapEl.classList.remove('panning');
+    }
+
+    function onGraphWheel(ev) {
+      ev.preventDefault();
+      const step = ev.deltaY < 0 ? 1.1 : 0.9;
+      setZoom(state.scale * step, ev.clientX, ev.clientY);
+    }
+
+    function setEdgeDeleteMode(enabled) {
+      state.edgeDeleteEnabled = !!enabled;
+      const btn = document.getElementById('btn-edge-delete-mode');
+      btn.textContent = `Delete Lines: ${state.edgeDeleteEnabled ? 'ON' : 'OFF'}`;
+      btn.classList.toggle('warn', state.edgeDeleteEnabled);
+      btn.classList.toggle('primary', !state.edgeDeleteEnabled);
+      renderLinks();
+    }
+
+    async function initializeGraphFromConfig() {
+      await loadConfig();
+      await listSfxFiles();
+      await loadMappings();
+      await loadRoutingThings();
+      await loadRoutingFile();
+      renderGraph();
+      updateZoomLabel();
+      setEdgeDeleteMode(true);
+      setMappingMode(false);
+    }
+
+    tabsEl.querySelectorAll('.tab-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
-        triggerSlot(btn.dataset.slot);
+        setActiveTab(btn.dataset.tab);
       });
     });
 
-    document.getElementById('btn-load').addEventListener('click', loadConfig);
-    document.getElementById('btn-save').addEventListener('click', saveConfig);
-    document.getElementById('btn-reload').addEventListener('click', reloadConfig);
+    document.getElementById('btn-load').addEventListener('click', async () => {
+      const cfg = await loadConfig();
+      if (cfg) {
+        await loadRoutingThings();
+        renderGraph();
+      }
+    });
 
-    loadConfig();
+    document.getElementById('btn-save').addEventListener('click', async () => {
+      const ok = await saveConfig();
+      if (ok) {
+        await loadRoutingThings();
+        await loadRoutingFile();
+      }
+    });
+
+    document.getElementById('btn-reload').addEventListener('click', async () => {
+      const ok = await reloadConfig();
+      if (ok) {
+        await loadRoutingThings();
+        await loadRoutingFile();
+      }
+    });
+
+    document.getElementById('btn-route-save').addEventListener('click', saveRouting);
+
+    document.getElementById('btn-edge-delete-mode').addEventListener('click', () => {
+      setEdgeDeleteMode(!state.edgeDeleteEnabled);
+    });
+
+    document.getElementById('btn-zoom-in').addEventListener('click', () => {
+      setZoom(state.scale * 1.15);
+    });
+
+    document.getElementById('btn-zoom-out').addEventListener('click', () => {
+      setZoom(state.scale * 0.87);
+    });
+
+    document.getElementById('btn-zoom-reset').addEventListener('click', () => {
+      setZoom(1);
+    });
+
+    graphWrapEl.addEventListener('mousedown', beginPan);
+    graphWrapEl.addEventListener('wheel', onGraphWheel, { passive: false });
+    window.addEventListener('mousemove', movePan);
+    window.addEventListener('mouseup', endPan);
+    graphWrapEl.addEventListener('mouseleave', endPan);
+
+    window.addEventListener('resize', renderLinks);
+
+    document.getElementById('btn-upload-real').addEventListener('click', uploadSfxFile);
+
+    document.getElementById('btn-upload-clear').addEventListener('click', () => {
+      document.getElementById('upload_slot').value = '0';
+      document.getElementById('upload_name').value = '';
+      document.getElementById('upload_file').value = '';
+      setStatus('upload form cleared');
+    });
+
+    document.getElementById('btn-mapping-mode').addEventListener('click', () => {
+      setMappingMode(!state.mappingMode);
+    });
+
+    document.getElementById('btn-mapping-refresh').addEventListener('click', async () => {
+      await listSfxFiles();
+      await loadMappings();
+      setStatus('mapping data refreshed', 'ok');
+    });
+
+    document.getElementById('btn-mapping-save').addEventListener('click', saveMapping);
+    document.getElementById('btn-mapping-delete').addEventListener('click', deleteMapping);
+
+    document.getElementById('btn-system-sync').addEventListener('click', async () => {
+      await runSystemAction('/api/system/sync', 'sync');
+    });
+
+    document.getElementById('btn-system-restart').addEventListener('click', async () => {
+      await runSystemAction('/api/system/restart', 'restart');
+    });
+
+    document.getElementById('btn-system-shutdown').addEventListener('click', async () => {
+      await runSystemAction('/api/system/shutdown', 'shutdown');
+    });
+
+    initializeGraphFromConfig();
+    loadVersion();
   </script>
 </body>
 </html>

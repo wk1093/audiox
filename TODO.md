@@ -1,62 +1,39 @@
 # TODO
 
-This is the rough plan for audiox. Not fancy. Just the stuff I need to get done before the good part starts working.
+Roadmap for future audiox development.
 
-## Right now
+## v1.0.0 - Complete ✓
 
-- Clean up the audio path so it is actually ready for routing instead of just playing one-off voices
-- Keep the hot path tight: fixed buffers, no dumb allocations, no weird locks if I can avoid them
-- Add a real internal routing model so "virtual wires" are not a future panic attack
-- Make the config side simple enough that I can edit it by hand without hating myself
-- AUDIO CRACKLING FIX: drift-aware resampling (adaptive SRC based on ring fill level)
+- [x] Real-time audio engine with ALSA capture/playback
+- [x] USB UAC2 gadget (bidirectional audio)
+- [x] Framebuffer UI with touch + MIDI input + level metering
+- [x] HTTP API (config, routing, file upload, sync/restart/shutdown)
+- [x] MIDI note-to-SFX mapping
+- [x] Soundboard with file-based clip slots
+- [x] USB microphone input support
+- [x] Gadget audio I/O with proper gain control
+- [x] CPU/RAM metrics display on fbui
+
+## Next Steps - v1.1+
+
+- Improve soundboard UI to be more usable and less confusing
+- Make soundboard MIDI mapping more flexible
+- Make soundboard able to output midi as well to display lights on a connected controller
+- Volume sliders for all devices, with proper gain control for USB gadget input
+
+## Later - v1.2+
+
+- Add audio effects (reverb, delay, etc) to the audio engine, and make it so they can be routed to any output, and have their parameters controlled via the HTTP API as well as bindable MIDI CCs and buttons (for toggling effects on/off)
+- Add a static ffmpeg build to the initramfs so that uploaded audio files can be converted to wav (which I can easily parse and play)
+- Allow controlling routes with MIDI CCs and buttons
 
 ## Network + web control status
 
-- [x] USB NCM gadget link is up from init (usb0)
-- [x] Link-local static endpoint on Pi side with gratuitous ARP announce
-- [x] Basic HTTP server on port 80 in init runtime
-- [x] Static web page staged into initramfs (`/etc/www/index.html`)
-- [x] HTTP rootfs API: `GET/PUT /main/rootfs/<path>` mapped to `/audiox/<path>`
-- [x] Web soundboard trigger endpoint wired into runtime audio trigger path
 - [ ] Revisit temporary DHCP for better host plug-and-play on Linux
 - [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)
-- [ ] Expand web UI from test page into real config + soundboard control panel + soundboard upload + midi assignment to soundboard slots + routing view + status view + log view
-
-## Audio refactor phases
-
-- Phase 0 (in progress): split monolithic audio code into modules without changing behavior
-- Phase 1: replace render-path mutex reads with control snapshot swap
-- Phase 2: add routing model container + prevalidated execution order (linear path first)
-- Phase 3: move render path to node execution (same current audible result)
-- Phase 4: add first effect node contract + bypass + smoothed params
-- Phase 5: expose routing/effects params to config + touchscreen + MIDI
-
-### Phase 0 checklist
-
-- [x] Create modular headers under `include/audio/` and keep existing API stable
-- [x] Convert `include/audio_oss.h` to umbrella include
-- [x] Add placeholder router node/bus structs for future DAG work
-- [x] Move runtime control state toward snapshot-friendly layout (no behavior change yet)
-- [x] Verify build on debug profile
-- [x] Verify build on target cross-compile profile
-- [x] Example with rerouting a separate USB audio device (a usb mic) to the usb gadget output (this is the first real test of the routing model)
-
-## Next
-
-- Finish UI cleanup so the touchscreen shows routing, inputs, outputs, and status without being cluttered
-- Make web control panel useful enough for normal testing (voice buttons + config toggles + status)
-- Add board profiles for Pi 4 / Pi 5, with Pi 3 treated like a maybe-if-it-has-a-good-day option
-- Move model-specific stuff out of random places and into one obvious config/profile path
-- Keep audio + UI + config code separated enough that I can change one without breaking everything else
-
-## Later
-
-- Virtual audio cables in the UI
-- Mixer paths that can be patched like hardware
-- Effects control from touch and MIDI
-- Soundboard/preset loading from rootfs
-- Better desktop config tool if the touchscreen starts feeling too small for the job
-- Support multiple board sizes from the same software stack
+- [ ] Polish UI:
+  - [ ] Make svg connection nodes start at edge of device inside of under it, if a connection goes up or down it looks weird
+  - [ ] Make it so currently connected node channels are highlighted, and when selecting a node, anything it's connected to is highlighted extra/differently
 
 ## Hardware dream stuff
 

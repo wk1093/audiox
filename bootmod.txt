@@ -1,0 +1,13 @@
+# Seed modules for the tiny bootloader initramfs.
+# Keep this list focused on storage and filesystems needed to promote staged runtime updates.
+
+# MMC / SD card host drivers commonly used on Raspberry Pi boards
+base: drivers/mmc/host/sdhci
+base: drivers/mmc/host/sdhci-iproc
+base: drivers/mmc/host/bcm2835
+base: drivers/mmc/host/bcm2835-mmc
+
+# Filesystems for boot and rootfs partitions
+base: fs/fat/fat
+base: fs/fat/vfat
+base: fs/ext4/ext4

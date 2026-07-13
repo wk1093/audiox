@@ -1,23 +1,33 @@
-# audiox
+# audiox - v1.0.0
 
 `audiox` is a custom Raspberry Pi audio workstation project that combines a low-level initramfs software stack with a long-term plan for purpose-built audio hardware.
 
-Right now it boots straight into a custom `init` process, brings up a USB UAC2 gadget, plays local WAV voices, and renders touchscreen + MIDI control; long term the same software will drive multiple reverse-HAT board variants with patchable analog/digital routing, effects, and persistent user configuration.
+Right now it boots through a tiny custom bootloader initramfs into a separate runtime initramfs, brings up a USB UAC2 gadget, plays local WAV voices, routes audio with real-time metering, and renders touchscreen + MIDI control with a responsive framebuffer UI; long term the same software will drive multiple reverse-HAT board variants with patchable analog/digital routing, effects, and persistent user configuration.
 
 ## What it does
 
-- Loads the required kernel modules from `/etc/module-load.list`
-- Configures a USB audio gadget through ConfigFS
+- Loads boot-critical modules first from `/etc/module-load.base.list`, then normal modules from `/etc/module-load.normal.list`
+- Keeps a compatibility combined list at `/etc/module-load.list`
+- Uses a two-stage ramfs layout: `initramfs.cpio.gz` bootloader plus `program.cpio.gz` runtime
+- Bootloader stages its own storage/filesystem modules from `bootmod.txt`
+- Configures a USB audio gadget through ConfigFS with bidirectional capture/playback
 - Configures a USB NCM network gadget (`usb0`) for host<->Pi control traffic
-- Starts audio playback in a dedicated audio thread
-- Polls touch + MIDI input and renders a framebuffer UI
-- Stores a simple config flag at `/audiox/config.txt`
-- Runs a basic HTTP server on port 80 for early web tooling
+- Dedicates a real-time audio thread (SCHED_FIFO) for low-latency capture/playback processing
+- Routes audio between capture devices, effects, and playback sinks with live-metering
+- Polls touch + MIDI input and renders a responsive framebuffer UI with CPU/RAM metrics
+- Stores config at `/audiox/config.txt`
+- Runs a basic HTTP server on port 80 for web tooling
 - Serves a static page from `/etc/www/index.html`
+- Accepts firmware updates with `PUT /api/initram`, stages a new `program.cpio.gz`, reboots into the bootloader, promotes the staged image to the boot partition, and reboots again
 - Exposes basic rootfs file APIs over HTTP:
-	- `GET /main/rootfs/<path>` -> reads `/audiox/<path>`
-	- `PUT /main/rootfs/<path>` -> writes `/audiox/<path>`
+	- `GET /api/rootfs/<path>` -> reads `/audiox/<path>`
+	- `PUT /api/rootfs/<path>` -> writes `/audiox/<path>`
+- Exposes system control endpoints:
+	- `POST /api/system/sync` - flushes filesystem
+	- `POST /api/system/restart` - reboots
+	- `POST /api/system/shutdown` - powers off
 - Exposes a web soundboard trigger endpoint so web and MIDI can both trigger voices
+- Supports MIDI note-to-SFX mappings from config stored in `/audiox/config.txt` and targeting files in `/audiox/sfx/`
 
 ## Build
 
@@ -27,18 +37,26 @@ Main output is an initramfs image:
 make initramfs
 ```
 
+This produces two boot artifacts in `out/`:
+
+- `initramfs.cpio.gz` - tiny bootloader image loaded first
+- `program.cpio.gz` - main runtime image loaded second
+
 Useful targets:
 
 - `make show_kernel` - show detected kernel version
+- `make dev` - build runtime image, upload it over HTTP, then let the Pi reboot twice to install it
 - `make qemu` - boot in QEMU (aarch64) // doesn't work because qemu raspi support is very minimal (no gui, no USB, no audio)
 - `make fancyexport` - wait for SD mount and export build artifacts
 - `make image` - create a flashable image file
-- `make debug` - native x86_64 debug boot in QEMU // probably doesn't work anymore because of raspi-specific code
 
 ## Notes
 
 - Put `voice0.wav` ... `voice3.wav` in `wavs/`
-- This project is still rough around the edges, but it is usable for bring-up and iteration
+- Module seeds live in `depmod.txt`: use `base:` for early boot/UI-critical modules and `normal:` (or no prefix) for the rest
+- Bootloader-only storage/filesystem module seeds live in `bootmod.txt`
+- Default boot graphics stay on FKMS (`vc4-fkms-v3d-pi4`); framebuffer rendering stages into an off-screen buffer before presenting to reduce visual tearing without switching the display stack
+- v1.0.0 is a stable, working release with real-time audio processing, touchscreen UI, and HTTP control; the long-term vision includes hardware expansion and effects support
 
 Network currently requires this on linux host (sometimes, only tested on one machine):
 Either this on every time you plugin the Pi:
@@ -58,9 +76,12 @@ Quick endpoint examples (replace IP if needed):
 # static web page
 curl http://169.254.1.2/
 
+# upload a new runtime image; the Pi reboots into the bootloader, installs it, then reboots again
+curl --fail --show-error -X PUT --data-binary @out/program.cpio.gz http://169.254.1.2/api/initram
+
 # read/write config files via HTTP API
-curl http://169.254.1.2/main/rootfs/config.txt
-curl -X PUT --data-binary '1\n' http://169.254.1.2/main/rootfs/config.txt
+curl http://169.254.1.2/api/rootfs/config.txt
+curl -X PUT --data-binary '1\n' http://169.254.1.2/api/rootfs/config.txt
 
 # trigger soundboard slot 0 from web/API
 curl http://169.254.1.2/api/soundboard/trigger/0
@@ -74,6 +95,22 @@ usb_sample_size=2
 EOF
 curl -X POST http://169.254.1.2/api/config/reload
 ```
+
+MIDI mapping entries in `/audiox/config.txt`:
+
+```txt
+usb_sample_rate=44100
+usb_playback_channels=2
+usb_capture_channels=2
+usb_sample_size=2
+
+midi_map=36,kick.wav
+midi_map=38,snare.wav
+midi_map=42,hats/closed.wav
+```
+
+Each `midi_map` is `note_number,sfx_relative_path`.
+Relative paths resolve under `/audiox/sfx/`.
 
 
 ## Long-term vision

@@ -78,9 +78,21 @@ void FramebufferContext::drawImage(int x, int y, int w, int h, const unsigned ch
         ++pixel_data;
     }
 
-    for (int yy = 0; yy < img_h; ++yy) {
-        for (int xx = 0; xx < img_w; ++xx) {
-            int src_idx = (yy * img_w + xx) * 3;
+    // If w or h is 0, use original image dimensions
+    if (w <= 0) w = img_w;
+    if (h <= 0) h = img_h;
+
+    for (int yy = 0; yy < h; ++yy) {
+        for (int xx = 0; xx < w; ++xx) {
+            // Calculate source coordinates with nearest neighbor sampling
+            int src_x = (xx * img_w) / w;
+            int src_y = (yy * img_h) / h;
+            
+            // Clamp to image bounds
+            if (src_x >= img_w) src_x = img_w - 1;
+            if (src_y >= img_h) src_y = img_h - 1;
+            
+            int src_idx = (src_y * img_w + src_x) * 3;
             unsigned char r = pixel_data[src_idx];
             unsigned char g = pixel_data[src_idx + 1];
             unsigned char b = pixel_data[src_idx + 2];

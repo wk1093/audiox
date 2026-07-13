@@ -445,7 +445,7 @@ void FramebufferContext::drawBootLogo() {
     // fill bg with a nice gray color
     drawRect(0, 0, width, height, 8, 11, 16);
 
-    drawImage(x, y, img_w, img_h, (const unsigned char *)boot_logo_data);
+    drawImage(x, y, 0, 0, (const unsigned char *)boot_logo_data);
 }
 
 void FramebufferContext::bootStatus(const char *status) {
@@ -574,13 +574,13 @@ void FramebufferContext::drawMain(TouchState *touchState) {
 
     const int padding = 10;
     const int panelWidth = (int)width - (2 * padding);
-    const int statusHeight = 60;
+    const int logoHeight = 60;
     const int metricsHeight = 74;
     const int buttonHeight = 45;
     const int buttonCount = 3;
     const int gap = 10;
     const int buttonsY = (int)height - padding - buttonHeight;
-    const int metricsY = padding + statusHeight + gap;
+    const int metricsY = padding + logoHeight + gap;
     const int listY = metricsY + metricsHeight + gap;
     const int listHeight = buttonsY - gap - listY;
     const int headerHeight = 18;
@@ -588,15 +588,12 @@ void FramebufferContext::drawMain(TouchState *touchState) {
     AudioDeviceInfo deviceInfos[kMaxUiDevices];
     size_t deviceCount = 0;
     ConfigData liveCfg = {};
-    ConfigData stagedCfg = {};
-    int hasStagedCfg = RET_WARN;
     if (app && app->audio) {
         deviceCount = app->audio->copyDeviceInfos(deviceInfos, kMaxUiDevices);
         sortDeviceInfos(deviceInfos, deviceCount);
     }
     if (app && app->config) {
         liveCfg = app->config->readConfigFile();
-        hasStagedCfg = app->config->readStagingConfigFile(&stagedCfg);
     }
 
     int contentHeight = headerHeight + 8;
@@ -609,36 +606,31 @@ void FramebufferContext::drawMain(TouchState *touchState) {
     }
     updateScrollArea(deviceListScrollState, touchState, padding, listY, panelWidth, listHeight, maxScroll);
 
-    drawRect(padding, padding, panelWidth, statusHeight, 30, 40, 60);
-    drawRectBorder(this, padding, padding, panelWidth, statusHeight, 100, 140, 180, 1);
-    drawText(padding + 8, padding + 6, "audiox fbui", 210, 225, 240, 1);
-
-    char statusLine[96];
-    snprintf(statusLine,
-             sizeof(statusLine),
-             "devices %u | usb p%u c%u | touch %s",
-             (unsigned)deviceCount,
-             (unsigned)liveCfg.playbackChannels,
-             (unsigned)liveCfg.captureChannels,
-             (touchState && touchState->is_pressed) ? "down" : "idle");
-    drawText(padding + 8, padding + 22, statusLine, 150, 188, 228, 1);
-
-    char configLine[96];
-    if (hasStagedCfg == RET_OK) {
-        snprintf(configLine,
-                 sizeof(configLine),
-                 "staged p%u c%u rate %u",
-                 (unsigned)stagedCfg.playbackChannels,
-                 (unsigned)stagedCfg.captureChannels,
-                 (unsigned)stagedCfg.sampleRate);
-        drawText(padding + 8, padding + 38, configLine, 255, 198, 132, 1);
-    } else {
-        snprintf(configLine,
-                 sizeof(configLine),
-                 "live rate %u size %u",
-                 (unsigned)liveCfg.sampleRate,
-                 (unsigned)liveCfg.sampleSize);
-        drawText(padding + 8, padding + 38, configLine, 140, 164, 186, 1);
+    // Draw scaled boot logo in header area
+    drawRect(padding, padding, panelWidth, logoHeight, 15, 20, 30);
+    drawRectBorder(this, padding, padding, panelWidth, logoHeight, 60, 80, 110, 1);
+    
+    if (boot_logo_data) {
+        int img_w = 0;
+        int img_h = 0;
+        const char *pixel_data = (const char *)boot_logo_data;
+        if (sscanf(pixel_data, "P6\n%d %d\n255\n", &img_w, &img_h) == 2 && img_h > 0) {
+            // Scale to fit height perfectly with small margins
+            float scale = (float)(logoHeight - 4) / (float)img_h;
+            int scaled_w = (int)((float)img_w * scale);
+            int scaled_h = (int)((float)img_h * scale);
+            
+            // Ensure it fits within panel width
+            if (scaled_w > panelWidth - 8) {
+                scale = (float)(panelWidth - 8) / (float)img_w;
+                scaled_w = (int)((float)img_w * scale);
+                scaled_h = (int)((float)img_h * scale);
+            }
+            
+            int logo_x = padding + (panelWidth - scaled_w) / 2;
+            int logo_y = padding + (logoHeight - scaled_h) / 2;
+            drawImage(logo_x, logo_y, scaled_w, scaled_h, (const unsigned char *)boot_logo_data);
+        }
     }
 
     drawRect(padding, metricsY, panelWidth, metricsHeight, 25, 35, 50);
@@ -646,7 +638,8 @@ void FramebufferContext::drawMain(TouchState *touchState) {
     drawText(padding + 8, metricsY + 6, "system", 150, 188, 228, 1);
 
     const int metricBarX = padding + 52;
-    const int metricBarW = panelWidth - 120;
+    const int labelWidth = 75;
+    const int metricBarW = panelWidth - metricBarX - labelWidth - 12;
     const int cpuBarY = metricsY + 18;
     const int ramBarY = metricsY + 43;
     drawText(padding + 8, cpuBarY, "cpu", 200, 220, 255, 1);
@@ -666,8 +659,11 @@ void FramebufferContext::drawMain(TouchState *touchState) {
              "%3d%% %lluM",
              (int)(systemMetricsState.ramUsage * 100.0f + 0.5f),
              (unsigned long long)(systemMetricsState.memUsedKb / 1024ULL));
-    drawText(metricBarX + metricBarW + 6, cpuBarY, cpuLabel, 210, 225, 240, 1);
-    drawText(metricBarX + metricBarW + 6, ramBarY, ramLabel, 210, 225, 240, 1);
+    
+    // Right-align labels after the bar with a small gap
+    const int labelX = metricBarX + metricBarW + 8;
+    drawText(labelX, cpuBarY, cpuLabel, 210, 225, 240, 1);
+    drawText(labelX, ramBarY, ramLabel, 210, 225, 240, 1);
 
     drawRect(padding, listY, panelWidth, listHeight, 24, 31, 44);
     drawRectBorder(this, padding, listY, panelWidth, listHeight, 80, 120, 160, 1);

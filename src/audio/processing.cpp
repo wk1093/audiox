@@ -943,11 +943,23 @@ static void renderSourceNode(const AudioContext *ctx, RuntimeGraph *rt, uint16_t
         float fillRatio = (float)s.ringCount / (float)kCaptureRingFrames;
         float srcRatio = adaptiveSrcStep(&s.src, fillRatio);
 
+        // Check if this is a gadget device to apply gain
+        uint8_t isGadgetSource = 0;
+        if (ctx) {
+            for (const auto &dev : ctx->devices) {
+                if (dev.second.cardIndex == s.card && dev.second.deviceIndex == s.device && dev.second.hasCapture) {
+                    isGadgetSource = dev.second.isGadget;
+                    break;
+                }
+            }
+        }
+        float gainMultiplier = isGadgetSource ? USB_GADGET_IN_GAIN : 1.0f;
+
         for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
             if (s.ringCount == 0) {
                 for (uint8_t ch = 0; ch < outChannels; ++ch) {
                     uint8_t srcCh = (ch < s.channels) ? ch : 0;
-                    float out = s.lastSample[srcCh] * 5.0f;
+                    float out = s.lastSample[srcCh] * gainMultiplier;
                     if (out > 1.0f) out = 1.0f;
                     if (out < -1.0f) out = -1.0f;
                     rt->outputs[nodeIndex][ch][frame] = out;
@@ -960,7 +972,7 @@ static void renderSourceNode(const AudioContext *ctx, RuntimeGraph *rt, uint16_t
                     uint8_t srcCh = (ch < s.channels) ? ch : (uint8_t)(s.channels - 1U);
                     float a = (float)captureRingSample(s, aFrame, srcCh) / 32768.0f;
                     float b = (float)captureRingSample(s, bFrame, srcCh) / 32768.0f;
-                    float out = (a + ((b - a) * s.readFrac)) * 5.0f;
+                    float out = (a + ((b - a) * s.readFrac)) * gainMultiplier;
                     if (out > 1.0f) out = 1.0f;
                     if (out < -1.0f) out = -1.0f;
                     rt->outputs[nodeIndex][ch][frame] = out;

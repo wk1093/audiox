@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/reboot.h>
 #include <unistd.h>
 
 #define HTTP_BODY_MAX 49152
@@ -889,33 +890,39 @@ static int handleSystemSync(HttpServer *server,
 							int cfd,
 							const char *method,
 							const char *path) {
-	(void)server;
-	(void)cfd;
 	(void)method;
 	(void)path;
-	return RET_WARN;
+	sync();
+	static const char ok[] = "{\"status\":\"synced\"}\n";
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
 }
 
 static int handleSystemRestart(HttpServer *server,
 							   int cfd,
 							   const char *method,
 							   const char *path) {
-	(void)server;
-	(void)cfd;
 	(void)method;
 	(void)path;
-	return RET_WARN;
+	static const char ok[] = "{\"status\":\"restarting\"}\n";
+	int ret = server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
+	sync();
+	sleep(1);
+	reboot(RB_AUTOBOOT);
+	return ret;
 }
 
 static int handleSystemShutdown(HttpServer *server,
 								int cfd,
 								const char *method,
 								const char *path) {
-	(void)server;
-	(void)cfd;
 	(void)method;
 	(void)path;
-	return RET_WARN;
+	static const char ok[] = "{\"status\":\"shutting down\"}\n";
+	int ret = server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
+	sync();
+	sleep(1);
+	reboot(RB_POWER_OFF);
+	return ret;
 }
 
 static int handleVersion(HttpServer *server,

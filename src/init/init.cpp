@@ -113,6 +113,9 @@ int main() {
     flushLogs();
     int logFlushCounter = 0;
     while (1) {
+        // nothing in this loop is super high-importance, so I am going to add a small delay to give the kernel 
+        // more of an opportunity to dedicate resources to audio processing.
+        usleep(10000); // 10ms
         if (++logFlushCounter >= 100) {
             flushLogs();
             logFlushCounter = 0;

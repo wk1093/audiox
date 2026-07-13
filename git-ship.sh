@@ -20,7 +20,9 @@ fi
 # 3. Force main to match dev
 echo "Merging 'dev' into 'main'..."
 git switch main
-git checkout dev -- . || exit 1
+git read-tree dev || exit 1
+git checkout-index -a -f || exit 1
+git clean -fd || exit 1
 git add -A || exit 1
 
 # 4. Commit and push

@@ -1,23 +1,16 @@
 CC = aarch64-linux-gnu-gcc
-CFLAGS = -static -O2 -Iold/include -Wall -Wextra -Werror -Wno-error=format-truncation -pthread -std=gnu11
+CFLAGS = -static -O2 -Wall -Wextra -Werror -Wno-error=format-truncation -pthread -std=gnu11
 CXX = aarch64-linux-gnu-g++
-CXXFLAGS = -static -O3 -Iinclude -Iold/include -Wall -Wextra -Werror -Wno-error=format-truncation -Wno-error=unused-parameter -pthread -fno-exceptions -fno-rtti -std=c++17
+CXXFLAGS = -static -O3 -Iinclude -Wall -Wextra -Werror -Wno-error=format-truncation -Wno-error=unused-parameter -pthread -fno-exceptions -fno-rtti -std=c++17
 LIBS = -lm -pthread
 
 # Recursive source discovery for upcoming C++ port.
 CPP_SRCS := $(shell find src -type f -name '*.cpp' 2>/dev/null)
 BOOTLOADER_SRC := src/init/bootloader.cpp
 RUNTIME_CPP_SRCS := $(filter-out $(BOOTLOADER_SRC),$(CPP_SRCS))
-
-ifeq ($(strip $(RUNTIME_CPP_SRCS)),)
-RUNTIME_SRCS := old/src/init.c
-RUNTIME_COMPILER := $(CC)
-RUNTIME_FLAGS := $(CFLAGS)
-else
 RUNTIME_SRCS := $(RUNTIME_CPP_SRCS)
 RUNTIME_COMPILER := $(CXX)
 RUNTIME_FLAGS := $(CXXFLAGS)
-endif
 
 BOOTLOADER_SRCS := $(BOOTLOADER_SRC)
 BOOTLOADER_COMPILER := $(CXX)

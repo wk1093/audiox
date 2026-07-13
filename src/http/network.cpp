@@ -177,7 +177,7 @@ void setupNetworkIp() {
     close(fd);
 }
 
-int setupNetworkInterface(Audiox *context) {
+int setupNetworkInterface(Audiox *) {
     for (int i = 0; i < 20; ++i) {
         if (isNetworkReady()) {
             setupNetworkIp();

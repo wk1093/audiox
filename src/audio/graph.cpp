@@ -42,6 +42,35 @@ static void trimSpace(char *text) {
     }
 }
 
+static void formatRouteParseError(char *errorOut,
+                                  size_t errorOutSize,
+                                  const char *prefix,
+                                  const char *route) {
+    if (!errorOut || errorOutSize == 0 || !prefix) {
+        return;
+    }
+
+    if (!route) {
+        snprintf(errorOut, errorOutSize, "%s", prefix);
+        return;
+    }
+
+    int prefixLen = snprintf(errorOut, errorOutSize, "%s: ", prefix);
+    if (prefixLen < 0 || (size_t)prefixLen >= errorOutSize) {
+        return;
+    }
+
+    size_t offset = (size_t)prefixLen;
+    size_t remaining = errorOutSize - offset;
+    if (remaining <= 1) {
+        return;
+    }
+
+    size_t routeLen = strnlen(route, remaining - 1);
+    memcpy(errorOut + offset, route, routeLen);
+    errorOut[offset + routeLen] = '\0';
+}
+
 static void appendThing(AudioGraphThingInfo *out,
                         size_t cap,
                         size_t *count,
@@ -103,7 +132,7 @@ static int parseRouteString(const char *route,
 
     if (fieldCount != 4 || strchr(fields[3], ',') != nullptr) {
         if (errorOut && errorOutSize > 0) {
-            snprintf(errorOut, errorOutSize, "bad route format: %s", route);
+            formatRouteParseError(errorOut, errorOutSize, "bad route format", route);
         }
         return RET_ERR;
     }
@@ -113,7 +142,7 @@ static int parseRouteString(const char *route,
     }
     if (!fields[0][0] || !fields[1][0]) {
         if (errorOut && errorOutSize > 0) {
-            snprintf(errorOut, errorOutSize, "missing route endpoint: %s", route);
+            formatRouteParseError(errorOut, errorOutSize, "missing route endpoint", route);
         }
         return RET_ERR;
     }
@@ -122,7 +151,7 @@ static int parseRouteString(const char *route,
     long srcChannel = strtol(fields[2], &endp, 10);
     if (!endp || *endp != '\0' || srcChannel < 0 || srcChannel > 255) {
         if (errorOut && errorOutSize > 0) {
-            snprintf(errorOut, errorOutSize, "invalid source channel: %s", route);
+            formatRouteParseError(errorOut, errorOutSize, "invalid source channel", route);
         }
         return RET_ERR;
     }
@@ -130,7 +159,7 @@ static int parseRouteString(const char *route,
     long dstChannel = strtol(fields[3], &endp, 10);
     if (!endp || *endp != '\0' || dstChannel < 0 || dstChannel > 255) {
         if (errorOut && errorOutSize > 0) {
-            snprintf(errorOut, errorOutSize, "invalid destination channel: %s", route);
+            formatRouteParseError(errorOut, errorOutSize, "invalid destination channel", route);
         }
         return RET_ERR;
     }

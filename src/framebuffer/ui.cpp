@@ -268,9 +268,7 @@ static inline void drawChannelMeterGroup(FramebufferContext *fb,
                                          int channelCount,
                                          const char *label,
                                          AudioHandle handle,
-                                         int deviceIndex,
                                          int isCapture,
-                                         uint64_t nowMs,
                                          unsigned char fillR,
                                          unsigned char fillG,
                                          unsigned char fillB) {
@@ -675,7 +673,6 @@ void FramebufferContext::drawMain(TouchState *touchState) {
     const int meterW = 132;
     const int rowTextW = listInnerW - meterW - 16;
     const int maxNameChars = rowTextW / 8;
-    const uint64_t nowMs = uiMonotonicMs();
 
     if (deviceCount == 0) {
         drawText(listInnerX, listInnerY + 10, "No audio devices found.", 190, 205, 220, 1);
@@ -738,9 +735,7 @@ void FramebufferContext::drawMain(TouchState *touchState) {
                                   playbackCount,
                                   captureCount > 0 ? "out" : "play",
                                   deviceInfos[i].handle,
-                                  (int)i,
                                   0,
-                                  nowMs,
                                   230,
                                   148,
                                   58);
@@ -754,9 +749,7 @@ void FramebufferContext::drawMain(TouchState *touchState) {
                                   captureCount,
                                   playbackCount > 0 ? "in" : "cap",
                                   deviceInfos[i].handle,
-                                  (int)i,
                                   1,
-                                  nowMs,
                                   66,
                                   190,
                                   180);

@@ -36,7 +36,6 @@ const state = {
   graph: null,
   graphCanvas: null,
   nodeByThingId: new Map(),
-  nextMixerId: 1,
   suspendGraphSync: false,
   internalGraphMutation: false,
 };
@@ -218,7 +217,7 @@ function renderEdgesList() {
     row.appendChild(txt);
     row.appendChild(btn);
     row.addEventListener('click', () => {
-      state.selectedEdgeIdx = idx;
+      state.selectedEdgeIdx = (state.selectedEdgeIdx === idx) ? -1 : idx;
       renderEdgesList();
       renderInspector();
     });
@@ -232,29 +231,8 @@ function normalizeThingId(v) {
   return String(v || '').trim();
 }
 
-function isMixerNode(node) {
-  return String(node?.properties?.nodeKind || '') === 'mixer';
-}
-
 function isDeviceNode(node) {
   return String(node?.properties?.nodeKind || '') === 'device';
-}
-
-function newMixerThingId() {
-  const id = `mixer_${state.nextMixerId}`;
-  state.nextMixerId += 1;
-  return id;
-}
-
-function bumpNextMixerIdFromThingId(thingId) {
-  const m = /^mixer_(\d+)$/.exec(String(thingId || ''));
-  if (!m) {
-    return;
-  }
-  const n = Number(m[1]);
-  if (Number.isFinite(n) && n >= state.nextMixerId) {
-    state.nextMixerId = n + 1;
-  }
 }
 
 function shortNodeTitle(label) {
@@ -280,57 +258,15 @@ function getInputChannelFromSlot(node, slot) {
   return Number(slot);
 }
 
-function getOrCreateInputSlotForChannel(node, channel) {
-  if (!node || !Array.isArray(node.inputs) || !Array.isArray(node._inputChannelBySlot)) {
-    return channel;
-  }
-
-  for (let i = 0; i < node.inputs.length; i += 1) {
-    if (node._inputChannelBySlot[i] === channel && node.inputs[i]?.link == null) {
-      return i;
-    }
-  }
-
-  node.addInput(`in ${channel + 1}`, 'audio');
-  node._inputChannelBySlot.push(channel);
-  return node.inputs.length - 1;
+function getOutputChannelCount(node) {
+  return Array.isArray(node?.outputs) ? node.outputs.length : 0;
 }
 
-function collectUpstreamSources(node, slotIndex, visitedLinks = new Set()) {
-  if (!node || !Array.isArray(node.inputs) || slotIndex < 0 || slotIndex >= node.inputs.length) {
-    return [];
+function getInputChannelCount(node) {
+  if (Number.isFinite(Number(node?._baseInputCount))) {
+    return Number(node._baseInputCount);
   }
-
-  const linkId = node.inputs[slotIndex]?.link;
-  if (linkId == null || visitedLinks.has(linkId)) {
-    return [];
-  }
-  visitedLinks.add(linkId);
-
-  const link = state.graph?.links?.[linkId];
-  if (!link) {
-    return [];
-  }
-
-  const srcNode = state.graph.getNodeById(link.origin_id);
-  if (!srcNode) {
-    return [];
-  }
-
-  if (isMixerNode(srcNode)) {
-    const out = [];
-    for (let i = 0; i < (srcNode.inputs?.length || 0); i += 1) {
-      const nested = collectUpstreamSources(srcNode, i, visitedLinks);
-      out.push(...nested);
-    }
-    return out;
-  }
-
-  const srcThingId = normalizeThingId(srcNode.properties?.thingId);
-  if (!srcThingId) {
-    return [];
-  }
-  return [{ src: srcThingId, srcChannel: Number(link.origin_slot) }];
+  return Array.isArray(node?.inputs) ? node.inputs.length : 0;
 }
 
 function syncEdgesFromGraph() {
@@ -344,34 +280,41 @@ function syncEdgesFromGraph() {
 
   const next = [];
   const seen = new Set();
-  for (const node of state.graph._nodes || []) {
-    if (!node || isMixerNode(node)) {
+  for (const edge of state.edges) {
+    const srcNode = state.nodeByThingId.get(edge.src);
+    const dstNode = state.nodeByThingId.get(edge.dst);
+    if (!srcNode || !dstNode) {
       continue;
     }
 
-    const dst = normalizeThingId(node.properties?.thingId);
-    if (!dst) {
+    const srcChannel = Number(edge.srcChannel);
+    const dstChannel = Number(edge.dstChannel);
+    if (!Number.isFinite(srcChannel) || !Number.isFinite(dstChannel)) {
+      continue;
+    }
+    if (srcChannel < 0 || srcChannel >= getOutputChannelCount(srcNode)) {
+      continue;
+    }
+    if (dstChannel < 0 || dstChannel >= getInputChannelCount(dstNode)) {
       continue;
     }
 
-    for (let slot = 0; slot < (node.inputs?.length || 0); slot += 1) {
-      const dstChannel = getInputChannelFromSlot(node, slot);
-      const upstream = collectUpstreamSources(node, slot, new Set());
-      for (const srcInfo of upstream) {
-        const edge = {
-          src: srcInfo.src,
-          dst,
-          srcChannel: srcInfo.srcChannel,
-          dstChannel,
-        };
-        const key = edgeKey(edge);
-        if (seen.has(key)) {
-          continue;
-        }
-        seen.add(key);
-        next.push(edge);
-      }
+    const normalized = {
+      src: normalizeThingId(edge.src),
+      dst: normalizeThingId(edge.dst),
+      srcChannel,
+      dstChannel,
+    };
+    if (!normalized.src || !normalized.dst) {
+      continue;
     }
+
+    const key = edgeKey(normalized);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    next.push(normalized);
   }
 
   next.sort((a, b) => edgeKey(a).localeCompare(edgeKey(b)));
@@ -385,6 +328,30 @@ function syncEdgesFromGraph() {
   }
 
   renderEdgesList();
+  state.graphCanvas.setDirty(true, true);
+}
+
+function addEdgeFromConnection(srcNode, srcSlot, dstNode, dstSlot) {
+  const src = normalizeThingId(srcNode?.properties?.thingId);
+  const dst = normalizeThingId(dstNode?.properties?.thingId);
+  const srcChannel = Number(srcSlot);
+  const dstChannel = Number(getInputChannelFromSlot(dstNode, dstSlot));
+
+  if (!src || !dst || !Number.isFinite(srcChannel) || !Number.isFinite(dstChannel)) {
+    return false;
+  }
+
+  const edge = { src, dst, srcChannel, dstChannel };
+  if (findEdgeIndex(edge) >= 0) {
+    setStatus('route already exists', 'warn');
+    return false;
+  }
+
+  state.edges.push(edge);
+  syncEdgesFromGraph();
+  renderEdgesList();
+  setStatus('route added (not saved yet)', 'ok');
+  return true;
 }
 
 function getViewCenterGraphCoords() {
@@ -403,124 +370,6 @@ function getViewCenterGraphCoords() {
     ((graphCanvasEl.width * 0.5) - offset[0]) / scale,
     ((graphCanvasEl.height * 0.5) - offset[1]) / scale,
   ];
-}
-
-function mixerHeightForInputs(count) {
-  const n = Math.max(1, Number(count) || 1);
-  return Math.max(84, 54 + (n * 22));
-}
-
-function resizeMixerNode(node) {
-  if (!node) {
-    return;
-  }
-  const inputCount = Array.isArray(node.inputs) ? node.inputs.length : 0;
-  node.size = [220, mixerHeightForInputs(inputCount)];
-}
-
-function setMixerInputCount(node, desiredCount) {
-  if (!node) {
-    return;
-  }
-
-  const target = Math.max(1, Math.min(16, Math.round(Number(desiredCount) || 1)));
-  if (!Array.isArray(node._inputChannelBySlot)) {
-    node._inputChannelBySlot = [];
-  }
-
-  while ((node.inputs?.length || 0) < target) {
-    const idx = (node.inputs?.length || 0);
-    node.addInput(`in ${idx + 1}`, 'audio');
-    node._inputChannelBySlot.push(node._inputChannelBySlot.length);
-  }
-
-  while ((node.inputs?.length || 0) > target) {
-    const idx = node.inputs.length - 1;
-    const slot = node.inputs[idx];
-    if (slot?.link != null && node.graph) {
-      node.graph.removeLink(slot.link);
-    }
-    node.removeInput(idx);
-    node._inputChannelBySlot.pop();
-  }
-
-  node.properties.input_count = target;
-  resizeMixerNode(node);
-  if (node.graph) {
-    node.graph.setDirtyCanvas(true, true);
-  }
-}
-
-function ensureMixerWidget(node) {
-  if (!node) {
-    return;
-  }
-  if (!Array.isArray(node.widgets)) {
-    node.widgets = [];
-  }
-  const normalized = String(Math.max(1, Math.round(Number(node.properties?.input_count || 2))));
-
-  const idx = node.widgets.findIndex((w) => w && w.name === 'inputs');
-  if (idx >= 0) {
-    node.widgets.splice(idx, 1);
-  }
-
-  node.addWidget('text', 'inputs', normalized, (value) => {
-    const raw = String(value || '').trim();
-    const parsed = Math.max(1, Math.min(16, Math.round(Number(raw) || 1)));
-    const widget = node.widgets?.find((w) => w && w.name === 'inputs');
-    if (widget) {
-      widget.value = String(parsed);
-    }
-    setMixerInputCount(node, parsed);
-    syncEdgesFromGraph();
-  });
-}
-
-function configureMixerNode(node, thingId = null) {
-  const id = thingId || newMixerThingId();
-  bumpNextMixerIdFromThingId(id);
-
-  node.title = shortNodeTitle(`mixer ${id.split('_').pop()}`);
-  node.size = [220, 84];
-  node.properties = { thingId: id, nodeKind: 'mixer' };
-  if (!Number.isFinite(Number(node.properties.input_count))) {
-    node.properties.input_count = Math.max(2, node.inputs?.length || 2);
-  }
-  node.removable = true;
-
-  if (!Array.isArray(node.inputs)) {
-    node.inputs = [];
-  }
-  if (!Array.isArray(node.outputs)) {
-    node.outputs = [];
-  }
-
-  if (!Array.isArray(node._inputChannelBySlot)) {
-    node._inputChannelBySlot = [];
-  }
-
-  if (!node.inputs.length) {
-    node.addInput('in 1', 'audio');
-  }
-  if (!node.outputs.length) {
-    node.addOutput('out 1', 'audio');
-  }
-
-  while (node._inputChannelBySlot.length < node.inputs.length) {
-    node._inputChannelBySlot.push(node._inputChannelBySlot.length);
-  }
-
-  ensureMixerWidget(node);
-  setMixerInputCount(node, node.properties.input_count || node.inputs.length || 2);
-
-  node.onConnectionsChange = function() {
-    if (!state.suspendGraphSync) {
-      syncEdgesFromGraph();
-    }
-  };
-
-  return node;
 }
 
 function resizeRoutingCanvas() {
@@ -588,14 +437,14 @@ function distToSegment(px, py, ax, ay, bx, by) {
 }
 
 function linkDistance(link, x, y) {
-  const srcNode = state.graph.getNodeById(link.origin_id);
-  const dstNode = state.graph.getNodeById(link.target_id);
+  const srcNode = state.nodeByThingId.get(link.src);
+  const dstNode = state.nodeByThingId.get(link.dst);
   if (!srcNode || !dstNode) {
     return Number.POSITIVE_INFINITY;
   }
 
-  const a = srcNode.getConnectionPos(false, link.origin_slot);
-  const b = dstNode.getConnectionPos(true, link.target_slot);
+  const a = srcNode.getConnectionPos(false, Number(link.srcChannel));
+  const b = dstNode.getConnectionPos(true, Number(link.dstChannel));
   if (!a || !b) {
     return Number.POSITIVE_INFINITY;
   }
@@ -625,120 +474,24 @@ function removeNearestLinkAt(x, y) {
   }
 
   const threshold = 16 / Math.max(0.35, state.graphCanvas.ds.scale);
-  let bestId = null;
+  let bestIdx = -1;
   let bestDist = Number.POSITIVE_INFINITY;
 
-  const links = state.graph.links || {};
-  for (const linkId of Object.keys(links)) {
-    const link = links[linkId];
-    if (!link) continue;
-    const d = linkDistance(link, x, y);
+  for (let i = 0; i < state.edges.length; i += 1) {
+    const d = linkDistance(state.edges[i], x, y);
     if (d < bestDist) {
       bestDist = d;
-      bestId = Number(linkId);
+      bestIdx = i;
     }
   }
 
-  if (bestId == null || bestDist > threshold) {
+  if (bestIdx < 0 || bestDist > threshold) {
     return false;
   }
 
-  state.graph.removeLink(bestId);
+  state.edges.splice(bestIdx, 1);
   syncEdgesFromGraph();
   setStatus('route removed (not saved yet)', 'ok');
-  return true;
-}
-
-function createMixerNode(x, y) {
-  const node = window.LiteGraph.createNode('audiox/mixer');
-  if (!node) {
-    return null;
-  }
-
-  configureMixerNode(node);
-  node.pos = [Math.round(x), Math.round(y)];
-
-  state.graph.add(node);
-  state.nodeByThingId.set(node.properties.thingId, node);
-  return node;
-}
-
-function getOrCreateFreeMixerInput(node) {
-  for (let i = 0; i < (node.inputs?.length || 0); i += 1) {
-    if (node.inputs[i]?.link == null) {
-      return i;
-    }
-  }
-  const next = (node.inputs?.length || 0) + 1;
-  setMixerInputCount(node, next);
-  return (node.inputs?.length || 1) - 1;
-}
-
-function removeCollapsedRoute(edge) {
-  const dstNode = state.nodeByThingId.get(edge.dst);
-  if (!dstNode) {
-    return false;
-  }
-
-  const dstSlot = Number(edge.dstChannel);
-  if (!Array.isArray(dstNode.inputs) || dstSlot < 0 || dstSlot >= dstNode.inputs.length) {
-    return false;
-  }
-
-  const incomingLinkId = dstNode.inputs[dstSlot]?.link;
-  if (incomingLinkId == null) {
-    return false;
-  }
-
-  const incoming = state.graph.links?.[incomingLinkId];
-  if (!incoming) {
-    return false;
-  }
-
-  const upstreamNode = state.graph.getNodeById(incoming.origin_id);
-  if (!upstreamNode) {
-    return false;
-  }
-
-  if (!isMixerNode(upstreamNode)) {
-    const srcThing = normalizeThingId(upstreamNode.properties?.thingId);
-    if (srcThing === edge.src && Number(incoming.origin_slot) === Number(edge.srcChannel)) {
-      state.graph.removeLink(incomingLinkId);
-      return true;
-    }
-    return false;
-  }
-
-  let removedBranch = false;
-  for (let i = 0; i < (upstreamNode.inputs?.length || 0); i += 1) {
-    const branchLinkId = upstreamNode.inputs[i]?.link;
-    if (branchLinkId == null) {
-      continue;
-    }
-    const branch = state.graph.links?.[branchLinkId];
-    if (!branch) {
-      continue;
-    }
-    const branchSrc = state.graph.getNodeById(branch.origin_id);
-    if (!branchSrc || isMixerNode(branchSrc)) {
-      continue;
-    }
-    const srcThing = normalizeThingId(branchSrc.properties?.thingId);
-    if (srcThing === edge.src && Number(branch.origin_slot) === Number(edge.srcChannel)) {
-      state.graph.removeLink(branchLinkId);
-      removedBranch = true;
-      break;
-    }
-  }
-
-  if (!removedBranch) {
-    return false;
-  }
-
-  const remaining = (upstreamNode.inputs || []).filter((inp) => inp?.link != null);
-  if (remaining.length <= 1) {
-    state.graph.remove(upstreamNode);
-  }
   return true;
 }
 
@@ -747,11 +500,7 @@ function removeEdgeByIndex(index) {
     return;
   }
 
-  const target = state.edges[index];
-  if (!removeCollapsedRoute(target)) {
-    setStatus('route remove failed', 'warn');
-    return;
-  }
+  state.edges.splice(index, 1);
 
   syncEdgesFromGraph();
   setStatus('route removed (not saved yet)', 'ok');
@@ -796,22 +545,9 @@ function ensureRoutingGraph() {
     window.LiteGraph.registerNodeType('audiox/thing', AudioxThingNode);
   }
 
-  if (!window.LiteGraph.registered_node_types['audiox/mixer']) {
-    function AudioxMixerNode() {
-      configureMixerNode(this, this.properties?.thingId || null);
-    }
-    AudioxMixerNode.title = 'Mixer';
-    AudioxMixerNode.filter = 'audiox';
-    window.LiteGraph.registerNodeType('audiox/mixer', AudioxMixerNode);
-  }
-
   const thingCtor = window.LiteGraph.registered_node_types['audiox/thing'];
   if (thingCtor) {
     thingCtor.filter = 'audiox-internal';
-  }
-  const mixerCtor = window.LiteGraph.registered_node_types['audiox/mixer'];
-  if (mixerCtor) {
-    mixerCtor.filter = 'audiox';
   }
   state.graphCanvas.background_image = null;
   window.LiteGraph.NODE_DEFAULT_COLOR = '#1f4a62';
@@ -877,15 +613,50 @@ function ensureRoutingGraph() {
       x: Math.round(node.pos[0]),
       y: Math.round(node.pos[1]),
     };
+    state.graphCanvas.setDirty(true, true);
   };
 
   state.graphCanvas.onNodeAdded = (node) => {
-    if (String(node?.type || '') === 'audiox/mixer') {
-      configureMixerNode(node, node.properties?.thingId || null);
-      state.nodeByThingId.set(node.properties.thingId, node);
-      state.graphCanvas.setDirty(true, true);
-      syncEdgesFromGraph();
+    if (!node) {
+      return;
     }
+    const thingId = normalizeThingId(node.properties?.thingId);
+    if (!thingId) {
+      return;
+    }
+    state.nodeByThingId.set(thingId, node);
+    syncEdgesFromGraph();
+  };
+
+  state.graphCanvas.onDrawForeground = (ctx) => {
+    const selected = (state.selectedEdgeIdx >= 0 && state.selectedEdgeIdx < state.edges.length)
+      ? edgeKey(state.edges[state.selectedEdgeIdx])
+      : '';
+
+    for (const edge of state.edges) {
+      const srcNode = state.nodeByThingId.get(edge.src);
+      const dstNode = state.nodeByThingId.get(edge.dst);
+      if (!srcNode || !dstNode) {
+        continue;
+      }
+
+      const a = srcNode.getConnectionPos(false, Number(edge.srcChannel));
+      const b = dstNode.getConnectionPos(true, Number(edge.dstChannel));
+      if (!a || !b) {
+        continue;
+      }
+
+      const isSelected = selected && edgeKey(edge) === selected;
+      const c = Math.max(40, Math.min(220, Math.abs(b[0] - a[0]) * 0.45));
+      ctx.beginPath();
+      ctx.moveTo(a[0], a[1]);
+      ctx.bezierCurveTo(a[0] + c, a[1], b[0] - c, b[1], b[0], b[1]);
+      ctx.strokeStyle = isSelected ? '#ffcf66' : '#79c8ff';
+      ctx.lineWidth = isSelected ? 4 : 3;
+      ctx.globalAlpha = isSelected ? 1 : 0.92;
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
   };
 
   state.graphCanvas.onMouse = (ev) => {
@@ -946,6 +717,7 @@ function rebuildRoutingGraph() {
     node.size = [260, 60];
     node.properties = { thingId: thing.id, nodeKind: 'device' };
     node.removable = false;
+    node._baseInputCount = thing.inputs;
     node._inputChannelBySlot = [];
 
     for (let ch = 0; ch < thing.inputs; ch += 1) {
@@ -960,56 +732,7 @@ function rebuildRoutingGraph() {
     node.pos = [pos.x, pos.y];
 
     node.onConnectInput = function(inputIndex, _outputType, _outputSlot, outputNode, outputIndex) {
-      const input = this.inputs?.[inputIndex];
-      if (!input || input.link == null) {
-        return true;
-      }
-
-      const existing = this.graph?.links?.[input.link];
-      if (!existing) {
-        return true;
-      }
-
-      if (existing.origin_id === outputNode?.id && Number(existing.origin_slot) === Number(outputIndex)) {
-        return false;
-      }
-
-      const existingSrc = this.graph.getNodeById(existing.origin_id);
-      if (!existingSrc) {
-        return false;
-      }
-
-      if (isMixerNode(existingSrc)) {
-        const slot = getOrCreateFreeMixerInput(existingSrc);
-        if (outputNode) {
-          outputNode.connect(Number(outputIndex), existingSrc, slot);
-        }
-        syncEdgesFromGraph();
-        setStatus('route added via existing mixer', 'ok');
-        return false;
-      }
-
-      const mx = this.pos[0] - 250;
-      const my = this.pos[1] + (inputIndex * 26);
-      const mixer = createMixerNode(mx, my);
-      if (!mixer) {
-        return false;
-      }
-
-      state.suspendGraphSync = true;
-      this.graph.removeLink(input.link);
-
-      const a = getOrCreateFreeMixerInput(mixer);
-      existingSrc.connect(Number(existing.origin_slot), mixer, a);
-      const b = getOrCreateFreeMixerInput(mixer);
-      if (outputNode) {
-        outputNode.connect(Number(outputIndex), mixer, b);
-      }
-      mixer.connect(0, this, inputIndex);
-      state.suspendGraphSync = false;
-
-      syncEdgesFromGraph();
-      setStatus('auto-created mixer for multi-input route', 'ok');
+      addEdgeFromConnection(outputNode, outputIndex, this, inputIndex);
       return false;
     };
 
@@ -1022,56 +745,6 @@ function rebuildRoutingGraph() {
     state.graph.add(node);
     state.nodeByThingId.set(thing.id, node);
   });
-
-  const grouped = new Map();
-  for (const edge of state.edges) {
-    const key = `${edge.dst}|${edge.dstChannel}`;
-    if (!grouped.has(key)) {
-      grouped.set(key, []);
-    }
-    grouped.get(key).push(edge);
-  }
-
-  for (const [key, list] of grouped.entries()) {
-    if (!list.length) {
-      continue;
-    }
-    const sample = list[0];
-    const dstNode = state.nodeByThingId.get(sample.dst);
-    if (!dstNode) {
-      continue;
-    }
-
-    const dstSlot = Number(sample.dstChannel);
-    if (!Number.isFinite(dstSlot) || dstSlot < 0 || dstSlot >= (dstNode.inputs?.length || 0)) {
-      continue;
-    }
-
-    if (list.length === 1) {
-      const srcNode = state.nodeByThingId.get(sample.src);
-      if (srcNode) {
-        srcNode.connect(Number(sample.srcChannel), dstNode, dstSlot);
-      }
-      continue;
-    }
-
-    const mx = dstNode.pos[0] - 260;
-    const my = dstNode.pos[1] + (dstSlot * 24);
-    const mixer = createMixerNode(mx, my);
-    if (!mixer) {
-      continue;
-    }
-
-    for (const edge of list) {
-      const srcNode = state.nodeByThingId.get(edge.src);
-      if (!srcNode) {
-        continue;
-      }
-      const slot = getOrCreateFreeMixerInput(mixer);
-      srcNode.connect(Number(edge.srcChannel), mixer, slot);
-    }
-    mixer.connect(0, dstNode, dstSlot);
-  }
 
   state.internalGraphMutation = false;
   state.suspendGraphSync = false;
@@ -1191,14 +864,6 @@ async function saveRouting() {
     setStatus(`routing save error: ${err}`, 'warn');
     return false;
   }
-}
-
-function setEdgeDeleteMode(enabled) {
-  state.edgeDeleteEnabled = !!enabled;
-  const btn = document.getElementById('btn-edge-delete-mode');
-  btn.textContent = `Delete Click: ${state.edgeDeleteEnabled ? 'ON' : 'OFF'}`;
-  btn.classList.toggle('warn', state.edgeDeleteEnabled);
-  btn.classList.toggle('primary', !state.edgeDeleteEnabled);
 }
 
 async function loadVersion() {
@@ -1591,7 +1256,7 @@ async function initializeGraphFromConfig() {
   await loadMappings();
   await loadRoutingThings();
   await loadRoutingFile();
-  setEdgeDeleteMode(true);
+  state.edgeDeleteEnabled = true;
   setMappingMode(false);
   updateZoomLabel();
 }
@@ -1628,10 +1293,6 @@ document.getElementById('btn-reload').addEventListener('click', async () => {
 
 document.getElementById('btn-route-save').addEventListener('click', saveRouting);
 document.getElementById('btn-route-remove-selected').addEventListener('click', deleteSelectedEdge);
-
-document.getElementById('btn-edge-delete-mode').addEventListener('click', () => {
-  setEdgeDeleteMode(!state.edgeDeleteEnabled);
-});
 
 document.getElementById('btn-zoom-in').addEventListener('click', () => {
   const scale = state.graphCanvas ? state.graphCanvas.ds.scale : 1;

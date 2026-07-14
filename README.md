@@ -48,7 +48,7 @@ Useful targets:
 - `make dev` - build runtime image, upload it over HTTP, then let the Pi reboot twice to install it
 - `make qemu` - boot in QEMU (aarch64) // doesn't work because qemu raspi support is very minimal (no gui, no USB, no audio)
 - `make fancyexport` - wait for SD mount and export build artifacts
-- `make image` - create a flashable image file
+- `make image` - create a flashable image file (WARNING: untested, may not work)
 
 ## Notes
 

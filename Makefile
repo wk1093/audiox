@@ -19,7 +19,7 @@ BOOTLOADER_FLAGS := $(CXXFLAGS)
 # Version information
 AUDIOX_VERSION_MAJOR = 1
 AUDIOX_VERSION_MINOR = 0
-AUDIOX_VERSION_PATCH = 0
+AUDIOX_VERSION_PATCH = 2
 
 # Auto-detected from firmware after fetch_deps runs.
 KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")
@@ -195,6 +195,10 @@ export: initramfs
 	cp $(INITRAMFS) $(SD_MOUNT_BOOT)/initramfs.cpio.gz
 	cp $(PROGRAM_INITRAMFS) $(SD_MOUNT_BOOT)/program.cpio.gz
 	@echo "initramfs initramfs.cpio.gz,program.cpio.gz followkernel" > $(SD_MOUNT_BOOT)/config.txt
+	# if we enable cd start it might be a bit faster
+	@echo "start_cd=1" >> $(SD_MOUNT_BOOT)/config.txt
+	@echo "boot_delay=0" >> $(SD_MOUNT_BOOT)/config.txt
+	@echo "disable_splash=1" >> $(SD_MOUNT_BOOT)/config.txt
 	@echo "dtoverlay=$(VC4_OVERLAY)" >> $(SD_MOUNT_BOOT)/config.txt
 	@if [ -n "$(DSI_TOUCH_OVERLAY)" ]; then \
 		echo "dtoverlay=$(DSI_TOUCH_OVERLAY)" >> $(SD_MOUNT_BOOT)/config.txt; \

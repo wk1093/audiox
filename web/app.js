@@ -36,7 +36,9 @@ const state = {
   graph: null,
   graphCanvas: null,
   nodeByThingId: new Map(),
+  nextMixerId: 1,
   suspendGraphSync: false,
+  internalGraphMutation: false,
 };
 
 function setStatus(text, kind = '') {
@@ -230,6 +232,31 @@ function normalizeThingId(v) {
   return String(v || '').trim();
 }
 
+function isMixerNode(node) {
+  return String(node?.properties?.nodeKind || '') === 'mixer';
+}
+
+function isDeviceNode(node) {
+  return String(node?.properties?.nodeKind || '') === 'device';
+}
+
+function newMixerThingId() {
+  const id = `mixer_${state.nextMixerId}`;
+  state.nextMixerId += 1;
+  return id;
+}
+
+function bumpNextMixerIdFromThingId(thingId) {
+  const m = /^mixer_(\d+)$/.exec(String(thingId || ''));
+  if (!m) {
+    return;
+  }
+  const n = Number(m[1]);
+  if (Number.isFinite(n) && n >= state.nextMixerId) {
+    state.nextMixerId = n + 1;
+  }
+}
+
 function shortNodeTitle(label) {
   const txt = String(label || '').trim();
   if (!txt) {
@@ -269,6 +296,43 @@ function getOrCreateInputSlotForChannel(node, channel) {
   return node.inputs.length - 1;
 }
 
+function collectUpstreamSources(node, slotIndex, visitedLinks = new Set()) {
+  if (!node || !Array.isArray(node.inputs) || slotIndex < 0 || slotIndex >= node.inputs.length) {
+    return [];
+  }
+
+  const linkId = node.inputs[slotIndex]?.link;
+  if (linkId == null || visitedLinks.has(linkId)) {
+    return [];
+  }
+  visitedLinks.add(linkId);
+
+  const link = state.graph?.links?.[linkId];
+  if (!link) {
+    return [];
+  }
+
+  const srcNode = state.graph.getNodeById(link.origin_id);
+  if (!srcNode) {
+    return [];
+  }
+
+  if (isMixerNode(srcNode)) {
+    const out = [];
+    for (let i = 0; i < (srcNode.inputs?.length || 0); i += 1) {
+      const nested = collectUpstreamSources(srcNode, i, visitedLinks);
+      out.push(...nested);
+    }
+    return out;
+  }
+
+  const srcThingId = normalizeThingId(srcNode.properties?.thingId);
+  if (!srcThingId) {
+    return [];
+  }
+  return [{ src: srcThingId, srcChannel: Number(link.origin_slot) }];
+}
+
 function syncEdgesFromGraph() {
   if (!state.graph || state.suspendGraphSync) {
     return;
@@ -279,24 +343,35 @@ function syncEdgesFromGraph() {
     : null;
 
   const next = [];
-  const links = state.graph.links || {};
-  for (const linkId of Object.keys(links)) {
-    const link = links[linkId];
-    if (!link) continue;
-
-    const srcNode = state.graph.getNodeById(link.origin_id);
-    const dstNode = state.graph.getNodeById(link.target_id);
-    if (!srcNode || !dstNode) continue;
-
-    const src = normalizeThingId(srcNode.properties?.thingId);
-    const dst = normalizeThingId(dstNode.properties?.thingId);
-    const srcChannel = Number(link.origin_slot);
-    const dstChannel = getInputChannelFromSlot(dstNode, Number(link.target_slot));
-    if (!src || !dst || srcChannel < 0 || dstChannel < 0) {
+  const seen = new Set();
+  for (const node of state.graph._nodes || []) {
+    if (!node || isMixerNode(node)) {
       continue;
     }
 
-    next.push({ src, dst, srcChannel, dstChannel });
+    const dst = normalizeThingId(node.properties?.thingId);
+    if (!dst) {
+      continue;
+    }
+
+    for (let slot = 0; slot < (node.inputs?.length || 0); slot += 1) {
+      const dstChannel = getInputChannelFromSlot(node, slot);
+      const upstream = collectUpstreamSources(node, slot, new Set());
+      for (const srcInfo of upstream) {
+        const edge = {
+          src: srcInfo.src,
+          dst,
+          srcChannel: srcInfo.srcChannel,
+          dstChannel,
+        };
+        const key = edgeKey(edge);
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        next.push(edge);
+      }
+    }
   }
 
   next.sort((a, b) => edgeKey(a).localeCompare(edgeKey(b)));
@@ -310,6 +385,24 @@ function syncEdgesFromGraph() {
   }
 
   renderEdgesList();
+}
+
+function getViewCenterGraphCoords() {
+  if (!state.graphCanvas) {
+    return [0, 0];
+  }
+
+  const area = state.graphCanvas.visible_area;
+  if (Array.isArray(area) && area.length >= 4) {
+    return [area[0] + (area[2] * 0.5), area[1] + (area[3] * 0.5)];
+  }
+
+  const scale = state.graphCanvas.ds.scale;
+  const offset = state.graphCanvas.ds.offset;
+  return [
+    ((graphCanvasEl.width * 0.5) - offset[0]) / scale,
+    ((graphCanvasEl.height * 0.5) - offset[1]) / scale,
+  ];
 }
 
 function bezierPoint(a, b, t) {
@@ -417,38 +510,127 @@ function removeNearestLinkAt(x, y) {
   return true;
 }
 
+function createMixerNode(x, y) {
+  const node = window.LiteGraph.createNode('audiox/mixer');
+  if (!node) {
+    return null;
+  }
+
+  const thingId = newMixerThingId();
+  node.title = shortNodeTitle(`mixer ${thingId.split('_').pop()}`);
+  node.size = [220, 80];
+  node.properties = { thingId, nodeKind: 'mixer' };
+  node.removable = true;
+  node._inputChannelBySlot = [];
+  node.addInput('in 1', 'audio');
+  node.addInput('in 2', 'audio');
+  node._inputChannelBySlot.push(0, 1);
+  node.addOutput('out 1', 'audio');
+  node.pos = [Math.round(x), Math.round(y)];
+
+  node.onConnectionsChange = function() {
+    if (!state.suspendGraphSync) {
+      syncEdgesFromGraph();
+    }
+  };
+
+  state.graph.add(node);
+  state.nodeByThingId.set(thingId, node);
+  return node;
+}
+
+function getOrCreateFreeMixerInput(node) {
+  for (let i = 0; i < (node.inputs?.length || 0); i += 1) {
+    if (node.inputs[i]?.link == null) {
+      return i;
+    }
+  }
+  const idx = node.inputs.length + 1;
+  node.addInput(`in ${idx}`, 'audio');
+  node._inputChannelBySlot.push(node._inputChannelBySlot.length);
+  return node.inputs.length - 1;
+}
+
+function removeCollapsedRoute(edge) {
+  const dstNode = state.nodeByThingId.get(edge.dst);
+  if (!dstNode) {
+    return false;
+  }
+
+  const dstSlot = Number(edge.dstChannel);
+  if (!Array.isArray(dstNode.inputs) || dstSlot < 0 || dstSlot >= dstNode.inputs.length) {
+    return false;
+  }
+
+  const incomingLinkId = dstNode.inputs[dstSlot]?.link;
+  if (incomingLinkId == null) {
+    return false;
+  }
+
+  const incoming = state.graph.links?.[incomingLinkId];
+  if (!incoming) {
+    return false;
+  }
+
+  const upstreamNode = state.graph.getNodeById(incoming.origin_id);
+  if (!upstreamNode) {
+    return false;
+  }
+
+  if (!isMixerNode(upstreamNode)) {
+    const srcThing = normalizeThingId(upstreamNode.properties?.thingId);
+    if (srcThing === edge.src && Number(incoming.origin_slot) === Number(edge.srcChannel)) {
+      state.graph.removeLink(incomingLinkId);
+      return true;
+    }
+    return false;
+  }
+
+  let removedBranch = false;
+  for (let i = 0; i < (upstreamNode.inputs?.length || 0); i += 1) {
+    const branchLinkId = upstreamNode.inputs[i]?.link;
+    if (branchLinkId == null) {
+      continue;
+    }
+    const branch = state.graph.links?.[branchLinkId];
+    if (!branch) {
+      continue;
+    }
+    const branchSrc = state.graph.getNodeById(branch.origin_id);
+    if (!branchSrc || isMixerNode(branchSrc)) {
+      continue;
+    }
+    const srcThing = normalizeThingId(branchSrc.properties?.thingId);
+    if (srcThing === edge.src && Number(branch.origin_slot) === Number(edge.srcChannel)) {
+      state.graph.removeLink(branchLinkId);
+      removedBranch = true;
+      break;
+    }
+  }
+
+  if (!removedBranch) {
+    return false;
+  }
+
+  const remaining = (upstreamNode.inputs || []).filter((inp) => inp?.link != null);
+  if (remaining.length <= 1) {
+    state.graph.remove(upstreamNode);
+  }
+  return true;
+}
+
 function removeEdgeByIndex(index) {
   if (index < 0 || index >= state.edges.length) {
     return;
   }
 
   const target = state.edges[index];
-  const links = state.graph ? (state.graph.links || {}) : {};
-  for (const linkId of Object.keys(links)) {
-    const link = links[linkId];
-    if (!link) continue;
-
-    const srcNode = state.graph.getNodeById(link.origin_id);
-    const dstNode = state.graph.getNodeById(link.target_id);
-    if (!srcNode || !dstNode) continue;
-
-    const edge = {
-      src: normalizeThingId(srcNode.properties?.thingId),
-      dst: normalizeThingId(dstNode.properties?.thingId),
-      srcChannel: Number(link.origin_slot),
-      dstChannel: getInputChannelFromSlot(dstNode, Number(link.target_slot)),
-    };
-
-    if (edgeKey(edge) === edgeKey(target)) {
-      state.graph.removeLink(Number(linkId));
-      syncEdgesFromGraph();
-      setStatus('route removed (not saved yet)', 'ok');
-      return;
-    }
+  if (!removeCollapsedRoute(target)) {
+    setStatus('route remove failed', 'warn');
+    return;
   }
 
-  state.edges.splice(index, 1);
-  rebuildRoutingGraph();
+  syncEdgesFromGraph();
   setStatus('route removed (not saved yet)', 'ok');
 }
 
@@ -471,6 +653,14 @@ function ensureRoutingGraph() {
   }
 
   state.graph = new window.LGraph();
+  const graphRemove = state.graph.remove.bind(state.graph);
+  state.graph.remove = (node) => {
+    if (!state.internalGraphMutation && isDeviceNode(node)) {
+      setStatus('device nodes cannot be deleted', 'warn');
+      return;
+    }
+    graphRemove(node);
+  };
   state.graphCanvas = new window.LGraphCanvas(graphCanvasEl, state.graph, { autoresize: true });
 
   if (!window.LiteGraph.registered_node_types['audiox/thing']) {
@@ -479,7 +669,27 @@ function ensureRoutingGraph() {
       this.properties = { thingId: '' };
     }
     AudioxThingNode.title = 'Thing';
+    AudioxThingNode.filter = 'audiox';
     window.LiteGraph.registerNodeType('audiox/thing', AudioxThingNode);
+  }
+
+  if (!window.LiteGraph.registered_node_types['audiox/mixer']) {
+    function AudioxMixerNode() {
+      this.size = [220, 80];
+      this.properties = { thingId: '', nodeKind: 'mixer' };
+    }
+    AudioxMixerNode.title = 'Mixer';
+    AudioxMixerNode.filter = 'audiox';
+    window.LiteGraph.registerNodeType('audiox/mixer', AudioxMixerNode);
+  }
+
+  const thingCtor = window.LiteGraph.registered_node_types['audiox/thing'];
+  if (thingCtor) {
+    thingCtor.filter = 'audiox';
+  }
+  const mixerCtor = window.LiteGraph.registered_node_types['audiox/mixer'];
+  if (mixerCtor) {
+    mixerCtor.filter = 'audiox';
   }
   state.graphCanvas.background_image = null;
   window.LiteGraph.NODE_DEFAULT_COLOR = '#1f4a62';
@@ -489,12 +699,42 @@ function ensureRoutingGraph() {
   window.LiteGraph.LINK_COLOR = '#79c8ff';
   window.LiteGraph.EVENT_LINK_COLOR = '#79c8ff';
   state.graphCanvas.default_link_color = '#79c8ff';
+  state.graphCanvas.clear_background = false;
+  state.graphCanvas.canvas.style.background = '#0d1e2a';
+  if (state.graphCanvas.bgcanvas) {
+    state.graphCanvas.bgcanvas.style.background = '#0d1e2a';
+  }
+  state.graphCanvas.onDrawBackground = (ctx, visibleArea) => {
+    const x = Array.isArray(visibleArea) ? visibleArea[0] : 0;
+    const y = Array.isArray(visibleArea) ? visibleArea[1] : 0;
+    const w = Array.isArray(visibleArea) ? visibleArea[2] : graphCanvasEl.width;
+    const h = Array.isArray(visibleArea) ? visibleArea[3] : graphCanvasEl.height;
+    ctx.fillStyle = '#0d1e2a';
+    ctx.fillRect(x, y, w, h);
+  };
   state.graphCanvas.allow_searchbox = false;
+  state.graphCanvas.filter = 'audiox';
   state.graphCanvas.render_shadows = true;
   state.graphCanvas.render_curved_connections = true;
   state.graphCanvas.connections_width = 3;
-  state.graphCanvas.processContextMenu = () => false;
-  state.graphCanvas.getCanvasMenuOptions = () => [];
+  state.graphCanvas.getNodeMenuOptions = (node) => {
+    if (isDeviceNode(node)) {
+      return [];
+    }
+    return [
+      {
+        content: 'Remove Node',
+        callback: () => {
+          if (isDeviceNode(node)) {
+            return;
+          }
+          state.graph.remove(node);
+          syncEdgesFromGraph();
+          state.graphCanvas.setDirty(true, true);
+        },
+      },
+    ];
+  };
 
   state.graphCanvas.onNodeSelected = (node) => {
     state.selectedNodeId = normalizeThingId(node?.properties?.thingId);
@@ -554,6 +794,7 @@ function rebuildRoutingGraph() {
   }
 
   state.suspendGraphSync = true;
+  state.internalGraphMutation = true;
   state.graph.clear();
   state.nodeByThingId.clear();
 
@@ -571,7 +812,8 @@ function rebuildRoutingGraph() {
     }
     node.title = shortNodeTitle(thing.label);
     node.size = [260, 60];
-    node.properties = { thingId: thing.id };
+    node.properties = { thingId: thing.id, nodeKind: 'device' };
+    node.removable = false;
     node._inputChannelBySlot = [];
 
     for (let ch = 0; ch < thing.inputs; ch += 1) {
@@ -585,15 +827,58 @@ function rebuildRoutingGraph() {
     const pos = state.positions[thing.id] || known[thing.id] || defaultNodePosition(idx);
     node.pos = [pos.x, pos.y];
 
-    node.onBeforeConnectInput = function(inputIndex) {
-      const channel = getInputChannelFromSlot(this, inputIndex);
+    node.onConnectInput = function(inputIndex, _outputType, _outputSlot, outputNode, outputIndex) {
       const input = this.inputs?.[inputIndex];
-      if (channel < 0 || !input || input.link == null) {
-        return inputIndex;
+      if (!input || input.link == null) {
+        return true;
       }
-      this.addInput(`in ${channel + 1}`, 'audio');
-      this._inputChannelBySlot.push(channel);
-      return this.inputs.length - 1;
+
+      const existing = this.graph?.links?.[input.link];
+      if (!existing) {
+        return true;
+      }
+
+      if (existing.origin_id === outputNode?.id && Number(existing.origin_slot) === Number(outputIndex)) {
+        return false;
+      }
+
+      const existingSrc = this.graph.getNodeById(existing.origin_id);
+      if (!existingSrc) {
+        return false;
+      }
+
+      if (isMixerNode(existingSrc)) {
+        const slot = getOrCreateFreeMixerInput(existingSrc);
+        if (outputNode) {
+          outputNode.connect(Number(outputIndex), existingSrc, slot);
+        }
+        syncEdgesFromGraph();
+        setStatus('route added via existing mixer', 'ok');
+        return false;
+      }
+
+      const mx = this.pos[0] - 250;
+      const my = this.pos[1] + (inputIndex * 26);
+      const mixer = createMixerNode(mx, my);
+      if (!mixer) {
+        return false;
+      }
+
+      state.suspendGraphSync = true;
+      this.graph.removeLink(input.link);
+
+      const a = getOrCreateFreeMixerInput(mixer);
+      existingSrc.connect(Number(existing.origin_slot), mixer, a);
+      const b = getOrCreateFreeMixerInput(mixer);
+      if (outputNode) {
+        outputNode.connect(Number(outputIndex), mixer, b);
+      }
+      mixer.connect(0, this, inputIndex);
+      state.suspendGraphSync = false;
+
+      syncEdgesFromGraph();
+      setStatus('auto-created mixer for multi-input route', 'ok');
+      return false;
     };
 
     node.onConnectionsChange = function() {
@@ -606,16 +891,57 @@ function rebuildRoutingGraph() {
     state.nodeByThingId.set(thing.id, node);
   });
 
+  const grouped = new Map();
   for (const edge of state.edges) {
-    const srcNode = state.nodeByThingId.get(edge.src);
-    const dstNode = state.nodeByThingId.get(edge.dst);
-    if (!srcNode || !dstNode) {
-      continue;
+    const key = `${edge.dst}|${edge.dstChannel}`;
+    if (!grouped.has(key)) {
+      grouped.set(key, []);
     }
-    const dstSlot = getOrCreateInputSlotForChannel(dstNode, edge.dstChannel);
-    srcNode.connect(edge.srcChannel, dstNode, dstSlot);
+    grouped.get(key).push(edge);
   }
 
+  for (const [key, list] of grouped.entries()) {
+    if (!list.length) {
+      continue;
+    }
+    const sample = list[0];
+    const dstNode = state.nodeByThingId.get(sample.dst);
+    if (!dstNode) {
+      continue;
+    }
+
+    const dstSlot = Number(sample.dstChannel);
+    if (!Number.isFinite(dstSlot) || dstSlot < 0 || dstSlot >= (dstNode.inputs?.length || 0)) {
+      continue;
+    }
+
+    if (list.length === 1) {
+      const srcNode = state.nodeByThingId.get(sample.src);
+      if (srcNode) {
+        srcNode.connect(Number(sample.srcChannel), dstNode, dstSlot);
+      }
+      continue;
+    }
+
+    const mx = dstNode.pos[0] - 260;
+    const my = dstNode.pos[1] + (dstSlot * 24);
+    const mixer = createMixerNode(mx, my);
+    if (!mixer) {
+      continue;
+    }
+
+    for (const edge of list) {
+      const srcNode = state.nodeByThingId.get(edge.src);
+      if (!srcNode) {
+        continue;
+      }
+      const slot = getOrCreateFreeMixerInput(mixer);
+      srcNode.connect(Number(edge.srcChannel), mixer, slot);
+    }
+    mixer.connect(0, dstNode, dstSlot);
+  }
+
+  state.internalGraphMutation = false;
   state.suspendGraphSync = false;
   syncEdgesFromGraph();
   state.graphCanvas.setDirty(true, true);
@@ -1169,6 +1495,24 @@ document.getElementById('btn-reload').addEventListener('click', async () => {
 });
 
 document.getElementById('btn-route-save').addEventListener('click', saveRouting);
+document.getElementById('btn-add-mixer').addEventListener('click', () => {
+  ensureRoutingGraph();
+  if (!state.graph) {
+    return;
+  }
+  const center = getViewCenterGraphCoords();
+  const cx = center[0];
+  const cy = center[1];
+  const node = createMixerNode(cx, cy);
+  if (!node) {
+    setStatus('failed to add mixer', 'warn');
+    return;
+  }
+  state.graphCanvas.selectNode(node);
+  state.graphCanvas.centerOnNode(node);
+  state.graphCanvas.setDirty(true, true);
+  setStatus('mixer node added', 'ok');
+});
 document.getElementById('btn-route-remove-selected').addEventListener('click', deleteSelectedEdge);
 
 document.getElementById('btn-edge-delete-mode').addEventListener('click', () => {
@@ -1203,10 +1547,29 @@ window.addEventListener('resize', () => {
 
 document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Delete' || ev.key === 'Backspace') {
-    if (state.activeTab === 'routing' && state.selectedEdgeIdx >= 0) {
-      ev.preventDefault();
-      deleteSelectedEdge();
+    if (state.activeTab !== 'routing') {
+      return;
     }
+
+    ev.preventDefault();
+    if (state.selectedEdgeIdx >= 0) {
+      deleteSelectedEdge();
+      return;
+    }
+
+    const selected = state.graphCanvas ? Object.values(state.graphCanvas.selected_nodes || {}) : [];
+    const node = selected.length ? selected[0] : null;
+    if (!node) {
+      return;
+    }
+    if (isDeviceNode(node)) {
+      setStatus('device nodes cannot be deleted', 'warn');
+      return;
+    }
+    state.graph.remove(node);
+    syncEdgesFromGraph();
+    state.graphCanvas.setDirty(true, true);
+    setStatus('node removed', 'ok');
   }
 });
 

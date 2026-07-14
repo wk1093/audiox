@@ -446,6 +446,13 @@ select {
   cursor: pointer;
 }
 
+.edge-item > div:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .edge-item.selected {
   border-color: var(--select);
   box-shadow: 0 0 0 1px rgba(255, 208, 144, 0.38) inset;

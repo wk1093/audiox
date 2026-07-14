@@ -18,7 +18,7 @@ Roadmap for future audiox development.
 
 - [ ] Improve soundboard UI to be more usable and less confusing
 - [ ] Polish UI:
-  - [ ] switch to using LiteGraph for the routing.
+  - [x] switch to using LiteGraph for the routing.
   - [ ] Make it so "things" are reloaded periodically so that new devices show up on the WebUI
 - [ ] Make soundboard MIDI mapping more flexible
 - [ ] Make soundboard able to output midi as well to display lights on a connected controller

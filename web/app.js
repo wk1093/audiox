@@ -458,38 +458,22 @@ function ensureMixerWidget(node) {
   if (!Array.isArray(node.widgets)) {
     node.widgets = [];
   }
-  const existing = node.widgets.find((w) => w && w.name === 'inputs');
-  if (existing) {
-    existing.value = Math.max(1, Math.round(Number(node.properties?.input_count || existing.value || 2)));
-    if (!existing.options) {
-      existing.options = {};
-    }
-    existing.options.min = 1;
-    existing.options.max = 16;
-    existing.options.step = 1;
-    existing.options.precision = 0;
-    existing.callback = (value) => {
-      const whole = Math.max(1, Math.round(Number(value) || 1));
-      existing.value = whole;
-      setMixerInputCount(node, whole);
-      syncEdgesFromGraph();
-    };
-    return;
+  const normalized = String(Math.max(1, Math.round(Number(node.properties?.input_count || 2))));
+
+  const idx = node.widgets.findIndex((w) => w && w.name === 'inputs');
+  if (idx >= 0) {
+    node.widgets.splice(idx, 1);
   }
 
-  node.addWidget('number', 'inputs', Number(node.properties?.input_count || 2), (value) => {
-    const whole = Math.max(1, Math.round(Number(value) || 1));
+  node.addWidget('text', 'inputs', normalized, (value) => {
+    const raw = String(value || '').trim();
+    const parsed = Math.max(1, Math.min(16, Math.round(Number(raw) || 1)));
     const widget = node.widgets?.find((w) => w && w.name === 'inputs');
     if (widget) {
-      widget.value = whole;
+      widget.value = String(parsed);
     }
-    setMixerInputCount(node, whole);
+    setMixerInputCount(node, parsed);
     syncEdgesFromGraph();
-  }, {
-    min: 1,
-    max: 16,
-    step: 1,
-    precision: 0,
   });
 }
 

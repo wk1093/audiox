@@ -20,6 +20,7 @@ Roadmap for future audiox development.
 - [ ] Polish UI:
   - [ ] Make svg connection nodes start at edge of device inside of under it, if a connection goes up or down it looks weird
   - [ ] Make it so currently connected node channels are highlighted, and when selecting a node, anything it's connected to is highlighted extra/differently
+  - [ ] Improve delete connection UX (the current one is very buggy, and half the time it doesn't realize you are hovering over a connection)
 - [ ] Make soundboard MIDI mapping more flexible
 - [ ] Make soundboard able to output midi as well to display lights on a connected controller
 - [ ] Volume sliders for all devices, with proper gain control for USB gadget input

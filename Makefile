@@ -142,6 +142,12 @@ rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE
 	else \
 		echo "Warning: web index file not found at $(WEB_INDEX_HTML)"; \
 	fi
+	@if [ -d "$(CURDIR)/web" ]; then \
+		echo "Staging web assets from $(CURDIR)/web/..."; \
+		cp -a "$(CURDIR)/web/." "$(ROOTFS_DIR)/etc/www/"; \
+	else \
+		echo "Warning: web assets directory not found at $(CURDIR)/web"; \
+	fi
 	@if [ -f "$(WEB_LOGO_SVG)" ]; then \
 		echo "Staging web logo svg from $(WEB_LOGO_SVG)..."; \
 		cp "$(WEB_LOGO_SVG)" "$(ROOTFS_DIR)/etc/www/logo.svg"; \

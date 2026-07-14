@@ -16,24 +16,24 @@ Roadmap for future audiox development.
 
 ## Next Steps - v1.1+
 
-- Improve soundboard UI to be more usable and less confusing
-- Make soundboard MIDI mapping more flexible
-- Make soundboard able to output midi as well to display lights on a connected controller
-- Volume sliders for all devices, with proper gain control for USB gadget input
-
-## Later - v1.2+
-
-- Add audio effects (reverb, delay, etc) to the audio engine, and make it so they can be routed to any output, and have their parameters controlled via the HTTP API as well as bindable MIDI CCs and buttons (for toggling effects on/off)
-- Add a static ffmpeg build to the initramfs so that uploaded audio files can be converted to wav (which I can easily parse and play)
-- Allow controlling routes with MIDI CCs and buttons
-
-## Network + web control status
-
-- [ ] Revisit temporary DHCP for better host plug-and-play on Linux
-- [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)
+- [ ] Improve soundboard UI to be more usable and less confusing
 - [ ] Polish UI:
   - [ ] Make svg connection nodes start at edge of device inside of under it, if a connection goes up or down it looks weird
   - [ ] Make it so currently connected node channels are highlighted, and when selecting a node, anything it's connected to is highlighted extra/differently
+- [ ] Make soundboard MIDI mapping more flexible
+- [ ] Make soundboard able to output midi as well to display lights on a connected controller
+- [ ] Volume sliders for all devices, with proper gain control for USB gadget input
+
+## Later - v1.2+
+
+- [ ] Add audio effects (reverb, delay, etc) to the audio engine, and make it so they can be routed to any output, and have their parameters controlled via the HTTP API as well as bindable MIDI CCs and buttons (for toggling effects on/off)
+- [ ] Add a static ffmpeg build to the initramfs so that uploaded audio files can be converted to wav (which I can easily parse and play)
+- [ ] Allow controlling routes with MIDI CCs and buttons
+
+## Later - v1.3+
+
+- [ ] Revisit temporary DHCP for better host plug-and-play on Linux
+- [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)
 
 ## Hardware dream stuff
 

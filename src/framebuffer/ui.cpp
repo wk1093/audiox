@@ -10,6 +10,10 @@
 #include <stdio.h>
 #include <time.h>
 #include <cmath>
+#include <errno.h>
+#include <unistd.h>
+#include <sys/syscall.h>
+#include <linux/reboot.h>
 
 static uint8_t* boot_logo_data = nullptr;
 static constexpr int kButtonDragThresholdPx = 12;
@@ -57,6 +61,30 @@ static SystemMetricsState systemMetricsState;
 static ScrollAreaState deviceListScrollState;
 static MeterSmoothingState meterSmoothingState[kMeterSmoothingSlots];
 static int _calculatedLogoHeight = 0;
+static bool uiSleepEnabled = false;
+static bool uiSleepFrameDrawn = false;
+static bool uiSleepLastTouchDown = false;
+
+static inline int requestRebootCommand(int cmd) {
+    sync();
+    return (int)syscall(SYS_reboot,
+                        (long)LINUX_REBOOT_MAGIC1,
+                        (long)LINUX_REBOOT_MAGIC2,
+                        (long)cmd,
+                        0L);
+}
+
+static inline void requestSystemReboot() {
+    if (requestRebootCommand(LINUX_REBOOT_CMD_RESTART) != 0) {
+        printf("[FBUI] [WARN] Reboot syscall failed: %s\n", strerror(errno));
+    }
+}
+
+static inline void requestSystemPoweroff() {
+    if (requestRebootCommand(LINUX_REBOOT_CMD_POWER_OFF) != 0) {
+        printf("[FBUI] [WARN] Shutdown syscall failed: %s\n", strerror(errno));
+    }
+}
 
 static inline int calculateLogoY(int screenHeight, int logoHeight) {
     const int textHeight = 8;
@@ -657,6 +685,27 @@ void FramebufferContext::drawMain(TouchState *touchState) {
         return;
     }
 
+    const bool touchDown = touchState && touchState->is_pressed;
+
+    if (uiSleepEnabled) {
+        if (!uiSleepFrameDrawn) {
+            beginFrame();
+            drawRect(0, 0, width, height, 0, 0, 0);
+            present();
+            uiSleepFrameDrawn = true;
+        }
+
+        if (touchDown && !uiSleepLastTouchDown) {
+            uiSleepEnabled = false;
+            uiSleepFrameDrawn = false;
+        }
+
+        uiSleepLastTouchDown = touchDown;
+        return;
+    }
+
+    uiSleepLastTouchDown = touchDown;
+
     refreshSystemMetrics();
     beginFrame();
 
@@ -874,14 +923,21 @@ void FramebufferContext::drawMain(TouchState *touchState) {
         const char *btnLabel = nullptr;
         
         switch (i) {
-            case 0: btnLabel = "Reset"; break;
-            case 1: btnLabel = "Info"; break;
-            case 2: btnLabel = "Menu"; break;
+            case 0: btnLabel = "Sleep"; break;
+            case 1: btnLabel = "Reboot"; break;
+            case 2: btnLabel = "Shutdown"; break;
         }
         
         int pressed = imuiButton(this, i, btnX, buttonsY, buttonW, buttonHeight, btnLabel, touchState);
         if (pressed) {
-            // TODO: Handle button presses
+            if (i == 0) {
+                uiSleepEnabled = true;
+                uiSleepFrameDrawn = false;
+            } else if (i == 1) {
+                requestSystemReboot();
+            } else if (i == 2) {
+                requestSystemPoweroff();
+            }
         }
     }
 

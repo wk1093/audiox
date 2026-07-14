@@ -239,9 +239,10 @@ select {
 
 .graph-wrap {
   position: relative;
-  height: min(70vh, 760px);
+  height: min(84vh, 1120px);
   overflow: hidden;
   touch-action: none;
+  background: #0d1e2a;
 }
 
 #graph-canvas {
@@ -520,7 +521,7 @@ select {
   }
 
   .graph-wrap {
-    height: 58vh;
+    height: 66vh;
   }
 }
 

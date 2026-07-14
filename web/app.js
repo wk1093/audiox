@@ -405,6 +405,161 @@ function getViewCenterGraphCoords() {
   ];
 }
 
+function mixerHeightForInputs(count) {
+  const n = Math.max(1, Number(count) || 1);
+  return Math.max(84, 54 + (n * 22));
+}
+
+function resizeMixerNode(node) {
+  if (!node) {
+    return;
+  }
+  const inputCount = Array.isArray(node.inputs) ? node.inputs.length : 0;
+  node.size = [220, mixerHeightForInputs(inputCount)];
+}
+
+function setMixerInputCount(node, desiredCount) {
+  if (!node) {
+    return;
+  }
+
+  const target = Math.max(1, Math.min(16, Math.round(Number(desiredCount) || 1)));
+  if (!Array.isArray(node._inputChannelBySlot)) {
+    node._inputChannelBySlot = [];
+  }
+
+  while ((node.inputs?.length || 0) < target) {
+    const idx = (node.inputs?.length || 0);
+    node.addInput(`in ${idx + 1}`, 'audio');
+    node._inputChannelBySlot.push(node._inputChannelBySlot.length);
+  }
+
+  while ((node.inputs?.length || 0) > target) {
+    const idx = node.inputs.length - 1;
+    const slot = node.inputs[idx];
+    if (slot?.link != null && node.graph) {
+      node.graph.removeLink(slot.link);
+    }
+    node.removeInput(idx);
+    node._inputChannelBySlot.pop();
+  }
+
+  node.properties.input_count = target;
+  resizeMixerNode(node);
+  if (node.graph) {
+    node.graph.setDirtyCanvas(true, true);
+  }
+}
+
+function ensureMixerWidget(node) {
+  if (!node) {
+    return;
+  }
+  if (!Array.isArray(node.widgets)) {
+    node.widgets = [];
+  }
+  const existing = node.widgets.find((w) => w && w.name === 'inputs');
+  if (existing) {
+    existing.value = Math.max(1, Math.round(Number(node.properties?.input_count || existing.value || 2)));
+    if (!existing.options) {
+      existing.options = {};
+    }
+    existing.options.min = 1;
+    existing.options.max = 16;
+    existing.options.step = 1;
+    existing.options.precision = 0;
+    existing.callback = (value) => {
+      const whole = Math.max(1, Math.round(Number(value) || 1));
+      existing.value = whole;
+      setMixerInputCount(node, whole);
+      syncEdgesFromGraph();
+    };
+    return;
+  }
+
+  node.addWidget('number', 'inputs', Number(node.properties?.input_count || 2), (value) => {
+    const whole = Math.max(1, Math.round(Number(value) || 1));
+    const widget = node.widgets?.find((w) => w && w.name === 'inputs');
+    if (widget) {
+      widget.value = whole;
+    }
+    setMixerInputCount(node, whole);
+    syncEdgesFromGraph();
+  }, {
+    min: 1,
+    max: 16,
+    step: 1,
+    precision: 0,
+  });
+}
+
+function configureMixerNode(node, thingId = null) {
+  const id = thingId || newMixerThingId();
+  bumpNextMixerIdFromThingId(id);
+
+  node.title = shortNodeTitle(`mixer ${id.split('_').pop()}`);
+  node.size = [220, 84];
+  node.properties = { thingId: id, nodeKind: 'mixer' };
+  if (!Number.isFinite(Number(node.properties.input_count))) {
+    node.properties.input_count = Math.max(2, node.inputs?.length || 2);
+  }
+  node.removable = true;
+
+  if (!Array.isArray(node.inputs)) {
+    node.inputs = [];
+  }
+  if (!Array.isArray(node.outputs)) {
+    node.outputs = [];
+  }
+
+  if (!Array.isArray(node._inputChannelBySlot)) {
+    node._inputChannelBySlot = [];
+  }
+
+  if (!node.inputs.length) {
+    node.addInput('in 1', 'audio');
+  }
+  if (!node.outputs.length) {
+    node.addOutput('out 1', 'audio');
+  }
+
+  while (node._inputChannelBySlot.length < node.inputs.length) {
+    node._inputChannelBySlot.push(node._inputChannelBySlot.length);
+  }
+
+  ensureMixerWidget(node);
+  setMixerInputCount(node, node.properties.input_count || node.inputs.length || 2);
+
+  node.onConnectionsChange = function() {
+    if (!state.suspendGraphSync) {
+      syncEdgesFromGraph();
+    }
+  };
+
+  return node;
+}
+
+function resizeRoutingCanvas() {
+  if (!state.graphCanvas || !graphWrapEl) {
+    return;
+  }
+
+  const rect = graphWrapEl.getBoundingClientRect();
+  const w = Math.max(320, Math.floor(rect.width));
+  const h = Math.max(260, Math.floor(rect.height));
+
+  graphCanvasEl.style.width = `${w}px`;
+  graphCanvasEl.style.height = `${h}px`;
+
+  if (state.graphCanvas.bgcanvas) {
+    state.graphCanvas.bgcanvas.style.width = `${w}px`;
+    state.graphCanvas.bgcanvas.style.height = `${h}px`;
+  }
+
+  state.graphCanvas.resize(w, h);
+  state.graphCanvas.setDirty(true, true);
+}
+
 function bezierPoint(a, b, t) {
   const c = Math.max(40, Math.min(220, Math.abs(b[0] - a[0]) * 0.45));
   const p0x = a[0];
@@ -516,26 +671,11 @@ function createMixerNode(x, y) {
     return null;
   }
 
-  const thingId = newMixerThingId();
-  node.title = shortNodeTitle(`mixer ${thingId.split('_').pop()}`);
-  node.size = [220, 80];
-  node.properties = { thingId, nodeKind: 'mixer' };
-  node.removable = true;
-  node._inputChannelBySlot = [];
-  node.addInput('in 1', 'audio');
-  node.addInput('in 2', 'audio');
-  node._inputChannelBySlot.push(0, 1);
-  node.addOutput('out 1', 'audio');
+  configureMixerNode(node);
   node.pos = [Math.round(x), Math.round(y)];
 
-  node.onConnectionsChange = function() {
-    if (!state.suspendGraphSync) {
-      syncEdgesFromGraph();
-    }
-  };
-
   state.graph.add(node);
-  state.nodeByThingId.set(thingId, node);
+  state.nodeByThingId.set(node.properties.thingId, node);
   return node;
 }
 
@@ -545,10 +685,9 @@ function getOrCreateFreeMixerInput(node) {
       return i;
     }
   }
-  const idx = node.inputs.length + 1;
-  node.addInput(`in ${idx}`, 'audio');
-  node._inputChannelBySlot.push(node._inputChannelBySlot.length);
-  return node.inputs.length - 1;
+  const next = (node.inputs?.length || 0) + 1;
+  setMixerInputCount(node, next);
+  return (node.inputs?.length || 1) - 1;
 }
 
 function removeCollapsedRoute(edge) {
@@ -669,14 +808,13 @@ function ensureRoutingGraph() {
       this.properties = { thingId: '' };
     }
     AudioxThingNode.title = 'Thing';
-    AudioxThingNode.filter = 'audiox';
+    AudioxThingNode.filter = 'audiox-internal';
     window.LiteGraph.registerNodeType('audiox/thing', AudioxThingNode);
   }
 
   if (!window.LiteGraph.registered_node_types['audiox/mixer']) {
     function AudioxMixerNode() {
-      this.size = [220, 80];
-      this.properties = { thingId: '', nodeKind: 'mixer' };
+      configureMixerNode(this, this.properties?.thingId || null);
     }
     AudioxMixerNode.title = 'Mixer';
     AudioxMixerNode.filter = 'audiox';
@@ -685,7 +823,7 @@ function ensureRoutingGraph() {
 
   const thingCtor = window.LiteGraph.registered_node_types['audiox/thing'];
   if (thingCtor) {
-    thingCtor.filter = 'audiox';
+    thingCtor.filter = 'audiox-internal';
   }
   const mixerCtor = window.LiteGraph.registered_node_types['audiox/mixer'];
   if (mixerCtor) {
@@ -705,10 +843,10 @@ function ensureRoutingGraph() {
     state.graphCanvas.bgcanvas.style.background = '#0d1e2a';
   }
   state.graphCanvas.onDrawBackground = (ctx, visibleArea) => {
-    const x = Array.isArray(visibleArea) ? visibleArea[0] : 0;
-    const y = Array.isArray(visibleArea) ? visibleArea[1] : 0;
-    const w = Array.isArray(visibleArea) ? visibleArea[2] : graphCanvasEl.width;
-    const h = Array.isArray(visibleArea) ? visibleArea[3] : graphCanvasEl.height;
+    const x = Array.isArray(visibleArea) ? visibleArea[0] - 4096 : -4096;
+    const y = Array.isArray(visibleArea) ? visibleArea[1] - 4096 : -4096;
+    const w = Array.isArray(visibleArea) ? visibleArea[2] + 8192 : 8192;
+    const h = Array.isArray(visibleArea) ? visibleArea[3] + 8192 : 8192;
     ctx.fillStyle = '#0d1e2a';
     ctx.fillRect(x, y, w, h);
   };
@@ -757,6 +895,15 @@ function ensureRoutingGraph() {
     };
   };
 
+  state.graphCanvas.onNodeAdded = (node) => {
+    if (String(node?.type || '') === 'audiox/mixer') {
+      configureMixerNode(node, node.properties?.thingId || null);
+      state.nodeByThingId.set(node.properties.thingId, node);
+      state.graphCanvas.setDirty(true, true);
+      syncEdgesFromGraph();
+    }
+  };
+
   state.graphCanvas.onMouse = (ev) => {
     if (!state.edgeDeleteEnabled) {
       return false;
@@ -779,6 +926,7 @@ function ensureRoutingGraph() {
   };
 
   updateZoomLabel();
+  resizeRoutingCanvas();
 }
 
 function defaultNodePosition(idx) {
@@ -1495,24 +1643,6 @@ document.getElementById('btn-reload').addEventListener('click', async () => {
 });
 
 document.getElementById('btn-route-save').addEventListener('click', saveRouting);
-document.getElementById('btn-add-mixer').addEventListener('click', () => {
-  ensureRoutingGraph();
-  if (!state.graph) {
-    return;
-  }
-  const center = getViewCenterGraphCoords();
-  const cx = center[0];
-  const cy = center[1];
-  const node = createMixerNode(cx, cy);
-  if (!node) {
-    setStatus('failed to add mixer', 'warn');
-    return;
-  }
-  state.graphCanvas.selectNode(node);
-  state.graphCanvas.centerOnNode(node);
-  state.graphCanvas.setDirty(true, true);
-  setStatus('mixer node added', 'ok');
-});
 document.getElementById('btn-route-remove-selected').addEventListener('click', deleteSelectedEdge);
 
 document.getElementById('btn-edge-delete-mode').addEventListener('click', () => {
@@ -1539,14 +1669,13 @@ graphWrapEl.addEventListener('wheel', () => {
 
 window.addEventListener('resize', () => {
   if (state.graphCanvas) {
-    state.graphCanvas.resize();
-    state.graphCanvas.setDirty(true, true);
+    resizeRoutingCanvas();
     updateZoomLabel();
   }
 });
 
 document.addEventListener('keydown', (ev) => {
-  if (ev.key === 'Delete' || ev.key === 'Backspace') {
+  if (ev.key === 'Delete') {
     if (state.activeTab !== 'routing') {
       return;
     }

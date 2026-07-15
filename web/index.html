@@ -24,9 +24,8 @@
       <nav class="tabs" id="tabs">
         <button class="tab-btn active" data-tab="routing">Routing</button>
         <button class="tab-btn" data-tab="config">Config</button>
-        <button class="tab-btn" data-tab="control">Control/Status</button>
-        <button class="tab-btn" data-tab="mapping">MIDI Mapping</button>
-        <button class="tab-btn" data-tab="upload">Soundboard Upload</button>
+        <button class="tab-btn" data-tab="soundboard">Soundboard</button>
+        <button class="tab-btn" data-tab="system">System</button>
       </nav>
     </header>
 
@@ -95,7 +94,7 @@
         </div>
         <div class="cfg-row">
           <label for="usb_sample_rate">USB Sample Rate</label>
-          <input id="usb_sample_rate" type="number" min="8000" max="192000" step="1" value="44100">
+          <input id="usb_sample_rate" type="number" min="8000" max="192000" step="1" value="48000">
         </div>
         <div class="cfg-row">
           <label for="usb_sample_size">USB Sample Size (bytes)</label>
@@ -110,15 +109,36 @@
       </div>
     </section>
 
-    <section class="page" data-page="control">
-      <div class="grid-2">
-        <section class="card stack">
-          <h2>Soundboard Triggers</h2>
-          <div id="soundboard-trigger-list" class="grid-2"></div>
+    <section class="page" data-page="system">
+      <div class="system-layout">
+        <section class="card">
+          <h2>Device Info</h2>
+          <div class="metric-grid" style="margin-top: 8px;">
+            <div class="metric">
+              <div class="label">audiox</div>
+              <div class="value" id="sysinfo-version">—</div>
+            </div>
+            <div class="metric">
+              <div class="label">Kernel</div>
+              <div class="value" id="sysinfo-kernel">—</div>
+            </div>
+            <div class="metric">
+              <div class="label">Uptime</div>
+              <div class="value" id="sysinfo-uptime">—</div>
+            </div>
+            <div class="metric">
+              <div class="label">Memory</div>
+              <div class="value" id="sysinfo-memory">—</div>
+            </div>
+            <div class="metric">
+              <div class="label">Load (1m)</div>
+              <div class="value" id="sysinfo-load">—</div>
+            </div>
+          </div>
         </section>
 
         <section class="card stack">
-          <h2>System Status</h2>
+          <h2>Actions</h2>
           <button id="btn-system-sync">Sync Filesystem</button>
           <button id="btn-system-restart" class="warn">Restart Device</button>
           <button id="btn-system-shutdown" class="warn">Shutdown Device</button>
@@ -126,67 +146,29 @@
       </div>
     </section>
 
-    <section class="page" data-page="mapping">
-      <div class="card stack" style="max-width: 840px;">
-        <h2>MIDI Button Mapping</h2>
-        <div class="grid-2">
-          <button id="btn-mapping-mode" class="warn">Mapping Mode: OFF</button>
-          <button id="btn-mapping-refresh">Refresh Mappings</button>
+    <section class="page" data-page="soundboard">
+      <div class="soundboard-layout">
+        <div class="sb-topbar card">
+          <span class="small" id="sb-mapping-status">Click &ldquo;Assign MIDI&rdquo; on a sound card to map a button.</span>
+          <button id="btn-sb-refresh" class="flat">Refresh</button>
         </div>
 
-        <div class="small" id="mapping-capture-status">No MIDI note captured yet.</div>
+        <div id="sb-grid" class="sb-grid"></div>
 
-        <div class="cfg-row" style="margin-top: 0;">
-          <label for="mapping_note">Captured MIDI Note</label>
-          <input id="mapping_note" type="number" min="0" max="127" value="0">
-        </div>
-
-        <div class="cfg-row">
-          <label for="mapping_sfx">Target Sound</label>
-          <select id="mapping_sfx"></select>
-        </div>
-
-        <div class="grid-2">
-          <button id="btn-mapping-save" class="primary">Save Mapping</button>
-          <button id="btn-mapping-delete" class="warn">Delete Mapping For Note</button>
-        </div>
-
-        <section class="card">
-          <h2>Current Mappings</h2>
-          <div id="mapping-list" class="edge-list" style="margin-top: 8px;"></div>
-        </section>
-      </div>
-    </section>
-
-    <section class="page" data-page="upload">
-      <div class="card stack" style="max-width: 840px;">
-        <h2>Soundboard Upload</h2>
-
-        <div class="cfg-row" style="margin-top: 0;">
-          <label for="upload_slot">Target Slot</label>
-          <input id="upload_slot" type="number" min="0" max="31" value="0">
-        </div>
-
-        <div class="cfg-row">
-          <label for="upload_name">Target Filename (optional)</label>
-          <input id="upload_name" type="text" placeholder="kick.wav">
-        </div>
-
-        <div class="cfg-row">
-          <label for="upload_file">Audio File</label>
-          <input id="upload_file" type="file" accept="audio/*">
-        </div>
-
-        <div class="grid-2">
-          <button id="btn-upload-real" class="primary">Upload To /audiox/sfx</button>
-          <button id="btn-upload-clear">Clear</button>
-        </div>
-
-        <div class="small">Uploaded files are written to /audiox/sfx and appear below.</div>
-
-        <section class="card">
-          <h2>Available SFX Files</h2>
-          <div id="sfx-list" class="edge-list" style="margin-top: 8px;"></div>
+        <section class="card stack">
+          <h2>Add Sound</h2>
+          <div class="cfg-row" style="margin-top: 0;">
+            <label for="upload_name">Filename</label>
+            <input id="upload_name" type="text" placeholder="kick.wav">
+          </div>
+          <div class="cfg-row">
+            <label for="upload_file">Audio File</label>
+            <input id="upload_file" type="file" accept="audio/*">
+          </div>
+          <div class="grid-2">
+            <button id="btn-upload-real" class="primary">Upload</button>
+            <button id="btn-upload-clear">Clear</button>
+          </div>
         </section>
       </div>
     </section>

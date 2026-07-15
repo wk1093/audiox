@@ -90,7 +90,7 @@ curl http://169.254.1.2/api/soundboard/trigger/0
 cat <<'EOF' | curl -X PUT --data-binary @- http://169.254.1.2/api/rootfs/config.staging.txt
 usb_playback_channels=4
 usb_capture_channels=2
-usb_sample_rate=44100
+usb_sample_rate=48000
 usb_sample_size=2
 EOF
 curl -X POST http://169.254.1.2/api/config/reload
@@ -99,7 +99,7 @@ curl -X POST http://169.254.1.2/api/config/reload
 MIDI mapping entries in `/audiox/config.txt`:
 
 ```txt
-usb_sample_rate=44100
+usb_sample_rate=48000
 usb_playback_channels=2
 usb_capture_channels=2
 usb_sample_size=2

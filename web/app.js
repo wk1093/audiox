@@ -5,12 +5,8 @@ const graphCanvasEl = document.getElementById('graph-canvas');
 const zoomLabelEl = document.getElementById('zoom-label');
 const tabsEl = document.getElementById('tabs');
 const appVersionEl = document.getElementById('app-version');
-const sfxListEl = document.getElementById('sfx-list');
-const soundboardTriggerListEl = document.getElementById('soundboard-trigger-list');
-const mappingListEl = document.getElementById('mapping-list');
-const mappingSfxEl = document.getElementById('mapping_sfx');
-const mappingNoteEl = document.getElementById('mapping_note');
-const mappingCaptureStatusEl = document.getElementById('mapping-capture-status');
+const sbGridEl = document.getElementById('sb-grid');
+const sbMappingStatusEl = document.getElementById('sb-mapping-status');
 const inspectorEl = document.getElementById('route-inspector');
 const nodeCountEl = document.getElementById('metric-node-count');
 const routeCountEl = document.getElementById('metric-route-count');
@@ -29,9 +25,11 @@ const state = {
   selectedEdgeIdx: -1,
   edgeDeleteEnabled: true,
   activeTab: 'routing',
-  mappingMode: false,
   mappingPollTimer: null,
   mappingLastSeq: 0,
+  mappingAssignTarget: null,
+  midiMappingsByNote: {},
+  midiMappingsBySfx: {},
   sfxFiles: [],
   graph: null,
   graphCanvas: null,
@@ -60,6 +58,9 @@ function setActiveTab(tab) {
     ensureRoutingGraph();
     state.graphCanvas.setDirty(true, true);
     updateZoomLabel();
+  }
+  if (tab === 'system') {
+    loadSystemInfo();
   }
 }
 
@@ -95,7 +96,7 @@ function parseConfigText(text) {
   const cfg = {
     usb_playback_channels: 2,
     usb_capture_channels: 2,
-    usb_sample_rate: 44100,
+    usb_sample_rate: 48000,
     usb_sample_size: 2,
   };
 
@@ -177,7 +178,7 @@ function setFormFromConfig(cfg) {
   if (!cfg) return;
   document.getElementById('usb_playback_channels').value = String(cfg.usb_playback_channels ?? 2);
   document.getElementById('usb_capture_channels').value = String(cfg.usb_capture_channels ?? 2);
-  document.getElementById('usb_sample_rate').value = String(cfg.usb_sample_rate ?? 44100);
+  document.getElementById('usb_sample_rate').value = String(cfg.usb_sample_rate ?? 48000);
   document.getElementById('usb_sample_size').value = String(cfg.usb_sample_size ?? 2);
 }
 
@@ -185,7 +186,7 @@ function getConfigFromForm() {
   return {
     usb_playback_channels: Number(document.getElementById('usb_playback_channels').value) || 2,
     usb_capture_channels: Number(document.getElementById('usb_capture_channels').value) || 2,
-    usb_sample_rate: Number(document.getElementById('usb_sample_rate').value) || 44100,
+    usb_sample_rate: Number(document.getElementById('usb_sample_rate').value) || 48000,
     usb_sample_size: Number(document.getElementById('usb_sample_size').value) || 2,
   };
 }
@@ -946,6 +947,37 @@ async function loadVersion() {
   }
 }
 
+async function loadSystemInfo() {
+  try {
+    const res = await fetch('/api/system/info', { method: 'GET' });
+    const txt = await res.text();
+    if (!res.ok) return;
+    const data = JSON.parse(txt);
+
+    const vEl = document.getElementById('sysinfo-version');
+    const kEl = document.getElementById('sysinfo-kernel');
+    const uEl = document.getElementById('sysinfo-uptime');
+    const mEl = document.getElementById('sysinfo-memory');
+    const lEl = document.getElementById('sysinfo-load');
+    if (!vEl) return;
+
+    vEl.textContent = data.version ? `v${data.version}` : '\u2014';
+    kEl.textContent = data.kernel || '\u2014';
+
+    const secs = Number(data.uptime_secs || 0);
+    const d = Math.floor(secs / 86400);
+    const h = Math.floor((secs % 86400) / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    uEl.textContent = d > 0 ? `${d}d ${h}h ${m}m` : `${h}h ${m}m`;
+
+    const totalMb = Number(data.mem_total_mb || 0);
+    const availMb = Number(data.mem_avail_mb || 0);
+    mEl.textContent = `${availMb} / ${totalMb} MB`;
+
+    lEl.textContent = Number(data.load1 || 0).toFixed(2);
+  } catch (err) {}
+}
+
 async function loadConfig() {
   setStatus('loading config...');
   try {
@@ -1076,76 +1108,139 @@ async function listSfxFiles() {
 
     files.sort((a, b) => a.localeCompare(b));
     state.sfxFiles = files;
-    renderSfxFiles();
-    renderSoundboardTriggers();
-    renderMappingSfxSelect();
+    renderSoundboardGrid();
     return files;
   } catch (err) {
-    sfxListEl.textContent = `failed to list sfx files: ${err}`;
     return [];
   }
 }
 
-function renderSfxFiles() {
-  sfxListEl.innerHTML = '';
-  if (!state.sfxFiles.length) {
-    sfxListEl.textContent = 'no files in /audiox/sfx';
-    return;
-  }
-
-  for (const file of state.sfxFiles) {
-    const row = document.createElement('div');
-    row.className = 'edge-item';
-    row.textContent = file;
-    sfxListEl.appendChild(row);
-  }
-}
-
-function renderSoundboardTriggers() {
-  soundboardTriggerListEl.innerHTML = '';
+function renderSoundboardGrid() {
+  sbGridEl.innerHTML = '';
   if (!state.sfxFiles.length) {
     const empty = document.createElement('div');
     empty.className = 'small';
-    empty.textContent = 'No SFX files uploaded yet.';
-    soundboardTriggerListEl.appendChild(empty);
+    empty.textContent = 'No sounds uploaded yet.';
+    sbGridEl.appendChild(empty);
     return;
   }
 
   for (const file of state.sfxFiles) {
-    const btn = document.createElement('button');
-    btn.textContent = `Play ${file}`;
-    btn.addEventListener('click', () => triggerSfx(file));
-    soundboardTriggerListEl.appendChild(btn);
+    const mappedNote = state.midiMappingsBySfx[file];
+    const hasMidi = mappedNote !== undefined;
+    const isTarget = state.mappingAssignTarget === file;
+
+    const card = document.createElement('div');
+    card.className = `sb-card${isTarget ? ' assign-target' : ''}`;
+    card.dataset.file = file;
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'sb-card-name';
+    nameEl.title = file;
+    nameEl.textContent = file;
+
+    const midiEl = document.createElement('div');
+    midiEl.className = `sb-card-midi${hasMidi ? ' mapped' : ''}`;
+    if (hasMidi) {
+      const noteSpan = document.createElement('span');
+      noteSpan.textContent = `MIDI ${mappedNote}`;
+      const clearBtn = document.createElement('button');
+      clearBtn.className = 'sb-midi-clear';
+      clearBtn.textContent = '\u00d7';
+      clearBtn.title = 'Remove MIDI mapping';
+      clearBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        deleteMapping(mappedNote);
+      });
+      midiEl.appendChild(noteSpan);
+      midiEl.appendChild(clearBtn);
+    } else {
+      midiEl.textContent = 'no MIDI';
+    }
+
+    const actionsEl = document.createElement('div');
+    actionsEl.className = 'sb-card-actions';
+
+    const playBtn = document.createElement('button');
+    playBtn.className = 'primary';
+    playBtn.textContent = '\u25b6 Play';
+    playBtn.addEventListener('click', () => triggerSfx(file));
+
+    const assignBtn = document.createElement('button');
+    assignBtn.textContent = isTarget ? 'Waiting\u2026' : 'Assign MIDI';
+    if (isTarget) assignBtn.classList.add('primary');
+    assignBtn.addEventListener('click', async () => {
+      if (isTarget) {
+        state.mappingAssignTarget = null;
+        if (state.mappingPollTimer) {
+          clearInterval(state.mappingPollTimer);
+          state.mappingPollTimer = null;
+        }
+        sbMappingStatusEl.textContent = 'Assignment cancelled.';
+      } else {
+        // Snapshot the current seq so only presses AFTER this click are captured.
+        try {
+          const r = await fetch('/api/midi/last_note', { method: 'GET' });
+          if (r.ok) {
+            const d = JSON.parse(await r.text());
+            state.mappingLastSeq = Number(d.last_seq || 0);
+          }
+        } catch (_) {}
+        state.mappingAssignTarget = file;
+        if (!state.mappingPollTimer) {
+          state.mappingPollTimer = setInterval(pollMappingCapture, 220);
+        }
+        sbMappingStatusEl.textContent = `Press a MIDI button to assign to "${file}".`;
+      }
+      renderSoundboardGrid();
+    });
+
+    actionsEl.appendChild(playBtn);
+    actionsEl.appendChild(assignBtn);
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'warn';
+    delBtn.textContent = 'Remove';
+    delBtn.addEventListener('click', () => deleteSfxFile(file));
+    actionsEl.appendChild(delBtn);
+
+    card.appendChild(nameEl);
+    card.appendChild(midiEl);
+    card.appendChild(actionsEl);
+    sbGridEl.appendChild(card);
   }
 }
 
-function renderMappingSfxSelect() {
-  const prev = mappingSfxEl.value;
-  mappingSfxEl.innerHTML = '';
-  for (const file of state.sfxFiles) {
-    const opt = document.createElement('option');
-    opt.value = file;
-    opt.textContent = file;
-    mappingSfxEl.appendChild(opt);
-  }
-
-  if (prev && state.sfxFiles.includes(prev)) {
-    mappingSfxEl.value = prev;
+async function deleteSfxFile(filename) {
+  setStatus(`deleting ${filename}...`);
+  try {
+    const res = await fetch(`/api/rootfs/sfx/${encodeURIComponent(filename)}`, {
+      method: 'DELETE',
+    });
+    const txt = (await res.text()).trim();
+    if (!res.ok) {
+      setStatus(`delete failed: ${res.status} ${txt}`, 'warn');
+      return;
+    }
+    await listSfxFiles();
+    await loadMappings();
+    setStatus(`deleted ${filename}`, 'ok');
+  } catch (err) {
+    setStatus(`delete error: ${err}`, 'warn');
   }
 }
 
 async function uploadSfxFile() {
-  const slot = Number(document.getElementById('upload_slot').value || 0);
   const file = document.getElementById('upload_file').files[0];
   const manualName = document.getElementById('upload_name').value;
   if (!file) {
-    setStatus('upload failed: pick a file first', 'warn');
+    setStatus('pick a file first', 'warn');
     return;
   }
 
   const targetName = sanitizeSfxName(manualName || file.name);
   if (!targetName) {
-    setStatus('upload failed: invalid target name', 'warn');
+    setStatus('invalid target filename', 'warn');
     return;
   }
 
@@ -1164,7 +1259,7 @@ async function uploadSfxFile() {
     }
 
     await listSfxFiles();
-    setStatus(`uploaded ${targetName} for slot ${slot}`, 'ok');
+    setStatus(`uploaded ${targetName}`, 'ok');
   } catch (err) {
     setStatus(`upload error: ${err}`, 'warn');
   }
@@ -1174,49 +1269,32 @@ async function loadMappings() {
   try {
     const res = await fetch('/api/midi/mappings', { method: 'GET' });
     const txt = await res.text();
-    if (!res.ok) {
-      mappingListEl.textContent = `failed to load mappings: ${res.status}`;
-      return;
-    }
+    if (!res.ok) return;
 
     const data = JSON.parse(txt);
     const mappings = Array.isArray(data?.mappings) ? data.mappings : [];
-    mappingListEl.innerHTML = '';
-    if (!mappings.length) {
-      mappingListEl.textContent = 'no mappings yet';
-      return;
-    }
+    state.midiMappingsByNote = {};
+    state.midiMappingsBySfx = {};
 
     for (const map of mappings) {
-      const row = document.createElement('div');
-      row.className = 'edge-item';
-      row.textContent = `note ${map.note} -> ${map.sfx}`;
-      row.addEventListener('click', () => {
-        mappingNoteEl.value = String(map.note);
-        if (state.sfxFiles.includes(map.sfx)) {
-          mappingSfxEl.value = map.sfx;
-        }
-      });
-      mappingListEl.appendChild(row);
+      state.midiMappingsByNote[Number(map.note)] = map.sfx;
+      state.midiMappingsBySfx[map.sfx] = Number(map.note);
     }
-  } catch (err) {
-    mappingListEl.textContent = `failed to load mappings: ${err}`;
-  }
+
+    renderSoundboardGrid();
+  } catch (err) {}
 }
 
-async function saveMapping() {
-  const note = Number(mappingNoteEl.value);
-  const sfx = mappingSfxEl.value;
+async function saveMapping(note, sfx) {
   if (!Number.isFinite(note) || note < 0 || note > 127) {
     setStatus('invalid midi note, expected 0-127', 'warn');
     return;
   }
   if (!sfx) {
-    setStatus('select a target sound first', 'warn');
+    setStatus('no target sound selected', 'warn');
     return;
   }
 
-  setStatus(`saving mapping note ${note} -> ${sfx}...`);
   try {
     const body = `note=${note}&sfx=${sfx}`;
     const res = await fetch('/api/midi/mapping/set', {
@@ -1231,20 +1309,18 @@ async function saveMapping() {
     }
 
     await loadMappings();
-    setStatus(`mapping saved note ${note} -> ${sfx}`, 'ok');
+    setStatus(`mapped note ${note} \u2192 ${sfx}`, 'ok');
   } catch (err) {
     setStatus(`mapping save error: ${err}`, 'warn');
   }
 }
 
-async function deleteMapping() {
-  const note = Number(mappingNoteEl.value);
+async function deleteMapping(note) {
   if (!Number.isFinite(note) || note < 0 || note > 127) {
-    setStatus('invalid midi note, expected 0-127', 'warn');
+    setStatus('invalid midi note', 'warn');
     return;
   }
 
-  setStatus(`deleting mapping for note ${note}...`);
   try {
     const res = await fetch('/api/midi/mapping/delete', {
       method: 'POST',
@@ -1258,63 +1334,49 @@ async function deleteMapping() {
     }
 
     await loadMappings();
-    setStatus(`mapping deleted for note ${note}`, 'ok');
+    setStatus(`mapping removed for note ${note}`, 'ok');
   } catch (err) {
     setStatus(`mapping delete error: ${err}`, 'warn');
   }
 }
 
 async function pollMappingCapture() {
-  if (!state.mappingMode) {
+  if (!state.mappingAssignTarget) {
+    if (state.mappingPollTimer) {
+      clearInterval(state.mappingPollTimer);
+      state.mappingPollTimer = null;
+    }
     return;
   }
 
   try {
     const res = await fetch('/api/midi/last_note', { method: 'GET' });
     const txt = await res.text();
-    if (!res.ok) {
-      return;
-    }
+    if (!res.ok) return;
 
     const data = JSON.parse(txt);
     const connected = !!data.connected;
     const seq = Number(data.last_seq || 0);
     const note = Number(data.last_note);
-    const velocity = Number(data.last_velocity || 0);
 
     if (!connected) {
-      mappingCaptureStatusEl.textContent = 'Mapping mode ON - waiting for MIDI device...';
+      sbMappingStatusEl.textContent = 'Waiting for MIDI device\u2026';
       return;
     }
 
     if (seq > state.mappingLastSeq && note >= 0 && note <= 127) {
       state.mappingLastSeq = seq;
-      mappingNoteEl.value = String(note);
-      mappingCaptureStatusEl.textContent = `Captured note ${note} (velocity ${velocity})`;
-      setStatus(`captured midi note ${note}`, 'ok');
+      const target = state.mappingAssignTarget;
+      state.mappingAssignTarget = null;
+      if (state.mappingPollTimer) {
+        clearInterval(state.mappingPollTimer);
+        state.mappingPollTimer = null;
+      }
+      await saveMapping(note, target);
+      sbMappingStatusEl.textContent = `Assigned note ${note} to "${target}".`;
+      renderSoundboardGrid();
     }
-  } catch (err) {
-  }
-}
-
-function setMappingMode(enabled) {
-  state.mappingMode = !!enabled;
-  const btn = document.getElementById('btn-mapping-mode');
-  btn.textContent = `Mapping Mode: ${state.mappingMode ? 'ON' : 'OFF'}`;
-  btn.classList.toggle('primary', state.mappingMode);
-  btn.classList.toggle('warn', !state.mappingMode);
-
-  if (state.mappingPollTimer) {
-    clearInterval(state.mappingPollTimer);
-    state.mappingPollTimer = null;
-  }
-
-  if (state.mappingMode) {
-    mappingCaptureStatusEl.textContent = 'Mapping mode ON - press a MIDI button to capture note.';
-    state.mappingPollTimer = setInterval(pollMappingCapture, 220);
-  } else {
-    mappingCaptureStatusEl.textContent = 'Mapping mode OFF.';
-  }
+  } catch (err) {}
 }
 
 async function initializeGraphFromConfig() {
@@ -1325,7 +1387,6 @@ async function initializeGraphFromConfig() {
   await loadRoutingThings();
   await loadRoutingFile();
   state.edgeDeleteEnabled = true;
-  setMappingMode(false);
   updateZoomLabel();
   startRoutingThingsPolling();
 }
@@ -1422,24 +1483,16 @@ document.addEventListener('keydown', (ev) => {
 document.getElementById('btn-upload-real').addEventListener('click', uploadSfxFile);
 
 document.getElementById('btn-upload-clear').addEventListener('click', () => {
-  document.getElementById('upload_slot').value = '0';
   document.getElementById('upload_name').value = '';
   document.getElementById('upload_file').value = '';
   setStatus('upload form cleared');
 });
 
-document.getElementById('btn-mapping-mode').addEventListener('click', () => {
-  setMappingMode(!state.mappingMode);
-});
-
-document.getElementById('btn-mapping-refresh').addEventListener('click', async () => {
+document.getElementById('btn-sb-refresh').addEventListener('click', async () => {
   await listSfxFiles();
   await loadMappings();
-  setStatus('mapping data refreshed', 'ok');
+  setStatus('soundboard refreshed', 'ok');
 });
-
-document.getElementById('btn-mapping-save').addEventListener('click', saveMapping);
-document.getElementById('btn-mapping-delete').addEventListener('click', deleteMapping);
 
 document.getElementById('btn-system-sync').addEventListener('click', async () => {
   await runSystemAction('/api/system/sync', 'sync');

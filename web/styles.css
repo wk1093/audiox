@@ -115,7 +115,6 @@ body {
 .page {
   display: none;
   padding: 14px;
-  overflow: hidden;
   animation: page-in 220ms ease;
 }
 
@@ -201,12 +200,14 @@ select {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
   gap: 12px;
+  align-items: start;
 }
 
 .graph-shell {
   border: 1px solid var(--line);
   border-radius: 12px;
   overflow: hidden;
+  min-width: 0;
   background:
     linear-gradient(rgba(127, 209, 255, 0.08) 1px, transparent 1px),
     linear-gradient(90deg, rgba(127, 209, 255, 0.08) 1px, transparent 1px),
@@ -398,6 +399,7 @@ select {
   gap: 10px;
   align-content: start;
   min-width: 0;
+  overflow: hidden;
 }
 
 .metric-grid {
@@ -411,6 +413,7 @@ select {
   border-radius: 8px;
   padding: 6px;
   background: #0d222f;
+  min-width: 0;
 }
 
 .metric .label {
@@ -431,7 +434,9 @@ select {
   display: grid;
   gap: 6px;
   max-height: 300px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-width: 0;
 }
 
 .edge-item {
@@ -462,6 +467,7 @@ select {
 .small {
   font-size: 12px;
   color: var(--muted);
+  overflow-wrap: break-word;
 }
 
 .cfg-wrap {
@@ -515,7 +521,104 @@ select {
   color: var(--warn);
 }
 
-@media (max-width: 1120px) {
+.soundboard-layout {
+  display: grid;
+  gap: 12px;
+}
+
+.sb-topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.sb-topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.sb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.sb-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-solid);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.sb-card.assign-target {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(127, 209, 255, 0.35) inset;
+}
+
+.sb-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sb-card-midi {
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sb-card-midi.mapped {
+  color: var(--accent-2);
+}
+
+.sb-midi-clear {
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 3px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.sb-midi-clear:hover {
+  color: var(--warn);
+  border-color: transparent;
+  background: transparent;
+}
+
+.sb-card-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.sb-card-actions button {
+  font-size: 12px;
+  padding: 5px 6px;
+}
+
+.system-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 12px;
+  align-items: start;
+}
+
+@media (max-width: 1280px) {
   .routing-grid {
     grid-template-columns: 1fr;
   }
@@ -545,6 +648,10 @@ select {
   .actions-3,
   .grid-2,
   .metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .system-layout {
     grid-template-columns: 1fr;
   }
 

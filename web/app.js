@@ -209,7 +209,7 @@ function renderInspector() {
     return;
   }
 
-  inspectorEl.textContent = 'Drag from output to input to route. Multi-source into one input is supported.';
+  inspectorEl.textContent = '';
 }
 
 function renderEdgesList() {

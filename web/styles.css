@@ -37,7 +37,7 @@ body {
 }
 
 .app {
-  width: min(1360px, 96vw);
+  width: 95%;
   margin: 18px auto;
   border: 1px solid var(--line);
   border-radius: 16px;
@@ -197,17 +197,18 @@ select {
 }
 
 .routing-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  display: flex;
   gap: 12px;
-  align-items: start;
+  align-items: flex-start;
+  min-width: 0;
 }
 
 .graph-shell {
+  flex: 1;
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 12px;
   overflow: hidden;
-  min-width: 0;
   background:
     linear-gradient(rgba(127, 209, 255, 0.08) 1px, transparent 1px),
     linear-gradient(90deg, rgba(127, 209, 255, 0.08) 1px, transparent 1px),
@@ -620,7 +621,11 @@ select {
 
 @media (max-width: 1280px) {
   .routing-grid {
-    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+
+  .side-stack {
+    flex: 0 0 auto;
   }
 
   .graph-wrap {

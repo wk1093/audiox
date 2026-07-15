@@ -908,7 +908,7 @@ static void updateChannelLevels(AudioContext *ctx, RuntimeGraph *rt) {
                     }
                 }
                 rt->channelLevels[node][ch].store(peak, std::memory_order_relaxed);
-                ctx->nodeChannelLevels[node][ch] = peak;
+                ctx->nodeChannelLevels[node][ch].store(peak, std::memory_order_relaxed);
             }
         } else {
             for (uint8_t ch = 0; ch < channels; ++ch) {
@@ -920,7 +920,7 @@ static void updateChannelLevels(AudioContext *ctx, RuntimeGraph *rt) {
                     }
                 }
                 rt->channelLevels[node][ch].store(peak, std::memory_order_relaxed);
-                ctx->nodeChannelLevels[node][ch] = peak;
+                ctx->nodeChannelLevels[node][ch].store(peak, std::memory_order_relaxed);
             }
         }
     }

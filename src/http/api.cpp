@@ -14,6 +14,8 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/reboot.h>
+#include <sys/sysinfo.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 
 #define HTTP_BODY_MAX 49152
@@ -27,6 +29,7 @@
 #define HTTP_SYSTEM_RESTART_PATH HTTP_API_PREFIX "system/restart"
 #define HTTP_SYSTEM_SHUTDOWN_PATH HTTP_API_PREFIX "system/shutdown"
 #define HTTP_VERSION_PATH HTTP_API_PREFIX "version"
+#define HTTP_SYSTEM_INFO_PATH HTTP_API_PREFIX "system/info"
 #define HTTP_MIDI_LAST_NOTE_PATH HTTP_API_PREFIX "midi/last_note"
 #define HTTP_MIDI_MAPPINGS_PATH HTTP_API_PREFIX "midi/mappings"
 #define HTTP_MIDI_MAPPING_SET_PATH HTTP_API_PREFIX "midi/mapping/set"
@@ -253,6 +256,37 @@ static int handleApiPutRootfs(HttpServer *server,
 
 	if (written != body_len) {
 		static const char err[] = "write failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	static const char ok[] = "ok\n";
+	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
+}
+
+static int handleApiDeleteRootfs(HttpServer *server, int cfd, const char *path) {
+	const char *suffix = rootfsSuffix(path);
+	if (!suffix || !safeApiSuffix(suffix)) {
+		static const char bad[] = "bad path\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+	if (!suffix[0] || suffix[strlen(suffix) - 1] == '/') {
+		static const char bad[] = "cannot delete a directory\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char fs_path[512];
+	int pn = snprintf(fs_path, sizeof(fs_path), "%s%s", HTTP_FS_ROOT, suffix);
+	if (pn <= 0 || (size_t)pn >= sizeof(fs_path)) {
+		static const char bad[] = "path too long\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	if (unlink(fs_path) < 0) {
+		if (errno == ENOENT) {
+			static const char nf[] = "not found\n";
+			return server->sendResponse(cfd, "404 Not Found", "text/plain; charset=utf-8", nf, sizeof(nf) - 1);
+		}
+		static const char err[] = "delete failed\n";
 		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
 	}
 
@@ -925,6 +959,54 @@ static int handleSystemShutdown(HttpServer *server,
 	return ret;
 }
 
+static int handleSystemInfo(HttpServer *server,
+							 int cfd,
+							 const char *method,
+							 const char *path) {
+	(void)method;
+	(void)path;
+	if (!server) return -1;
+
+	const char *version_str = "unknown";
+#if defined(AUDIOX_VERSION_MAJOR) && defined(AUDIOX_VERSION_MINOR) && defined(AUDIOX_VERSION_PATCH)
+	char version_buf[32];
+	snprintf(version_buf, sizeof(version_buf), "%d.%d.%d",
+			 AUDIOX_VERSION_MAJOR, AUDIOX_VERSION_MINOR, AUDIOX_VERSION_PATCH);
+	version_str = version_buf;
+#endif
+
+	char kernel_buf[192] = "unknown";
+	struct utsname u;
+	if (uname(&u) == 0) {
+		snprintf(kernel_buf, sizeof(kernel_buf), "Linux %s", u.release);
+	}
+
+	long uptime_secs = 0;
+	long mem_total_mb = 0;
+	long mem_avail_mb = 0;
+	float load1 = 0.0f;
+	struct sysinfo si;
+	if (sysinfo(&si) == 0) {
+		uptime_secs = si.uptime;
+		unsigned long unit = si.mem_unit;
+		mem_total_mb = (long)((unsigned long long)si.totalram * unit / (1024UL * 1024UL));
+		mem_avail_mb = (long)((unsigned long long)(si.freeram + si.bufferram) * unit / (1024UL * 1024UL));
+		load1 = (float)si.loads[0] / 65536.0f;
+	}
+
+	char out[384];
+	int n = snprintf(out, sizeof(out),
+					 "{\"version\":\"%s\",\"kernel\":\"%s\","
+					 "\"uptime_secs\":%ld,"
+					 "\"mem_total_mb\":%ld,"
+					 "\"mem_avail_mb\":%ld,"
+					 "\"load1\":%.2f}\n",
+					 version_str, kernel_buf,
+					 uptime_secs, mem_total_mb, mem_avail_mb, load1);
+	if (n < 0 || n >= (int)sizeof(out)) n = 0;
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
 static int handleVersion(HttpServer *server,
 						 int cfd,
 						 const char *method,
@@ -1042,6 +1124,13 @@ int handleApiRequest(HttpServer *server,
 		return rc;
 	}
 
+	if (strcmp(path, HTTP_SYSTEM_INFO_PATH) == 0) {
+		if (strcmp(method, "GET") != 0) {
+			return sendMethodNotAllowed(server, cfd);
+		}
+		return handleSystemInfo(server, cfd, method, path);
+	}
+
 	if (strcmp(path, HTTP_VERSION_PATH) == 0) {
 		if (strcmp(method, "GET") != 0) {
 			return sendMethodNotAllowed(server, cfd);
@@ -1083,6 +1172,9 @@ int handleApiRequest(HttpServer *server,
 		}
 		if (strcmp(method, "PUT") == 0) {
 			return handleApiPutRootfs(server, cfd, path, body, body_len);
+		}
+		if (strcmp(method, "DELETE") == 0) {
+			return handleApiDeleteRootfs(server, cfd, path);
 		}
 		return sendMethodNotAllowed(server, cfd);
 	}

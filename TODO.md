@@ -16,18 +16,20 @@ Roadmap for future audiox development.
 
 ## Next Steps - v1.1+
 
-- [ ] Improve soundboard UI to be more usable and less confusing
-- [ ] Polish UI:
-  - [ ] Make svg connection nodes start at edge of device inside of under it, if a connection goes up or down it looks weird
-  - [ ] Make it so currently connected node channels are highlighted, and when selecting a node, anything it's connected to is highlighted extra/differently
+- [x] Improve soundboard UI to be more usable and less confusing
+- [x] Polish UI:
+  - [x] switch to using LiteGraph for the routing.
+  - [x] Make it so "things" are reloaded periodically so that new devices show up on the WebUI
+
+## Later - v1.2+
 - [ ] Make soundboard MIDI mapping more flexible
-- [ ] Make soundboard able to output midi as well to display lights on a connected controller
+  - [ ] Make soundboard able to output midi as well to display lights on a connected controller
 - [ ] Volume sliders for all devices, with proper gain control for USB gadget input
+- [ ] Add a static ffmpeg build to the initramfs so that uploaded audio files can be converted to wav (which I can easily parse and play)
 
 ## Later - v1.2+
 
 - [ ] Add audio effects (reverb, delay, etc) to the audio engine, and make it so they can be routed to any output, and have their parameters controlled via the HTTP API as well as bindable MIDI CCs and buttons (for toggling effects on/off)
-- [ ] Add a static ffmpeg build to the initramfs so that uploaded audio files can be converted to wav (which I can easily parse and play)
 - [ ] Allow controlling routes with MIDI CCs and buttons
 
 ## Later - v1.3+

@@ -10,6 +10,6 @@ Format requirements (current loader):
 - RIFF/WAVE PCM (audio format 1)
 - 16-bit little-endian samples
 - Mono or stereo
-- Any sample rate (resampled at runtime to 44100 Hz)
+- Any sample rate (resampled at runtime to 48000 Hz)
 
 These files are copied into the initramfs at /etc/wavs/.

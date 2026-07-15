@@ -18,8 +18,8 @@ BOOTLOADER_FLAGS := $(CXXFLAGS)
 
 # Version information
 AUDIOX_VERSION_MAJOR = 1
-AUDIOX_VERSION_MINOR = 0
-AUDIOX_VERSION_PATCH = 2
+AUDIOX_VERSION_MINOR = 1
+AUDIOX_VERSION_PATCH = 0
 
 # Auto-detected from firmware after fetch_deps runs.
 KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")
@@ -141,6 +141,12 @@ rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE
 		cp "$(WEB_INDEX_HTML)" "$(ROOTFS_DIR)/etc/www/index.html"; \
 	else \
 		echo "Warning: web index file not found at $(WEB_INDEX_HTML)"; \
+	fi
+	@if [ -d "$(CURDIR)/web" ]; then \
+		echo "Staging web assets from $(CURDIR)/web/..."; \
+		cp -a "$(CURDIR)/web/." "$(ROOTFS_DIR)/etc/www/"; \
+	else \
+		echo "Warning: web assets directory not found at $(CURDIR)/web"; \
 	fi
 	@if [ -f "$(WEB_LOGO_SVG)" ]; then \
 		echo "Staging web logo svg from $(WEB_LOGO_SVG)..."; \

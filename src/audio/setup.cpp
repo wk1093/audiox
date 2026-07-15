@@ -238,7 +238,7 @@ float AudioContext::getChannelLevel(AudioHandle handle, int channelIndex, bool i
     for (uint16_t i = 0; i < routingGraphPublished.thingCount; ++i) {
         if (strcmp(routingGraphPublished.things[i].id, thingId) == 0) {
             if (channelIndex >= 0 && channelIndex < 16) {
-                return nodeChannelLevels[i][channelIndex];
+                return nodeChannelLevels[i][channelIndex].load(std::memory_order_relaxed);
             }
             break;
         }

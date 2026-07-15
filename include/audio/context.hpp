@@ -137,8 +137,7 @@ struct AudioContext {
     AudioGraphState routingGraphPublished;
     std::atomic<uint32_t> routingGraphSeq;
     mutable std::mutex routingGraphMutex;
-    float nodeChannelLevels[AUDIO_GRAPH_MAX_THINGS][16];
-    mutable std::mutex levelsMutex;
+    std::atomic<float> nodeChannelLevels[AUDIO_GRAPH_MAX_THINGS][16];
 
     AudioContext(Audiox *context);
     ~AudioContext();

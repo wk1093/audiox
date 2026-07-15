@@ -38,6 +38,9 @@ const state = {
   nodeByThingId: new Map(),
   suspendGraphSync: false,
   internalGraphMutation: false,
+  thingsPollTimer: null,
+  thingsPollInFlight: false,
+  thingsSignature: '',
 };
 
 function setStatus(text, kind = '') {
@@ -152,6 +155,22 @@ function formatRoutingText() {
   }
   out.push('');
   return out.join('\n');
+}
+
+function makeThingsSignature(things) {
+  const rows = [];
+  for (const raw of Array.isArray(things) ? things : []) {
+    const id = normalizeThingId(raw?.id);
+    if (!id) {
+      continue;
+    }
+    const name = String(raw?.name || id);
+    const inputs = Math.max(0, Math.min(16, Number(raw?.inputs) || 0));
+    const outputs = Math.max(0, Math.min(16, Number(raw?.outputs) || 0));
+    rows.push(`${id}|${name}|${inputs}|${outputs}`);
+  }
+  rows.sort((a, b) => a.localeCompare(b));
+  return rows.join('\n');
 }
 
 function setFormFromConfig(cfg) {
@@ -785,22 +804,71 @@ function buildNodesFromThings(things) {
 }
 
 async function loadRoutingThings() {
+  return loadRoutingThingsWithOptions({ silent: false, force: true });
+}
+
+async function loadRoutingThingsWithOptions(options = {}) {
+  const silent = !!options.silent;
+  const force = !!options.force;
+
   try {
     const res = await fetch('/api/routing/things', { method: 'GET' });
     const txt = await res.text();
     if (!res.ok) {
-      setStatus(`things load failed: ${res.status} ${txt.trim()}`, 'warn');
+      if (!silent) {
+        setStatus(`things load failed: ${res.status} ${txt.trim()}`, 'warn');
+      }
       return false;
     }
 
     const parsed = JSON.parse(txt);
-    buildNodesFromThings(parsed?.things || []);
+    const nextThings = parsed?.things || [];
+    const nextSig = makeThingsSignature(nextThings);
+    if (!force && nextSig === state.thingsSignature) {
+      return false;
+    }
+
+    state.thingsSignature = nextSig;
+    buildNodesFromThings(nextThings);
     rebuildRoutingGraph();
     return true;
   } catch (err) {
-    setStatus(`things load error: ${err}`, 'warn');
+    if (!silent) {
+      setStatus(`things load error: ${err}`, 'warn');
+    }
     return false;
   }
+}
+
+async function pollRoutingThingsIfNeeded() {
+  if (state.activeTab !== 'routing') {
+    return;
+  }
+  if (document.visibilityState && document.visibilityState !== 'visible') {
+    return;
+  }
+  if (state.thingsPollInFlight) {
+    return;
+  }
+
+  state.thingsPollInFlight = true;
+  try {
+    const changed = await loadRoutingThingsWithOptions({ silent: true, force: false });
+    if (changed) {
+      setStatus('routing things updated', 'ok');
+    }
+  } finally {
+    state.thingsPollInFlight = false;
+  }
+}
+
+function startRoutingThingsPolling() {
+  if (state.thingsPollTimer) {
+    clearInterval(state.thingsPollTimer);
+  }
+  state.thingsPollTimer = setInterval(() => {
+    pollRoutingThingsIfNeeded();
+  }, 1000);
 }
 
 async function loadRoutingFile() {
@@ -1259,11 +1327,15 @@ async function initializeGraphFromConfig() {
   state.edgeDeleteEnabled = true;
   setMappingMode(false);
   updateZoomLabel();
+  startRoutingThingsPolling();
 }
 
 tabsEl.querySelectorAll('.tab-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
     setActiveTab(btn.dataset.tab);
+    if (btn.dataset.tab === 'routing') {
+      pollRoutingThingsIfNeeded();
+    }
   });
 });
 

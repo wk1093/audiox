@@ -130,6 +130,15 @@ struct AudioContext {
     AudioSfxClipSlot sfxSlots[2];
     std::atomic<uint32_t> sfxActiveSlot;
 
+    // Soundboard play-state tracking for MIDI lighting.
+    // sfxIsPlaying: set to 1 by the audio thread when a clip is audible, 0 when done.
+    // sfxTriggerSeq: bumped (from the HTTP/trigger thread) each time a new clip starts.
+    // sfxLastTriggeredBasename: basename of last triggered file, e.g. "kick.wav".
+    std::atomic<int> sfxIsPlaying;
+    std::atomic<uint32_t> sfxTriggerSeq;
+    char sfxLastTriggeredBasename[256];
+    mutable std::mutex sfxNameMutex;
+
     std::unordered_map<std::string, AudioHandle> pathToHandle;
     std::unordered_map<AudioHandle, AudioDeviceInfo> devices;
     mutable std::mutex devicesMutex;

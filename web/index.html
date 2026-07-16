@@ -156,6 +156,31 @@
         <div id="sb-grid" class="sb-grid"></div>
 
         <section class="card stack">
+          <h2>MIDI Lighting</h2>
+          <p class="small" style="margin:0 0 8px;">Sets LED colors on the MIDI controller per playback state. Velocity 0 = off.</p>
+          <div class="cfg-row">
+            <label for="light_channel">MIDI Channel (0&ndash;15)</label>
+            <input id="light_channel" type="number" min="0" max="15" step="1" value="0">
+          </div>
+          <div class="cfg-row">
+            <label for="light_mapped_vel">Mapped velocity (assigned, idle)</label>
+            <input id="light_mapped_vel" type="number" min="0" max="127" step="1" value="0">
+          </div>
+          <div class="cfg-row">
+            <label for="light_held_vel">Held velocity (button pressed)</label>
+            <input id="light_held_vel" type="number" min="0" max="127" step="1" value="0">
+          </div>
+          <div class="cfg-row">
+            <label for="light_playing_vel">Playing velocity (clip running)</label>
+            <input id="light_playing_vel" type="number" min="0" max="127" step="1" value="0">
+          </div>
+          <div class="grid-2">
+            <button id="btn-light-save" class="primary">Save Lighting</button>
+            <button id="btn-light-refresh" class="flat">Refresh LEDs</button>
+          </div>
+        </section>
+
+        <section class="card stack">
           <h2>Add Sound</h2>
           <div class="cfg-row" style="margin-top: 0;">
             <label for="upload_name">Filename</label>

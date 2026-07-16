@@ -34,6 +34,11 @@
 #define HTTP_MIDI_MAPPINGS_PATH HTTP_API_PREFIX "midi/mappings"
 #define HTTP_MIDI_MAPPING_SET_PATH HTTP_API_PREFIX "midi/mapping/set"
 #define HTTP_MIDI_MAPPING_DELETE_PATH HTTP_API_PREFIX "midi/mapping/delete"
+#define HTTP_MIDI_LIGHT_CONFIG_PATH HTTP_API_PREFIX "midi/light_config"
+#define HTTP_MIDI_LIGHT_SOUNDS_PATH HTTP_API_PREFIX "midi/light_sounds"
+#define HTTP_MIDI_LIGHT_SOUND_SET_PATH HTTP_API_PREFIX "midi/light_sound/set"
+#define HTTP_MIDI_LIGHT_SOUND_DELETE_PATH HTTP_API_PREFIX "midi/light_sound/delete"
+#define HTTP_MIDI_LIGHT_REFRESH_PATH HTTP_API_PREFIX "midi/light_refresh"
 #define HTTP_AUDIO_DEVICES_PATH HTTP_API_PREFIX "audio/devices"
 #define HTTP_AUDIO_RESCAN_PATH HTTP_API_PREFIX "audio/rescan"
 #define HTTP_FS_ROOT ROOT_MOUNT_POINT "/"
@@ -603,31 +608,32 @@ static int handleMidiMappings(HttpServer *server,
 		return sendMethodNotAllowed(server, cfd);
 	}
 
-	ConfigData cfg = server->app->config->readConfigFile();
+	// Note mappings live in midi_map.txt (separated from audio config).
+	MidiMapData data = server->app->config->readMidiMapFile();
 	char out[HTTP_BODY_MAX];
 	size_t off = 0;
 
-	int n = snprintf(out + off, sizeof(out) - off, "{\"mapping_count\":%u,\"mappings\":[", (unsigned)cfg.mappingCount);
+	int n = snprintf(out + off, sizeof(out) - off, "{\"mapping_count\":%u,\"mappings\":[", (unsigned)data.mappingCount);
 	if (n <= 0 || (size_t)n >= sizeof(out) - off) {
 		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", "encode failed\n", 14);
 	}
 	off += (size_t)n;
 
-	uint32_t count = cfg.mappingCount;
+	uint32_t count = data.mappingCount;
 	if (count > MIDI_MAPPINGS_MAX) {
 		count = MIDI_MAPPINGS_MAX;
 	}
 	int first = 1;
 	for (uint32_t i = 0; i < count; ++i) {
-		if (!cfg.mappings[i].sfxPath[0]) {
+		if (!data.mappings[i].sfxPath[0]) {
 			continue;
 		}
 		n = snprintf(out + off,
 					 sizeof(out) - off,
 					 "%s{\"note\":%u,\"sfx\":\"%s\"}",
 					 first ? "" : ",",
-					 (unsigned)cfg.mappings[i].note,
-					 cfg.mappings[i].sfxPath);
+					 (unsigned)data.mappings[i].note,
+					 data.mappings[i].sfxPath);
 		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
 			break;
 		}
@@ -679,36 +685,43 @@ static int handleMidiMappingSet(HttpServer *server,
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
 	}
 
-	ConfigData cfg = server->app->config->readConfigFile();
-	uint32_t count = cfg.mappingCount;
+	// Note mappings are stored in midi_map.txt.
+	MidiMapData data = server->app->config->readMidiMapFile();
+	uint32_t count = data.mappingCount;
 	if (count > MIDI_MAPPINGS_MAX) {
 		count = MIDI_MAPPINGS_MAX;
 	}
 
 	int found = -1;
 	for (uint32_t i = 0; i < count; ++i) {
-		if (cfg.mappings[i].note == (uint8_t)note) {
+		if (data.mappings[i].note == (uint8_t)note) {
 			found = (int)i;
 			break;
 		}
 	}
 
 	if (found >= 0) {
-		cfg.mappings[found].note = (uint8_t)note;
-		copy_bound(cfg.mappings[found].sfxPath, sizeof(cfg.mappings[found].sfxPath), normalized);
+		data.mappings[found].note = (uint8_t)note;
+		copy_bound(data.mappings[found].sfxPath, sizeof(data.mappings[found].sfxPath), normalized);
 	} else {
 		if (count >= MIDI_MAPPINGS_MAX) {
 			static const char full[] = "mapping table full\n";
 			return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8", full, sizeof(full) - 1);
 		}
-		cfg.mappings[count].note = (uint8_t)note;
-		copy_bound(cfg.mappings[count].sfxPath, sizeof(cfg.mappings[count].sfxPath), normalized);
-		cfg.mappingCount = count + 1;
+		data.mappings[count].note = (uint8_t)note;
+		copy_bound(data.mappings[count].sfxPath, sizeof(data.mappings[count].sfxPath), normalized);
+		data.mappingCount = count + 1;
 	}
 
-	if (server->app->config->writeConfigFile(&cfg) < 0) {
-		static const char err[] = "failed to write config\n";
+	if (server->app->config->writeMidiMapFile(&data) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
 		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	// Push update to MIDI context immediately so lighting reflects new mapping.
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = data;
+		server->app->midi->refreshAllLighting();
 	}
 
 	static const char ok[] = "ok\n";
@@ -743,15 +756,15 @@ static int handleMidiMappingDelete(HttpServer *server,
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
 	}
 
-	ConfigData cfg = server->app->config->readConfigFile();
-	uint32_t count = cfg.mappingCount;
+	MidiMapData data = server->app->config->readMidiMapFile();
+	uint32_t count = data.mappingCount;
 	if (count > MIDI_MAPPINGS_MAX) {
 		count = MIDI_MAPPINGS_MAX;
 	}
 
 	int idx = -1;
 	for (uint32_t i = 0; i < count; ++i) {
-		if (cfg.mappings[i].note == (uint8_t)note) {
+		if (data.mappings[i].note == (uint8_t)note) {
 			idx = (int)i;
 			break;
 		}
@@ -763,15 +776,22 @@ static int handleMidiMappingDelete(HttpServer *server,
 	}
 
 	for (uint32_t i = (uint32_t)idx; i + 1 < count; ++i) {
-		cfg.mappings[i] = cfg.mappings[i + 1];
+		data.mappings[i] = data.mappings[i + 1];
 	}
 	if (count > 0) {
-		cfg.mappingCount = count - 1;
+		data.mappingCount = count - 1;
 	}
 
-	if (server->app->config->writeConfigFile(&cfg) < 0) {
-		static const char err[] = "failed to write config\n";
+	if (server->app->config->writeMidiMapFile(&data) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
 		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	// Turn off the removed note's LED and refresh the rest.
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = data;
+		server->app->midi->sendLightNote((uint8_t)note, data.globalLight.channel, 0);
+		server->app->midi->refreshAllLighting();
 	}
 
 	static const char ok[] = "ok\n";
@@ -1035,6 +1055,323 @@ static int handleVersion(HttpServer *server,
 #endif
 }
 
+static int handleMidiLightConfig(HttpServer *server,
+								 int cfd,
+								 const char *method,
+								 const char *path,
+								 const char *body,
+								 size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method) {
+		return -1;
+	}
+
+	if (strcmp(method, "GET") == 0) {
+		MidiMapData data = server->app->config->readMidiMapFile();
+		char out[256];
+		int n = snprintf(out, sizeof(out),
+						 "{\"channel\":%u,\"mapped_vel\":%u,\"held_vel\":%u,\"playing_vel\":%u}\n",
+						 (unsigned)data.globalLight.channel,
+						 (unsigned)data.globalLight.mappedVel,
+						 (unsigned)data.globalLight.heldVel,
+						 (unsigned)data.globalLight.playingVel);
+		if (n < 0 || (size_t)n >= sizeof(out)) {
+			n = 0;
+		}
+		return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+	}
+
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	if (!body) {
+		static const char bad[] = "missing body\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char ch_buf[16], mapped_buf[16], held_buf[16], playing_buf[16];
+	MidiMapData data = server->app->config->readMidiMapFile();
+
+	if (body_get_value(body, body_len, "channel", ch_buf, sizeof(ch_buf))) {
+		char *ep = NULL;
+		long v = strtol(ch_buf, &ep, 10);
+		if (ep && *ep == '\0' && v >= 0 && v <= 15) {
+			data.globalLight.channel = (uint8_t)v;
+		}
+	}
+	if (body_get_value(body, body_len, "mapped_vel", mapped_buf, sizeof(mapped_buf))) {
+		char *ep = NULL;
+		long v = strtol(mapped_buf, &ep, 10);
+		if (ep && *ep == '\0' && v >= 0 && v <= 127) {
+			data.globalLight.mappedVel = (uint8_t)v;
+		}
+	}
+	if (body_get_value(body, body_len, "held_vel", held_buf, sizeof(held_buf))) {
+		char *ep = NULL;
+		long v = strtol(held_buf, &ep, 10);
+		if (ep && *ep == '\0' && v >= 0 && v <= 127) {
+			data.globalLight.heldVel = (uint8_t)v;
+		}
+	}
+	if (body_get_value(body, body_len, "playing_vel", playing_buf, sizeof(playing_buf))) {
+		char *ep = NULL;
+		long v = strtol(playing_buf, &ep, 10);
+		if (ep && *ep == '\0' && v >= 0 && v <= 127) {
+			data.globalLight.playingVel = (uint8_t)v;
+		}
+	}
+
+	if (server->app->config->writeMidiMapFile(&data) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	// Immediately push updated lighting to the controller if connected.
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = data;
+		server->app->midi->refreshAllLighting();
+	}
+
+	static const char ok[] = "ok\n";
+	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
+}
+
+static int handleMidiLightSounds(HttpServer *server, int cfd, const char *method, const char *path) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method) {
+		return -1;
+	}
+	if (strcmp(method, "GET") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	MidiMapData data = server->app->config->readMidiMapFile();
+	char out[HTTP_BODY_MAX];
+	size_t off = 0;
+
+	int n = snprintf(out + off, sizeof(out) - off, "{\"count\":%u,\"sounds\":[",
+					 (unsigned)data.soundLightCount);
+	if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+		static const char err[] = "encode failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	off += (size_t)n;
+
+	uint32_t count = data.soundLightCount;
+	if (count > MIDI_SOUND_LIGHTS_MAX) {
+		count = MIDI_SOUND_LIGHTS_MAX;
+	}
+	int first = 1;
+	for (uint32_t i = 0; i < count; ++i) {
+		if (!data.soundLights[i].sfxPath[0]) {
+			continue;
+		}
+		n = snprintf(out + off, sizeof(out) - off,
+					 "%s{\"sfx\":\"%s\",\"mapped_vel\":%u,\"held_vel\":%u,\"playing_vel\":%u}",
+					 first ? "" : ",",
+					 data.soundLights[i].sfxPath,
+					 (unsigned)data.soundLights[i].mappedVel,
+					 (unsigned)data.soundLights[i].heldVel,
+					 (unsigned)data.soundLights[i].playingVel);
+		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+			break;
+		}
+		off += (size_t)n;
+		first = 0;
+	}
+
+	n = snprintf(out + off, sizeof(out) - off, "]}\n");
+	if (n > 0 && (size_t)n < sizeof(out) - off) {
+		off += (size_t)n;
+	}
+
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, off);
+}
+
+static int handleMidiLightSoundSet(HttpServer *server,
+									int cfd,
+									const char *method,
+									const char *path,
+									const char *body,
+									size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method || !body) {
+		return -1;
+	}
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char sfx_buf[MIDI_SFX_PATH_MAX];
+	char mapped_buf[16], held_buf[16], playing_buf[16];
+	if (!body_get_value(body, body_len, "sfx", sfx_buf, sizeof(sfx_buf))) {
+		static const char bad[] = "expected sfx\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char normalized[MIDI_SFX_PATH_MAX];
+	if (mapping_normalize_sfx(sfx_buf, normalized, sizeof(normalized)) != RET_OK) {
+		static const char bad[] = "invalid sfx path\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	MidiMapData data = server->app->config->readMidiMapFile();
+	uint32_t count = data.soundLightCount;
+	if (count > MIDI_SOUND_LIGHTS_MAX) {
+		count = MIDI_SOUND_LIGHTS_MAX;
+	}
+
+	// Find existing entry or create new.
+	int idx = -1;
+	for (uint32_t i = 0; i < count; ++i) {
+		if (strcmp(data.soundLights[i].sfxPath, normalized) == 0) {
+			idx = (int)i;
+			break;
+		}
+	}
+	if (idx < 0) {
+		if (count >= MIDI_SOUND_LIGHTS_MAX) {
+			static const char full[] = "sound light table full\n";
+			return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8", full, sizeof(full) - 1);
+		}
+		idx = (int)count;
+		memset(&data.soundLights[idx], 0, sizeof(data.soundLights[idx]));
+		copy_bound(data.soundLights[idx].sfxPath,
+				   sizeof(data.soundLights[idx].sfxPath),
+				   normalized);
+		data.soundLightCount = count + 1;
+	}
+
+	MidiSoundLight &sl = data.soundLights[idx];
+	if (body_get_value(body, body_len, "mapped_vel", mapped_buf, sizeof(mapped_buf))) {
+		char *ep = NULL;
+		long v = strtol(mapped_buf, &ep, 10);
+		if (ep && *ep == '\0' && v >= 0 && v <= 127) {
+			sl.mappedVel = (uint8_t)v;
+			sl.hasMapped = 1;
+		}
+	}
+	if (body_get_value(body, body_len, "held_vel", held_buf, sizeof(held_buf))) {
+		char *ep = NULL;
+		long v = strtol(held_buf, &ep, 10);
+		if (ep && *ep == '\0' && v >= 0 && v <= 127) {
+			sl.heldVel = (uint8_t)v;
+			sl.hasHeld = 1;
+		}
+	}
+	if (body_get_value(body, body_len, "playing_vel", playing_buf, sizeof(playing_buf))) {
+		char *ep = NULL;
+		long v = strtol(playing_buf, &ep, 10);
+		if (ep && *ep == '\0' && v >= 0 && v <= 127) {
+			sl.playingVel = (uint8_t)v;
+			sl.hasPlaying = 1;
+		}
+	}
+
+	if (server->app->config->writeMidiMapFile(&data) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = data;
+		server->app->midi->refreshAllLighting();
+	}
+
+	static const char ok[] = "ok\n";
+	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
+}
+
+static int handleMidiLightSoundDelete(HttpServer *server,
+									   int cfd,
+									   const char *method,
+									   const char *path,
+									   const char *body,
+									   size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method || !body) {
+		return -1;
+	}
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char sfx_buf[MIDI_SFX_PATH_MAX];
+	if (!body_get_value(body, body_len, "sfx", sfx_buf, sizeof(sfx_buf))) {
+		static const char bad[] = "expected sfx\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char normalized[MIDI_SFX_PATH_MAX];
+	if (mapping_normalize_sfx(sfx_buf, normalized, sizeof(normalized)) != RET_OK) {
+		static const char bad[] = "invalid sfx path\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	MidiMapData data = server->app->config->readMidiMapFile();
+	uint32_t count = data.soundLightCount;
+	if (count > MIDI_SOUND_LIGHTS_MAX) {
+		count = MIDI_SOUND_LIGHTS_MAX;
+	}
+
+	int idx = -1;
+	for (uint32_t i = 0; i < count; ++i) {
+		if (strcmp(data.soundLights[i].sfxPath, normalized) == 0) {
+			idx = (int)i;
+			break;
+		}
+	}
+
+	if (idx < 0) {
+		static const char nf[] = "sound light not found\n";
+		return server->sendResponse(cfd, "404 Not Found", "text/plain; charset=utf-8", nf, sizeof(nf) - 1);
+	}
+
+	for (uint32_t i = (uint32_t)idx; i + 1 < count; ++i) {
+		data.soundLights[i] = data.soundLights[i + 1];
+	}
+	if (count > 0) {
+		data.soundLightCount = count - 1;
+	}
+
+	if (server->app->config->writeMidiMapFile(&data) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = data;
+		server->app->midi->refreshAllLighting();
+	}
+
+	static const char ok[] = "ok\n";
+	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
+}
+
+static int handleMidiLightRefresh(HttpServer *server, int cfd, const char *method, const char *path) {
+	(void)path;
+	if (!server || !server->app || !method) {
+		return -1;
+	}
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	if (!server->app->midi) {
+		static const char err[] = "{\"ok\":false,\"error\":\"midi unavailable\"}\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "application/json; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	if (server->app->config) {
+		server->app->midi->cachedMidiMap = server->app->config->readMidiMapFile();
+	}
+	server->app->midi->refreshAllLighting();
+
+	static const char ok[] = "{\"ok\":true}\n";
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
+}
+
 } // namespace
 
 int handleApiRequest(HttpServer *server,
@@ -1164,6 +1501,26 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_AUDIO_RESCAN_PATH) == 0) {
 		return handleAudioRescan(server, cfd, method, path);
+	}
+
+	if (strcmp(path, HTTP_MIDI_LIGHT_CONFIG_PATH) == 0) {
+		return handleMidiLightConfig(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_MIDI_LIGHT_SOUNDS_PATH) == 0) {
+		return handleMidiLightSounds(server, cfd, method, path);
+	}
+
+	if (strcmp(path, HTTP_MIDI_LIGHT_SOUND_SET_PATH) == 0) {
+		return handleMidiLightSoundSet(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_MIDI_LIGHT_SOUND_DELETE_PATH) == 0) {
+		return handleMidiLightSoundDelete(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_MIDI_LIGHT_REFRESH_PATH) == 0) {
+		return handleMidiLightRefresh(server, cfd, method, path);
 	}
 
 	if (pathIsRootfs(path)) {

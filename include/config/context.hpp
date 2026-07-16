@@ -8,10 +8,12 @@
 #define CONFIG_REAL_FILE_PATH ROOT_MOUNT_POINT "/config.txt"
 #define CONFIG_STAGING_FILE_PATH ROOT_MOUNT_POINT "/config.staging.txt"
 #define ROUTING_REAL_FILE_PATH ROOT_MOUNT_POINT "/routing.txt"
+#define MIDI_MAP_REAL_FILE_PATH ROOT_MOUNT_POINT "/midi_map.txt"
 #define SFX_ROOT_DIR ROOT_MOUNT_POINT "/sfx"
 
 #define MIDI_MAPPINGS_MAX 64
 #define MIDI_SFX_PATH_MAX 160
+#define MIDI_SOUND_LIGHTS_MAX MIDI_MAPPINGS_MAX
 
 struct RouterConfig {
     RouterConfig();
@@ -29,11 +31,42 @@ struct ConfigData {
     uint32_t playbackChannels;
     uint32_t captureChannels;
     uint32_t sampleSize;
+};
+
+
+// Global MIDI lighting config: one velocity per state, one channel for all output.
+// "mapped"  = button is assigned to a sound but not active
+// "held"    = button is physically held (for future hold mode)
+// "playing" = clip is playing in non-hold mode but button is no longer held
+struct MidiLightGlobal {
+    uint8_t channel;    // MIDI channel 0-15
+    uint8_t mappedVel;  // note-on velocity for mapped/idle state (0 = off)
+    uint8_t heldVel;    // note-on velocity for held state
+    uint8_t playingVel; // note-on velocity for playing state
+};
+
+// Per-sound lighting override.  If present, these velocities replace global values
+// for that specific sound.  Fields marked has* = 0 fall back to global.
+struct MidiSoundLight {
+    char sfxPath[MIDI_SFX_PATH_MAX]; // basename, e.g. "kick.wav"
+    uint8_t hasMapped;
+    uint8_t hasHeld;
+    uint8_t hasPlaying;
+    uint8_t mappedVel;
+    uint8_t heldVel;
+    uint8_t playingVel;
+};
+
+// Contents of midi_map.txt: note→sfx mappings plus lighting config.
+struct MidiMapData {
     uint32_t mappingCount;
     struct MidiMapping {
         uint8_t note;
         char sfxPath[MIDI_SFX_PATH_MAX];
     } mappings[MIDI_MAPPINGS_MAX];
+    MidiLightGlobal globalLight;
+    uint32_t soundLightCount;
+    MidiSoundLight soundLights[MIDI_SOUND_LIGHTS_MAX];
 };
 
 struct ConfigStore {
@@ -44,8 +77,11 @@ struct ConfigStore {
     ConfigData readConfigFile() const;
     int readStagingConfigFile(ConfigData *out) const;
     int writeConfigFile(ConfigData *cfg);
-    int findMidiMapping(uint8_t note, ConfigData::MidiMapping *out) const;
 
-    RouterConfig router() const; // no need for a setter, the router config manages itself, this is just a handy accessor.
+    // midi_map.txt: note→sfx mappings + lighting config (separate from config.txt)
+    MidiMapData readMidiMapFile() const;
+    int writeMidiMapFile(MidiMapData *data);
+
+    RouterConfig router() const;
 
 };

@@ -720,6 +720,8 @@ static void consumeSoundboardTriggers(AudioContext *ctx, RuntimeGraph *rt) {
         total = kSoundboardBurstMax;
     }
     rt->soundboardBurstRemaining = (uint32_t)total;
+
+    ctx->sfxIsPlaying.store(1, std::memory_order_release);
 }
 
 static bool tryReadPublishedGraph(const AudioContext *ctx,
@@ -1294,6 +1296,14 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
     updateChannelLevels(ctx, rt);
 
     servicePlaybackIo(rt);
+
+    // Update play-state for MIDI lighting.  If no clip is running, clear the flag.
+    bool clipActive = (rt->activeClipFrames > 0 &&
+                       rt->activeClipPos < rt->activeClipFrames &&
+                       rt->soundboardBurstRemaining > 0);
+    if (!clipActive && ctx->sfxIsPlaying.load(std::memory_order_relaxed)) {
+        ctx->sfxIsPlaying.store(0, std::memory_order_release);
+    }
 }
 
 static void maybeLogStats(RuntimeGraph *rt) {

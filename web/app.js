@@ -1491,6 +1491,7 @@ document.getElementById('btn-upload-clear').addEventListener('click', () => {
 document.getElementById('btn-sb-refresh').addEventListener('click', async () => {
   await listSfxFiles();
   await loadMappings();
+  await loadLightConfig();
   setStatus('soundboard refreshed', 'ok');
 });
 
@@ -1506,5 +1507,60 @@ document.getElementById('btn-system-shutdown').addEventListener('click', async (
   await runSystemAction('/api/system/shutdown', 'shutdown');
 });
 
+async function loadLightConfig() {
+  try {
+    const res = await fetch('/api/midi/light_config', { method: 'GET' });
+    if (!res.ok) return;
+    const data = JSON.parse(await res.text());
+    document.getElementById('light_channel').value = String(data.channel ?? 0);
+    document.getElementById('light_mapped_vel').value = String(data.mapped_vel ?? 0);
+    document.getElementById('light_held_vel').value = String(data.held_vel ?? 0);
+    document.getElementById('light_playing_vel').value = String(data.playing_vel ?? 0);
+  } catch (err) {}
+}
+
+async function saveLightConfig() {
+  const channel = Number(document.getElementById('light_channel').value) || 0;
+  const mappedVel = Number(document.getElementById('light_mapped_vel').value) || 0;
+  const heldVel = Number(document.getElementById('light_held_vel').value) || 0;
+  const playingVel = Number(document.getElementById('light_playing_vel').value) || 0;
+
+  setStatus('saving lighting config...');
+  try {
+    const body = `channel=${channel}&mapped_vel=${mappedVel}&held_vel=${heldVel}&playing_vel=${playingVel}`;
+    const res = await fetch('/api/midi/light_config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body,
+    });
+    const txt = (await res.text()).trim();
+    if (!res.ok) {
+      setStatus(`lighting save failed: ${res.status} ${txt}`, 'warn');
+      return;
+    }
+    setStatus('lighting config saved', 'ok');
+  } catch (err) {
+    setStatus(`lighting save error: ${err}`, 'warn');
+  }
+}
+
+document.getElementById('btn-light-save').addEventListener('click', saveLightConfig);
+
+document.getElementById('btn-light-refresh').addEventListener('click', async () => {
+  setStatus('refreshing LEDs...');
+  try {
+    const res = await fetch('/api/midi/light_refresh', { method: 'POST' });
+    const txt = (await res.text()).trim();
+    if (!res.ok) {
+      setStatus(`LED refresh failed: ${res.status} ${txt}`, 'warn');
+      return;
+    }
+    setStatus('LEDs refreshed', 'ok');
+  } catch (err) {
+    setStatus(`LED refresh error: ${err}`, 'warn');
+  }
+});
+
 initializeGraphFromConfig();
 loadVersion();
+loadLightConfig();

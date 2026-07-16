@@ -153,6 +153,9 @@ AudioContext::AudioContext(Audiox *context) : app(context) {
     pendingSfxTriggers.store(0, std::memory_order_relaxed);
     memset(&sfxSlots, 0, sizeof(sfxSlots));
     sfxActiveSlot.store(0, std::memory_order_relaxed);
+    sfxIsPlaying.store(0, std::memory_order_relaxed);
+    sfxTriggerSeq.store(0, std::memory_order_relaxed);
+    sfxLastTriggeredBasename[0] = '\0';
     memset(&routingGraph, 0, sizeof(routingGraph));
     memset(&routingGraphPublished, 0, sizeof(routingGraphPublished));
     routingGraphSeq.store(0, std::memory_order_relaxed);
@@ -183,6 +186,17 @@ int AudioContext::triggerSfx(const char *sfxPath) {
     } else {
         printf("[AUDIO] [WARN] failed to load WAV clip: %s\n", sfxPath);
     }
+
+    // Record basename for MIDI lighting.
+    const char *slash = strrchr(sfxPath, '/');
+    const char *basename = slash ? slash + 1 : sfxPath;
+    {
+        std::lock_guard<std::mutex> lock(sfxNameMutex);
+        size_t n = strnlen(basename, sizeof(sfxLastTriggeredBasename) - 1);
+        memcpy(sfxLastTriggeredBasename, basename, n);
+        sfxLastTriggeredBasename[n] = '\0';
+    }
+    sfxTriggerSeq.fetch_add(1U, std::memory_order_release);
 
     uint32_t queued = pendingSfxTriggers.fetch_add(1U, std::memory_order_relaxed) + 1U;
     if ((queued % 64U) == 1U) {

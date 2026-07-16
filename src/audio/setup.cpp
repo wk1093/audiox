@@ -136,6 +136,54 @@ static int loadPcm16WavIntoSlot(const char *path, AudioSfxClipSlot *slot) {
     return RET_OK;
 }
 
+static int queueSfxClip(AudioContext *ctx, const char *sfxPath, int holdStart) {
+    if (!ctx || !sfxPath || !sfxPath[0]) {
+        return RET_ERR;
+    }
+
+    if (strncmp(sfxPath, SFX_ROOT_DIR "/", strlen(SFX_ROOT_DIR) + 1) != 0) {
+        printf("[AUDIO] [WARN] refusing SFX outside %s: %s\n", SFX_ROOT_DIR, sfxPath);
+        return RET_ERR;
+    }
+
+    uint32_t active = ctx->sfxActiveSlot.load(std::memory_order_relaxed) & 1U;
+    uint32_t inactive = active ^ 1U;
+    int loadRc = loadPcm16WavIntoSlot(sfxPath, &ctx->sfxSlots[inactive]);
+    if (loadRc == RET_OK) {
+        ctx->sfxActiveSlot.store(inactive, std::memory_order_release);
+    } else if (loadRc == RET_WARN) {
+        printf("[AUDIO] [WARN] mapped SFX missing: %s\n", sfxPath);
+        return RET_WARN;
+    } else {
+        printf("[AUDIO] [WARN] failed to load WAV clip: %s\n", sfxPath);
+        return RET_ERR;
+    }
+
+    const char *slash = strrchr(sfxPath, '/');
+    const char *basename = slash ? slash + 1 : sfxPath;
+    {
+        std::lock_guard<std::mutex> lock(ctx->sfxNameMutex);
+        size_t n = strnlen(basename, sizeof(ctx->sfxLastTriggeredBasename) - 1);
+        memcpy(ctx->sfxLastTriggeredBasename, basename, n);
+        ctx->sfxLastTriggeredBasename[n] = '\0';
+    }
+    ctx->sfxTriggerSeq.fetch_add(1U, std::memory_order_release);
+
+    if (holdStart) {
+        uint32_t queued = ctx->pendingSfxHoldStarts.fetch_add(1U, std::memory_order_relaxed) + 1U;
+        if ((queued % 64U) == 1U) {
+            printf("[AUDIO] [INFO] queued hold-start(s): %u\n", (unsigned)queued);
+        }
+    } else {
+        uint32_t queued = ctx->pendingSfxTriggers.fetch_add(1U, std::memory_order_relaxed) + 1U;
+        if ((queued % 64U) == 1U) {
+            printf("[AUDIO] [INFO] queued soundboard trigger(s): %u\n", (unsigned)queued);
+        }
+    }
+
+    return RET_OK;
+}
+
 }
 
 AudioContext::AudioContext(Audiox *context) : app(context) {
@@ -151,8 +199,11 @@ AudioContext::AudioContext(Audiox *context) : app(context) {
     nextHandle = 1;
     deviceGeneration = 0;
     pendingSfxTriggers.store(0, std::memory_order_relaxed);
+    pendingSfxHoldStarts.store(0, std::memory_order_relaxed);
+    pendingSfxHoldStops.store(0, std::memory_order_relaxed);
     memset(&sfxSlots, 0, sizeof(sfxSlots));
     sfxActiveSlot.store(0, std::memory_order_relaxed);
+    soundboardMode.store(SOUNDBOARD_MODE_PLAY, std::memory_order_relaxed);
     sfxIsPlaying.store(0, std::memory_order_relaxed);
     sfxTriggerSeq.store(0, std::memory_order_relaxed);
     sfxLastTriggeredBasename[0] = '\0';
@@ -160,6 +211,11 @@ AudioContext::AudioContext(Audiox *context) : app(context) {
     memset(&routingGraphPublished, 0, sizeof(routingGraphPublished));
     routingGraphSeq.store(0, std::memory_order_relaxed);
     memset(&nodeChannelLevels, 0, sizeof(nodeChannelLevels));
+
+    if (app && app->config) {
+        ConfigData cfg = app->config->readConfigFile();
+        soundboardMode.store(cfg.soundboardMode, std::memory_order_relaxed);
+    }
 }
 
 AudioContext::~AudioContext() {
@@ -167,42 +223,24 @@ AudioContext::~AudioContext() {
 }
 
 int AudioContext::triggerSfx(const char *sfxPath) {
-    if (!sfxPath || !sfxPath[0]) {
-        return RET_ERR;
-    }
+    return queueSfxClip(this, sfxPath, 0);
+}
 
-    if (strncmp(sfxPath, SFX_ROOT_DIR "/", strlen(SFX_ROOT_DIR) + 1) != 0) {
-        printf("[AUDIO] [WARN] refusing SFX outside %s: %s\n", SFX_ROOT_DIR, sfxPath);
-        return RET_ERR;
-    }
+int AudioContext::startHeldSfx(const char *sfxPath) {
+    return queueSfxClip(this, sfxPath, 1);
+}
 
-    uint32_t active = sfxActiveSlot.load(std::memory_order_relaxed) & 1U;
-    uint32_t inactive = active ^ 1U;
-    int loadRc = loadPcm16WavIntoSlot(sfxPath, &sfxSlots[inactive]);
-    if (loadRc == RET_OK) {
-        sfxActiveSlot.store(inactive, std::memory_order_release);
-    } else if (loadRc == RET_WARN) {
-        printf("[AUDIO] [WARN] mapped SFX missing: %s\n", sfxPath);
-    } else {
-        printf("[AUDIO] [WARN] failed to load WAV clip: %s\n", sfxPath);
-    }
+void AudioContext::stopHeldSfx() {
+    pendingSfxHoldStops.fetch_add(1U, std::memory_order_relaxed);
+}
 
-    // Record basename for MIDI lighting.
-    const char *slash = strrchr(sfxPath, '/');
-    const char *basename = slash ? slash + 1 : sfxPath;
-    {
-        std::lock_guard<std::mutex> lock(sfxNameMutex);
-        size_t n = strnlen(basename, sizeof(sfxLastTriggeredBasename) - 1);
-        memcpy(sfxLastTriggeredBasename, basename, n);
-        sfxLastTriggeredBasename[n] = '\0';
-    }
-    sfxTriggerSeq.fetch_add(1U, std::memory_order_release);
+void AudioContext::setSoundboardMode(uint8_t mode) {
+    uint8_t normalized = (mode == SOUNDBOARD_MODE_HOLD) ? SOUNDBOARD_MODE_HOLD : SOUNDBOARD_MODE_PLAY;
+    soundboardMode.store(normalized, std::memory_order_release);
+}
 
-    uint32_t queued = pendingSfxTriggers.fetch_add(1U, std::memory_order_relaxed) + 1U;
-    if ((queued % 64U) == 1U) {
-        printf("[AUDIO] [INFO] queued soundboard trigger(s): %u\n", (unsigned)queued);
-    }
-    return RET_OK;
+uint8_t AudioContext::getSoundboardMode() const {
+    return soundboardMode.load(std::memory_order_acquire);
 }
 
 void AudioContext::poll() {

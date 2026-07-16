@@ -22,6 +22,11 @@
 #define HTTP_API_PREFIX "/api/"
 #define HTTP_ROOTFS_PREFIX HTTP_API_PREFIX "rootfs/"
 #define HTTP_SOUNDBOARD_TRIGGER_PREFIX HTTP_API_PREFIX "soundboard/trigger/"
+#define HTTP_SOUNDBOARD_PRESS_PREFIX HTTP_API_PREFIX "soundboard/press/"
+#define HTTP_SOUNDBOARD_RELEASE_PREFIX HTTP_API_PREFIX "soundboard/release/"
+#define HTTP_SOUNDBOARD_MODE_PATH HTTP_API_PREFIX "soundboard/mode"
+#define HTTP_SOUNDBOARD_MODES_PATH HTTP_API_PREFIX "soundboard/modes"
+#define HTTP_SOUNDBOARD_MODE_SET_PATH HTTP_API_PREFIX "soundboard/mode/set"
 #define HTTP_CONFIG_RELOAD_PATH HTTP_API_PREFIX "config/reload"
 #define HTTP_ROUTING_RELOAD_PATH HTTP_API_PREFIX "routing/reload"
 #define HTTP_ROUTING_THINGS_PATH HTTP_API_PREFIX "routing/things"
@@ -46,6 +51,13 @@
 namespace {
 
 static int mapping_path_safe(const char *s);
+static int body_get_value(const char *body,
+						  size_t body_len,
+						  const char *key,
+						  char *out,
+						  size_t out_sz);
+static void copy_bound(char *dst, size_t dst_sz, const char *src);
+static int mapping_normalize_sfx(const char *raw, char *out, size_t out_sz);
 
 static int sendMethodNotAllowed(HttpServer *server, int cfd) {
 	static const char mna[] = "method not allowed\n";
@@ -299,48 +311,68 @@ static int handleApiDeleteRootfs(HttpServer *server, int cfd, const char *path) 
 	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
 }
 
+static int decodeSoundboardTarget(const char *token, char *triggerPath, size_t triggerPathSz) {
+    if (!token || !triggerPath || triggerPathSz == 0 || !token[0]) {
+        return RET_ERR;
+    }
+
+    char decoded[MIDI_SFX_PATH_MAX];
+    size_t di = 0;
+    for (size_t i = 0; token[i] && di + 1 < sizeof(decoded); ++i) {
+        unsigned char c = (unsigned char)token[i];
+        if (c == '%') {
+            if (!isxdigit((unsigned char)token[i + 1]) || !isxdigit((unsigned char)token[i + 2])) {
+                return RET_ERR;
+            }
+            char hex[3] = {token[i + 1], token[i + 2], '\0'};
+            decoded[di++] = (char)strtol(hex, NULL, 16);
+            i += 2;
+            continue;
+        }
+        if (c == '+') {
+            decoded[di++] = ' ';
+            continue;
+        }
+        decoded[di++] = (char)c;
+    }
+    decoded[di] = '\0';
+
+    char *endp = NULL;
+    long slot = strtol(decoded, &endp, 10);
+    int isNumericSlot = (endp && *endp == '\0' && slot >= 0 && slot <= 255) ? 1 : 0;
+    if (!isNumericSlot && !mapping_path_safe(decoded)) {
+        return RET_ERR;
+    }
+
+    int pn = 0;
+    if (isNumericSlot) {
+        pn = snprintf(triggerPath, triggerPathSz, "%s/%ld.wav", SFX_ROOT_DIR, slot);
+    } else if (strncmp(decoded, SFX_ROOT_DIR "/", strlen(SFX_ROOT_DIR) + 1) == 0) {
+        pn = snprintf(triggerPath, triggerPathSz, "%s", decoded);
+    } else {
+        pn = snprintf(triggerPath, triggerPathSz, "%s/%s", SFX_ROOT_DIR, decoded);
+    }
+
+    if (pn <= 0 || (size_t)pn >= triggerPathSz) {
+        return RET_ERR;
+    }
+
+    return RET_OK;
+}
+
 static int handleSoundboardTrigger(HttpServer *server,
 								   int cfd,
 								   const char *method,
-								   const char *path) {
+								   const char *path,
+								   const char *prefix,
+								   int action) {
 	if (!server || !server->app || !method || !path) {
 		return -1;
 	}
 
-	const char *token = path + strlen(HTTP_SOUNDBOARD_TRIGGER_PREFIX);
+	const char *token = path + strlen(prefix);
 	if (!token[0]) {
 		static const char bad[] = "missing trigger target\n";
-		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
-	}
-
-	char decoded[MIDI_SFX_PATH_MAX];
-	size_t di = 0;
-	for (size_t i = 0; token[i] && di + 1 < sizeof(decoded); ++i) {
-		unsigned char c = (unsigned char)token[i];
-		if (c == '%') {
-			if (!isxdigit((unsigned char)token[i + 1]) || !isxdigit((unsigned char)token[i + 2])) {
-				static const char bad[] = "invalid url encoding\n";
-				return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
-			}
-			char hex[3] = {token[i + 1], token[i + 2], '\0'};
-			decoded[di++] = (char)strtol(hex, NULL, 16);
-			i += 2;
-			continue;
-		}
-		if (c == '+') {
-			decoded[di++] = ' ';
-			continue;
-		}
-		decoded[di++] = (char)c;
-	}
-	decoded[di] = '\0';
-
-	char *endp = NULL;
-	long slot = strtol(decoded, &endp, 10);
-	int is_numeric_slot = (endp && *endp == '\0' && slot >= 0 && slot <= 255) ? 1 : 0;
-
-	if (!is_numeric_slot && !mapping_path_safe(decoded)) {
-		static const char bad[] = "invalid trigger target\n";
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
 	}
 
@@ -350,27 +382,21 @@ static int handleSoundboardTrigger(HttpServer *server,
 	}
 
 	char triggerPath[256];
-	if (is_numeric_slot) {
-		int pn = snprintf(triggerPath, sizeof(triggerPath), "%s/%ld.wav", SFX_ROOT_DIR, slot);
-		if (pn <= 0 || (size_t)pn >= sizeof(triggerPath)) {
-			static const char bad[] = "trigger path too long\n";
-			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
-		}
-	} else if (strncmp(decoded, SFX_ROOT_DIR "/", strlen(SFX_ROOT_DIR) + 1) == 0) {
-		int pn = snprintf(triggerPath, sizeof(triggerPath), "%s", decoded);
-		if (pn <= 0 || (size_t)pn >= sizeof(triggerPath)) {
-			static const char bad[] = "trigger path too long\n";
-			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
-		}
-	} else {
-		int pn = snprintf(triggerPath, sizeof(triggerPath), "%s/%s", SFX_ROOT_DIR, decoded);
-		if (pn <= 0 || (size_t)pn >= sizeof(triggerPath)) {
-			static const char bad[] = "trigger path too long\n";
-			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
-		}
+	if (decodeSoundboardTarget(token, triggerPath, sizeof(triggerPath)) != RET_OK) {
+		static const char bad[] = "invalid trigger target\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
 	}
 
-	int rc = server->app->audio->triggerSfx(triggerPath);
+	int rc = RET_ERR;
+	if (action == 1) {
+		rc = server->app->audio->startHeldSfx(triggerPath);
+	} else if (action == 2) {
+		server->app->audio->stopHeldSfx();
+		rc = RET_OK;
+	} else {
+		rc = server->app->audio->triggerSfx(triggerPath);
+	}
+
 	if (rc == RET_ERR) {
 		static const char err[] = "trigger failed\n";
 		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
@@ -382,6 +408,223 @@ static int handleSoundboardTrigger(HttpServer *server,
 
 	static const char ok[] = "ok\n";
 	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
+}
+
+static int handleSoundboardMode(HttpServer *server,
+								int cfd,
+								const char *method,
+								const char *path,
+								const char *body,
+								size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !method || !server->app->config) {
+		return -1;
+	}
+
+	if (strcmp(method, "GET") == 0) {
+		ConfigData cfg = server->app->config->readConfigFile();
+		char out[96];
+		int n = snprintf(out, sizeof(out), "{\"mode\":\"%s\"}\n", soundboardModeToString(cfg.soundboardMode));
+		if (n < 0 || (size_t)n >= sizeof(out)) {
+			n = 0;
+		}
+		return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+	}
+
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char modeBuf[24];
+	if (!body || !body_get_value(body, body_len, "mode", modeBuf, sizeof(modeBuf))) {
+		static const char bad[] = "expected mode=play|hold\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char modeLower[24];
+	size_t ml = strnlen(modeBuf, sizeof(modeLower) - 1);
+	for (size_t i = 0; i < ml; ++i) {
+		modeLower[i] = (char)tolower((unsigned char)modeBuf[i]);
+	}
+	modeLower[ml] = '\0';
+	if (strcmp(modeLower, "play") != 0 && strcmp(modeLower, "hold") != 0) {
+		static const char bad[] = "invalid mode\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	uint8_t mode = soundboardModeFromString(modeLower);
+
+	ConfigData cfg = server->app->config->readConfigFile();
+	cfg.soundboardMode = mode;
+	if (server->app->config->writeConfigFile(&cfg) != RET_OK) {
+		static const char err[] = "failed to write config\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	if (server->app->audio) {
+		server->app->audio->setSoundboardMode(mode);
+		if (mode == SOUNDBOARD_MODE_PLAY) {
+			server->app->audio->stopHeldSfx();
+		}
+	}
+
+	char out[96];
+	int n = snprintf(out, sizeof(out), "{\"ok\":true,\"mode\":\"%s\"}\n", soundboardModeToString(mode));
+	if (n < 0 || (size_t)n >= sizeof(out)) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
+static int handleSoundboardModes(HttpServer *server,
+								 int cfd,
+								 const char *method,
+								 const char *path) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method) {
+		return -1;
+	}
+
+	if (strcmp(method, "GET") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	MidiMapData data = server->app->config->readMidiMapFile();
+	char out[HTTP_BODY_MAX];
+	size_t off = 0;
+
+	int n = snprintf(out + off, sizeof(out) - off, "{\"count\":%u,\"modes\":[", (unsigned)data.soundModeCount);
+	if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+		static const char err[] = "encode failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	off += (size_t)n;
+
+	uint32_t count = data.soundModeCount;
+	if (count > MIDI_SOUND_MODES_MAX) {
+		count = MIDI_SOUND_MODES_MAX;
+	}
+	int first = 1;
+	for (uint32_t i = 0; i < count; ++i) {
+		if (!data.soundModes[i].sfxPath[0]) {
+			continue;
+		}
+		n = snprintf(out + off,
+					 sizeof(out) - off,
+					 "%s{\"sfx\":\"%s\",\"mode\":\"%s\"}",
+					 first ? "" : ",",
+					 data.soundModes[i].sfxPath,
+					 soundboardModeToString(data.soundModes[i].mode));
+		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+			break;
+		}
+		off += (size_t)n;
+		first = 0;
+	}
+
+	n = snprintf(out + off, sizeof(out) - off, "]}\n");
+	if (n > 0 && (size_t)n < sizeof(out) - off) {
+		off += (size_t)n;
+	}
+
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, off);
+}
+
+static int handleSoundboardModeSet(HttpServer *server,
+								   int cfd,
+								   const char *method,
+								   const char *path,
+								   const char *body,
+								   size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method || !body) {
+		return -1;
+	}
+
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char sfx_buf[MIDI_SFX_PATH_MAX];
+	char mode_buf[24];
+	if (!body_get_value(body, body_len, "sfx", sfx_buf, sizeof(sfx_buf)) ||
+		!body_get_value(body, body_len, "mode", mode_buf, sizeof(mode_buf))) {
+		static const char bad[] = "expected sfx and mode\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char normalized[MIDI_SFX_PATH_MAX];
+	if (mapping_normalize_sfx(sfx_buf, normalized, sizeof(normalized)) != RET_OK) {
+		static const char bad[] = "invalid sfx path\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char modeLower[24];
+	size_t ml = strnlen(mode_buf, sizeof(modeLower) - 1);
+	for (size_t i = 0; i < ml; ++i) {
+		modeLower[i] = (char)tolower((unsigned char)mode_buf[i]);
+	}
+	modeLower[ml] = '\0';
+	if (strcmp(modeLower, "play") != 0 && strcmp(modeLower, "hold") != 0) {
+		static const char bad[] = "invalid mode\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+	uint8_t mode = soundboardModeFromString(modeLower);
+
+	MidiMapData data = server->app->config->readMidiMapFile();
+	uint32_t count = data.soundModeCount;
+	if (count > MIDI_SOUND_MODES_MAX) {
+		count = MIDI_SOUND_MODES_MAX;
+	}
+
+	int idx = -1;
+	for (uint32_t i = 0; i < count; ++i) {
+		if (strcmp(data.soundModes[i].sfxPath, normalized) == 0) {
+			idx = (int)i;
+			break;
+		}
+	}
+
+	if (mode == SOUNDBOARD_MODE_PLAY) {
+		if (idx >= 0) {
+			for (uint32_t i = (uint32_t)idx; i + 1 < count; ++i) {
+				data.soundModes[i] = data.soundModes[i + 1];
+			}
+			data.soundModeCount = (count > 0) ? (count - 1U) : 0U;
+		}
+	} else {
+		if (idx >= 0) {
+			data.soundModes[idx].mode = mode;
+			copy_bound(data.soundModes[idx].sfxPath, sizeof(data.soundModes[idx].sfxPath), normalized);
+		} else {
+			if (count >= MIDI_SOUND_MODES_MAX) {
+				static const char full[] = "sound mode table full\n";
+				return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8", full, sizeof(full) - 1);
+			}
+			copy_bound(data.soundModes[count].sfxPath, sizeof(data.soundModes[count].sfxPath), normalized);
+			data.soundModes[count].mode = mode;
+			data.soundModeCount = count + 1U;
+		}
+	}
+
+	if (server->app->config->writeMidiMapFile(&data) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = data;
+	}
+
+	char out[128];
+	int n = snprintf(out, sizeof(out), "{\"ok\":true,\"sfx\":\"%s\",\"mode\":\"%s\"}\n", normalized, soundboardModeToString(mode));
+	if (n < 0) {
+		n = 0;
+	}
+	if ((size_t)n >= sizeof(out)) {
+		n = (int)(sizeof(out) - 1);
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
 }
 
 static int handleAudioDevices(HttpServer *server,
@@ -830,14 +1073,21 @@ static int handleConfigReload(HttpServer *server,
 	}
 
 	ConfigData cfg = server->app->config->readConfigFile();
+	if (server->app->audio) {
+		server->app->audio->setSoundboardMode(cfg.soundboardMode);
+		if (cfg.soundboardMode != SOUNDBOARD_MODE_HOLD) {
+			server->app->audio->stopHeldSfx();
+		}
+	}
 	char out[256];
 	int n = snprintf(out,
 				 sizeof(out),
-				 "{\"ok\":true,\"sampleRate\":%u,\"playbackChannels\":%u,\"captureChannels\":%u,\"sampleSize\":%u,\"source\":\"real\"}\n",
+				 "{\"ok\":true,\"sampleRate\":%u,\"playbackChannels\":%u,\"captureChannels\":%u,\"sampleSize\":%u,\"soundboardMode\":\"%s\",\"source\":\"real\"}\n",
 				 (unsigned)cfg.sampleRate,
 				 (unsigned)cfg.playbackChannels,
 				 (unsigned)cfg.captureChannels,
-				 (unsigned)cfg.sampleSize);
+				 (unsigned)cfg.sampleSize,
+				 soundboardModeToString(cfg.soundboardMode));
 	if (n < 0) {
 		n = 0;
 	}
@@ -1388,11 +1638,45 @@ int handleApiRequest(HttpServer *server,
 		if (strcmp(method, "GET") != 0 && strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
 			return sendMethodNotAllowed(server, cfd);
 		}
-		int rc = handleSoundboardTrigger(server, cfd, method, path);
+		int rc = handleSoundboardTrigger(server, cfd, method, path, HTTP_SOUNDBOARD_TRIGGER_PREFIX, 0);
 		if (rc == RET_WARN) {
 			return sendNotImplemented(server, cfd, "soundboard trigger");
 		}
 		return rc;
+	}
+
+	if (strncmp(path, HTTP_SOUNDBOARD_PRESS_PREFIX, strlen(HTTP_SOUNDBOARD_PRESS_PREFIX)) == 0) {
+		if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+			return sendMethodNotAllowed(server, cfd);
+		}
+		int rc = handleSoundboardTrigger(server, cfd, method, path, HTTP_SOUNDBOARD_PRESS_PREFIX, 1);
+		if (rc == RET_WARN) {
+			return sendNotImplemented(server, cfd, "soundboard press");
+		}
+		return rc;
+	}
+
+	if (strncmp(path, HTTP_SOUNDBOARD_RELEASE_PREFIX, strlen(HTTP_SOUNDBOARD_RELEASE_PREFIX)) == 0) {
+		if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+			return sendMethodNotAllowed(server, cfd);
+		}
+		int rc = handleSoundboardTrigger(server, cfd, method, path, HTTP_SOUNDBOARD_RELEASE_PREFIX, 2);
+		if (rc == RET_WARN) {
+			return sendNotImplemented(server, cfd, "soundboard release");
+		}
+		return rc;
+	}
+
+	if (strcmp(path, HTTP_SOUNDBOARD_MODE_PATH) == 0) {
+		return handleSoundboardMode(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_SOUNDBOARD_MODES_PATH) == 0) {
+		return handleSoundboardModes(server, cfd, method, path);
+	}
+
+	if (strcmp(path, HTTP_SOUNDBOARD_MODE_SET_PATH) == 0) {
+		return handleSoundboardModeSet(server, cfd, method, path, body, body_len);
 	}
 
 	if (strcmp(path, HTTP_CONFIG_RELOAD_PATH) == 0) {

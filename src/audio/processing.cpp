@@ -24,8 +24,6 @@ constexpr uint32_t kMaxCaptureStreams = 4;
 constexpr uint32_t kMaxPlaybackStreams = 4;
 constexpr uint32_t kCaptureRingFrames = BUFFER_FRAMES * 16U;
 constexpr uint32_t kReopenRetryBlocks = 200;
-constexpr uint32_t kSoundboardBurstSamples = SAMPLE_RATE / 3U;
-constexpr uint32_t kSoundboardBurstMax = SAMPLE_RATE * 3U;
 constexpr float kSoundboardClipGain = 0.35f;
 
 struct AdaptiveSrcController {
@@ -105,7 +103,8 @@ struct RuntimeGraph {
     float outputs[AUDIO_GRAPH_MAX_THINGS][kMaxChannelsPerThing][BUFFER_FRAMES];
     float soundboardPhase;
     float soundboardEnv;
-    uint32_t soundboardBurstRemaining;
+    uint8_t soundboardClipActive;
+    uint8_t soundboardHoldActive;
     uint32_t activeClipSlot;
     uint32_t activeClipFrames;
     uint32_t activeClipRate;
@@ -700,6 +699,33 @@ static void consumeSoundboardTriggers(AudioContext *ctx, RuntimeGraph *rt) {
         return;
     }
 
+    uint32_t holdStarts = ctx->pendingSfxHoldStarts.exchange(0U, std::memory_order_acq_rel);
+    uint32_t holdStops = ctx->pendingSfxHoldStops.exchange(0U, std::memory_order_acq_rel);
+
+    if (holdStops > 0U) {
+        rt->soundboardHoldActive = 0;
+        rt->soundboardClipActive = 0;
+        rt->activeClipPos = rt->activeClipFrames;
+        rt->activeClipFrac = 0.0f;
+        ctx->sfxIsPlaying.store(0, std::memory_order_release);
+    }
+
+    if (holdStarts > 0U) {
+        uint32_t activeSlot = ctx->sfxActiveSlot.load(std::memory_order_acquire) & 1U;
+        const AudioSfxClipSlot &clip = ctx->sfxSlots[activeSlot];
+        rt->activeClipSlot = activeSlot;
+        rt->activeClipFrames = clip.frames;
+        rt->activeClipRate = clip.sampleRate;
+        rt->activeClipChannels = clip.channels;
+        rt->activeClipPos = 0;
+        rt->activeClipFrac = 0.0f;
+        rt->soundboardClipActive = (clip.frames > 0U) ? 1U : 0U;
+        rt->soundboardHoldActive = rt->soundboardClipActive;
+        if (rt->soundboardClipActive) {
+            ctx->sfxIsPlaying.store(1, std::memory_order_release);
+        }
+    }
+
     uint32_t pending = ctx->pendingSfxTriggers.exchange(0U, std::memory_order_acq_rel);
     if (pending == 0) {
         return;
@@ -713,15 +739,18 @@ static void consumeSoundboardTriggers(AudioContext *ctx, RuntimeGraph *rt) {
     rt->activeClipChannels = clip.channels;
     rt->activeClipPos = 0;
     rt->activeClipFrac = 0.0f;
+    rt->soundboardClipActive = (clip.frames > 0U) ? 1U : 0U;
+    rt->soundboardHoldActive = 0;
 
-    uint64_t add = (uint64_t)pending * (uint64_t)kSoundboardBurstSamples;
-    uint64_t total = (uint64_t)rt->soundboardBurstRemaining + add;
-    if (total > kSoundboardBurstMax) {
-        total = kSoundboardBurstMax;
+    if (rt->soundboardClipActive) {
+        ctx->sfxIsPlaying.store(1, std::memory_order_release);
     }
-    rt->soundboardBurstRemaining = (uint32_t)total;
 
-    ctx->sfxIsPlaying.store(1, std::memory_order_release);
+    if (holdStops > 0U && rt->soundboardHoldActive) {
+        rt->soundboardHoldActive = 0;
+        rt->soundboardClipActive = 0;
+        ctx->sfxIsPlaying.store(0, std::memory_order_release);
+    }
 }
 
 static bool tryReadPublishedGraph(const AudioContext *ctx,
@@ -1005,7 +1034,7 @@ static void renderSourceNode(const AudioContext *ctx, RuntimeGraph *rt, uint16_t
         const AudioSfxClipSlot &clip = ctx->sfxSlots[rt->activeClipSlot & 1U];
 
         for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
-            float target = (rt->soundboardBurstRemaining > 0U) ? 1.0f : 0.0f;
+            float target = rt->soundboardClipActive ? 1.0f : 0.0f;
             if (target > env) {
                 env += 0.02f;
                 if (env > target) {
@@ -1020,7 +1049,16 @@ static void renderSourceNode(const AudioContext *ctx, RuntimeGraph *rt, uint16_t
 
             float s = 0.0f;
 
-            if (rt->soundboardBurstRemaining > 0U &&
+            if (rt->soundboardClipActive &&
+                clipFrames > 0U &&
+                clipRate > 0U &&
+                (clipChannels == 1U || clipChannels == 2U)) {
+                if (rt->activeClipPos >= clipFrames) {
+                    rt->soundboardClipActive = 0;
+                }
+            }
+
+            if (rt->soundboardClipActive &&
                 clipFrames > 0U &&
                 clipRate > 0U &&
                 (clipChannels == 1U || clipChannels == 2U) &&
@@ -1044,6 +1082,10 @@ static void renderSourceNode(const AudioContext *ctx, RuntimeGraph *rt, uint16_t
                     ++rt->activeClipPos;
                     rt->activeClipFrac -= 1.0f;
                 }
+
+                if (rt->activeClipPos >= clipFrames) {
+                    rt->soundboardClipActive = 0;
+                }
             }
 
             for (uint8_t ch = 0; ch < outChannels; ++ch) {
@@ -1052,10 +1094,6 @@ static void renderSourceNode(const AudioContext *ctx, RuntimeGraph *rt, uint16_t
             phase += inc;
             if (phase >= kTwoPi) {
                 phase -= kTwoPi;
-            }
-
-            if (rt->soundboardBurstRemaining > 0U) {
-                --rt->soundboardBurstRemaining;
             }
         }
         rt->soundboardPhase = phase;
@@ -1298,9 +1336,9 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
     servicePlaybackIo(rt);
 
     // Update play-state for MIDI lighting.  If no clip is running, clear the flag.
-    bool clipActive = (rt->activeClipFrames > 0 &&
-                       rt->activeClipPos < rt->activeClipFrames &&
-                       rt->soundboardBurstRemaining > 0);
+    bool clipActive = (rt->soundboardClipActive &&
+                       rt->activeClipFrames > 0 &&
+                       rt->activeClipPos < rt->activeClipFrames);
     if (!clipActive && ctx->sfxIsPlaying.load(std::memory_order_relaxed)) {
         ctx->sfxIsPlaying.store(0, std::memory_order_release);
     }

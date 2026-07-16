@@ -9,6 +9,28 @@
 
 namespace {
 
+static int streqIgnoreCase(const char *a, const char *b) {
+    if (!a || !b) {
+        return 0;
+    }
+    while (*a && *b) {
+        char ca = *a;
+        char cb = *b;
+        if (ca >= 'A' && ca <= 'Z') {
+            ca = (char)(ca - 'A' + 'a');
+        }
+        if (cb >= 'A' && cb <= 'Z') {
+            cb = (char)(cb - 'A' + 'a');
+        }
+        if (ca != cb) {
+            return 0;
+        }
+        ++a;
+        ++b;
+    }
+    return (*a == '\0' && *b == '\0') ? 1 : 0;
+}
+
 static inline void normalizeConfig(ConfigData *cfg) {
     if (!cfg) {
         return;
@@ -25,6 +47,9 @@ static inline void normalizeConfig(ConfigData *cfg) {
     }
     if (cfg->sampleSize == 0) {
         cfg->sampleSize = 2;
+    }
+    if (cfg->soundboardMode != SOUNDBOARD_MODE_HOLD) {
+        cfg->soundboardMode = SOUNDBOARD_MODE_PLAY;
     }
 }
 
@@ -99,6 +124,8 @@ static int readConfigPath(const char *path, ConfigData *out, int warnIfMissing) 
             cfg.captureChannels = (uint32_t)strtoul(value, NULL, 10);
         } else if (strcmp(key, "usb_sample_size") == 0) {
             cfg.sampleSize = (uint32_t)strtoul(value, NULL, 10);
+        } else if (strcmp(key, "soundboard_mode") == 0) {
+            cfg.soundboardMode = soundboardModeFromString(value);
         }
     }
 
@@ -143,8 +170,23 @@ int ConfigStore::writeConfigFile(ConfigData *cfg) {
     dprintf(fd, "usb_playback_channels=%u\n", cfg->playbackChannels);
     dprintf(fd, "usb_capture_channels=%u\n", cfg->captureChannels);
     dprintf(fd, "usb_sample_size=%u\n", cfg->sampleSize);
+    dprintf(fd, "soundboard_mode=%s\n", soundboardModeToString(cfg->soundboardMode));
     close(fd);
     return 0;
+}
+
+const char *soundboardModeToString(uint8_t mode) {
+    return (mode == SOUNDBOARD_MODE_HOLD) ? "hold" : "play";
+}
+
+uint8_t soundboardModeFromString(const char *value) {
+    if (!value) {
+        return SOUNDBOARD_MODE_PLAY;
+    }
+    if (streqIgnoreCase(value, "hold") || strcmp(value, "1") == 0) {
+        return SOUNDBOARD_MODE_HOLD;
+    }
+    return SOUNDBOARD_MODE_PLAY;
 }
 
 ConfigStore::ConfigStore(Audiox *context) : app(context) {

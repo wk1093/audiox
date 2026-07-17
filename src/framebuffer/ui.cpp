@@ -23,6 +23,11 @@ static constexpr int kMeterSmoothingSlots = kMaxUiDevices * kChannelMeterMax * 2
 static constexpr float kMeterAttackTauMs = 45.0f;
 static constexpr float kMeterReleaseTauMs = 180.0f;
 static constexpr uint64_t kMeterSlotStaleMs = 3000ULL;
+static constexpr int kMeterLabelH = 8;
+static constexpr int kMeterBarH = 2;
+static constexpr int kMeterGap = 2;
+static constexpr int kMeterLabelToBarsGap = 3;
+static constexpr int kMeterTopPad = 3;
 
 struct SystemMetricsState {
     uint64_t lastUpdateMs{0};
@@ -278,15 +283,16 @@ static inline int channelCountForUi(uint8_t channels, uint8_t hasDirection) {
 }
 
 static inline int deviceRowHeight(const AudioDeviceInfo &info) {
-    const int meterLabelH = 8;
-    const int meterBarH = 2;
-    const int meterGap = 2;
     int playbackCount = channelCountForUi(info.playbackChannels, info.hasPlayback);
     int captureCount = channelCountForUi(info.captureChannels, info.hasCapture);
     int maxChannels = playbackCount > captureCount ? playbackCount : captureCount;
     int meterHeight = 0;
     if (maxChannels > 0) {
-        meterHeight = meterLabelH + 3 + (maxChannels * meterBarH) + ((maxChannels - 1) * meterGap);
+        meterHeight = kMeterTopPad +
+                      kMeterLabelH +
+                      kMeterLabelToBarsGap +
+                      (maxChannels * kMeterBarH) +
+                      ((maxChannels - 1) * kMeterGap);
     }
     int textHeight = 24;
     int innerHeight = meterHeight > textHeight ? meterHeight : textHeight;
@@ -395,16 +401,14 @@ static inline void drawChannelMeterGroup(FramebufferContext *fb,
         return;
     }
 
-    const int meterBarH = 2;
-    const int meterGap = 2;
     fb->drawText(x, y, label, 150, 188, 228, 1);
-    int barsY = y + 11;
+    int barsY = y + kMeterLabelH + kMeterLabelToBarsGap;
     for (int ch = 0; ch < channelCount; ++ch) {
-        int barY = barsY + (ch * (meterBarH + meterGap));
-        fb->drawRect(x, barY, w, meterBarH, 42, 52, 68);
+        int barY = barsY + (ch * (kMeterBarH + kMeterGap));
+        fb->drawRect(x, barY, w, kMeterBarH, 42, 52, 68);
         float level = getAudioChannelLevel(fb, handle, ch, isCapture);
         level = smoothMeterLevel(handle, ch, isCapture, level, nowMs);
-        drawMeterFillColor(fb, x, barY, w, meterBarH, level, fillR, fillG, fillB);
+        drawMeterFillColor(fb, x, barY, w, kMeterBarH, level, fillR, fillG, fillB);
     }
 }
 

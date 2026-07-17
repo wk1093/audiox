@@ -48,14 +48,33 @@ This produces two boot artifacts in `out/`:
 Useful targets:
 
 - `make show_kernel` - show detected kernel version
+- `make show_alsa` - print ALSA dependency mode and resolved paths/flags
+- `make alsa` - prepare static `libasound.a` into `out/alsa-sysroot`
 - `make dev` - build runtime image, upload it over HTTP, then let the Pi reboot twice to install it
 - `make qemu` - boot in QEMU (aarch64) // doesn't work because qemu raspi support is very minimal (no gui, no USB, no audio)
 - `make fancyexport` - wait for SD mount and export build artifacts
 - `make image` - create a flashable image file (WARNING: untested, may not work)
 
+### ALSA dependency setup on amd64 host
+
+When building with cross compiler on amd64, the runtime now expects ALSA under `out/alsa-sysroot` and links against static `libasound.a`.
+
+Source build is the only supported mode:
+
+```bash
+make alsa
+make initramfs
+```
+
+Useful override:
+
+```bash
+# pin upstream alsa-lib source version
+make ALSA_VERSION=1.2.14 alsa
+```
+
 ## Notes
 
-- Put `voice0.wav` ... `voice3.wav` in `wavs/`
 - Module seeds live in `depmod.txt`: use `base:` for early boot/UI-critical modules and `normal:` (or no prefix) for the rest
 - Bootloader-only storage/filesystem module seeds live in `bootmod.txt`
 - Default boot graphics stay on FKMS (`vc4-fkms-v3d-pi4`); framebuffer rendering stages into an off-screen buffer before presenting to reduce visual tearing without switching the display stack

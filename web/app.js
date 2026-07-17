@@ -39,6 +39,7 @@ const state = {
   thingsPollTimer: null,
   thingsPollInFlight: false,
   thingsSignature: '',
+  soundboardModesBySfx: {},
 };
 
 function setStatus(text, kind = '') {
@@ -98,6 +99,7 @@ function parseConfigText(text) {
     usb_capture_channels: 2,
     usb_sample_rate: 48000,
     usb_sample_size: 2,
+    soundboard_mode: 'play',
   };
 
   for (const rawLine of text.split(/\r?\n/)) {
@@ -106,6 +108,11 @@ function parseConfigText(text) {
     const eq = line.indexOf('=');
     if (eq < 0) continue;
     const key = line.slice(0, eq).trim();
+    if (key === 'soundboard_mode') {
+      const mode = line.slice(eq + 1).trim().toLowerCase();
+      cfg.soundboard_mode = (mode === 'hold') ? 'hold' : 'play';
+      continue;
+    }
     const value = Number(line.slice(eq + 1).trim());
     if (Number.isNaN(value)) continue;
     if (key in cfg) cfg[key] = value;
@@ -119,6 +126,7 @@ function formatConfigText(cfg) {
     `usb_capture_channels=${cfg.usb_capture_channels}`,
     `usb_sample_rate=${cfg.usb_sample_rate}`,
     `usb_sample_size=${cfg.usb_sample_size}`,
+    `soundboard_mode=${cfg.soundboard_mode || 'play'}`,
     ''
   ].join('\n');
 }
@@ -188,6 +196,7 @@ function getConfigFromForm() {
     usb_capture_channels: Number(document.getElementById('usb_capture_channels').value) || 2,
     usb_sample_rate: Number(document.getElementById('usb_sample_rate').value) || 48000,
     usb_sample_size: Number(document.getElementById('usb_sample_size').value) || 2,
+    soundboard_mode: 'play',
   };
 }
 
@@ -1045,23 +1054,80 @@ async function reloadConfig() {
   }
 }
 
-async function triggerSfx(fileName) {
+async function triggerSfx(fileName, action = 'trigger') {
   if (!fileName) {
     return;
   }
 
-  setStatus(`triggering ${fileName}...`);
+  const verb = action === 'press' ? 'pressing' : (action === 'release' ? 'releasing' : 'triggering');
+  setStatus(`${verb} ${fileName}...`);
   try {
     const target = encodeURIComponent(fileName);
-    const res = await fetch(`/api/soundboard/trigger/${target}`, { method: 'POST' });
+    const endpoint = (action === 'press')
+      ? `/api/soundboard/press/${target}`
+      : (action === 'release')
+        ? `/api/soundboard/release/${target}`
+        : `/api/soundboard/trigger/${target}`;
+    const res = await fetch(endpoint, { method: 'POST' });
     const txt = await res.text();
     if (!res.ok) {
       setStatus(`error: ${res.status} ${txt.trim()}`, 'warn');
       return;
     }
-    setStatus(txt.trim() || `triggered ${fileName}`, 'ok');
+    if (action === 'release') {
+      setStatus(txt.trim() || `released ${fileName}`, 'ok');
+    } else {
+      setStatus(txt.trim() || `triggered ${fileName}`, 'ok');
+    }
   } catch (err) {
     setStatus(`request failed: ${err}`, 'warn');
+  }
+}
+
+async function loadSoundboardModes() {
+  try {
+    const res = await fetch('/api/soundboard/modes', { method: 'GET' });
+    const txt = await res.text();
+    if (!res.ok) {
+      return;
+    }
+    const data = JSON.parse(txt);
+    state.soundboardModesBySfx = {};
+    const modes = Array.isArray(data?.modes) ? data.modes : [];
+    for (const entry of modes) {
+      const sfx = String(entry?.sfx || '');
+      const mode = (entry?.mode === 'hold') ? 'hold' : 'play';
+      if (sfx) {
+        state.soundboardModesBySfx[sfx] = mode;
+      }
+    }
+    renderSoundboardGrid();
+  } catch (_) {}
+}
+
+async function saveSoundboardModeForSfx(sfx, mode) {
+  const normalizedMode = (mode === 'hold') ? 'hold' : 'play';
+  setStatus(`saving mode for ${sfx}...`);
+  try {
+    const res = await fetch('/api/soundboard/mode/set', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: `sfx=${encodeURIComponent(sfx)}&mode=${normalizedMode}`,
+    });
+    const txt = await res.text();
+    if (!res.ok) {
+      setStatus(`mode save failed: ${res.status} ${txt.trim()}`, 'warn');
+      return;
+    }
+    if (normalizedMode === 'hold') {
+      state.soundboardModesBySfx[sfx] = 'hold';
+    } else {
+      delete state.soundboardModesBySfx[sfx];
+    }
+    renderSoundboardGrid();
+    setStatus(`mode for ${sfx} set to ${normalizedMode}`, 'ok');
+  } catch (err) {
+    setStatus(`mode save error: ${err}`, 'warn');
   }
 }
 
@@ -1129,6 +1195,7 @@ function renderSoundboardGrid() {
     const mappedNote = state.midiMappingsBySfx[file];
     const hasMidi = mappedNote !== undefined;
     const isTarget = state.mappingAssignTarget === file;
+    const mode = (state.soundboardModesBySfx[file] === 'hold') ? 'hold' : 'play';
 
     const card = document.createElement('div');
     card.className = `sb-card${isTarget ? ' assign-target' : ''}`;
@@ -1161,10 +1228,52 @@ function renderSoundboardGrid() {
     const actionsEl = document.createElement('div');
     actionsEl.className = 'sb-card-actions';
 
+    const modeSelect = document.createElement('select');
+    modeSelect.title = 'Playback mode for this sound';
+    const optPlay = document.createElement('option');
+    optPlay.value = 'play';
+    optPlay.textContent = 'Play';
+    const optHold = document.createElement('option');
+    optHold.value = 'hold';
+    optHold.textContent = 'Hold';
+    modeSelect.appendChild(optPlay);
+    modeSelect.appendChild(optHold);
+    modeSelect.value = mode;
+    modeSelect.addEventListener('change', () => {
+      saveSoundboardModeForSfx(file, modeSelect.value);
+    });
+
     const playBtn = document.createElement('button');
     playBtn.className = 'primary';
-    playBtn.textContent = '\u25b6 Play';
-    playBtn.addEventListener('click', () => triggerSfx(file));
+    playBtn.textContent = (mode === 'hold') ? 'Hold' : '\u25b6 Play';
+
+    let holdDown = false;
+    const releaseHold = () => {
+      if (!holdDown) {
+        return;
+      }
+      holdDown = false;
+      triggerSfx(file, 'release');
+    };
+
+    playBtn.addEventListener('pointerdown', (ev) => {
+      if (mode !== 'hold') {
+        return;
+      }
+      ev.preventDefault();
+      holdDown = true;
+      triggerSfx(file, 'press');
+    });
+    playBtn.addEventListener('pointerup', releaseHold);
+    playBtn.addEventListener('pointercancel', releaseHold);
+    playBtn.addEventListener('pointerleave', releaseHold);
+    playBtn.addEventListener('click', (ev) => {
+      if (mode === 'hold') {
+        ev.preventDefault();
+        return;
+      }
+      triggerSfx(file, 'trigger');
+    });
 
     const assignBtn = document.createElement('button');
     assignBtn.textContent = isTarget ? 'Waiting\u2026' : 'Assign MIDI';
@@ -1195,6 +1304,7 @@ function renderSoundboardGrid() {
       renderSoundboardGrid();
     });
 
+    actionsEl.appendChild(modeSelect);
     actionsEl.appendChild(playBtn);
     actionsEl.appendChild(assignBtn);
 
@@ -1382,6 +1492,7 @@ async function pollMappingCapture() {
 async function initializeGraphFromConfig() {
   ensureRoutingGraph();
   await loadConfig();
+  await loadSoundboardModes();
   await listSfxFiles();
   await loadMappings();
   await loadRoutingThings();
@@ -1492,6 +1603,7 @@ document.getElementById('btn-sb-refresh').addEventListener('click', async () => 
   await listSfxFiles();
   await loadMappings();
   await loadLightConfig();
+  await loadSoundboardModes();
   setStatus('soundboard refreshed', 'ok');
 });
 

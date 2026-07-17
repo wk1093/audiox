@@ -159,6 +159,80 @@ static int loadCardStreamLabel(uint32_t card, char *out, size_t outSize) {
     return out[0] ? RET_OK : RET_ERR;
 }
 
+static int loadCardStreamChannelCaps(uint32_t card,
+                                     uint8_t *playbackMax,
+                                     uint8_t *captureMax) {
+    if (!playbackMax || !captureMax) {
+        return RET_ERR;
+    }
+
+    *playbackMax = 0;
+    *captureMax = 0;
+
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/asound/card%u/stream0", (unsigned)card);
+
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        return RET_ERR;
+    }
+
+    enum {
+        STREAM_DIR_NONE = 0,
+        STREAM_DIR_PLAYBACK = 1,
+        STREAM_DIR_CAPTURE = 2,
+    } dir = STREAM_DIR_NONE;
+
+    char line[256];
+    while (fgets(line, sizeof(line), fp) != nullptr) {
+        trimAsciiSpace(line);
+        if (!line[0]) {
+            continue;
+        }
+
+        if (strncasecmp(line, "Playback:", 9) == 0) {
+            dir = STREAM_DIR_PLAYBACK;
+            continue;
+        }
+        if (strncasecmp(line, "Capture:", 8) == 0) {
+            dir = STREAM_DIR_CAPTURE;
+            continue;
+        }
+
+        const char *needle = "Channels:";
+        char *channelsField = strstr(line, needle);
+        if (!channelsField) {
+            continue;
+        }
+
+        channelsField += strlen(needle);
+        while (*channelsField && isspace((unsigned char)*channelsField)) {
+            ++channelsField;
+        }
+
+        char *endp = nullptr;
+        long channels = strtol(channelsField, &endp, 10);
+        if (endp == channelsField || channels <= 0) {
+            continue;
+        }
+
+        uint8_t ch = (channels > 16) ? 16U : (uint8_t)channels;
+        if (dir == STREAM_DIR_PLAYBACK || dir == STREAM_DIR_NONE) {
+            if (ch > *playbackMax) {
+                *playbackMax = ch;
+            }
+        }
+        if (dir == STREAM_DIR_CAPTURE || dir == STREAM_DIR_NONE) {
+            if (ch > *captureMax) {
+                *captureMax = ch;
+            }
+        }
+    }
+
+    fclose(fp);
+    return (*playbackMax > 0 || *captureMax > 0) ? RET_OK : RET_ERR;
+}
+
 static bool containsTokenNoCase(const char *text, const char *token) {
     if (!text || !token || !token[0]) {
         return false;
@@ -268,38 +342,63 @@ static void buildDisplayName(uint32_t card,
     }
 }
 
-static unsigned probePcmChannels(const char *path, int isCapture) {
-    if (!path || !path[0]) {
+static unsigned probePcmChannels(uint32_t card, uint32_t device, int isCapture) {
+    char pcmName[64];
+    snprintf(pcmName, sizeof(pcmName), "hw:%u,%u", (unsigned)card, (unsigned)device);
+    if (!pcmName[0]) {
         return 0;
     }
 
     const unsigned rates[] = {SAMPLE_RATE, AUDIO_INPUT_FALLBACK_RATE};
     const unsigned maxProbeChannels = 16;
-    for (size_t rateIndex = 0; rateIndex < (sizeof(rates) / sizeof(rates[0])); ++rateIndex) {
-        for (unsigned ch = maxProbeChannels; ch >= 1; --ch) {
-            int fd = open(path, isCapture ? (O_RDONLY | O_NONBLOCK) : (O_WRONLY | O_NONBLOCK));
-            if (fd < 0) {
-                return 2;
-            }
 
-            snd_pcm_uframes_t periodFrames = 0;
-            size_t frameBytes = 0;
-            int ok = audio_pcm_configure_hw_fd(fd,
-                                               path,
-                                               rates[rateIndex],
-                                               ch,
-                                               isCapture ? AUDIO_CAPTURE_PERIOD_FRAMES : BUFFER_FRAMES,
-                                               isCapture ? AUDIO_CAPTURE_PERIODS : 2U,
-                                               &periodFrames,
-                                               &frameBytes,
-                                               1,
-                                               0);
-            close(fd);
-            (void)periodFrames;
-            (void)frameBytes;
-            if (ok == 0) {
-                return ch;
+    for (size_t rateIndex = 0; rateIndex < (sizeof(rates) / sizeof(rates[0])); ++rateIndex) {
+        snd_pcm_t *pcm = nullptr;
+        int openRc = snd_pcm_open(&pcm,
+                                  pcmName,
+                                  isCapture ? SND_PCM_STREAM_CAPTURE : SND_PCM_STREAM_PLAYBACK,
+                                  SND_PCM_NONBLOCK);
+        if (openRc < 0) {
+            return 2;
+        }
+
+        snd_pcm_hw_params_t *hw = nullptr;
+        int rc = snd_pcm_hw_params_malloc(&hw);
+        if (rc < 0) {
+            snd_pcm_close(pcm);
+            continue;
+        }
+
+        rc = snd_pcm_hw_params_any(pcm, hw);
+        if (rc >= 0) {
+            rc = snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED);
+        }
+        if (rc >= 0) {
+            rc = snd_pcm_hw_params_set_format(pcm, hw, SND_PCM_FORMAT_S16_LE);
+        }
+        if (rc >= 0) {
+            unsigned int rateNear = rates[rateIndex];
+            rc = snd_pcm_hw_params_set_rate_near(pcm, hw, &rateNear, nullptr);
+        }
+
+        unsigned detected = 0;
+        if (rc >= 0) {
+            unsigned int chMax = 0;
+            if (snd_pcm_hw_params_get_channels_max(hw, &chMax) == 0 && chMax > 0) {
+                unsigned int start = (chMax > maxProbeChannels) ? maxProbeChannels : chMax;
+                for (unsigned int ch = start; ch >= 1; --ch) {
+                    if (snd_pcm_hw_params_test_channels(pcm, hw, ch) == 0) {
+                        detected = ch;
+                        break;
+                    }
+                }
             }
+        }
+
+        snd_pcm_hw_params_free(hw);
+        snd_pcm_close(pcm);
+        if (detected > 0) {
+            return detected;
         }
     }
 
@@ -470,8 +569,18 @@ int AudioContext::rescanDevices() {
         info.hasCapture = p.hasCapture;
         info.isUsb = 0;
         info.isGadget = 0;
-        info.playbackChannels = (uint8_t)(p.hasPlayback ? probePcmChannels(p.playbackPath, 0) : 0);
-        info.captureChannels = (uint8_t)(p.hasCapture ? probePcmChannels(p.capturePath, 1) : 0);
+        info.playbackChannels = (uint8_t)(p.hasPlayback ? probePcmChannels(p.card, p.device, 0) : 0);
+        info.captureChannels = (uint8_t)(p.hasCapture ? probePcmChannels(p.card, p.device, 1) : 0);
+        uint8_t streamPlaybackMax = 0;
+        uint8_t streamCaptureMax = 0;
+        if (loadCardStreamChannelCaps(p.card, &streamPlaybackMax, &streamCaptureMax) == RET_OK) {
+            if (info.hasPlayback && streamPlaybackMax > info.playbackChannels) {
+                info.playbackChannels = streamPlaybackMax;
+            }
+            if (info.hasCapture && streamCaptureMax > info.captureChannels) {
+                info.captureChannels = streamCaptureMax;
+            }
+        }
         snprintf(info.nodeName, sizeof(info.nodeName), "%s", p.nodeName);
         snprintf(info.devPath, sizeof(info.devPath), "%s", preferredPath);
         buildDisplayName(p.card,

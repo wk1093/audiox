@@ -4,22 +4,46 @@ CXX = aarch64-linux-gnu-g++
 CXXFLAGS = -static -O3 -Iinclude -Wall -Wextra -Werror -Wno-error=format-truncation -Wno-error=unused-parameter -pthread -fno-exceptions -fno-rtti -std=c++17
 LIBS = -lm -pthread
 
+PKG_FETCH ?= curl -fsSL
+
 # Recursive source discovery for upcoming C++ port.
 CPP_SRCS := $(shell find src -type f -name '*.cpp' 2>/dev/null)
 BOOTLOADER_SRC := src/init/bootloader.cpp
 RUNTIME_CPP_SRCS := $(filter-out $(BOOTLOADER_SRC),$(CPP_SRCS))
 RUNTIME_SRCS := $(RUNTIME_CPP_SRCS)
 RUNTIME_COMPILER := $(CXX)
-RUNTIME_FLAGS := $(CXXFLAGS)
+RUNTIME_FLAGS = $(CXXFLAGS)
+RUNTIME_LIBS = $(LIBS)
 
 BOOTLOADER_SRCS := $(BOOTLOADER_SRC)
 BOOTLOADER_COMPILER := $(CXX)
 BOOTLOADER_FLAGS := $(CXXFLAGS)
 
+# ALSA dependency strategy (build-only; runtime audio code remains unchanged).
+# Source build is the only supported mode.
+ENABLE_ALSA ?= 1
+ALSA_SYSROOT ?= $(OUT_DIR)/alsa-sysroot
+ALSA_PREFIX ?= /usr
+ALSA_LIB_DIR ?= $(ALSA_SYSROOT)$(ALSA_PREFIX)/lib
+ALSA_INCLUDE_DIR ?= $(ALSA_SYSROOT)$(ALSA_PREFIX)/include
+ALSA_STATIC_LIB ?= $(ALSA_LIB_DIR)/libasound.a
+ALSA_CONF_DIR ?= $(ALSA_SYSROOT)$(ALSA_PREFIX)/share/alsa
+
+ALSA_VERSION ?= 1.2.14
+ALSA_SOURCE_URL ?= https://www.alsa-project.org/files/pub/lib/alsa-lib-$(ALSA_VERSION).tar.bz2
+ALSA_SRC_TARBALL ?= $(OUT_DIR)/downloads/alsa-lib-$(ALSA_VERSION).tar.bz2
+ALSA_SRC_DIR ?= $(OUT_DIR)/build/alsa-lib-$(ALSA_VERSION)
+ALSA_BUILD_DIR ?= $(OUT_DIR)/build/alsa-lib-$(ALSA_VERSION)-build
+
+ifeq ($(ENABLE_ALSA),1)
+RUNTIME_FLAGS += -I$(ALSA_INCLUDE_DIR)
+RUNTIME_LIBS += -L$(ALSA_LIB_DIR) -lasound -ldl
+endif
+
 # Version information
 AUDIOX_VERSION_MAJOR = 1
 AUDIOX_VERSION_MINOR = 1
-AUDIOX_VERSION_PATCH = 2
+AUDIOX_VERSION_PATCH = 6
 
 # Auto-detected from firmware after fetch_deps runs.
 KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")
@@ -58,7 +82,7 @@ SD_MOUNT_BOOT ?= /run/media/$(USER)/bootfs
 IMG_FILE = $(OUT_DIR)/audiox.img
 IMG_SIZE_MB = 128
 
-.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev FORCE
+.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev FORCE alsa alsa_source show_alsa
 
 all: initramfs
 
@@ -91,6 +115,46 @@ $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST): fetch_m
 $(BOOT_MODULE_LOAD_LIST) $(BOOT_MODULE_LOAD_BASE_LIST) $(BOOT_MODULE_LOAD_NORMAL_LIST): fetch_boot_modules
 	@:
 
+ifeq ($(ENABLE_ALSA),1)
+RUNTIME_DEPS := $(ALSA_STATIC_LIB)
+else
+RUNTIME_DEPS :=
+endif
+
+show_alsa:
+	@echo "ENABLE_ALSA=$(ENABLE_ALSA)"
+	@echo "ALSA_MODE=source"
+	@echo "ALSA_SYSROOT=$(ALSA_SYSROOT)"
+	@echo "ALSA_STATIC_LIB=$(ALSA_STATIC_LIB)"
+	@echo "RUNTIME_FLAGS=$(RUNTIME_FLAGS)"
+	@echo "RUNTIME_LIBS=$(RUNTIME_LIBS)"
+
+alsa: $(ALSA_STATIC_LIB)
+
+$(ALSA_STATIC_LIB):
+	@mkdir -p "$(OUT_DIR)"
+	@$(MAKE) alsa_source
+	@test -f "$(ALSA_STATIC_LIB)" || { echo "Missing $(ALSA_STATIC_LIB) after ALSA build step"; exit 1; }
+
+alsa_source:
+	@echo "Building static alsa-lib $(ALSA_VERSION) with cross toolchain..."
+	@mkdir -p "$(OUT_DIR)/downloads" "$(OUT_DIR)/build" "$(ALSA_SYSROOT)"
+	@[ -f "$(ALSA_SRC_TARBALL)" ] || $(PKG_FETCH) "$(ALSA_SOURCE_URL)" -o "$(ALSA_SRC_TARBALL)"
+	rm -rf "$(ALSA_SRC_DIR)" "$(ALSA_BUILD_DIR)"
+	mkdir -p "$(ALSA_SRC_DIR)" "$(ALSA_BUILD_DIR)"
+	tar -xjf "$(ALSA_SRC_TARBALL)" -C "$(OUT_DIR)/build"
+	cd "$(ALSA_BUILD_DIR)" && \
+		"$(ALSA_SRC_DIR)/configure" \
+			--host=aarch64-linux-gnu \
+			--prefix=$(ALSA_PREFIX) \
+			--libdir=$(ALSA_PREFIX)/lib \
+			--disable-shared \
+			--enable-static \
+			CC="$(CC)" CXX="$(CXX)"
+	$(MAKE) -C "$(ALSA_BUILD_DIR)" -j$$(nproc)
+	$(MAKE) -C "$(ALSA_BUILD_DIR)" DESTDIR="$(ALSA_SYSROOT)" install
+	@echo "ALSA static lib ready: $(ALSA_STATIC_LIB)"
+
 
 $(BOOTLOADER_ROOTFS_DIR)/init: FORCE $(BOOTLOADER_SRCS)
 	@echo "Compiling bootloader init..."
@@ -99,7 +163,7 @@ $(BOOTLOADER_ROOTFS_DIR)/init: FORCE $(BOOTLOADER_SRCS)
 		-DKERNEL_VERSION='"$(KV)"' \
 		-o $(BOOTLOADER_ROOTFS_DIR)/init $(BOOTLOADER_SRCS) $(LIBS)
 
-$(ROOTFS_DIR)/init: fetch_deps FORCE $(RUNTIME_SRCS)
+$(ROOTFS_DIR)/init: fetch_deps FORCE $(RUNTIME_DEPS) $(RUNTIME_SRCS)
 	@echo "Compiling runtime init..."
 	mkdir -p $(ROOTFS_DIR)
 	$(RUNTIME_COMPILER) $(RUNTIME_FLAGS) \
@@ -108,7 +172,7 @@ $(ROOTFS_DIR)/init: fetch_deps FORCE $(RUNTIME_SRCS)
 		-DAUDIOX_VERSION_MINOR=$(AUDIOX_VERSION_MINOR) \
 		-DAUDIOX_VERSION_PATCH=$(AUDIOX_VERSION_PATCH) \
 		-DDEBUG_SHELL=$(DEBUG_SHELL) \
-		-o $(ROOTFS_DIR)/init $(RUNTIME_SRCS) $(LIBS)
+		-o $(ROOTFS_DIR)/init $(RUNTIME_SRCS) $(RUNTIME_LIBS)
 
 bootloader_rootfs: $(BOOTLOADER_ROOTFS_DIR)/init $(BOOT_MODULE_LOAD_LIST) $(BOOT_MODULE_LOAD_BASE_LIST)
 	@echo "Creating bootloader rootfs structure..."
@@ -155,6 +219,15 @@ rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE
 	@if [ -f "$(WEB_LOGO_PNG)" ]; then \
 		echo "Staging web logo png from $(WEB_LOGO_PNG)..."; \
 		cp "$(WEB_LOGO_PNG)" "$(ROOTFS_DIR)/etc/www/logo.png"; \
+	fi
+	@if [ "$(ENABLE_ALSA)" = "1" ]; then \
+		if [ -f "$(ALSA_CONF_DIR)/alsa.conf" ]; then \
+			echo "Staging ALSA config from $(ALSA_CONF_DIR)..."; \
+			mkdir -p "$(ROOTFS_DIR)$(ALSA_PREFIX)/share"; \
+			cp -a "$(ALSA_CONF_DIR)" "$(ROOTFS_DIR)$(ALSA_PREFIX)/share/"; \
+		else \
+			echo "Warning: ALSA config not found at $(ALSA_CONF_DIR)"; \
+		fi; \
 	fi
 
 bootloader_initramfs: bootloader_rootfs

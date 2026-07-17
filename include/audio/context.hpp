@@ -1,6 +1,7 @@
 #pragma once
 
 #include "defs.hpp"
+#include "config/context.hpp"
 #include "../context.hpp"
 
 #include <cstdint>
@@ -127,8 +128,11 @@ struct AudioContext {
     AudioHandle nextHandle;
     uint32_t deviceGeneration;
     std::atomic<uint32_t> pendingSfxTriggers;
+    std::atomic<uint32_t> pendingSfxHoldStarts;
+    std::atomic<uint32_t> pendingSfxHoldStops;
     AudioSfxClipSlot sfxSlots[2];
     std::atomic<uint32_t> sfxActiveSlot;
+    std::atomic<uint8_t> soundboardMode;
 
     // Soundboard play-state tracking for MIDI lighting.
     // sfxIsPlaying: set to 1 by the audio thread when a clip is audible, 0 when done.
@@ -153,6 +157,10 @@ struct AudioContext {
 
     int setupThreads() WARN_UNUSED;
     int triggerSfx(const char *sfxPath) WARN_UNUSED;
+    int startHeldSfx(const char *sfxPath) WARN_UNUSED;
+    void stopHeldSfx();
+    void setSoundboardMode(uint8_t mode);
+    uint8_t getSoundboardMode() const;
 
     int forceRescan() WARN_UNUSED;
     size_t copyDeviceInfos(AudioDeviceInfo *out, size_t cap) const;

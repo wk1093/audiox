@@ -144,6 +144,38 @@ static int parseSoundLightLine(const char *value,
     return RET_OK;
 }
 
+static int parseSoundModeLine(const char *value,
+                              MidiSoundMode *out,
+                              uint32_t *count_in_out) {
+    if (!value || !out || !count_in_out || *count_in_out >= MIDI_SOUND_MODES_MAX) {
+        return RET_ERR;
+    }
+
+    char buf[256];
+    copyBounded(buf, sizeof(buf), value);
+
+    char *comma = strchr(buf, ',');
+    if (!comma) {
+        return RET_ERR;
+    }
+    *comma = '\0';
+    char *sfxPath = trimLeft(buf);
+    char *modeStr = trimLeft(comma + 1);
+    trimRight(sfxPath);
+    trimRight(modeStr);
+
+    if (!sfxPath[0]) {
+        return RET_ERR;
+    }
+
+    uint8_t mode = soundboardModeFromString(modeStr);
+    MidiSoundMode *sm = &out[*count_in_out];
+    copyBounded(sm->sfxPath, MIDI_SFX_PATH_MAX, sfxPath);
+    sm->mode = mode;
+    ++(*count_in_out);
+    return RET_OK;
+}
+
 static int readMidiMapPath(const char *path, MidiMapData *out) {
     if (!path || !out) {
         return RET_ERR;
@@ -195,6 +227,8 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             }
         } else if (strcmp(key, "sound_light") == 0) {
             (void)parseSoundLightLine(value, data.soundLights, &data.soundLightCount);
+        } else if (strcmp(key, "sound_mode") == 0) {
+            (void)parseSoundModeLine(value, data.soundModes, &data.soundModeCount);
         }
     }
 
@@ -297,6 +331,23 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         }
     }
 
+    uint32_t smCount = data->soundModeCount;
+    if (smCount > MIDI_SOUND_MODES_MAX) {
+        smCount = MIDI_SOUND_MODES_MAX;
+    }
+    if (smCount > 0) {
+        dprintf(fd, "# per-sound playback mode: sfx,mode(play|hold)\n");
+        for (uint32_t i = 0; i < smCount; ++i) {
+            if (!data->soundModes[i].sfxPath[0]) {
+                continue;
+            }
+            dprintf(fd,
+                    "sound_mode=%s,%s\n",
+                    data->soundModes[i].sfxPath,
+                    soundboardModeToString(data->soundModes[i].mode));
+        }
+    }
+
     close(fd);
     return RET_OK;
 }
@@ -326,6 +377,10 @@ int ConfigStore::writeMidiMapFile(MidiMapData *data) {
     uint32_t slCount = data->soundLightCount;
     if (slCount > MIDI_SOUND_LIGHTS_MAX) {
         data->soundLightCount = MIDI_SOUND_LIGHTS_MAX;
+    }
+    uint32_t smCount = data->soundModeCount;
+    if (smCount > MIDI_SOUND_MODES_MAX) {
+        data->soundModeCount = MIDI_SOUND_MODES_MAX;
     }
     return writeMidiMapPath(MIDI_MAP_REAL_FILE_PATH, data);
 }

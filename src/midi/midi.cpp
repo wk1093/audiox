@@ -214,6 +214,24 @@ static int buildAbsoluteSfxPath(const char *configured, char *out, size_t outSz)
     return (n > 0 && (size_t)n < outSz) ? RET_OK : RET_ERR;
 }
 
+static uint8_t resolveSoundMode(const MidiMapData &data, const char *sfxPath) {
+    if (!sfxPath || !sfxPath[0]) {
+        return SOUNDBOARD_MODE_PLAY;
+    }
+
+    uint32_t count = data.soundModeCount;
+    if (count > MIDI_SOUND_MODES_MAX) {
+        count = MIDI_SOUND_MODES_MAX;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        if (strcmp(data.soundModes[i].sfxPath, sfxPath) == 0) {
+            return (data.soundModes[i].mode == SOUNDBOARD_MODE_HOLD) ? SOUNDBOARD_MODE_HOLD : SOUNDBOARD_MODE_PLAY;
+        }
+    }
+
+    return SOUNDBOARD_MODE_PLAY;
+}
+
 static void copyBounded(char *dst, size_t dstSz, const char *src) {
     if (!dst || dstSz == 0) {
         return;
@@ -247,7 +265,9 @@ MidiContext::MidiContext(Audiox *context)
       nextMidiMapReloadMs(0),
       currentLitNote(255),
       sfxWasPlaying(0),
-      cachedTriggerSeq(0) {
+            cachedTriggerSeq(0),
+            heldNote(255),
+            holdActive(0) {
     if (app) {
         app->midi = this;
         if (app->config) {
@@ -271,6 +291,8 @@ void MidiContext::disconnect() {
     dataNeed = 0;
     devPath[0] = '\0';
     currentLitNote = 255;
+    heldNote = 255;
+    holdActive = 0;
 }
 
 void MidiContext::sendRawMidi(uint8_t b0, uint8_t b1, uint8_t b2) {
@@ -507,13 +529,39 @@ void MidiContext::poll() {
                 }
 
                 const uint8_t kind = (uint8_t)(status & 0xF0);
-                if (kind != 0x90 || d1 == 0) {
+                int isNoteOn = (kind == 0x90 && d1 > 0);
+                int isNoteOff = (kind == 0x80) || (kind == 0x90 && d1 == 0);
+                if (!isNoteOn && !isNoteOff) {
                     continue;
                 }
 
-                ++lastNoteSeq;
-                lastNote = d0;
-                lastVelocity = d1;
+                if (isNoteOff) {
+                    // Some controllers send true NOTE OFF (0x80), others NOTE ON vel=0.
+                    // Treat both as release and do not depend on mapping lookup.
+                    // Stop on any NOTE OFF while hold is active, because some controllers
+                    // emit inconsistent note numbers/channels on release.
+                    if (holdActive && app->audio) {
+                        app->audio->stopHeldSfx();
+                        holdActive = 0;
+                        heldNote = 255;
+                        printf("[MIDI] NOTE OFF status=0x%02X n=%u v=%u -> hold release\n",
+                               (unsigned)status,
+                               (unsigned)d0,
+                               (unsigned)d1);
+                    } else {
+                        printf("[MIDI] NOTE OFF status=0x%02X n=%u v=%u\n",
+                               (unsigned)status,
+                               (unsigned)d0,
+                               (unsigned)d1);
+                    }
+                    continue;
+                }
+
+                if (isNoteOn) {
+                    ++lastNoteSeq;
+                    lastNote = d0;
+                    lastVelocity = d1;
+                }
 
                 // Look up note in midi_map.txt.
                 const MidiMapData::MidiMapping *mapping = NULL;
@@ -547,10 +595,28 @@ void MidiContext::poll() {
                     continue;
                 }
 
-                int triggerRc = app->audio->triggerSfx(sfxPath);
-                if (triggerRc == RET_OK) {
-                    printf("[MIDI] NOTE ON n=%u v=%u -> %s\n", (unsigned)d0, (unsigned)d1, sfxPath);
+                uint8_t mode = resolveSoundMode(cachedMidiMap, mapping->sfxPath);
+                int holdMode = (mode == SOUNDBOARD_MODE_HOLD) ? 1 : 0;
+
+                int triggerRc = RET_ERR;
+                if (holdMode) {
+                    if (holdActive && heldNote != d0) {
+                        app->audio->stopHeldSfx();
+                    }
+                    triggerRc = app->audio->startHeldSfx(sfxPath);
+                    if (triggerRc == RET_OK) {
+                        holdActive = 1;
+                        heldNote = d0;
+                        printf("[MIDI] NOTE ON n=%u v=%u -> hold %s\n", (unsigned)d0, (unsigned)d1, sfxPath);
+                    }
                 } else {
+                    triggerRc = app->audio->triggerSfx(sfxPath);
+                    if (triggerRc == RET_OK) {
+                        printf("[MIDI] NOTE ON n=%u v=%u -> %s\n", (unsigned)d0, (unsigned)d1, sfxPath);
+                    }
+                }
+
+                if (triggerRc != RET_OK) {
                     printf("[MIDI] [WARN] note %u mapped to %s but trigger failed (%d)\n",
                            (unsigned)d0,
                            sfxPath,

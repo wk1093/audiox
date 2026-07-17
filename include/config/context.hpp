@@ -14,6 +14,7 @@
 #define MIDI_MAPPINGS_MAX 64
 #define MIDI_SFX_PATH_MAX 160
 #define MIDI_SOUND_LIGHTS_MAX MIDI_MAPPINGS_MAX
+#define MIDI_SOUND_MODES_MAX MIDI_MAPPINGS_MAX
 
 struct RouterConfig {
     RouterConfig();
@@ -31,7 +32,16 @@ struct ConfigData {
     uint32_t playbackChannels;
     uint32_t captureChannels;
     uint32_t sampleSize;
+    uint8_t soundboardMode;
 };
+
+enum SoundboardMode : uint8_t {
+    SOUNDBOARD_MODE_PLAY = 0,
+    SOUNDBOARD_MODE_HOLD = 1,
+};
+
+const char *soundboardModeToString(uint8_t mode);
+uint8_t soundboardModeFromString(const char *value);
 
 
 // Global MIDI lighting config: one velocity per state, one channel for all output.
@@ -57,6 +67,11 @@ struct MidiSoundLight {
     uint8_t playingVel;
 };
 
+struct MidiSoundMode {
+    char sfxPath[MIDI_SFX_PATH_MAX]; // basename, e.g. "kick.wav"
+    uint8_t mode;                    // SoundboardMode
+};
+
 // Contents of midi_map.txt: note→sfx mappings plus lighting config.
 struct MidiMapData {
     uint32_t mappingCount;
@@ -67,6 +82,8 @@ struct MidiMapData {
     MidiLightGlobal globalLight;
     uint32_t soundLightCount;
     MidiSoundLight soundLights[MIDI_SOUND_LIGHTS_MAX];
+    uint32_t soundModeCount;
+    MidiSoundMode soundModes[MIDI_SOUND_MODES_MAX];
 };
 
 struct ConfigStore {

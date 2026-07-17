@@ -17,6 +17,9 @@ if [[ "$LOCAL_MAIN" != "$REMOTE_MAIN" ]]; then
     exit 1
 fi
 
+# Get commit message
+read -p "Enter commit message for merging 'dev' into 'main': " COMMIT_MSG
+
 # 3. Force main to match dev
 echo "Merging 'dev' into 'main'..."
 git switch main
@@ -26,7 +29,7 @@ git clean -fd || exit 1
 git add -A || exit 1
 
 # 4. Commit and push
-git commit
+git commit -m "$COMMIT_MSG"
 
 echo "Pushing to GitHub..."
 git push github main

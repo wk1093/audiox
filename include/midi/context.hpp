@@ -25,6 +25,8 @@ struct MidiContext {
     uint8_t  currentLitNote;  // note currently in "playing" state; 255 = none
     int      sfxWasPlaying;   // previous sfxIsPlaying value
     uint32_t cachedTriggerSeq;
+    uint8_t heldNote;
+    int holdActive;
 
     MidiContext(Audiox *context);
 

@@ -23,24 +23,33 @@ Roadmap for future audiox development.
 
 ## Later - v1.2+
 
+- [x] Random thing: Resize device containers on fbui depending on # of channels so channel levels don't clip out of the device box.
 - [ ] Make soundboard more flexible
   - [x] Make soundboard able to output midi as well to display lights on a connected controller
-  - [ ] Make soundboard have two play modes: "play" and "hold" (where "hold" mode will play the clip as long as the button is held down, and "play" mode will play the clip once and then stop)
+  - [x] Make soundboard have two play modes: "play" and "hold" (where "hold" mode will play the clip as long as the button is held down, and "play" mode will play the clip once and then stop)
   - [ ] Add the ability to map a button to a "stop all" function that will stop all currently playing clips
 
 
 ## More Later - v1.3+
 
 - [ ] Polyphonic soundboard playback
+- [ ] Ability to set a certain midi channel as "keyboard" so that those notes don't map to soundboard or other triggers, but are used for a sampler instrument.
+- [ ] Ability to set a certain midi button to be a "sampler mode" toggle, where soundboard buttons don't trigger clips, but set the current sample to be played by the keyboard notes.
+- [ ] More "modes" for advanced functionality, like mixing, routing, and effects. These modes would be accessible via the WebUI and/or MIDI buttons.
+
+The above last two features are mainly to improve my setup, but could probably be useful for others as well. This is kinda tailored to my midi controller (AKAI APC Key 25) which has an upper section with a bunch of buttons on one channel (which I will use for soundboard clips, and control buttons for sampler mode, muting, effect, etc), and also has knobs which i can use to control effects and volumes. the lower section is a keyboard on a separate midi channel, which I would like to use as a sampler keyboard, so I can select a soundboard clip and play it at different pitches. If sample mode is enabled, and we select clip X for example, and then we disable sampler mode, than the soundboard buttons will trigger clips again, but the keyboard will still play the last selected clip X at different pitches.
+
+## Even More Later - v1.4+
+
 - [ ] Volume sliders for all devices, with proper gain control for USB gadget input
 - [ ] Add a static ffmpeg build to the initramfs so that uploaded audio files can be converted to wav (which I can easily parse and play)
 
-## Even More Later - v1.4+
+## Very Later - v1.5+
 
 - [ ] Add audio effects (reverb, delay, etc) to the audio engine, and make it so they can be routed to any output, and have their parameters controlled via the HTTP API as well as bindable MIDI CCs and buttons (for toggling effects on/off)
 - [ ] Allow controlling routes with MIDI CCs and buttons
 
-## Perhaps - v1.5+
+## Perhaps - v1.6+
 
 - [ ] Revisit temporary DHCP for better host plug-and-play on Linux
 - [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)
@@ -56,7 +65,6 @@ Roadmap for future audiox development.
 
 ## Notes to self
 
-- Pi 4 is the first real target (because that is what I have)
-- Pi 5 is the nicer target (for the future of the project)
-- Pi 3 is only worth it if the performance budget still makes sense (likely limited by CPU headroom for full routing/effects workloads)
+- Pi 4 is the first real target (because that is what I have, but software only)
+- Pi 5 is the nicer target (for the future of the project, hardware will depend on this, because of multiple I2S busses)
 - If the audio pipeline starts fighting me, split it into separate processes later, but only if profiling says that is actually worth the pain

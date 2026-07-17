@@ -2,115 +2,194 @@
 
 #include "defs.hpp"
 
-#include <climits>
+#include <alsa/asoundlib.h>
 #include <errno.h>
-#include <sound/asound.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/ioctl.h>
 
 #define AUDIO_INPUT_FALLBACK_RATE 48000U
 #define AUDIO_CAPTURE_PERIOD_FRAMES 256U
 #define AUDIO_CAPTURE_PERIODS 4U
 
-static inline void audio_pcm_hw_params_any(struct snd_pcm_hw_params *params) {
-    memset(params, 0, sizeof(*params));
+static inline int audio_pcm_configure_hw_handle(snd_pcm_t *pcm,
+                                                const char *path,
+                                                unsigned int rate,
+                                                unsigned int channels,
+                                                snd_pcm_format_t format,
+                                                unsigned int periodFrames,
+                                                unsigned int periods,
+                                                snd_pcm_uframes_t *periodFramesOut,
+                                                size_t *frameBytesOut,
+                                                int configureTiming,
+                                                int logFail) {
+    if (!pcm) {
+        return -EINVAL;
+    }
 
-    for (size_t maskIndex = 0; maskIndex < (sizeof(params->masks) / sizeof(params->masks[0])); ++maskIndex) {
-        for (size_t bitIndex = 0; bitIndex < (sizeof(params->masks[maskIndex].bits) / sizeof(params->masks[maskIndex].bits[0])); ++bitIndex) {
-            params->masks[maskIndex].bits[bitIndex] = 0xFFFFFFFFU;
+    snd_pcm_hw_params_t *hw = nullptr;
+    int rc = snd_pcm_hw_params_malloc(&hw);
+    if (rc < 0) {
+        if (logFail) {
+            printf("[INIT] [ERR] ALSA HW_PARAMS alloc failed on %s: %s\n",
+                   path,
+                   snd_strerror(rc));
+        }
+        return rc;
+    }
+
+    const snd_pcm_uframes_t requestedPeriodFrames = (snd_pcm_uframes_t)periodFrames;
+    const unsigned int requestedPeriods = periods;
+    const snd_pcm_uframes_t requestedBufferFrames = requestedPeriodFrames * (snd_pcm_uframes_t)requestedPeriods;
+
+    rc = snd_pcm_hw_params_any(pcm, hw);
+    if (rc >= 0) {
+        rc = snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED);
+    }
+    if (rc >= 0) {
+        rc = snd_pcm_hw_params_set_format(pcm, hw, format);
+    }
+    if (rc >= 0) {
+        rc = snd_pcm_hw_params_set_channels(pcm, hw, channels);
+    }
+    if (rc >= 0) {
+        unsigned int exactRate = rate;
+        rc = snd_pcm_hw_params_set_rate_near(pcm, hw, &exactRate, nullptr);
+    }
+
+    if (rc >= 0 && configureTiming) {
+        snd_pcm_uframes_t exactPeriodFrames = requestedPeriodFrames;
+        unsigned int exactPeriods = requestedPeriods;
+        snd_pcm_uframes_t exactBufferFrames = requestedBufferFrames;
+
+        rc = snd_pcm_hw_params_set_period_size_near(pcm, hw, &exactPeriodFrames, nullptr);
+        if (rc >= 0) {
+            rc = snd_pcm_hw_params_set_periods_near(pcm, hw, &exactPeriods, nullptr);
+        }
+        if (rc >= 0) {
+            rc = snd_pcm_hw_params_set_buffer_size_near(pcm, hw, &exactBufferFrames);
         }
     }
 
-    for (size_t intervalIndex = 0; intervalIndex < (sizeof(params->intervals) / sizeof(params->intervals[0])); ++intervalIndex) {
-        params->intervals[intervalIndex].min = 0;
-        params->intervals[intervalIndex].max = UINT_MAX;
-        params->intervals[intervalIndex].openmin = 0;
-        params->intervals[intervalIndex].openmax = 0;
-        params->intervals[intervalIndex].integer = 0;
-        params->intervals[intervalIndex].empty = 0;
-    }
-}
-
-static inline void audio_pcm_hw_params_set_mask(struct snd_pcm_hw_params *params,
-                                                int param,
-                                                unsigned int value) {
-    if (param < SNDRV_PCM_HW_PARAM_FIRST_MASK || param > SNDRV_PCM_HW_PARAM_LAST_MASK) {
-        return;
+    if (rc >= 0) {
+        rc = snd_pcm_hw_params(pcm, hw);
     }
 
-    struct snd_mask *mask = &params->masks[param - SNDRV_PCM_HW_PARAM_FIRST_MASK];
-    memset(mask, 0, sizeof(*mask));
-    mask->bits[value / 32U] |= (1U << (value % 32U));
-    params->rmask |= (1U << param);
-}
-
-static inline void audio_pcm_hw_params_set_interval(struct snd_pcm_hw_params *params,
-                                                    int param,
-                                                    unsigned int minValue,
-                                                    unsigned int maxValue,
-                                                    int integerOnly) {
-    if (param < SNDRV_PCM_HW_PARAM_FIRST_INTERVAL || param > SNDRV_PCM_HW_PARAM_LAST_INTERVAL) {
-        return;
+    snd_pcm_uframes_t actualPeriodFrames = requestedPeriodFrames;
+    if (rc >= 0) {
+        rc = snd_pcm_hw_params_get_period_size(hw, &actualPeriodFrames, nullptr);
     }
 
-    struct snd_interval *interval = &params->intervals[param - SNDRV_PCM_HW_PARAM_FIRST_INTERVAL];
-    interval->min = minValue;
-    interval->max = maxValue;
-    interval->openmin = 0;
-    interval->openmax = 0;
-    interval->integer = integerOnly ? 1 : 0;
-    interval->empty = 0;
-    params->rmask |= (1U << param);
+    snd_pcm_hw_params_free(hw);
+
+    if (rc < 0) {
+        if (logFail) {
+            printf("[INIT] [ERR] ALSA HW_PARAMS failed on %s: %s\n", path, snd_strerror(rc));
+        }
+        return rc;
+    }
+
+    rc = snd_pcm_prepare(pcm);
+    if (rc < 0) {
+        if (logFail) {
+            printf("[INIT] [ERR] ALSA PREPARE failed on %s: %s\n", path, snd_strerror(rc));
+        }
+        return rc;
+    }
+
+    snd_pcm_sw_params_t *sw = nullptr;
+    rc = snd_pcm_sw_params_malloc(&sw);
+    if (rc >= 0) {
+        rc = snd_pcm_sw_params_current(pcm, sw);
+    }
+    if (rc >= 0) {
+        rc = snd_pcm_sw_params_set_start_threshold(pcm, sw, 1U);
+    }
+    if (rc >= 0) {
+        snd_pcm_uframes_t availMin = (actualPeriodFrames > 0) ? actualPeriodFrames : 1U;
+        rc = snd_pcm_sw_params_set_avail_min(pcm, sw, availMin);
+    }
+    if (rc >= 0) {
+        rc = snd_pcm_sw_params(pcm, sw);
+    }
+    if (sw) {
+        snd_pcm_sw_params_free(sw);
+    }
+    if (rc < 0) {
+        if (logFail) {
+            printf("[INIT] [ERR] ALSA SW_PARAMS failed on %s: %s\n", path, snd_strerror(rc));
+        }
+        return rc;
+    }
+
+    if (periodFramesOut) {
+        *periodFramesOut = actualPeriodFrames;
+    }
+    if (frameBytesOut) {
+        int widthBits = snd_pcm_format_physical_width(format);
+        size_t widthBytes = (widthBits > 0) ? (size_t)((widthBits + 7) / 8) : sizeof(int16_t);
+        *frameBytesOut = widthBytes * channels;
+    }
+    return 0;
 }
 
-static inline int audio_pcm_configure_hw_fd(int fd,
-                                            const char *path,
+static inline int audio_pcm_open_configured(snd_pcm_t **pcmOut,
+                                            const char *name,
+                                            snd_pcm_stream_t stream,
                                             unsigned int rate,
                                             unsigned int channels,
+                                            snd_pcm_format_t format,
                                             unsigned int periodFrames,
                                             unsigned int periods,
                                             snd_pcm_uframes_t *periodFramesOut,
                                             size_t *frameBytesOut,
                                             int configureTiming,
                                             int logFail) {
-    struct snd_pcm_hw_params hw;
-    audio_pcm_hw_params_any(&hw);
-
-    const unsigned int bufferFrames = periodFrames * periods;
-
-    audio_pcm_hw_params_set_mask(&hw, SNDRV_PCM_HW_PARAM_ACCESS, SNDRV_PCM_ACCESS_RW_INTERLEAVED);
-    audio_pcm_hw_params_set_mask(&hw, SNDRV_PCM_HW_PARAM_FORMAT, SNDRV_PCM_FORMAT_S16_LE);
-    audio_pcm_hw_params_set_mask(&hw, SNDRV_PCM_HW_PARAM_SUBFORMAT, SNDRV_PCM_SUBFORMAT_STD);
-
-    audio_pcm_hw_params_set_interval(&hw, SNDRV_PCM_HW_PARAM_CHANNELS, channels, channels, 1);
-    audio_pcm_hw_params_set_interval(&hw, SNDRV_PCM_HW_PARAM_RATE, rate, rate, 1);
-    if (configureTiming) {
-        audio_pcm_hw_params_set_interval(&hw, SNDRV_PCM_HW_PARAM_PERIOD_SIZE, periodFrames, periodFrames, 1);
-        audio_pcm_hw_params_set_interval(&hw, SNDRV_PCM_HW_PARAM_PERIODS, periods, periods, 1);
-        audio_pcm_hw_params_set_interval(&hw, SNDRV_PCM_HW_PARAM_BUFFER_SIZE, bufferFrames, bufferFrames, 1);
+    if (!pcmOut || !name) {
+        return -EINVAL;
     }
 
-    if (ioctl(fd, SNDRV_PCM_IOCTL_HW_PARAMS, &hw) < 0) {
+    *pcmOut = nullptr;
+    snd_pcm_t *pcm = nullptr;
+    int rc = snd_pcm_open(&pcm, name, stream, SND_PCM_NONBLOCK);
+    if (rc < 0) {
         if (logFail) {
-            printf("[INIT] [ERR] ALSA HW_PARAMS failed on %s: %s\n", path, strerror(errno));
+            printf("[INIT] [ERR] ALSA open failed on %s: %s\n", name, snd_strerror(rc));
         }
-        return -1;
+        return rc;
     }
 
-    if (ioctl(fd, SNDRV_PCM_IOCTL_PREPARE, nullptr) < 0) {
-        if (logFail) {
-            printf("[INIT] [ERR] ALSA PREPARE failed on %s: %s\n", path, strerror(errno));
-        }
-        return -1;
+    rc = audio_pcm_configure_hw_handle(pcm,
+                                       name,
+                                       rate,
+                                       channels,
+                                       format,
+                                       periodFrames,
+                                       periods,
+                                       periodFramesOut,
+                                       frameBytesOut,
+                                       configureTiming,
+                                       logFail);
+    if (rc < 0) {
+        snd_pcm_close(pcm);
+        return rc;
     }
 
-    if (periodFramesOut) {
-        *periodFramesOut = periodFrames;
-    }
-    if (frameBytesOut) {
-        *frameBytesOut = sizeof(int16_t) * channels;
-    }
+    *pcmOut = pcm;
     return 0;
+}
+
+static inline int audio_pcm_recover(snd_pcm_t *pcm, int err, const char *path, const char *op) {
+    if (!pcm) {
+        return -EINVAL;
+    }
+
+    int rc = snd_pcm_recover(pcm, err, 0);
+    if (rc < 0) {
+        printf("[AUDIO] [WARN] ALSA %s recover failed on %s: %s\n",
+               op ? op : "stream",
+               path ? path : "(unknown)",
+               snd_strerror(rc));
+    }
+    return rc;
 }

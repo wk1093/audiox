@@ -4,12 +4,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <errno.h>
-#include <fcntl.h>
 #include <stdint.h>
 #include <sched.h>
 #include <time.h>
-#include <unistd.h>
 
 namespace {
 
@@ -24,8 +21,6 @@ constexpr uint32_t kMaxCaptureStreams = 4;
 constexpr uint32_t kMaxPlaybackStreams = 4;
 constexpr uint32_t kCaptureRingFrames = BUFFER_FRAMES * 16U;
 constexpr uint32_t kReopenRetryBlocks = 200;
-constexpr uint32_t kSoundboardBurstSamples = SAMPLE_RATE / 3U;
-constexpr uint32_t kSoundboardBurstMax = SAMPLE_RATE * 3U;
 constexpr float kSoundboardClipGain = 0.35f;
 
 struct AdaptiveSrcController {
@@ -56,7 +51,7 @@ struct RuntimeGraph {
 
     struct AlsaCaptureStream {
         int active;
-        int fd;
+        snd_pcm_t *pcm;
         uint16_t nodeIndex;
         uint8_t channels;
         uint32_t card;
@@ -67,16 +62,18 @@ struct RuntimeGraph {
         uint32_t ringTail;
         uint32_t ringCount;
         float readFrac;
+        snd_pcm_format_t format;
         AdaptiveSrcController src;
         float lastSample[kMaxChannelsPerThing];
         char path[64];
         int16_t ioBlock[BUFFER_FRAMES * kMaxChannelsPerThing];
+        int32_t ioBlock32[BUFFER_FRAMES * kMaxChannelsPerThing];
         int16_t ring[kCaptureRingFrames * kMaxChannelsPerThing];
     };
 
     struct AlsaPlaybackStream {
         int active;
-        int fd;
+        snd_pcm_t *pcm;
         uint16_t nodeIndex;
         uint8_t channels;
         uint32_t card;
@@ -85,8 +82,10 @@ struct RuntimeGraph {
         uint32_t reopenRetryBlocks;
         uint32_t pendingFrames;
         uint32_t pendingOffsetFrames;
+        snd_pcm_format_t format;
         char path[64];
         int16_t pendingBlock[BUFFER_FRAMES * kMaxChannelsPerThing];
+        int32_t pendingBlock32[BUFFER_FRAMES * kMaxChannelsPerThing];
     };
 
     AudioGraphState snapshot;
@@ -105,7 +104,8 @@ struct RuntimeGraph {
     float outputs[AUDIO_GRAPH_MAX_THINGS][kMaxChannelsPerThing][BUFFER_FRAMES];
     float soundboardPhase;
     float soundboardEnv;
-    uint32_t soundboardBurstRemaining;
+    uint8_t soundboardClipActive;
+    uint8_t soundboardHoldActive;
     uint32_t activeClipSlot;
     uint32_t activeClipFrames;
     uint32_t activeClipRate;
@@ -325,9 +325,9 @@ static void closeCaptureStream(RuntimeGraph::AlsaCaptureStream *s) {
     if (!s) {
         return;
     }
-    if (s->fd >= 0) {
-        close(s->fd);
-        s->fd = -1;
+    if (s->pcm) {
+        snd_pcm_close(s->pcm);
+        s->pcm = nullptr;
     }
 }
 
@@ -335,9 +335,9 @@ static void closePlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
     if (!s) {
         return;
     }
-    if (s->fd >= 0) {
-        close(s->fd);
-        s->fd = -1;
+    if (s->pcm) {
+        snd_pcm_close(s->pcm);
+        s->pcm = nullptr;
     }
 }
 
@@ -349,11 +349,13 @@ static bool openCaptureStream(RuntimeGraph::AlsaCaptureStream *s) {
     static const struct {
         unsigned periodFrames;
         unsigned periods;
+        int configureTiming;
     } profiles[] = {
-        {512U, 4U},
-        {256U, 4U},
-        {BUFFER_FRAMES, 4U},
-        {BUFFER_FRAMES, 2U},
+        {512U, 4U, 1},
+        {256U, 4U, 1},
+        {BUFFER_FRAMES, 4U, 1},
+        {BUFFER_FRAMES, 2U, 1},
+        {BUFFER_FRAMES, 2U, 0},
     };
 
     const unsigned rates[] = {SAMPLE_RATE, AUDIO_INPUT_FALLBACK_RATE};
@@ -370,6 +372,14 @@ static bool openCaptureStream(RuntimeGraph::AlsaCaptureStream *s) {
         chAttempts[chCount++] = 1;
     }
 
+    int lastErr = 0;
+    const char *lastAttemptPath = s->path;
+    snd_pcm_format_t lastAttemptFormat = SND_PCM_FORMAT_UNKNOWN;
+    static const snd_pcm_format_t formats[] = {
+        SND_PCM_FORMAT_S16_LE,
+        SND_PCM_FORMAT_S32_LE,
+    };
+
     for (size_t r = 0; r < (sizeof(rates) / sizeof(rates[0])); ++r) {
         for (size_t c = 0; c < chCount; ++c) {
             uint8_t ch = chAttempts[c];
@@ -377,47 +387,58 @@ static bool openCaptureStream(RuntimeGraph::AlsaCaptureStream *s) {
                 continue;
             }
 
-            for (size_t p = 0; p < (sizeof(profiles) / sizeof(profiles[0])); ++p) {
-                int fd = open(s->path, O_RDONLY | O_NONBLOCK);
-                if (fd < 0) {
-                    return false;
-                }
+            for (size_t f = 0; f < (sizeof(formats) / sizeof(formats[0])); ++f) {
+                for (size_t p = 0; p < (sizeof(profiles) / sizeof(profiles[0])); ++p) {
+                    snd_pcm_t *pcm = nullptr;
+                    snd_pcm_uframes_t period = 0;
+                    size_t frameBytes = 0;
+                    int openRc = audio_pcm_open_configured(&pcm,
+                                                           s->path,
+                                                           SND_PCM_STREAM_CAPTURE,
+                                                           rates[r],
+                                                           ch,
+                                                           formats[f],
+                                                           profiles[p].periodFrames,
+                                                           profiles[p].periods,
+                                                           &period,
+                                                           &frameBytes,
+                                                           profiles[p].configureTiming,
+                                                           0);
+                    if (openRc != 0 || !pcm) {
+                        lastErr = openRc;
+                        lastAttemptPath = s->path;
+                        lastAttemptFormat = formats[f];
+                        continue;
+                    }
 
-                snd_pcm_uframes_t period = 0;
-                size_t frameBytes = 0;
-                if (audio_pcm_configure_hw_fd(fd,
-                                              s->path,
-                                              rates[r],
-                                              ch,
-                                              profiles[p].periodFrames,
-                                              profiles[p].periods,
-                                              &period,
-                                              &frameBytes,
-                                              1,
-                                              0) != 0) {
-                    close(fd);
-                    continue;
+                    s->pcm = pcm;
+                    s->format = formats[f];
+                    s->channels = ch;
+                    s->sampleRate = rates[r];
+                    s->reopenRetryBlocks = 0;
+                    captureRingReset(s);
+                    float baseRatio = (float)s->sampleRate / (float)SAMPLE_RATE;
+                    initAdaptiveSrc(&s->src, 0.50f, baseRatio);
+                    if (snd_pcm_start(s->pcm) < 0) {
+                        // Capture may auto-start on first read depending on driver.
+                    }
+                    printf("[AUDIO] [INFO] capture stream opened %s (%uch, %u Hz, fmt=%s period=%u periods=%u)\n",
+                           s->path,
+                           (unsigned)s->channels,
+                           (unsigned)s->sampleRate,
+                           snd_pcm_format_name(s->format),
+                           profiles[p].periodFrames,
+                           profiles[p].periods);
+                    return true;
                 }
-
-                s->fd = fd;
-                s->channels = ch;
-                s->sampleRate = rates[r];
-                s->reopenRetryBlocks = 0;
-                captureRingReset(s);
-                float baseRatio = (float)s->sampleRate / (float)SAMPLE_RATE;
-                initAdaptiveSrc(&s->src, 0.50f, baseRatio);
-                printf("[AUDIO] [INFO] capture stream opened %s (%uch, %u Hz, period=%u periods=%u)\n",
-                       s->path,
-                       (unsigned)s->channels,
-                       (unsigned)s->sampleRate,
-                       profiles[p].periodFrames,
-                       profiles[p].periods);
-                return true;
             }
         }
     }
 
-    printf("[AUDIO] [WARN] capture stream open failed: %s\n", s->path);
+    printf("[AUDIO] [WARN] capture stream open failed: %s fmt=%s (%s)\n",
+           lastAttemptPath ? lastAttemptPath : s->path,
+           snd_pcm_format_name(lastAttemptFormat),
+           snd_strerror(lastErr));
     return false;
 }
 
@@ -451,6 +472,14 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
         chAttempts[chCount++] = 1;
     }
 
+    int lastErr = 0;
+    const char *lastAttemptPath = s->path;
+    snd_pcm_format_t lastAttemptFormat = SND_PCM_FORMAT_UNKNOWN;
+    static const snd_pcm_format_t formats[] = {
+        SND_PCM_FORMAT_S16_LE,
+        SND_PCM_FORMAT_S32_LE,
+    };
+
     for (size_t r = 0; r < (sizeof(rates) / sizeof(rates[0])); ++r) {
         for (size_t c = 0; c < chCount; ++c) {
             uint8_t ch = chAttempts[c];
@@ -458,53 +487,60 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
                 continue;
             }
 
-            for (size_t p = 0; p < (sizeof(profiles) / sizeof(profiles[0])); ++p) {
-                int fd = open(s->path, O_WRONLY | O_NONBLOCK);
-                if (fd < 0) {
-                    printf("[AUDIO] [WARN] playback open failed: %s (%s)\n", s->path, strerror(errno));
-                    return false;
-                }
+            for (size_t f = 0; f < (sizeof(formats) / sizeof(formats[0])); ++f) {
+                for (size_t p = 0; p < (sizeof(profiles) / sizeof(profiles[0])); ++p) {
+                    snd_pcm_t *pcm = nullptr;
+                    snd_pcm_uframes_t period = 0;
+                    size_t frameBytes = 0;
+                    int openRc = audio_pcm_open_configured(&pcm,
+                                                           s->path,
+                                                           SND_PCM_STREAM_PLAYBACK,
+                                                           rates[r],
+                                                           ch,
+                                                           formats[f],
+                                                           profiles[p].periodFrames,
+                                                           profiles[p].periods,
+                                                           &period,
+                                                           &frameBytes,
+                                                           profiles[p].configureTiming,
+                                                           0);
+                    if (openRc != 0 || !pcm) {
+                        lastErr = openRc;
+                        lastAttemptPath = s->path;
+                        lastAttemptFormat = formats[f];
+                        continue;
+                    }
 
-                snd_pcm_uframes_t period = 0;
-                size_t frameBytes = 0;
-                if (audio_pcm_configure_hw_fd(fd,
-                                              s->path,
-                                              rates[r],
-                                              ch,
-                                              profiles[p].periodFrames,
-                                              profiles[p].periods,
-                                              &period,
-                                              &frameBytes,
-                                              profiles[p].configureTiming,
-                                              0) != 0) {
-                    close(fd);
-                    continue;
+                    s->pcm = pcm;
+                    s->format = formats[f];
+                    s->channels = ch;
+                    s->sampleRate = rates[r];
+                    s->reopenRetryBlocks = 0;
+                    s->pendingFrames = 0;
+                    s->pendingOffsetFrames = 0;
+                    printf("[AUDIO] [INFO] playback stream opened %s (%uch, %u Hz, fmt=%s period=%u periods=%u timing=%d)\n",
+                           s->path,
+                           (unsigned)s->channels,
+                           (unsigned)s->sampleRate,
+                           snd_pcm_format_name(s->format),
+                           profiles[p].periodFrames,
+                           profiles[p].periods,
+                           profiles[p].configureTiming);
+                    return true;
                 }
-
-                s->fd = fd;
-                s->channels = ch;
-                s->sampleRate = rates[r];
-                s->reopenRetryBlocks = 0;
-                s->pendingFrames = 0;
-                s->pendingOffsetFrames = 0;
-                printf("[AUDIO] [INFO] playback stream opened %s (%uch, %u Hz, period=%u periods=%u timing=%d)\n",
-                       s->path,
-                       (unsigned)s->channels,
-                       (unsigned)s->sampleRate,
-                       profiles[p].periodFrames,
-                       profiles[p].periods,
-                       profiles[p].configureTiming);
-                return true;
             }
         }
     }
 
-    printf("[AUDIO] [WARN] playback stream open failed all profiles: %s\n", s->path);
+    printf("[AUDIO] [WARN] playback stream open failed: %s fmt=%s (%s)\n",
+           lastAttemptPath ? lastAttemptPath : s->path,
+           snd_pcm_format_name(lastAttemptFormat),
+           snd_strerror(lastErr));
     return false;
 }
 
 static void maybeReopenCapture(RuntimeGraph::AlsaCaptureStream *s) {
-    if (!s || !s->active || s->fd >= 0) {
+    if (!s || !s->active || s->pcm) {
         return;
     }
     if (s->reopenRetryBlocks > 0) {
@@ -517,7 +553,7 @@ static void maybeReopenCapture(RuntimeGraph::AlsaCaptureStream *s) {
 }
 
 static void maybeReopenPlayback(RuntimeGraph::AlsaPlaybackStream *s) {
-    if (!s || !s->active || s->fd >= 0) {
+    if (!s || !s->active || s->pcm) {
         return;
     }
     if (s->reopenRetryBlocks > 0) {
@@ -537,7 +573,7 @@ static void serviceCaptureIo(RuntimeGraph *rt) {
     for (uint16_t i = 0; i < rt->captureCount; ++i) {
         RuntimeGraph::AlsaCaptureStream &s = rt->capture[i];
         maybeReopenCapture(&s);
-        if (s.fd < 0) {
+        if (!s.pcm) {
             continue;
         }
 
@@ -548,18 +584,29 @@ static void serviceCaptureIo(RuntimeGraph *rt) {
                 break;
             }
 
-            snd_xferi xfer = {};
-            xfer.buf = s.ioBlock;
-            xfer.frames = reqFrames;
-
-            int rc = ioctl(s.fd, SNDRV_PCM_IOCTL_READI_FRAMES, &xfer);
-            snd_pcm_sframes_t framesRead = xfer.result;
-            if (rc < 0 && framesRead >= 0) {
-                framesRead = -errno;
-            }
+            void *readBuf = (s.format == SND_PCM_FORMAT_S32_LE)
+                                ? static_cast<void *>(s.ioBlock32)
+                                : static_cast<void *>(s.ioBlock);
+            snd_pcm_sframes_t framesRead = snd_pcm_readi(s.pcm, readBuf, reqFrames);
 
             if (framesRead > 0) {
-                captureRingPush(&s, s.ioBlock, (uint32_t)framesRead);
+                if (s.format == SND_PCM_FORMAT_S32_LE) {
+                    int16_t converted[BUFFER_FRAMES * kMaxChannelsPerThing];
+                    uint32_t sampleCount = (uint32_t)framesRead * s.channels;
+                    for (uint32_t j = 0; j < sampleCount; ++j) {
+                        int32_t v32 = s.ioBlock32[j] >> 16;
+                        if (v32 > 32767) {
+                            v32 = 32767;
+                        }
+                        if (v32 < -32768) {
+                            v32 = -32768;
+                        }
+                        converted[j] = (int16_t)v32;
+                    }
+                    captureRingPush(&s, converted, (uint32_t)framesRead);
+                } else {
+                    captureRingPush(&s, s.ioBlock, (uint32_t)framesRead);
+                }
                 if ((uint32_t)framesRead < reqFrames) {
                     break;
                 }
@@ -572,7 +619,10 @@ static void serviceCaptureIo(RuntimeGraph *rt) {
 
             int err = (framesRead < 0) ? (int)(-framesRead) : EIO;
             if (err == EPIPE || err == ESTRPIPE || err == EIO) {
-                (void)ioctl(s.fd, SNDRV_PCM_IOCTL_PREPARE);
+                if (audio_pcm_recover(s.pcm, -err, s.path, "capture") < 0) {
+                    closeCaptureStream(&s);
+                    s.reopenRetryBlocks = kReopenRetryBlocks;
+                }
                 break;
             }
 
@@ -595,7 +645,7 @@ static void servicePlaybackIo(RuntimeGraph *rt) {
     for (uint16_t i = 0; i < rt->playbackCount; ++i) {
         RuntimeGraph::AlsaPlaybackStream &s = rt->playback[i];
         maybeReopenPlayback(&s);
-        if (s.fd < 0) {
+        if (!s.pcm) {
             continue;
         }
 
@@ -630,6 +680,13 @@ static void servicePlaybackIo(RuntimeGraph *rt) {
 
             s.pendingFrames = BUFFER_FRAMES;
             s.pendingOffsetFrames = 0;
+
+            if (s.format == SND_PCM_FORMAT_S32_LE) {
+                uint32_t totalSamples = s.pendingFrames * s.channels;
+                for (uint32_t i = 0; i < totalSamples; ++i) {
+                    s.pendingBlock32[i] = ((int32_t)s.pendingBlock[i]) << 16;
+                }
+            }
         }
 
         if (s.pendingFrames <= s.pendingOffsetFrames) {
@@ -638,17 +695,17 @@ static void servicePlaybackIo(RuntimeGraph *rt) {
             continue;
         }
 
-        snd_xferi xfer = {};
-        xfer.buf = &s.pendingBlock[s.pendingOffsetFrames * s.channels];
-        xfer.frames = s.pendingFrames - s.pendingOffsetFrames;
-
-        int rc = ioctl(s.fd, SNDRV_PCM_IOCTL_WRITEI_FRAMES, &xfer);
-        snd_pcm_sframes_t framesWritten = xfer.result;
-        if (rc < 0 && framesWritten >= 0) {
-            framesWritten = -errno;
-        }
+        const void *writeBuf = (s.format == SND_PCM_FORMAT_S32_LE)
+                       ? static_cast<const void *>(&s.pendingBlock32[s.pendingOffsetFrames * s.channels])
+                       : static_cast<const void *>(&s.pendingBlock[s.pendingOffsetFrames * s.channels]);
+        snd_pcm_sframes_t framesWritten = snd_pcm_writei(s.pcm,
+                                 writeBuf,
+                                 s.pendingFrames - s.pendingOffsetFrames);
 
         if (framesWritten > 0) {
+            if (snd_pcm_state(s.pcm) == SND_PCM_STATE_PREPARED) {
+                (void)snd_pcm_start(s.pcm);
+            }
             s.pendingOffsetFrames += (uint32_t)framesWritten;
             if (s.pendingOffsetFrames >= s.pendingFrames) {
                 s.pendingFrames = 0;
@@ -663,7 +720,10 @@ static void servicePlaybackIo(RuntimeGraph *rt) {
 
         int err = (framesWritten < 0) ? (int)(-framesWritten) : EIO;
         if (err == EPIPE || err == ESTRPIPE || err == EIO) {
-            (void)ioctl(s.fd, SNDRV_PCM_IOCTL_PREPARE);
+            if (audio_pcm_recover(s.pcm, -err, s.path, "playback") < 0) {
+                closePlaybackStream(&s);
+                s.reopenRetryBlocks = kReopenRetryBlocks;
+            }
             s.pendingFrames = 0;
             s.pendingOffsetFrames = 0;
             continue;
@@ -700,6 +760,33 @@ static void consumeSoundboardTriggers(AudioContext *ctx, RuntimeGraph *rt) {
         return;
     }
 
+    uint32_t holdStarts = ctx->pendingSfxHoldStarts.exchange(0U, std::memory_order_acq_rel);
+    uint32_t holdStops = ctx->pendingSfxHoldStops.exchange(0U, std::memory_order_acq_rel);
+
+    if (holdStops > 0U) {
+        rt->soundboardHoldActive = 0;
+        rt->soundboardClipActive = 0;
+        rt->activeClipPos = rt->activeClipFrames;
+        rt->activeClipFrac = 0.0f;
+        ctx->sfxIsPlaying.store(0, std::memory_order_release);
+    }
+
+    if (holdStarts > 0U) {
+        uint32_t activeSlot = ctx->sfxActiveSlot.load(std::memory_order_acquire) & 1U;
+        const AudioSfxClipSlot &clip = ctx->sfxSlots[activeSlot];
+        rt->activeClipSlot = activeSlot;
+        rt->activeClipFrames = clip.frames;
+        rt->activeClipRate = clip.sampleRate;
+        rt->activeClipChannels = clip.channels;
+        rt->activeClipPos = 0;
+        rt->activeClipFrac = 0.0f;
+        rt->soundboardClipActive = (clip.frames > 0U) ? 1U : 0U;
+        rt->soundboardHoldActive = rt->soundboardClipActive;
+        if (rt->soundboardClipActive) {
+            ctx->sfxIsPlaying.store(1, std::memory_order_release);
+        }
+    }
+
     uint32_t pending = ctx->pendingSfxTriggers.exchange(0U, std::memory_order_acq_rel);
     if (pending == 0) {
         return;
@@ -713,15 +800,18 @@ static void consumeSoundboardTriggers(AudioContext *ctx, RuntimeGraph *rt) {
     rt->activeClipChannels = clip.channels;
     rt->activeClipPos = 0;
     rt->activeClipFrac = 0.0f;
+    rt->soundboardClipActive = (clip.frames > 0U) ? 1U : 0U;
+    rt->soundboardHoldActive = 0;
 
-    uint64_t add = (uint64_t)pending * (uint64_t)kSoundboardBurstSamples;
-    uint64_t total = (uint64_t)rt->soundboardBurstRemaining + add;
-    if (total > kSoundboardBurstMax) {
-        total = kSoundboardBurstMax;
+    if (rt->soundboardClipActive) {
+        ctx->sfxIsPlaying.store(1, std::memory_order_release);
     }
-    rt->soundboardBurstRemaining = (uint32_t)total;
 
-    ctx->sfxIsPlaying.store(1, std::memory_order_release);
+    if (holdStops > 0U && rt->soundboardHoldActive) {
+        rt->soundboardHoldActive = 0;
+        rt->soundboardClipActive = 0;
+        ctx->sfxIsPlaying.store(0, std::memory_order_release);
+    }
 }
 
 static bool tryReadPublishedGraph(const AudioContext *ctx,
@@ -1005,7 +1095,7 @@ static void renderSourceNode(const AudioContext *ctx, RuntimeGraph *rt, uint16_t
         const AudioSfxClipSlot &clip = ctx->sfxSlots[rt->activeClipSlot & 1U];
 
         for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
-            float target = (rt->soundboardBurstRemaining > 0U) ? 1.0f : 0.0f;
+            float target = rt->soundboardClipActive ? 1.0f : 0.0f;
             if (target > env) {
                 env += 0.02f;
                 if (env > target) {
@@ -1020,7 +1110,16 @@ static void renderSourceNode(const AudioContext *ctx, RuntimeGraph *rt, uint16_t
 
             float s = 0.0f;
 
-            if (rt->soundboardBurstRemaining > 0U &&
+            if (rt->soundboardClipActive &&
+                clipFrames > 0U &&
+                clipRate > 0U &&
+                (clipChannels == 1U || clipChannels == 2U)) {
+                if (rt->activeClipPos >= clipFrames) {
+                    rt->soundboardClipActive = 0;
+                }
+            }
+
+            if (rt->soundboardClipActive &&
                 clipFrames > 0U &&
                 clipRate > 0U &&
                 (clipChannels == 1U || clipChannels == 2U) &&
@@ -1044,6 +1143,10 @@ static void renderSourceNode(const AudioContext *ctx, RuntimeGraph *rt, uint16_t
                     ++rt->activeClipPos;
                     rt->activeClipFrac -= 1.0f;
                 }
+
+                if (rt->activeClipPos >= clipFrames) {
+                    rt->soundboardClipActive = 0;
+                }
             }
 
             for (uint8_t ch = 0; ch < outChannels; ++ch) {
@@ -1052,10 +1155,6 @@ static void renderSourceNode(const AudioContext *ctx, RuntimeGraph *rt, uint16_t
             phase += inc;
             if (phase >= kTwoPi) {
                 phase -= kTwoPi;
-            }
-
-            if (rt->soundboardBurstRemaining > 0U) {
-                --rt->soundboardBurstRemaining;
             }
         }
         rt->soundboardPhase = phase;
@@ -1166,13 +1265,13 @@ static void rebuildRuntimeGraph(RuntimeGraph *rt, const AudioGraphState &graph) 
                     RuntimeGraph::AlsaCaptureStream &s = rt->capture[rt->captureCount];
                     memset(&s, 0, sizeof(s));
                     s.active = 1;
-                    s.fd = -1;
+                    s.pcm = nullptr;
                     s.nodeIndex = i;
                     s.card = card;
                     s.device = device;
                     s.sampleRate = SAMPLE_RATE;
                     s.channels = (thing.outputs == 0) ? 1U : ((thing.outputs > kMaxChannelsPerThing) ? kMaxChannelsPerThing : thing.outputs);
-                    snprintf(s.path, sizeof(s.path), "/dev/snd/pcmC%uD%uc", (unsigned)card, (unsigned)device);
+                    snprintf(s.path, sizeof(s.path), "hw:%u,%u", (unsigned)card, (unsigned)device);
                     initAdaptiveSrc(&s.src, 0.5f, 1.0f);
                     captureRingReset(&s);
                     if (!openCaptureStream(&s)) {
@@ -1190,13 +1289,13 @@ static void rebuildRuntimeGraph(RuntimeGraph *rt, const AudioGraphState &graph) 
                     RuntimeGraph::AlsaPlaybackStream &s = rt->playback[rt->playbackCount];
                     memset(&s, 0, sizeof(s));
                     s.active = 1;
-                    s.fd = -1;
+                    s.pcm = nullptr;
                     s.nodeIndex = i;
                     s.card = card;
                     s.device = device;
                     s.sampleRate = SAMPLE_RATE;
                     s.channels = (thing.inputs == 0) ? 1U : ((thing.inputs > kMaxChannelsPerThing) ? kMaxChannelsPerThing : thing.inputs);
-                    snprintf(s.path, sizeof(s.path), "/dev/snd/pcmC%uD%up", (unsigned)card, (unsigned)device);
+                    snprintf(s.path, sizeof(s.path), "hw:%u,%u", (unsigned)card, (unsigned)device);
                     if (!openPlaybackStream(&s)) {
                         s.reopenRetryBlocks = kReopenRetryBlocks;
                     }
@@ -1298,9 +1397,9 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
     servicePlaybackIo(rt);
 
     // Update play-state for MIDI lighting.  If no clip is running, clear the flag.
-    bool clipActive = (rt->activeClipFrames > 0 &&
-                       rt->activeClipPos < rt->activeClipFrames &&
-                       rt->soundboardBurstRemaining > 0);
+    bool clipActive = (rt->soundboardClipActive &&
+                       rt->activeClipFrames > 0 &&
+                       rt->activeClipPos < rt->activeClipFrames);
     if (!clipActive && ctx->sfxIsPlaying.load(std::memory_order_relaxed)) {
         ctx->sfxIsPlaying.store(0, std::memory_order_release);
     }
@@ -1338,23 +1437,26 @@ static void maybeLogStats(RuntimeGraph *rt) {
            (unsigned)rt->snapshot.generation,
            peak);
 
-    if (rt->captureCount > 0) {
-        const RuntimeGraph::AlsaCaptureStream &s = rt->capture[0];
-        printf("[AUDIO] [INFO] src ratio=%.5f ring_fill=%u/%u\n",
+    for (uint16_t i = 0; i < rt->captureCount; ++i) {
+        const RuntimeGraph::AlsaCaptureStream &s = rt->capture[i];
+        printf("[AUDIO] [INFO] capture[%u] ratio=%.5f ring_fill=%u/%u path=%s\n",
+               (unsigned)i,
                s.src.ratio,
                (unsigned)s.ringCount,
-               (unsigned)kCaptureRingFrames);
-        if (s.fd < 0) {
-            printf("[AUDIO] [WARN] capture stream offline: %s\n", s.path);
+               (unsigned)kCaptureRingFrames,
+               s.path);
+        if (!s.pcm) {
+            printf("[AUDIO] [WARN] capture[%u] offline: %s\n", (unsigned)i, s.path);
         }
     }
 
-    if (rt->playbackCount > 0) {
-        const RuntimeGraph::AlsaPlaybackStream &p = rt->playback[0];
-        if (p.fd < 0) {
-            printf("[AUDIO] [WARN] playback stream offline: %s\n", p.path);
+    for (uint16_t i = 0; i < rt->playbackCount; ++i) {
+        const RuntimeGraph::AlsaPlaybackStream &p = rt->playback[i];
+        if (!p.pcm) {
+            printf("[AUDIO] [WARN] playback[%u] offline: %s\n", (unsigned)i, p.path);
         } else {
-            printf("[AUDIO] [INFO] playback stream active: %s (%uch @ %u)\n",
+            printf("[AUDIO] [INFO] playback[%u] active: %s (%uch @ %u)\n",
+                   (unsigned)i,
                    p.path,
                    (unsigned)p.channels,
                    (unsigned)p.sampleRate);

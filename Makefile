@@ -27,6 +27,7 @@ ALSA_PREFIX ?= /usr
 ALSA_LIB_DIR ?= $(ALSA_SYSROOT)$(ALSA_PREFIX)/lib
 ALSA_INCLUDE_DIR ?= $(ALSA_SYSROOT)$(ALSA_PREFIX)/include
 ALSA_STATIC_LIB ?= $(ALSA_LIB_DIR)/libasound.a
+ALSA_CONF_DIR ?= $(ALSA_SYSROOT)$(ALSA_PREFIX)/share/alsa
 
 ALSA_VERSION ?= 1.2.14
 ALSA_SOURCE_URL ?= https://www.alsa-project.org/files/pub/lib/alsa-lib-$(ALSA_VERSION).tar.bz2
@@ -42,7 +43,7 @@ endif
 # Version information
 AUDIOX_VERSION_MAJOR = 1
 AUDIOX_VERSION_MINOR = 1
-AUDIOX_VERSION_PATCH = 3
+AUDIOX_VERSION_PATCH = 5
 
 # Auto-detected from firmware after fetch_deps runs.
 KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")
@@ -218,6 +219,15 @@ rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE
 	@if [ -f "$(WEB_LOGO_PNG)" ]; then \
 		echo "Staging web logo png from $(WEB_LOGO_PNG)..."; \
 		cp "$(WEB_LOGO_PNG)" "$(ROOTFS_DIR)/etc/www/logo.png"; \
+	fi
+	@if [ "$(ENABLE_ALSA)" = "1" ]; then \
+		if [ -f "$(ALSA_CONF_DIR)/alsa.conf" ]; then \
+			echo "Staging ALSA config from $(ALSA_CONF_DIR)..."; \
+			mkdir -p "$(ROOTFS_DIR)$(ALSA_PREFIX)/share"; \
+			cp -a "$(ALSA_CONF_DIR)" "$(ROOTFS_DIR)$(ALSA_PREFIX)/share/"; \
+		else \
+			echo "Warning: ALSA config not found at $(ALSA_CONF_DIR)"; \
+		fi; \
 	fi
 
 bootloader_initramfs: bootloader_rootfs

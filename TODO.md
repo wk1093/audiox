@@ -23,6 +23,7 @@ Roadmap for future audiox development.
 
 ## Later - v1.2+
 
+- [ ] Random thing: Resize device containers on fbui depending on # of channels so channel levels don't clip out of the device box.
 - [ ] Make soundboard more flexible
   - [x] Make soundboard able to output midi as well to display lights on a connected controller
   - [ ] Make soundboard have two play modes: "play" and "hold" (where "hold" mode will play the clip as long as the button is held down, and "play" mode will play the clip once and then stop)

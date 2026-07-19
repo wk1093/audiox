@@ -18,6 +18,9 @@ struct MidiContext {
     uint32_t lastNoteSeq;
     uint8_t lastNote;
     uint8_t lastVelocity;
+    uint32_t lastCcSeq;
+    uint8_t lastCc;
+    uint8_t lastCcValue;
 
     // Lighting state
     MidiMapData cachedMidiMap;

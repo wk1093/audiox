@@ -9,6 +9,9 @@ const sbGridEl = document.getElementById('sb-grid');
 const sbMappingStatusEl = document.getElementById('sb-mapping-status');
 const sbStopAllMidiEl = document.getElementById('sb-stop-all-midi');
 const sbSamplerToggleMidiEl = document.getElementById('sb-sampler-toggle-midi');
+const midiActionCaptureStatusEl = document.getElementById('midi-action-capture-status');
+const volGridEl = document.getElementById('vol-grid');
+const volCcStatusEl = document.getElementById('vol-cc-status');
 const inspectorEl = document.getElementById('route-inspector');
 const nodeCountEl = document.getElementById('metric-node-count');
 const routeCountEl = document.getElementById('metric-route-count');
@@ -47,6 +50,12 @@ const state = {
   samplerKeyboardEnabled: true,
   samplerKeyboardChannel: 0,
   samplerRootNote: 60,
+  // Volume page
+  volumes: [],         // [{id, name, gain}] from /api/audio/volumes
+  ccVolumes: [],       // [{cc, id}] from /api/midi/cc_volumes
+  volAssignTarget: null,
+  volCcPollTimer: null,
+  volCcLastSeq: 0,
 };
 
 function setStatus(text, kind = '') {
@@ -69,6 +78,13 @@ function setActiveTab(tab) {
   }
   if (tab === 'system') {
     loadSystemInfo();
+  }
+  if (tab === 'volume') {
+    loadVolumes();
+  }
+  if (tab === 'midi') {
+    renderStopAllMidiStatus();
+    renderSamplerToggleMidiStatus();
   }
 }
 
@@ -1110,22 +1126,18 @@ function renderStopAllMidiStatus() {
   if (!sbStopAllMidiEl) {
     return;
   }
-  if (state.stopAllMidiNote === null || state.stopAllMidiNote === undefined) {
-    sbStopAllMidiEl.textContent = 'Stop All MIDI: unassigned';
-    return;
-  }
-  sbStopAllMidiEl.textContent = `Stop All MIDI: note ${state.stopAllMidiNote}`;
+  sbStopAllMidiEl.textContent = (state.stopAllMidiNote === null || state.stopAllMidiNote === undefined)
+    ? 'unassigned'
+    : `note ${state.stopAllMidiNote}`;
 }
 
 function renderSamplerToggleMidiStatus() {
   if (!sbSamplerToggleMidiEl) {
     return;
   }
-  if (state.samplerToggleMidiNote === null || state.samplerToggleMidiNote === undefined) {
-    sbSamplerToggleMidiEl.textContent = 'Sampler Toggle MIDI: unassigned';
-    return;
-  }
-  sbSamplerToggleMidiEl.textContent = `Sampler Toggle MIDI: note ${state.samplerToggleMidiNote}`;
+  sbSamplerToggleMidiEl.textContent = (state.samplerToggleMidiNote === null || state.samplerToggleMidiNote === undefined)
+    ? 'unassigned'
+    : `note ${state.samplerToggleMidiNote}`;
 }
 
 async function loadSoundboardModes() {
@@ -1725,8 +1737,12 @@ async function pollMappingCapture() {
     const seq = Number(data.last_seq || 0);
     const note = Number(data.last_note);
 
+    const isSbTarget = state.mappingAssignTarget !== '__action_stop_all__' &&
+                       state.mappingAssignTarget !== '__action_sampler_toggle__';
+    const statusEl2 = isSbTarget ? sbMappingStatusEl : midiActionCaptureStatusEl;
+
     if (!connected) {
-      sbMappingStatusEl.textContent = 'Waiting for MIDI device\u2026';
+      if (statusEl2) statusEl2.textContent = 'Waiting for MIDI device\u2026';
       return;
     }
 
@@ -1740,13 +1756,13 @@ async function pollMappingCapture() {
       }
       if (target === '__action_stop_all__') {
         await saveStopAllActionMapping(note);
-        sbMappingStatusEl.textContent = `Assigned note ${note} to stop all.`;
+        if (midiActionCaptureStatusEl) midiActionCaptureStatusEl.textContent = `Assigned note ${note} to stop all.`;
       } else if (target === '__action_sampler_toggle__') {
         await saveSamplerToggleActionMapping(note);
-        sbMappingStatusEl.textContent = `Assigned note ${note} to sampler toggle.`;
+        if (midiActionCaptureStatusEl) midiActionCaptureStatusEl.textContent = `Assigned note ${note} to sampler toggle.`;
       } else {
         await saveMapping(note, target);
-        sbMappingStatusEl.textContent = `Assigned note ${note} to "${target}".`;
+        if (sbMappingStatusEl) sbMappingStatusEl.textContent = `Assigned note ${note} to "${target}".`;
       }
       renderSoundboardGrid();
     }
@@ -1821,6 +1837,242 @@ async function initializeGraphFromConfig() {
   state.edgeDeleteEnabled = true;
   updateZoomLabel();
   startRoutingThingsPolling();
+}
+
+// ---- Volume page ----
+
+async function loadVolumes() {
+  try {
+    const [vRes, ccRes] = await Promise.all([
+      fetch('/api/audio/volumes', { method: 'GET' }),
+      fetch('/api/midi/cc_volumes', { method: 'GET' }),
+    ]);
+    if (vRes.ok) {
+      const data = JSON.parse(await vRes.text());
+      state.volumes = Array.isArray(data?.volumes) ? data.volumes : [];
+    }
+    if (ccRes.ok) {
+      const data = JSON.parse(await ccRes.text());
+      state.ccVolumes = Array.isArray(data?.mappings) ? data.mappings : [];
+    }
+    renderVolGrid();
+  } catch (err) {
+    setStatus(`volume load error: ${err}`, 'warn');
+  }
+}
+
+function ccForThing(thingId) {
+  const m = state.ccVolumes.find((e) => e.id === thingId);
+  return m ? Number(m.cc) : null;
+}
+
+function gainToPercent(gain) {
+  return Math.round(Number(gain) * 50);
+}
+
+function percentToGain(pct) {
+  return Number(pct) / 50;
+}
+
+function renderVolGrid() {
+  if (!volGridEl) return;
+  volGridEl.innerHTML = '';
+
+  if (!state.volumes.length) {
+    const empty = document.createElement('div');
+    empty.className = 'small';
+    empty.textContent = 'No active devices. Open the Routing tab first.';
+    volGridEl.appendChild(empty);
+    return;
+  }
+
+  for (const vol of state.volumes) {
+    const { id, name, gain } = vol;
+    const cc = ccForThing(id);
+    const isTarget = state.volAssignTarget === id;
+
+    const card = document.createElement('div');
+    card.className = `vol-card${isTarget ? ' cc-target' : ''}`;
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'vol-card-name';
+    nameEl.title = name;
+    nameEl.textContent = name;
+
+    const idEl = document.createElement('div');
+    idEl.className = 'vol-card-id';
+    idEl.textContent = id;
+
+    const sliderRow = document.createElement('div');
+    sliderRow.className = 'vol-slider-row';
+
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = '0';
+    slider.max = '100';
+    slider.step = '1';
+    slider.value = String(gainToPercent(gain));
+
+    const pctEl = document.createElement('div');
+    pctEl.className = 'vol-pct';
+    pctEl.textContent = `${slider.value}%`;
+
+    let saveTimer = null;
+    slider.addEventListener('input', () => {
+      pctEl.textContent = `${slider.value}%`;
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => {
+        setVolumeGain(id, percentToGain(slider.value));
+      }, 120);
+    });
+
+    sliderRow.appendChild(slider);
+    sliderRow.appendChild(pctEl);
+
+    const ccRow = document.createElement('div');
+    ccRow.className = 'vol-cc-row';
+
+    const ccBadge = document.createElement('span');
+    ccBadge.className = `vol-cc-badge${cc !== null ? '' : ' unset'}`;
+    ccBadge.textContent = cc !== null ? `CC ${cc}` : 'no MIDI CC';
+
+    const assignBtn = document.createElement('button');
+    assignBtn.textContent = isTarget ? 'Waiting\u2026' : 'Assign CC';
+    if (isTarget) assignBtn.classList.add('primary');
+    assignBtn.addEventListener('click', async () => {
+      if (isTarget) {
+        state.volAssignTarget = null;
+        if (state.volCcPollTimer) { clearInterval(state.volCcPollTimer); state.volCcPollTimer = null; }
+        if (volCcStatusEl) volCcStatusEl.textContent = 'Cancelled.';
+        renderVolGrid();
+        return;
+      }
+      try {
+        const r = await fetch('/api/midi/last_cc', { method: 'GET' });
+        if (r.ok) {
+          const d = JSON.parse(await r.text());
+          state.volCcLastSeq = Number(d.last_seq || 0);
+        }
+      } catch (_) {}
+      state.volAssignTarget = id;
+      if (!state.volCcPollTimer) {
+        state.volCcPollTimer = setInterval(pollVolCcCapture, 220);
+      }
+      if (volCcStatusEl) volCcStatusEl.textContent = `Move a MIDI knob or slider to assign to "${name}".`;
+      renderVolGrid();
+    });
+
+    const clearBtn = document.createElement('button');
+    clearBtn.className = 'flat';
+    clearBtn.textContent = 'Clear CC';
+    clearBtn.disabled = cc === null;
+    clearBtn.addEventListener('click', async () => {
+      if (cc === null) return;
+      await deleteCcVolumeMapping(cc);
+    });
+
+    if (cc !== null) ccRow.appendChild(ccBadge);
+    ccRow.appendChild(assignBtn);
+    if (cc !== null) ccRow.appendChild(clearBtn);
+    if (cc === null) ccRow.appendChild(ccBadge);
+
+    card.appendChild(nameEl);
+    card.appendChild(idEl);
+    card.appendChild(sliderRow);
+    card.appendChild(ccRow);
+    volGridEl.appendChild(card);
+  }
+}
+
+async function setVolumeGain(thingId, gain) {
+  try {
+    const res = await fetch('/api/audio/volume/set', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: `id=${encodeURIComponent(thingId)}&gain=${gain.toFixed(4)}`,
+    });
+    const txt = (await res.text()).trim();
+    if (!res.ok) {
+      setStatus(`volume set failed: ${res.status} ${txt}`, 'warn');
+      return;
+    }
+    // Update local state
+    const v = state.volumes.find((e) => e.id === thingId);
+    if (v) v.gain = gain;
+    setStatus(`${thingId} volume set to ${Math.round(gain * 50)}%`, 'ok');
+  } catch (err) {
+    setStatus(`volume set error: ${err}`, 'warn');
+  }
+}
+
+async function pollVolCcCapture() {
+  if (!state.volAssignTarget) {
+    if (state.volCcPollTimer) { clearInterval(state.volCcPollTimer); state.volCcPollTimer = null; }
+    return;
+  }
+  try {
+    const res = await fetch('/api/midi/last_cc', { method: 'GET' });
+    if (!res.ok) return;
+    const data = JSON.parse(await res.text());
+    const seq = Number(data.last_seq || 0);
+    const cc = Number(data.last_cc);
+
+    if (!data.connected) {
+      if (volCcStatusEl) volCcStatusEl.textContent = 'Waiting for MIDI device\u2026';
+      return;
+    }
+
+    if (seq > state.volCcLastSeq && cc >= 0 && cc <= 127) {
+      state.volCcLastSeq = seq;
+      const target = state.volAssignTarget;
+      state.volAssignTarget = null;
+      if (state.volCcPollTimer) { clearInterval(state.volCcPollTimer); state.volCcPollTimer = null; }
+      await setCcVolumeMapping(cc, target);
+      if (volCcStatusEl) volCcStatusEl.textContent = `Assigned CC ${cc} to "${target}".`;
+    }
+  } catch (_) {}
+}
+
+async function setCcVolumeMapping(cc, thingId) {
+  try {
+    const res = await fetch('/api/midi/cc_volume/set', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: `cc=${cc}&id=${encodeURIComponent(thingId)}`,
+    });
+    const txt = (await res.text()).trim();
+    if (!res.ok) {
+      setStatus(`CC volume set failed: ${res.status} ${txt}`, 'warn');
+      return;
+    }
+    // Update local CC map
+    state.ccVolumes = state.ccVolumes.filter((e) => e.cc !== cc && e.id !== thingId);
+    state.ccVolumes.push({ cc, id: thingId });
+    renderVolGrid();
+    setStatus(`CC ${cc} \u2192 ${thingId} volume`, 'ok');
+  } catch (err) {
+    setStatus(`CC volume set error: ${err}`, 'warn');
+  }
+}
+
+async function deleteCcVolumeMapping(cc) {
+  try {
+    const res = await fetch('/api/midi/cc_volume/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: `cc=${cc}`,
+    });
+    const txt = (await res.text()).trim();
+    if (!res.ok) {
+      setStatus(`CC volume delete failed: ${res.status} ${txt}`, 'warn');
+      return;
+    }
+    state.ccVolumes = state.ccVolumes.filter((e) => e.cc !== cc);
+    renderVolGrid();
+    setStatus(`CC ${cc} volume mapping removed`, 'ok');
+  } catch (err) {
+    setStatus(`CC volume delete error: ${err}`, 'warn');
+  }
 }
 
 tabsEl.querySelectorAll('.tab-btn').forEach((btn) => {
@@ -1924,9 +2176,6 @@ document.getElementById('btn-sb-refresh').addEventListener('click', async () => 
   await reloadSoundboardBank();
   await listSfxFiles();
   await loadMappings();
-  await loadMidiActions();
-  await loadSamplerConfig();
-  await loadLightConfig();
   await loadSoundboardModes();
   setStatus('soundboard refreshed', 'ok');
 });
@@ -1937,28 +2186,17 @@ document.getElementById('btn-sb-assign-stop-all').addEventListener('click', asyn
   const isTarget = state.mappingAssignTarget === '__action_stop_all__';
   if (isTarget) {
     state.mappingAssignTarget = null;
-    if (state.mappingPollTimer) {
-      clearInterval(state.mappingPollTimer);
-      state.mappingPollTimer = null;
-    }
-    sbMappingStatusEl.textContent = 'Assignment cancelled.';
+    if (state.mappingPollTimer) { clearInterval(state.mappingPollTimer); state.mappingPollTimer = null; }
+    if (midiActionCaptureStatusEl) midiActionCaptureStatusEl.textContent = 'Cancelled.';
     return;
   }
-
   try {
     const r = await fetch('/api/midi/last_note', { method: 'GET' });
-    if (r.ok) {
-      const d = JSON.parse(await r.text());
-      state.mappingLastSeq = Number(d.last_seq || 0);
-    }
+    if (r.ok) { const d = JSON.parse(await r.text()); state.mappingLastSeq = Number(d.last_seq || 0); }
   } catch (_) {}
-
   state.mappingAssignTarget = '__action_stop_all__';
-  if (!state.mappingPollTimer) {
-    state.mappingPollTimer = setInterval(pollMappingCapture, 220);
-  }
-  sbMappingStatusEl.textContent = 'Press a MIDI button to map stop all.';
-  renderSoundboardGrid();
+  if (!state.mappingPollTimer) state.mappingPollTimer = setInterval(pollMappingCapture, 220);
+  if (midiActionCaptureStatusEl) midiActionCaptureStatusEl.textContent = 'Press a MIDI button to map stop all.';
 });
 
 document.getElementById('btn-sb-clear-stop-all').addEventListener('click', async () => {
@@ -1969,33 +2207,24 @@ document.getElementById('btn-sb-assign-sampler-toggle').addEventListener('click'
   const isTarget = state.mappingAssignTarget === '__action_sampler_toggle__';
   if (isTarget) {
     state.mappingAssignTarget = null;
-    if (state.mappingPollTimer) {
-      clearInterval(state.mappingPollTimer);
-      state.mappingPollTimer = null;
-    }
-    sbMappingStatusEl.textContent = 'Assignment cancelled.';
+    if (state.mappingPollTimer) { clearInterval(state.mappingPollTimer); state.mappingPollTimer = null; }
+    if (midiActionCaptureStatusEl) midiActionCaptureStatusEl.textContent = 'Cancelled.';
     return;
   }
-
   try {
     const r = await fetch('/api/midi/last_note', { method: 'GET' });
-    if (r.ok) {
-      const d = JSON.parse(await r.text());
-      state.mappingLastSeq = Number(d.last_seq || 0);
-    }
+    if (r.ok) { const d = JSON.parse(await r.text()); state.mappingLastSeq = Number(d.last_seq || 0); }
   } catch (_) {}
-
   state.mappingAssignTarget = '__action_sampler_toggle__';
-  if (!state.mappingPollTimer) {
-    state.mappingPollTimer = setInterval(pollMappingCapture, 220);
-  }
-  sbMappingStatusEl.textContent = 'Press a MIDI button to map sampler toggle.';
-  renderSoundboardGrid();
+  if (!state.mappingPollTimer) state.mappingPollTimer = setInterval(pollMappingCapture, 220);
+  if (midiActionCaptureStatusEl) midiActionCaptureStatusEl.textContent = 'Press a MIDI button to map sampler toggle.';
 });
 
 document.getElementById('btn-sb-clear-sampler-toggle').addEventListener('click', async () => {
   await deleteSamplerToggleActionMapping();
 });
+
+document.getElementById('btn-vol-refresh').addEventListener('click', loadVolumes);
 
 document.getElementById('btn-sampler-config-save').addEventListener('click', saveSamplerConfig);
 document.getElementById('btn-sampler-config-load').addEventListener('click', loadSamplerConfig);

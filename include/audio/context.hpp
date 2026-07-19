@@ -172,6 +172,13 @@ struct AudioContext {
     mutable std::mutex routingGraphMutex;
     std::atomic<float> nodeChannelLevels[AUDIO_GRAPH_MAX_THINGS][16];
 
+    // Per-thing output gain (0.0-1.0). Indexed by current routing snapshot node index.
+    // Updated atomically so the audio thread reads without locking.
+    std::atomic<float> nodeGainAtomics[AUDIO_GRAPH_MAX_THINGS];
+    // Authoritative gain map by thing ID, persisted to volumes.txt.
+    mutable std::mutex gainsMutex;
+    std::unordered_map<std::string, float> thingGains;
+
     AudioContext(Audiox *context);
     ~AudioContext();
 
@@ -197,4 +204,12 @@ struct AudioContext {
 
     int rescanDevices();
     float getChannelLevel(AudioHandle handle, int channelIndex, bool isCapture) const;
+
+    // Per-thing output volume (0.0-1.0). Thread-safe.
+    void setThingGain(const char *thingId, float gain);
+    float getThingGain(const char *thingId) const;
+    // Snapshot thingGains into nodeGainAtomics using the given routing graph snapshot.
+    void snapshotGainsForGraph(const AudioGraphState &graph);
+    // Load gains from volumes.txt into thingGains.
+    void loadVolumesFromConfig();
 };

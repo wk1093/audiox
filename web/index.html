@@ -23,8 +23,10 @@
 
       <nav class="tabs" id="tabs">
         <button class="tab-btn active" data-tab="routing">Routing</button>
-        <button class="tab-btn" data-tab="config">Config</button>
+        <button class="tab-btn" data-tab="volume">Volume</button>
         <button class="tab-btn" data-tab="soundboard">Soundboard</button>
+        <button class="tab-btn" data-tab="midi">MIDI</button>
+        <button class="tab-btn" data-tab="config">Config</button>
         <button class="tab-btn" data-tab="system">System</button>
       </nav>
     </header>
@@ -78,6 +80,132 @@
             <div id="edge-list" class="edge-list" style="margin-top: 8px;"></div>
           </section>
         </aside>
+      </div>
+    </section>
+
+    <!-- Volume page -->
+    <section class="page" data-page="volume">
+      <div class="vol-layout">
+        <div class="vol-header card">
+          <div class="vol-header-left">
+            <span class="small" id="vol-cc-status">Click &ldquo;Assign CC&rdquo; on a channel to map a MIDI knob.</span>
+          </div>
+          <button id="btn-vol-refresh" class="flat">Refresh</button>
+        </div>
+        <div id="vol-grid" class="vol-grid"></div>
+      </div>
+    </section>
+
+    <!-- Soundboard page (cleaned up) -->
+    <section class="page" data-page="soundboard">
+      <div class="soundboard-layout">
+        <div class="sb-topbar card">
+          <div class="sb-topbar-left">
+            <span class="small" id="sb-mapping-status">Click &ldquo;Assign MIDI&rdquo; on a sound card to map a button.</span>
+          </div>
+          <div class="grid-2">
+            <button id="btn-sb-stop-all" class="warn">Stop All</button>
+            <button id="btn-sb-refresh" class="flat">Refresh</button>
+          </div>
+        </div>
+
+        <div id="sb-grid" class="sb-grid"></div>
+
+        <section class="card stack">
+          <h2>Add Sound</h2>
+          <div class="cfg-row" style="margin-top: 0;">
+            <label for="upload_name">Filename</label>
+            <input id="upload_name" type="text" placeholder="kick.wav">
+          </div>
+          <div class="cfg-row">
+            <label for="upload_file">Audio File</label>
+            <input id="upload_file" type="file" accept="audio/*">
+          </div>
+          <div class="grid-2">
+            <button id="btn-upload-real" class="primary">Upload</button>
+            <button id="btn-upload-clear">Clear</button>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <!-- MIDI page -->
+    <section class="page" data-page="midi">
+      <div class="midi-layout">
+        <section class="card stack">
+          <h2>Actions</h2>
+          <p class="small" style="margin:0 0 8px;">Assign MIDI notes to global actions.</p>
+          <div class="midi-action-row">
+            <div class="midi-action-info">
+              <span class="midi-action-label">Stop All</span>
+              <span class="small" id="sb-stop-all-midi">unassigned</span>
+            </div>
+            <div class="grid-2">
+              <button id="btn-sb-assign-stop-all">Assign MIDI</button>
+              <button id="btn-sb-clear-stop-all" class="flat">Clear</button>
+            </div>
+          </div>
+          <div class="midi-action-row">
+            <div class="midi-action-info">
+              <span class="midi-action-label">Sampler Toggle</span>
+              <span class="small" id="sb-sampler-toggle-midi">unassigned</span>
+            </div>
+            <div class="grid-2">
+              <button id="btn-sb-assign-sampler-toggle">Assign MIDI</button>
+              <button id="btn-sb-clear-sampler-toggle" class="flat">Clear</button>
+            </div>
+          </div>
+          <span class="small" id="midi-action-capture-status"></span>
+        </section>
+
+        <section class="card stack">
+          <h2>Sampler</h2>
+          <p class="small" style="margin:0 0 8px;">Set a keyboard channel for pitched sampler playback and the root note for no pitch shift.</p>
+          <div class="cfg-row">
+            <label for="sampler_keyboard_enabled">Keyboard Channel Enabled</label>
+            <select id="sampler_keyboard_enabled">
+              <option value="1">Enabled</option>
+              <option value="0">Disabled</option>
+            </select>
+          </div>
+          <div class="cfg-row">
+            <label for="sampler_keyboard_channel">Keyboard Channel (0&ndash;15)</label>
+            <input id="sampler_keyboard_channel" type="number" min="0" max="15" step="1" value="0">
+          </div>
+          <div class="cfg-row">
+            <label for="sampler_root_note">Root Note (0&ndash;127)</label>
+            <input id="sampler_root_note" type="number" min="0" max="127" step="1" value="60">
+          </div>
+          <div class="grid-2">
+            <button id="btn-sampler-config-save" class="primary">Save</button>
+            <button id="btn-sampler-config-load" class="flat">Reload</button>
+          </div>
+        </section>
+
+        <section class="card stack">
+          <h2>Lighting</h2>
+          <p class="small" style="margin:0 0 8px;">Sets LED colors on the MIDI controller per playback state. Velocity 0 = off.</p>
+          <div class="cfg-row">
+            <label for="light_channel">MIDI Channel (0&ndash;15)</label>
+            <input id="light_channel" type="number" min="0" max="15" step="1" value="0">
+          </div>
+          <div class="cfg-row">
+            <label for="light_mapped_vel">Mapped velocity (assigned, idle)</label>
+            <input id="light_mapped_vel" type="number" min="0" max="127" step="1" value="0">
+          </div>
+          <div class="cfg-row">
+            <label for="light_stop_all_vel">Stop All velocity (action button)</label>
+            <input id="light_stop_all_vel" type="number" min="0" max="127" step="1" value="0">
+          </div>
+          <div class="cfg-row">
+            <label for="light_playing_vel">Playing velocity (clip running)</label>
+            <input id="light_playing_vel" type="number" min="0" max="127" step="1" value="0">
+          </div>
+          <div class="grid-2">
+            <button id="btn-light-save" class="primary">Save Lighting</button>
+            <button id="btn-light-refresh" class="flat">Refresh LEDs</button>
+          </div>
+        </section>
       </div>
     </section>
 
@@ -142,93 +270,6 @@
           <button id="btn-system-sync">Sync Filesystem</button>
           <button id="btn-system-restart" class="warn">Restart Device</button>
           <button id="btn-system-shutdown" class="warn">Shutdown Device</button>
-        </section>
-      </div>
-    </section>
-
-    <section class="page" data-page="soundboard">
-      <div class="soundboard-layout">
-        <div class="sb-topbar card">
-          <div class="sb-topbar-left">
-            <span class="small" id="sb-mapping-status">Click &ldquo;Assign MIDI&rdquo; on a sound card to map a button.</span>
-            <span class="small" id="sb-stop-all-midi">Stop All MIDI: unassigned</span>
-            <span class="small" id="sb-sampler-toggle-midi">Sampler Toggle MIDI: unassigned</span>
-          </div>
-          <div class="grid-2">
-            <button id="btn-sb-stop-all" class="warn">Stop All</button>
-            <button id="btn-sb-refresh" class="flat">Refresh</button>
-            <button id="btn-sb-assign-stop-all">Assign MIDI Stop All</button>
-            <button id="btn-sb-clear-stop-all" class="flat">Clear Stop All MIDI</button>
-            <button id="btn-sb-assign-sampler-toggle">Assign MIDI Sampler Toggle</button>
-            <button id="btn-sb-clear-sampler-toggle" class="flat">Clear Sampler Toggle MIDI</button>
-          </div>
-        </div>
-
-        <section class="card stack">
-          <h2>Sampler MIDI</h2>
-          <p class="small" style="margin:0 0 8px;">Set a keyboard channel used for pitched sampler playback and the root note for no pitch shift.</p>
-          <div class="cfg-row">
-            <label for="sampler_keyboard_enabled">Keyboard Channel Enabled</label>
-            <select id="sampler_keyboard_enabled">
-              <option value="1">Enabled</option>
-              <option value="0">Disabled</option>
-            </select>
-          </div>
-          <div class="cfg-row">
-            <label for="sampler_keyboard_channel">Keyboard Channel (0&ndash;15)</label>
-            <input id="sampler_keyboard_channel" type="number" min="0" max="15" step="1" value="0">
-          </div>
-          <div class="cfg-row">
-            <label for="sampler_root_note">Root Note (0&ndash;127)</label>
-            <input id="sampler_root_note" type="number" min="0" max="127" step="1" value="60">
-          </div>
-          <div class="grid-2">
-            <button id="btn-sampler-config-save" class="primary">Save Sampler Config</button>
-            <button id="btn-sampler-config-load" class="flat">Reload Sampler Config</button>
-          </div>
-        </section>
-
-        <div id="sb-grid" class="sb-grid"></div>
-
-        <section class="card stack">
-          <h2>MIDI Lighting</h2>
-          <p class="small" style="margin:0 0 8px;">Sets LED colors on the MIDI controller per playback state. Velocity 0 = off.</p>
-          <div class="cfg-row">
-            <label for="light_channel">MIDI Channel (0&ndash;15)</label>
-            <input id="light_channel" type="number" min="0" max="15" step="1" value="0">
-          </div>
-          <div class="cfg-row">
-            <label for="light_mapped_vel">Mapped velocity (assigned, idle)</label>
-            <input id="light_mapped_vel" type="number" min="0" max="127" step="1" value="0">
-          </div>
-          <div class="cfg-row">
-            <label for="light_stop_all_vel">Stop All velocity (action button)</label>
-            <input id="light_stop_all_vel" type="number" min="0" max="127" step="1" value="0">
-          </div>
-          <div class="cfg-row">
-            <label for="light_playing_vel">Playing velocity (clip running)</label>
-            <input id="light_playing_vel" type="number" min="0" max="127" step="1" value="0">
-          </div>
-          <div class="grid-2">
-            <button id="btn-light-save" class="primary">Save Lighting</button>
-            <button id="btn-light-refresh" class="flat">Refresh LEDs</button>
-          </div>
-        </section>
-
-        <section class="card stack">
-          <h2>Add Sound</h2>
-          <div class="cfg-row" style="margin-top: 0;">
-            <label for="upload_name">Filename</label>
-            <input id="upload_name" type="text" placeholder="kick.wav">
-          </div>
-          <div class="cfg-row">
-            <label for="upload_file">Audio File</label>
-            <input id="upload_file" type="file" accept="audio/*">
-          </div>
-          <div class="grid-2">
-            <button id="btn-upload-real" class="primary">Upload</button>
-            <button id="btn-upload-clear">Clear</button>
-          </div>
         </section>
       </div>
     </section>

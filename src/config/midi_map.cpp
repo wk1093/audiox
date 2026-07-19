@@ -205,6 +205,41 @@ static const char *midiActionToString(uint8_t action) {
     }
 }
 
+static int parseCcVolumeLine(const char *value,
+                             MidiCcVolumeMapping *out,
+                             uint32_t *count_in_out) {
+    if (!value || !out || !count_in_out || *count_in_out >= MIDI_CC_VOLUME_MAPPINGS_MAX) {
+        return RET_ERR;
+    }
+
+    char buf[256];
+    copyBounded(buf, sizeof(buf), value);
+
+    char *comma = strchr(buf, ',');
+    if (!comma) {
+        return RET_ERR;
+    }
+    *comma = '\0';
+    char *ccStr = trimLeft(buf);
+    char *thingId = trimLeft(comma + 1);
+    trimRight(ccStr);
+    trimRight(thingId);
+
+    char *endp = NULL;
+    long cc = strtol(ccStr, &endp, 10);
+    if (!endp || *endp != '\0' || cc < 0 || cc > 127 || !thingId[0]) {
+        return RET_ERR;
+    }
+    if (strnlen(thingId, sizeof(out->thingId)) >= sizeof(out->thingId)) {
+        return RET_ERR;
+    }
+
+    out[*count_in_out].cc = (uint8_t)cc;
+    copyBounded(out[*count_in_out].thingId, sizeof(out[*count_in_out].thingId), thingId);
+    ++(*count_in_out);
+    return RET_OK;
+}
+
 static int parseMidiActionLine(const char *value,
                                MidiActionMapping *out,
                                uint32_t *count_in_out) {
@@ -321,6 +356,8 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             if (v >= 0 && v <= 127) {
                 data.samplerRootNote = (uint8_t)v;
             }
+        } else if (strcmp(key, "cc_volume") == 0) {
+            (void)parseCcVolumeLine(value, data.ccVolumeMappings, &data.ccVolumeMappingCount);
         }
     }
 
@@ -461,6 +498,23 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
     dprintf(fd, "sampler_keyboard_enabled=%u\n", (unsigned)data->samplerKeyboardEnabled);
     dprintf(fd, "sampler_keyboard_channel=%u\n", (unsigned)data->samplerKeyboardChannel);
     dprintf(fd, "sampler_root_note=%u\n", (unsigned)data->samplerRootNote);
+
+    uint32_t cvCount = data->ccVolumeMappingCount;
+    if (cvCount > MIDI_CC_VOLUME_MAPPINGS_MAX) {
+        cvCount = MIDI_CC_VOLUME_MAPPINGS_MAX;
+    }
+    if (cvCount > 0) {
+        dprintf(fd, "# MIDI CC to volume mappings: cc,thing_id\n");
+        for (uint32_t i = 0; i < cvCount; ++i) {
+            if (!data->ccVolumeMappings[i].thingId[0]) {
+                continue;
+            }
+            dprintf(fd,
+                    "cc_volume=%u,%s\n",
+                    (unsigned)data->ccVolumeMappings[i].cc,
+                    data->ccVolumeMappings[i].thingId);
+        }
+    }
 
     close(fd);
     return RET_OK;

@@ -203,3 +203,78 @@ ConfigStore::ConfigStore(Audiox *context) : app(context) {
 RouterConfig ConfigStore::router() const {
     return RouterConfig();
 }
+
+int ConfigStore::readVolumesFile(VolumeEntry *out, uint32_t *count_out, uint32_t cap) const {
+    if (!out || !count_out || cap == 0) {
+        return RET_ERR;
+    }
+    *count_out = 0;
+
+    FILE *fp = fopen(VOLUMES_FILE_PATH, "r");
+    if (!fp) {
+        return (errno == ENOENT) ? RET_WARN : RET_ERR;
+    }
+
+    char line[256];
+    while (fgets(line, sizeof(line), fp) && *count_out < cap) {
+        char *eq = strchr(line, '=');
+        if (!eq) {
+            continue;
+        }
+        *eq = '\0';
+        char *key = line;
+        char *value = eq + 1;
+        trimRight(key);
+        trimRight(value);
+        key = trimLeft(key);
+        value = trimLeft(value);
+
+        if (!key[0] || key[0] == '#') {
+            continue;
+        }
+        if (strnlen(key, sizeof(out->thingId)) >= sizeof(out->thingId)) {
+            continue;
+        }
+
+        char *endp = NULL;
+        double g = strtod(value, &endp);
+        if (!endp || endp == value) {
+            continue;
+        }
+        if (g < 0.0) g = 0.0;
+        if (g > 2.0) g = 2.0;
+
+        copyBounded(out[*count_out].thingId, sizeof(out[*count_out].thingId), key);
+        out[*count_out].gain = (float)g;
+        ++(*count_out);
+    }
+
+    fclose(fp);
+    return RET_OK;
+}
+
+int ConfigStore::writeVolumesFile(const VolumeEntry *entries, uint32_t count) {
+    if (!entries && count > 0) {
+        return RET_ERR;
+    }
+    if (count > VOLUME_ENTRIES_MAX) {
+        count = VOLUME_ENTRIES_MAX;
+    }
+
+    int fd = open(VOLUMES_FILE_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        printf("[CONFIG] [WARN] failed to open %s for writing: %s\n", VOLUMES_FILE_PATH, strerror(errno));
+        return RET_ERR;
+    }
+
+    dprintf(fd, "# audiox volumes v1\n");
+    for (uint32_t i = 0; i < count; ++i) {
+        if (!entries[i].thingId[0]) {
+            continue;
+        }
+        dprintf(fd, "%s=%.4f\n", entries[i].thingId, (double)entries[i].gain);
+    }
+
+    close(fd);
+    return RET_OK;
+}

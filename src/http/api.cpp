@@ -50,6 +50,12 @@
 #define HTTP_MIDI_LIGHT_SOUND_DELETE_PATH HTTP_API_PREFIX "midi/light_sound/delete"
 #define HTTP_MIDI_LIGHT_REFRESH_PATH HTTP_API_PREFIX "midi/light_refresh"
 #define HTTP_MIDI_SAMPLER_CONFIG_PATH HTTP_API_PREFIX "midi/sampler_config"
+#define HTTP_MIDI_LAST_CC_PATH HTTP_API_PREFIX "midi/last_cc"
+#define HTTP_MIDI_CC_VOLUMES_PATH HTTP_API_PREFIX "midi/cc_volumes"
+#define HTTP_MIDI_CC_VOLUME_SET_PATH HTTP_API_PREFIX "midi/cc_volume/set"
+#define HTTP_MIDI_CC_VOLUME_DELETE_PATH HTTP_API_PREFIX "midi/cc_volume/delete"
+#define HTTP_AUDIO_VOLUMES_PATH HTTP_API_PREFIX "audio/volumes"
+#define HTTP_AUDIO_VOLUME_SET_PATH HTTP_API_PREFIX "audio/volume/set"
 #define HTTP_AUDIO_DEVICES_PATH HTTP_API_PREFIX "audio/devices"
 #define HTTP_AUDIO_RESCAN_PATH HTTP_API_PREFIX "audio/rescan"
 #define HTTP_FS_ROOT ROOT_MOUNT_POINT "/"
@@ -977,6 +983,352 @@ static int handleMidiSamplerConfig(HttpServer *server,
 		n = 0;
 	}
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
+static int handleMidiLastCc(HttpServer *server,
+						   int cfd,
+						   const char *method,
+						   const char *path) {
+	(void)path;
+	if (!server || !server->app || !method) {
+		return -1;
+	}
+	if (strcmp(method, "GET") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	MidiContext *midi = server->app->midi;
+	if (!midi) {
+		static const char none[] = "{\"connected\":false,\"last_cc\":-1,\"last_cc_value\":0,\"last_seq\":0}\n";
+		return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", none, sizeof(none) - 1);
+	}
+
+	char out[256];
+	int n = snprintf(out,
+					 sizeof(out),
+					 "{\"connected\":%s,\"last_cc\":%d,\"last_cc_value\":%u,\"last_seq\":%u}\n",
+					 midi->connected ? "true" : "false",
+					 midi->lastCcSeq ? (int)midi->lastCc : -1,
+					 (unsigned)midi->lastCcValue,
+					 (unsigned)midi->lastCcSeq);
+	if (n < 0 || (size_t)n >= sizeof(out)) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
+static int handleAudioVolumes(HttpServer *server,
+							  int cfd,
+							  const char *method,
+							  const char *path) {
+	(void)path;
+	if (!server || !server->app || !method) {
+		return -1;
+	}
+	if (strcmp(method, "GET") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	AudioContext *audio = server->app->audio;
+	if (!audio) {
+		static const char none[] = "{\"volumes\":[]}\n";
+		return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", none, sizeof(none) - 1);
+	}
+
+	AudioGraphThingInfo things[AUDIO_GRAPH_MAX_THINGS];
+	size_t thingCount = audio->copyRoutingThings(things, AUDIO_GRAPH_MAX_THINGS);
+
+	char out[HTTP_BODY_MAX];
+	size_t off = 0;
+	int n = snprintf(out, sizeof(out), "{\"volumes\":[");
+	if (n <= 0 || (size_t)n >= sizeof(out)) {
+		static const char err[] = "encode failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	off += (size_t)n;
+
+	int first = 1;
+	for (size_t i = 0; i < thingCount; ++i) {
+		if (!things[i].id[0]) {
+			continue;
+		}
+		float gain = audio->getThingGain(things[i].id);
+		char escapedName[256] = {};
+		const char *src = things[i].name;
+		size_t ei = 0;
+		while (*src && ei + 2 < sizeof(escapedName)) {
+			if (*src == '"' || *src == '\\') {
+				escapedName[ei++] = '\\';
+			}
+			escapedName[ei++] = *src++;
+		}
+		escapedName[ei] = '\0';
+		n = snprintf(out + off,
+					 sizeof(out) - off,
+					 "%s{\"id\":\"%s\",\"name\":\"%s\",\"gain\":%.4f}",
+					 first ? "" : ",",
+					 things[i].id,
+					 escapedName,
+					 (double)gain);
+		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+			break;
+		}
+		off += (size_t)n;
+		first = 0;
+	}
+
+	n = snprintf(out + off, sizeof(out) - off, "]}\n");
+	if (n > 0 && (size_t)n < sizeof(out) - off) {
+		off += (size_t)n;
+	}
+
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, off);
+}
+
+static int handleAudioVolumeSet(HttpServer *server,
+								int cfd,
+								const char *method,
+								const char *path,
+								const char *body,
+								size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !method) {
+		return -1;
+	}
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+	if (!server->app->audio || !server->app->config) {
+		static const char err[] = "audio subsystem unavailable\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	char idBuf[64];
+	char gainBuf[32];
+	if (!body ||
+	    !body_get_value(body, body_len, "id", idBuf, sizeof(idBuf)) ||
+	    !body_get_value(body, body_len, "gain", gainBuf, sizeof(gainBuf))) {
+		static const char bad[] = "expected id=...&gain=0.0-1.0\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	if (!idBuf[0] || !mapping_path_safe(idBuf)) {
+		static const char bad[] = "invalid id\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char *endp = NULL;
+	double gainVal = strtod(gainBuf, &endp);
+	if (!endp || endp == gainBuf || gainVal < 0.0 || gainVal > 2.0) {
+		static const char bad[] = "gain must be 0.0-2.0\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+	float gain = (float)gainVal;
+
+	server->app->audio->setThingGain(idBuf, gain);
+
+	// Persist to volumes.txt.
+	VolumeEntry entries[VOLUME_ENTRIES_MAX];
+	uint32_t count = 0;
+	server->app->config->readVolumesFile(entries, &count, VOLUME_ENTRIES_MAX);
+
+	int found = 0;
+	for (uint32_t i = 0; i < count; ++i) {
+		if (strcmp(entries[i].thingId, idBuf) == 0) {
+			entries[i].gain = gain;
+			found = 1;
+			break;
+		}
+	}
+	if (!found && count < VOLUME_ENTRIES_MAX) {
+		copy_bound(entries[count].thingId, sizeof(entries[count].thingId), idBuf);
+		entries[count].gain = gain;
+		++count;
+	}
+	server->app->config->writeVolumesFile(entries, count);
+
+	char out[128];
+	int n = snprintf(out, sizeof(out), "{\"ok\":true,\"id\":\"%s\",\"gain\":%.4f}\n", idBuf, (double)gain);
+	if (n < 0 || (size_t)n >= sizeof(out)) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
+static int handleMidiCcVolumes(HttpServer *server,
+							   int cfd,
+							   const char *method,
+							   const char *path) {
+	(void)path;
+	if (!server || !server->app || !method || !server->app->config) {
+		return -1;
+	}
+	if (strcmp(method, "GET") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	MidiMapData data = server->app->config->readMidiMapFile();
+	char out[HTTP_BODY_MAX];
+	size_t off = 0;
+	int n = snprintf(out, sizeof(out), "{\"mappings\":[");
+	if (n <= 0 || (size_t)n >= sizeof(out)) {
+		static const char err[] = "encode failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	off += (size_t)n;
+
+	uint32_t count = data.ccVolumeMappingCount;
+	if (count > MIDI_CC_VOLUME_MAPPINGS_MAX) {
+		count = MIDI_CC_VOLUME_MAPPINGS_MAX;
+	}
+	int first = 1;
+	for (uint32_t i = 0; i < count; ++i) {
+		if (!data.ccVolumeMappings[i].thingId[0]) {
+			continue;
+		}
+		n = snprintf(out + off,
+					 sizeof(out) - off,
+					 "%s{\"cc\":%u,\"id\":\"%s\"}",
+					 first ? "" : ",",
+					 (unsigned)data.ccVolumeMappings[i].cc,
+					 data.ccVolumeMappings[i].thingId);
+		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+			break;
+		}
+		off += (size_t)n;
+		first = 0;
+	}
+
+	n = snprintf(out + off, sizeof(out) - off, "]}\n");
+	if (n > 0 && (size_t)n < sizeof(out) - off) {
+		off += (size_t)n;
+	}
+
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, off);
+}
+
+static int handleMidiCcVolumeSet(HttpServer *server,
+								 int cfd,
+								 const char *method,
+								 const char *path,
+								 const char *body,
+								 size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !method || !server->app->config) {
+		return -1;
+	}
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char ccBuf[16];
+	char idBuf[64];
+	if (!body ||
+	    !body_get_value(body, body_len, "cc", ccBuf, sizeof(ccBuf)) ||
+	    !body_get_value(body, body_len, "id", idBuf, sizeof(idBuf))) {
+		static const char bad[] = "expected cc=0-127&id=...\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char *endp = NULL;
+	long cc = strtol(ccBuf, &endp, 10);
+	if (!endp || *endp != '\0' || cc < 0 || cc > 127) {
+		static const char bad[] = "cc must be 0-127\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+	if (!idBuf[0] || !mapping_path_safe(idBuf)) {
+		static const char bad[] = "invalid id\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	MidiMapData data = server->app->config->readMidiMapFile();
+
+	// Remove any existing mapping for this cc or this id.
+	uint32_t out_count = 0;
+	for (uint32_t i = 0; i < data.ccVolumeMappingCount && i < MIDI_CC_VOLUME_MAPPINGS_MAX; ++i) {
+		if (data.ccVolumeMappings[i].cc == (uint8_t)cc ||
+		    strcmp(data.ccVolumeMappings[i].thingId, idBuf) == 0) {
+			continue;
+		}
+		data.ccVolumeMappings[out_count++] = data.ccVolumeMappings[i];
+	}
+	if (out_count < MIDI_CC_VOLUME_MAPPINGS_MAX) {
+		data.ccVolumeMappings[out_count].cc = (uint8_t)cc;
+		copy_bound(data.ccVolumeMappings[out_count].thingId,
+				   sizeof(data.ccVolumeMappings[out_count].thingId),
+				   idBuf);
+		++out_count;
+	}
+	data.ccVolumeMappingCount = out_count;
+
+	if (server->app->config->writeMidiMapFile(&data) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = data;
+	}
+
+	char outBuf[128];
+	int n = snprintf(outBuf, sizeof(outBuf), "{\"ok\":true,\"cc\":%u,\"id\":\"%s\"}\n", (unsigned)cc, idBuf);
+	if (n < 0 || (size_t)n >= sizeof(outBuf)) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", outBuf, (size_t)n);
+}
+
+static int handleMidiCcVolumeDelete(HttpServer *server,
+									int cfd,
+									const char *method,
+									const char *path,
+									const char *body,
+									size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !method || !server->app->config) {
+		return -1;
+	}
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char ccBuf[16];
+	if (!body || !body_get_value(body, body_len, "cc", ccBuf, sizeof(ccBuf))) {
+		static const char bad[] = "expected cc=0-127\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char *endp = NULL;
+	long cc = strtol(ccBuf, &endp, 10);
+	if (!endp || *endp != '\0' || cc < 0 || cc > 127) {
+		static const char bad[] = "cc must be 0-127\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	MidiMapData data = server->app->config->readMidiMapFile();
+
+	uint32_t out_count = 0;
+	for (uint32_t i = 0; i < data.ccVolumeMappingCount && i < MIDI_CC_VOLUME_MAPPINGS_MAX; ++i) {
+		if (data.ccVolumeMappings[i].cc == (uint8_t)cc) {
+			continue;
+		}
+		data.ccVolumeMappings[out_count++] = data.ccVolumeMappings[i];
+	}
+	data.ccVolumeMappingCount = out_count;
+
+	if (server->app->config->writeMidiMapFile(&data) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = data;
+	}
+
+	char outBuf[64];
+	int n = snprintf(outBuf, sizeof(outBuf), "{\"ok\":true,\"cc\":%u}\n", (unsigned)cc);
+	if (n < 0 || (size_t)n >= sizeof(outBuf)) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", outBuf, (size_t)n);
 }
 
 static int handleMidiLastNote(HttpServer *server,
@@ -2240,6 +2592,30 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_MIDI_SAMPLER_CONFIG_PATH) == 0) {
 		return handleMidiSamplerConfig(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_MIDI_LAST_CC_PATH) == 0) {
+		return handleMidiLastCc(server, cfd, method, path);
+	}
+
+	if (strcmp(path, HTTP_MIDI_CC_VOLUMES_PATH) == 0) {
+		return handleMidiCcVolumes(server, cfd, method, path);
+	}
+
+	if (strcmp(path, HTTP_MIDI_CC_VOLUME_SET_PATH) == 0) {
+		return handleMidiCcVolumeSet(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_MIDI_CC_VOLUME_DELETE_PATH) == 0) {
+		return handleMidiCcVolumeDelete(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_AUDIO_VOLUMES_PATH) == 0) {
+		return handleAudioVolumes(server, cfd, method, path);
+	}
+
+	if (strcmp(path, HTTP_AUDIO_VOLUME_SET_PATH) == 0) {
+		return handleAudioVolumeSet(server, cfd, method, path, body, body_len);
 	}
 
 	if (pathIsRootfs(path)) {

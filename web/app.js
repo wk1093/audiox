@@ -46,6 +46,7 @@ const state = {
   thingsPollTimer: null,
   thingsPollInFlight: false,
   thingsSignature: '',
+  effectsPollInFlight: false,
   soundboardModesBySfx: {},
   stopAllMidiNote: null,
   samplerToggleMidiNote: null,
@@ -305,7 +306,11 @@ function isDeviceNode(node) {
 
 function isProtectedNode(node) {
   const kind = String(node?.properties?.nodeKind || '');
-  return kind === 'device' || kind === 'effect';
+  return kind === 'device';
+}
+
+function isEffectNode(node) {
+  return String(node?.properties?.nodeKind || '') === 'effect';
 }
 
 function isEffectThingId(thingId) {
@@ -324,6 +329,25 @@ async function createEffectFromTemplate(type) {
     throw new Error(`effect create failed: ${res.status} ${txt.trim()}`);
   }
   return JSON.parse(txt || '{}');
+}
+
+async function deleteEffectThing(thingId) {
+  const id = normalizeThingId(thingId);
+  if (!id || !isEffectThingId(id) || !effectsManager) {
+    return false;
+  }
+
+  try {
+    await effectsManager.deleteEffect(id);
+    await loadRoutingThingsWithOptions({ silent: true, force: true });
+    await loadRoutingFile();
+    await effectsManager.loadEffects();
+    setStatus(`effect ${id} deleted`, 'ok');
+    return true;
+  } catch (err) {
+    setStatus(String(err), 'warn');
+    return false;
+  }
 }
 
 function shortNodeTitle(label) {
@@ -632,9 +656,18 @@ function ensureRoutingGraph() {
   const graphRemove = state.graph.remove.bind(state.graph);
   state.graph.remove = (node) => {
     if (!state.internalGraphMutation && isProtectedNode(node)) {
-      setStatus('device/effect nodes cannot be deleted', 'warn');
+      setStatus('device nodes cannot be deleted', 'warn');
       return;
     }
+
+    if (!state.internalGraphMutation && isEffectNode(node)) {
+      const thingId = normalizeThingId(node?.properties?.thingId);
+      if (thingId) {
+        deleteEffectThing(thingId);
+      }
+      return;
+    }
+
     graphRemove(node);
   };
   state.graphCanvas = new window.LGraphCanvas(graphCanvasEl, state.graph, { autoresize: false });
@@ -712,6 +745,19 @@ function ensureRoutingGraph() {
   state.graphCanvas.getNodeMenuOptions = (node) => {
     if (isProtectedNode(node)) {
       return [];
+    }
+    if (isEffectNode(node)) {
+      return [
+        {
+          content: 'Delete Effect',
+          callback: () => {
+            const thingId = normalizeThingId(node?.properties?.thingId);
+            if (thingId) {
+              deleteEffectThing(thingId);
+            }
+          },
+        },
+      ];
     }
     return [
       {
@@ -881,7 +927,7 @@ function rebuildRoutingGraph() {
     node.size = [260, 60];
     const isEffect = isEffectThingId(thing.id);
     node.properties = { thingId: thing.id, nodeKind: isEffect ? 'effect' : 'device' };
-    node.removable = false;
+    node.removable = isEffect;
     node._baseInputCount = thing.inputs;
     node._inputChannelBySlot = [];
 
@@ -1017,7 +1063,31 @@ function startRoutingThingsPolling() {
   }
   state.thingsPollTimer = setInterval(() => {
     pollRoutingThingsIfNeeded();
+    pollEffectsIfNeeded();
   }, 1000);
+}
+
+async function pollEffectsIfNeeded() {
+  if (!effectsManager) {
+    return;
+  }
+  if (state.activeTab !== 'routing' && state.activeTab !== 'effects') {
+    return;
+  }
+  if (document.visibilityState && document.visibilityState !== 'visible') {
+    return;
+  }
+  if (state.effectsPollInFlight) {
+    return;
+  }
+
+  state.effectsPollInFlight = true;
+  try {
+    await effectsManager.loadEffects();
+  } catch (_) {
+  } finally {
+    state.effectsPollInFlight = false;
+  }
 }
 
 async function loadRoutingFile() {
@@ -2291,7 +2361,14 @@ document.addEventListener('keydown', (ev) => {
       return;
     }
     if (isProtectedNode(node)) {
-      setStatus('device/effect nodes cannot be deleted', 'warn');
+      setStatus('device nodes cannot be deleted', 'warn');
+      return;
+    }
+    if (isEffectNode(node)) {
+      const thingId = normalizeThingId(node?.properties?.thingId);
+      if (thingId) {
+        deleteEffectThing(thingId);
+      }
       return;
     }
     state.graph.remove(node);

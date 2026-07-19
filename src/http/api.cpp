@@ -1,5 +1,6 @@
 #include "http/context.hpp"
 #include "audio/context.hpp"
+#include "audio/effects/slot.hpp"
 #include "config/context.hpp"
 #include "init.hpp"
 #include "midi/context.hpp"
@@ -54,6 +55,14 @@
 #define HTTP_MIDI_CC_VOLUMES_PATH HTTP_API_PREFIX "midi/cc_volumes"
 #define HTTP_MIDI_CC_VOLUME_SET_PATH HTTP_API_PREFIX "midi/cc_volume/set"
 #define HTTP_MIDI_CC_VOLUME_DELETE_PATH HTTP_API_PREFIX "midi/cc_volume/delete"
+#define HTTP_EFFECTS_PATH HTTP_API_PREFIX "effects"
+#define HTTP_EFFECT_SET_PATH HTTP_API_PREFIX "effect/set"
+#define HTTP_EFFECT_CREATE_PATH HTTP_API_PREFIX "effect/create"
+#define HTTP_EFFECT_DELETE_PATH HTTP_API_PREFIX "effect/delete"
+#define HTTP_EFFECT_MIDI_CC_SET_PATH HTTP_API_PREFIX "effect/midi_cc/set"
+#define HTTP_EFFECT_MIDI_CC_DELETE_PATH HTTP_API_PREFIX "effect/midi_cc/delete"
+#define HTTP_EFFECT_MIDI_TOGGLE_SET_PATH HTTP_API_PREFIX "effect/midi_toggle/set"
+#define HTTP_EFFECT_MIDI_TOGGLE_DELETE_PATH HTTP_API_PREFIX "effect/midi_toggle/delete"
 #define HTTP_AUDIO_VOLUMES_PATH HTTP_API_PREFIX "audio/volumes"
 #define HTTP_AUDIO_VOLUME_SET_PATH HTTP_API_PREFIX "audio/volume/set"
 #define HTTP_AUDIO_DEVICES_PATH HTTP_API_PREFIX "audio/devices"
@@ -902,6 +911,72 @@ static const char *midi_action_to_string(uint8_t action) {
 	}
 }
 
+static int effect_id_valid(const char *effectId) {
+	if (!effectId || !effectId[0]) {
+		return 0;
+	}
+	if (strncmp(effectId, "fx_", 3) != 0) {
+		return 0;
+	}
+	for (const char *p = effectId + 3; *p; ++p) {
+		if (((*p < '0' || *p > '9') &&
+			 (*p < 'a' || *p > 'z') &&
+			 (*p < 'A' || *p > 'Z')) &&
+			*p != '_') {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static int effect_param_valid(const char *param) {
+	if (!param) {
+		return 0;
+	}
+	return (strcmp(param, "gain") == 0 ||
+			strcmp(param, "drive") == 0 ||
+			strcmp(param, "clip") == 0 ||
+			strcmp(param, "output") == 0) ? 1 : 0;
+}
+
+static void upsertEffectStateFromRuntime(MidiMapData *map,
+										 const char *effectId,
+										 const audiox::effects::SlotParams &params) {
+	if (!map || !effectId || !effectId[0]) {
+		return;
+	}
+
+	uint32_t count = map->effectStateCount;
+	if (count > MIDI_EFFECT_STATES_MAX) {
+		count = MIDI_EFFECT_STATES_MAX;
+	}
+
+	int idx = -1;
+	for (uint32_t i = 0; i < count; ++i) {
+		if (strcmp(map->effectStates[i].effectId, effectId) == 0) {
+			idx = (int)i;
+			break;
+		}
+	}
+	if (idx < 0) {
+		if (count >= MIDI_EFFECT_STATES_MAX) {
+			return;
+		}
+		idx = (int)count;
+		memset(&map->effectStates[idx], 0, sizeof(map->effectStates[idx]));
+		copy_bound(map->effectStates[idx].effectId, sizeof(map->effectStates[idx].effectId), effectId);
+		map->effectStateCount = count + 1U;
+	}
+
+	MidiEffectState &state = map->effectStates[(uint32_t)idx];
+	copy_bound(state.type, sizeof(state.type), audiox::effects::effectTypeToString(params.type));
+	state.enabled = params.enabled ? 1U : 0U;
+	state.gain = params.gain;
+	state.drive = params.drive;
+	state.clip = params.clip;
+	state.output = params.output;
+}
+
 static int handleMidiSamplerConfig(HttpServer *server,
 								 int cfd,
 								 const char *method,
@@ -1329,6 +1404,599 @@ static int handleMidiCcVolumeDelete(HttpServer *server,
 		n = 0;
 	}
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", outBuf, (size_t)n);
+}
+
+static int handleEffects(HttpServer *server,
+						 int cfd,
+						 const char *method,
+						 const char *path) {
+	(void)path;
+	if (!server || !server->app || !method) {
+		return -1;
+	}
+	if (strcmp(method, "GET") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+	if (!server->app->audio || !server->app->config) {
+		static const char none[] = "{\"effects\":[]}\n";
+		return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", none, sizeof(none) - 1);
+	}
+
+	AudioEffectSlotState slots[AUDIO_GRAPH_MAX_THINGS] = {};
+	int slotCount = server->app->audio->listEffects(slots, AUDIO_GRAPH_MAX_THINGS);
+	if (slotCount < 0) {
+		slotCount = 0;
+	}
+
+	MidiMapData map = server->app->config->readMidiMapFile();
+
+	char out[HTTP_BODY_MAX];
+	size_t off = 0;
+	int n = snprintf(out + off, sizeof(out) - off, "{\"effects\":[");
+	if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+		static const char err[] = "encode failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	off += (size_t)n;
+
+	int first = 1;
+	for (int i = 0; i < slotCount; ++i) {
+		audiox::effects::SlotParams params = {};
+		if (server->app->audio->getEffectParams(slots[i].thingId, &params) != RET_OK) {
+			continue;
+		}
+
+		int toggleNote = -1;
+		uint32_t toggleCount = map.effectToggleMappingCount;
+		if (toggleCount > MIDI_EFFECT_TOGGLE_MAPPINGS_MAX) {
+			toggleCount = MIDI_EFFECT_TOGGLE_MAPPINGS_MAX;
+		}
+		for (uint32_t t = 0; t < toggleCount; ++t) {
+			if (strcmp(map.effectToggleMappings[t].effectId, slots[i].thingId) == 0) {
+				toggleNote = (int)map.effectToggleMappings[t].note;
+				break;
+			}
+		}
+
+		int ccGain = -1;
+		int ccDrive = -1;
+		int ccClip = -1;
+		int ccOutput = -1;
+		uint32_t ccCount = map.effectCcMappingCount;
+		if (ccCount > MIDI_EFFECT_CC_MAPPINGS_MAX) {
+			ccCount = MIDI_EFFECT_CC_MAPPINGS_MAX;
+		}
+		for (uint32_t c = 0; c < ccCount; ++c) {
+			const MidiEffectCcMapping &m = map.effectCcMappings[c];
+			if (strcmp(m.effectId, slots[i].thingId) != 0) {
+				continue;
+			}
+			if (strcmp(m.param, "gain") == 0) {
+				ccGain = (int)m.cc;
+			} else if (strcmp(m.param, "drive") == 0) {
+				ccDrive = (int)m.cc;
+			} else if (strcmp(m.param, "clip") == 0) {
+				ccClip = (int)m.cc;
+			} else if (strcmp(m.param, "output") == 0) {
+				ccOutput = (int)m.cc;
+			}
+		}
+
+		n = snprintf(out + off,
+					 sizeof(out) - off,
+					 "%s{\"id\":\"%s\",\"type\":\"%s\",\"enabled\":%s,\"params\":{\"gain\":%.4f,\"drive\":%.4f,\"clip\":%.4f,\"output\":%.4f},\"midi\":{\"toggle_note\":%d,\"cc\":{\"gain\":%d,\"drive\":%d,\"clip\":%d,\"output\":%d}}}",
+					 first ? "" : ",",
+					 slots[i].thingId,
+					 audiox::effects::effectTypeToString(params.type),
+					 params.enabled ? "true" : "false",
+					 (double)params.gain,
+					 (double)params.drive,
+					 (double)params.clip,
+					 (double)params.output,
+					 toggleNote,
+					 ccGain,
+					 ccDrive,
+					 ccClip,
+					 ccOutput);
+		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+			break;
+		}
+		off += (size_t)n;
+		first = 0;
+	}
+
+	n = snprintf(out + off, sizeof(out) - off, "]}\n");
+	if (n > 0 && (size_t)n < sizeof(out) - off) {
+		off += (size_t)n;
+	}
+
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, off);
+}
+
+static int handleEffectSet(HttpServer *server,
+						   int cfd,
+						   const char *method,
+						   const char *path,
+						   const char *body,
+						   size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !method || !server->app->audio || !server->app->config) {
+		return -1;
+	}
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+	if (!body) {
+		static const char bad[] = "missing body\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char idBuf[64] = {};
+	if (!body_get_value(body, body_len, "id", idBuf, sizeof(idBuf)) || !effect_id_valid(idBuf)) {
+		static const char bad[] = "invalid effect id\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	int changed = 0;
+	char typeBuf[24] = {};
+	if (body_get_value(body, body_len, "type", typeBuf, sizeof(typeBuf))) {
+		uint8_t type = audiox::effects::effectTypeFromString(typeBuf);
+		if (server->app->audio->setEffectType(idBuf, type) == RET_OK) {
+			changed = 1;
+		}
+	}
+
+	char enabledBuf[16] = {};
+	if (body_get_value(body, body_len, "enabled", enabledBuf, sizeof(enabledBuf))) {
+		char *ep = NULL;
+		long enabled = strtol(enabledBuf, &ep, 10);
+		if (ep && *ep == '\0' && (enabled == 0 || enabled == 1)) {
+			if (server->app->audio->setEffectEnabled(idBuf, (uint8_t)enabled) == RET_OK) {
+				changed = 1;
+			}
+		}
+	}
+
+	char paramBuf[24] = {};
+	char valueBuf[32] = {};
+	if (body_get_value(body, body_len, "param", paramBuf, sizeof(paramBuf)) &&
+		body_get_value(body, body_len, "value", valueBuf, sizeof(valueBuf))) {
+		if (!effect_param_valid(paramBuf)) {
+			static const char bad[] = "invalid effect param\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+		}
+		char *ep = NULL;
+		float value = strtof(valueBuf, &ep);
+		if (!ep || *ep != '\0') {
+			static const char bad[] = "invalid effect value\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+		}
+		if (server->app->audio->setEffectParam(idBuf, paramBuf, value) == RET_OK) {
+			changed = 1;
+		}
+	}
+
+	if (!changed) {
+		static const char bad[] = "no effect fields updated\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	audiox::effects::SlotParams params = {};
+	if (server->app->audio->getEffectParams(idBuf, &params) != RET_OK) {
+		static const char err[] = "effect update failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	MidiMapData map = server->app->config->readMidiMapFile();
+	upsertEffectStateFromRuntime(&map, idBuf, params);
+	if (server->app->config->writeMidiMapFile(&map) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = map;
+	}
+
+	char out[256];
+	int n = snprintf(out,
+					 sizeof(out),
+					 "{\"ok\":true,\"id\":\"%s\",\"type\":\"%s\",\"enabled\":%s,\"gain\":%.4f,\"drive\":%.4f,\"clip\":%.4f,\"output\":%.4f}\n",
+					 idBuf,
+					 audiox::effects::effectTypeToString(params.type),
+					 params.enabled ? "true" : "false",
+					 (double)params.gain,
+					 (double)params.drive,
+					 (double)params.clip,
+					 (double)params.output);
+	if (n < 0 || (size_t)n >= sizeof(out)) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
+static int handleEffectCreate(HttpServer *server,
+							 int cfd,
+							 const char *method,
+							 const char *path,
+							 const char *body,
+							 size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !method || !server->app->audio || !server->app->config) {
+		return -1;
+	}
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char typeBuf[24] = "gain";
+	if (body) {
+		(void)body_get_value(body, body_len, "type", typeBuf, sizeof(typeBuf));
+	}
+
+	char idBuf[64] = {};
+	if (server->app->audio->createEffect(typeBuf, idBuf, sizeof(idBuf)) != RET_OK) {
+		static const char err[] = "failed to create effect\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	audiox::effects::SlotParams params = {};
+	if (server->app->audio->getEffectParams(idBuf, &params) != RET_OK) {
+		static const char err[] = "failed to read created effect\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	MidiMapData map = server->app->config->readMidiMapFile();
+	upsertEffectStateFromRuntime(&map, idBuf, params);
+	if (server->app->config->writeMidiMapFile(&map) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = map;
+	}
+
+	if (server->app->audio) {
+		int reloadRc = server->app->audio->reloadRoutingGraph();
+		if (reloadRc != RET_OK) {
+			printf("[HTTP] [WARN] reloadRoutingGraph after effect create failed (%d)\n", reloadRc);
+		}
+	}
+
+	char out[192];
+	int n = snprintf(out,
+					 sizeof(out),
+					 "{\"ok\":true,\"id\":\"%s\",\"type\":\"%s\"}\n",
+					 idBuf,
+					 audiox::effects::effectTypeToString(params.type));
+	if (n < 0 || (size_t)n >= sizeof(out)) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
+static int handleEffectDelete(HttpServer *server,
+							 int cfd,
+							 const char *method,
+							 const char *path,
+							 const char *body,
+							 size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !method || !server->app->audio || !server->app->config) {
+		return -1;
+	}
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char idBuf[64] = {};
+	if (!body || !body_get_value(body, body_len, "id", idBuf, sizeof(idBuf)) || !effect_id_valid(idBuf)) {
+		static const char bad[] = "invalid effect id\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	if (server->app->audio->deleteEffect(idBuf) != RET_OK) {
+		static const char nf[] = "effect not found\n";
+		return server->sendResponse(cfd, "404 Not Found", "text/plain; charset=utf-8", nf, sizeof(nf) - 1);
+	}
+
+	MidiMapData map = server->app->config->readMidiMapFile();
+
+	uint32_t outStateCount = 0;
+	for (uint32_t i = 0; i < map.effectStateCount && i < MIDI_EFFECT_STATES_MAX; ++i) {
+		if (strcmp(map.effectStates[i].effectId, idBuf) == 0) {
+			continue;
+		}
+		map.effectStates[outStateCount++] = map.effectStates[i];
+	}
+	map.effectStateCount = outStateCount;
+
+	uint32_t outCcCount = 0;
+	for (uint32_t i = 0; i < map.effectCcMappingCount && i < MIDI_EFFECT_CC_MAPPINGS_MAX; ++i) {
+		if (strcmp(map.effectCcMappings[i].effectId, idBuf) == 0) {
+			continue;
+		}
+		map.effectCcMappings[outCcCount++] = map.effectCcMappings[i];
+	}
+	map.effectCcMappingCount = outCcCount;
+
+	uint32_t outToggleCount = 0;
+	for (uint32_t i = 0; i < map.effectToggleMappingCount && i < MIDI_EFFECT_TOGGLE_MAPPINGS_MAX; ++i) {
+		if (strcmp(map.effectToggleMappings[i].effectId, idBuf) == 0) {
+			continue;
+		}
+		map.effectToggleMappings[outToggleCount++] = map.effectToggleMappings[i];
+	}
+	map.effectToggleMappingCount = outToggleCount;
+
+	if (server->app->config->writeMidiMapFile(&map) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = map;
+	}
+
+	if (server->app->audio) {
+		int reloadRc = server->app->audio->reloadRoutingGraph();
+		if (reloadRc != RET_OK) {
+			printf("[HTTP] [WARN] reloadRoutingGraph after effect delete failed (%d)\n", reloadRc);
+		}
+	}
+
+	char out[96];
+	int n = snprintf(out, sizeof(out), "{\"ok\":true,\"id\":\"%s\"}\n", idBuf);
+	if (n < 0 || (size_t)n >= sizeof(out)) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
+static int handleEffectMidiCcSet(HttpServer *server,
+								 int cfd,
+								 const char *method,
+								 const char *path,
+								 const char *body,
+								 size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method) {
+		return -1;
+	}
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char ccBuf[16] = {};
+	char idBuf[64] = {};
+	char paramBuf[24] = {};
+	if (!body ||
+		!body_get_value(body, body_len, "cc", ccBuf, sizeof(ccBuf)) ||
+		!body_get_value(body, body_len, "id", idBuf, sizeof(idBuf)) ||
+		!body_get_value(body, body_len, "param", paramBuf, sizeof(paramBuf))) {
+		static const char bad[] = "expected cc,id,param\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char *ep = NULL;
+	long cc = strtol(ccBuf, &ep, 10);
+	if (!ep || *ep != '\0' || cc < 0 || cc > 127 || !effect_id_valid(idBuf) || !effect_param_valid(paramBuf)) {
+		static const char bad[] = "invalid cc/id/param\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	MidiMapData map = server->app->config->readMidiMapFile();
+	uint32_t outCount = 0;
+	for (uint32_t i = 0; i < map.effectCcMappingCount && i < MIDI_EFFECT_CC_MAPPINGS_MAX; ++i) {
+		const MidiEffectCcMapping &m = map.effectCcMappings[i];
+		if (m.cc == (uint8_t)cc ||
+			(strcmp(m.effectId, idBuf) == 0 && strcmp(m.param, paramBuf) == 0)) {
+			continue;
+		}
+		map.effectCcMappings[outCount++] = m;
+	}
+	if (outCount < MIDI_EFFECT_CC_MAPPINGS_MAX) {
+		map.effectCcMappings[outCount].cc = (uint8_t)cc;
+		copy_bound(map.effectCcMappings[outCount].effectId,
+				   sizeof(map.effectCcMappings[outCount].effectId),
+				   idBuf);
+		copy_bound(map.effectCcMappings[outCount].param,
+				   sizeof(map.effectCcMappings[outCount].param),
+				   paramBuf);
+		++outCount;
+	}
+	map.effectCcMappingCount = outCount;
+
+	if (server->app->config->writeMidiMapFile(&map) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = map;
+	}
+
+	char out[128];
+	int n = snprintf(out,
+					 sizeof(out),
+					 "{\"ok\":true,\"cc\":%u,\"id\":\"%s\",\"param\":\"%s\"}\n",
+					 (unsigned)cc,
+					 idBuf,
+					 paramBuf);
+	if (n < 0 || (size_t)n >= sizeof(out)) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
+static int handleEffectMidiCcDelete(HttpServer *server,
+									int cfd,
+									const char *method,
+									const char *path,
+									const char *body,
+									size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method) {
+		return -1;
+	}
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char ccBuf[16] = {};
+	if (!body || !body_get_value(body, body_len, "cc", ccBuf, sizeof(ccBuf))) {
+		static const char bad[] = "expected cc\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+	char *ep = NULL;
+	long cc = strtol(ccBuf, &ep, 10);
+	if (!ep || *ep != '\0' || cc < 0 || cc > 127) {
+		static const char bad[] = "invalid cc\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	MidiMapData map = server->app->config->readMidiMapFile();
+	uint32_t outCount = 0;
+	for (uint32_t i = 0; i < map.effectCcMappingCount && i < MIDI_EFFECT_CC_MAPPINGS_MAX; ++i) {
+		if (map.effectCcMappings[i].cc == (uint8_t)cc) {
+			continue;
+		}
+		map.effectCcMappings[outCount++] = map.effectCcMappings[i];
+	}
+	map.effectCcMappingCount = outCount;
+
+	if (server->app->config->writeMidiMapFile(&map) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = map;
+	}
+
+	char out[64];
+	int n = snprintf(out, sizeof(out), "{\"ok\":true,\"cc\":%u}\n", (unsigned)cc);
+	if (n < 0 || (size_t)n >= sizeof(out)) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
+static int handleEffectMidiToggleSet(HttpServer *server,
+									 int cfd,
+									 const char *method,
+									 const char *path,
+									 const char *body,
+									 size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method) {
+		return -1;
+	}
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char noteBuf[16] = {};
+	char idBuf[64] = {};
+	if (!body ||
+		!body_get_value(body, body_len, "note", noteBuf, sizeof(noteBuf)) ||
+		!body_get_value(body, body_len, "id", idBuf, sizeof(idBuf))) {
+		static const char bad[] = "expected note,id\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char *ep = NULL;
+	long note = strtol(noteBuf, &ep, 10);
+	if (!ep || *ep != '\0' || note < 0 || note > 127 || !effect_id_valid(idBuf)) {
+		static const char bad[] = "invalid note/id\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	MidiMapData map = server->app->config->readMidiMapFile();
+	uint32_t outCount = 0;
+	for (uint32_t i = 0; i < map.effectToggleMappingCount && i < MIDI_EFFECT_TOGGLE_MAPPINGS_MAX; ++i) {
+		const MidiEffectToggleMapping &m = map.effectToggleMappings[i];
+		if (m.note == (uint8_t)note || strcmp(m.effectId, idBuf) == 0) {
+			continue;
+		}
+		map.effectToggleMappings[outCount++] = m;
+	}
+	if (outCount < MIDI_EFFECT_TOGGLE_MAPPINGS_MAX) {
+		map.effectToggleMappings[outCount].note = (uint8_t)note;
+		copy_bound(map.effectToggleMappings[outCount].effectId,
+				   sizeof(map.effectToggleMappings[outCount].effectId),
+				   idBuf);
+		++outCount;
+	}
+	map.effectToggleMappingCount = outCount;
+
+	if (server->app->config->writeMidiMapFile(&map) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = map;
+	}
+
+	char out[96];
+	int n = snprintf(out,
+					 sizeof(out),
+					 "{\"ok\":true,\"note\":%u,\"id\":\"%s\"}\n",
+					 (unsigned)note,
+					 idBuf);
+	if (n < 0 || (size_t)n >= sizeof(out)) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
+static int handleEffectMidiToggleDelete(HttpServer *server,
+										int cfd,
+										const char *method,
+										const char *path,
+										const char *body,
+										size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method) {
+		return -1;
+	}
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char noteBuf[16] = {};
+	if (!body || !body_get_value(body, body_len, "note", noteBuf, sizeof(noteBuf))) {
+		static const char bad[] = "expected note\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char *ep = NULL;
+	long note = strtol(noteBuf, &ep, 10);
+	if (!ep || *ep != '\0' || note < 0 || note > 127) {
+		static const char bad[] = "invalid note\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	MidiMapData map = server->app->config->readMidiMapFile();
+	uint32_t outCount = 0;
+	for (uint32_t i = 0; i < map.effectToggleMappingCount && i < MIDI_EFFECT_TOGGLE_MAPPINGS_MAX; ++i) {
+		if (map.effectToggleMappings[i].note == (uint8_t)note) {
+			continue;
+		}
+		map.effectToggleMappings[outCount++] = map.effectToggleMappings[i];
+	}
+	map.effectToggleMappingCount = outCount;
+
+	if (server->app->config->writeMidiMapFile(&map) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = map;
+	}
+
+	char out[80];
+	int n = snprintf(out, sizeof(out), "{\"ok\":true,\"note\":%u}\n", (unsigned)note);
+	if (n < 0 || (size_t)n >= sizeof(out)) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
 }
 
 static int handleMidiLastNote(HttpServer *server,
@@ -2608,6 +3276,38 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_MIDI_CC_VOLUME_DELETE_PATH) == 0) {
 		return handleMidiCcVolumeDelete(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_EFFECTS_PATH) == 0) {
+		return handleEffects(server, cfd, method, path);
+	}
+
+	if (strcmp(path, HTTP_EFFECT_SET_PATH) == 0) {
+		return handleEffectSet(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_EFFECT_CREATE_PATH) == 0) {
+		return handleEffectCreate(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_EFFECT_DELETE_PATH) == 0) {
+		return handleEffectDelete(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_EFFECT_MIDI_CC_SET_PATH) == 0) {
+		return handleEffectMidiCcSet(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_EFFECT_MIDI_CC_DELETE_PATH) == 0) {
+		return handleEffectMidiCcDelete(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_EFFECT_MIDI_TOGGLE_SET_PATH) == 0) {
+		return handleEffectMidiToggleSet(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_EFFECT_MIDI_TOGGLE_DELETE_PATH) == 0) {
+		return handleEffectMidiToggleDelete(server, cfd, method, path, body, body_len);
 	}
 
 	if (strcmp(path, HTTP_AUDIO_VOLUMES_PATH) == 0) {

@@ -240,6 +240,182 @@ static int parseCcVolumeLine(const char *value,
     return RET_OK;
 }
 
+static int parseEffectStateLine(const char *value,
+                                MidiEffectState *out,
+                                uint32_t *count_in_out) {
+    if (!value || !out || !count_in_out || *count_in_out >= MIDI_EFFECT_STATES_MAX) {
+        return RET_ERR;
+    }
+
+    char buf[320];
+    copyBounded(buf, sizeof(buf), value);
+
+    // format: effect_id,type,enabled,gain,drive,clip,output
+    char *parts[7] = {};
+    size_t partCount = 0;
+    char *cursor = buf;
+    while (partCount < 7) {
+        parts[partCount++] = cursor;
+        char *comma = strchr(cursor, ',');
+        if (!comma) {
+            break;
+        }
+        *comma = '\0';
+        cursor = comma + 1;
+    }
+    if (partCount != 7 || strchr(parts[6], ',') != NULL) {
+        return RET_ERR;
+    }
+
+    for (size_t i = 0; i < 7; ++i) {
+        parts[i] = trimLeft(parts[i]);
+        trimRight(parts[i]);
+    }
+
+    if (!parts[0][0] || !parts[1][0] || !parts[2][0]) {
+        return RET_ERR;
+    }
+
+    char *ep = NULL;
+    long enabled = strtol(parts[2], &ep, 10);
+    if (!ep || *ep != '\0' || (enabled != 0 && enabled != 1)) {
+        return RET_ERR;
+    }
+
+    ep = NULL;
+    float gain = strtof(parts[3], &ep);
+    if (!ep || *ep != '\0') {
+        return RET_ERR;
+    }
+    ep = NULL;
+    float drive = strtof(parts[4], &ep);
+    if (!ep || *ep != '\0') {
+        return RET_ERR;
+    }
+    ep = NULL;
+    float clip = strtof(parts[5], &ep);
+    if (!ep || *ep != '\0') {
+        return RET_ERR;
+    }
+    ep = NULL;
+    float output = strtof(parts[6], &ep);
+    if (!ep || *ep != '\0') {
+        return RET_ERR;
+    }
+
+    if (strncmp(parts[0], "fx_", 3) != 0) {
+        return RET_ERR;
+    }
+    if (strcmp(parts[1], "gain") != 0 && strcmp(parts[1], "distortion") != 0) {
+        return RET_ERR;
+    }
+
+    MidiEffectState *state = &out[*count_in_out];
+    memset(state, 0, sizeof(*state));
+    copyBounded(state->effectId, sizeof(state->effectId), parts[0]);
+    copyBounded(state->type, sizeof(state->type), parts[1]);
+    state->enabled = (enabled != 0) ? 1U : 0U;
+    state->gain = gain;
+    state->drive = drive;
+    state->clip = clip;
+    state->output = output;
+    ++(*count_in_out);
+    return RET_OK;
+}
+
+static int parseEffectCcLine(const char *value,
+                             MidiEffectCcMapping *out,
+                             uint32_t *count_in_out) {
+    if (!value || !out || !count_in_out || *count_in_out >= MIDI_EFFECT_CC_MAPPINGS_MAX) {
+        return RET_ERR;
+    }
+
+    char buf[256];
+    copyBounded(buf, sizeof(buf), value);
+
+    // format: cc,effect_id,param
+    char *parts[3] = {};
+    size_t partCount = 0;
+    char *cursor = buf;
+    while (partCount < 3) {
+        parts[partCount++] = cursor;
+        char *comma = strchr(cursor, ',');
+        if (!comma) {
+            break;
+        }
+        *comma = '\0';
+        cursor = comma + 1;
+    }
+    if (partCount != 3 || strchr(parts[2], ',') != NULL) {
+        return RET_ERR;
+    }
+
+    for (size_t i = 0; i < 3; ++i) {
+        parts[i] = trimLeft(parts[i]);
+        trimRight(parts[i]);
+    }
+
+    char *ep = NULL;
+    long cc = strtol(parts[0], &ep, 10);
+    if (!ep || *ep != '\0' || cc < 0 || cc > 127) {
+        return RET_ERR;
+    }
+    if (!parts[1][0] || strncmp(parts[1], "fx_", 3) != 0) {
+        return RET_ERR;
+    }
+    if (strcmp(parts[2], "gain") != 0 &&
+        strcmp(parts[2], "drive") != 0 &&
+        strcmp(parts[2], "clip") != 0 &&
+        strcmp(parts[2], "output") != 0) {
+        return RET_ERR;
+    }
+
+    MidiEffectCcMapping *map = &out[*count_in_out];
+    memset(map, 0, sizeof(*map));
+    map->cc = (uint8_t)cc;
+    copyBounded(map->effectId, sizeof(map->effectId), parts[1]);
+    copyBounded(map->param, sizeof(map->param), parts[2]);
+    ++(*count_in_out);
+    return RET_OK;
+}
+
+static int parseEffectToggleLine(const char *value,
+                                 MidiEffectToggleMapping *out,
+                                 uint32_t *count_in_out) {
+    if (!value || !out || !count_in_out || *count_in_out >= MIDI_EFFECT_TOGGLE_MAPPINGS_MAX) {
+        return RET_ERR;
+    }
+
+    char buf[256];
+    copyBounded(buf, sizeof(buf), value);
+
+    char *comma = strchr(buf, ',');
+    if (!comma) {
+        return RET_ERR;
+    }
+    *comma = '\0';
+    char *noteStr = trimLeft(buf);
+    char *effectId = trimLeft(comma + 1);
+    trimRight(noteStr);
+    trimRight(effectId);
+
+    char *ep = NULL;
+    long note = strtol(noteStr, &ep, 10);
+    if (!ep || *ep != '\0' || note < 0 || note > 127) {
+        return RET_ERR;
+    }
+    if (!effectId[0] || strncmp(effectId, "fx_", 3) != 0) {
+        return RET_ERR;
+    }
+
+    MidiEffectToggleMapping *map = &out[*count_in_out];
+    memset(map, 0, sizeof(*map));
+    map->note = (uint8_t)note;
+    copyBounded(map->effectId, sizeof(map->effectId), effectId);
+    ++(*count_in_out);
+    return RET_OK;
+}
+
 static int parseMidiActionLine(const char *value,
                                MidiActionMapping *out,
                                uint32_t *count_in_out) {
@@ -358,6 +534,12 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             }
         } else if (strcmp(key, "cc_volume") == 0) {
             (void)parseCcVolumeLine(value, data.ccVolumeMappings, &data.ccVolumeMappingCount);
+        } else if (strcmp(key, "fx_state") == 0) {
+            (void)parseEffectStateLine(value, data.effectStates, &data.effectStateCount);
+        } else if (strcmp(key, "fx_cc") == 0) {
+            (void)parseEffectCcLine(value, data.effectCcMappings, &data.effectCcMappingCount);
+        } else if (strcmp(key, "fx_toggle") == 0) {
+            (void)parseEffectToggleLine(value, data.effectToggleMappings, &data.effectToggleMappingCount);
         }
     }
 
@@ -516,6 +698,63 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         }
     }
 
+    uint32_t fxStateCount = data->effectStateCount;
+    if (fxStateCount > MIDI_EFFECT_STATES_MAX) {
+        fxStateCount = MIDI_EFFECT_STATES_MAX;
+    }
+    if (fxStateCount > 0) {
+        dprintf(fd, "# effect state: effect_id,type,enabled,gain,drive,clip,output\n");
+        for (uint32_t i = 0; i < fxStateCount; ++i) {
+            if (!data->effectStates[i].effectId[0]) {
+                continue;
+            }
+            dprintf(fd,
+                    "fx_state=%s,%s,%u,%.6f,%.6f,%.6f,%.6f\n",
+                    data->effectStates[i].effectId,
+                    data->effectStates[i].type[0] ? data->effectStates[i].type : "gain",
+                    (unsigned)(data->effectStates[i].enabled ? 1U : 0U),
+                    (double)data->effectStates[i].gain,
+                    (double)data->effectStates[i].drive,
+                    (double)data->effectStates[i].clip,
+                    (double)data->effectStates[i].output);
+        }
+    }
+
+    uint32_t fxCcCount = data->effectCcMappingCount;
+    if (fxCcCount > MIDI_EFFECT_CC_MAPPINGS_MAX) {
+        fxCcCount = MIDI_EFFECT_CC_MAPPINGS_MAX;
+    }
+    if (fxCcCount > 0) {
+        dprintf(fd, "# effect MIDI CC mappings: cc,effect_id,param\n");
+        for (uint32_t i = 0; i < fxCcCount; ++i) {
+            if (!data->effectCcMappings[i].effectId[0] || !data->effectCcMappings[i].param[0]) {
+                continue;
+            }
+            dprintf(fd,
+                    "fx_cc=%u,%s,%s\n",
+                    (unsigned)data->effectCcMappings[i].cc,
+                    data->effectCcMappings[i].effectId,
+                    data->effectCcMappings[i].param);
+        }
+    }
+
+    uint32_t fxToggleCount = data->effectToggleMappingCount;
+    if (fxToggleCount > MIDI_EFFECT_TOGGLE_MAPPINGS_MAX) {
+        fxToggleCount = MIDI_EFFECT_TOGGLE_MAPPINGS_MAX;
+    }
+    if (fxToggleCount > 0) {
+        dprintf(fd, "# effect bypass toggle mappings: note,effect_id\n");
+        for (uint32_t i = 0; i < fxToggleCount; ++i) {
+            if (!data->effectToggleMappings[i].effectId[0]) {
+                continue;
+            }
+            dprintf(fd,
+                    "fx_toggle=%u,%s\n",
+                    (unsigned)data->effectToggleMappings[i].note,
+                    data->effectToggleMappings[i].effectId);
+        }
+    }
+
     close(fd);
     return RET_OK;
 }
@@ -553,6 +792,22 @@ int ConfigStore::writeMidiMapFile(MidiMapData *data) {
     uint32_t actionCount = data->actionMappingCount;
     if (actionCount > MIDI_ACTION_MAPPINGS_MAX) {
         data->actionMappingCount = MIDI_ACTION_MAPPINGS_MAX;
+    }
+    uint32_t cvCount = data->ccVolumeMappingCount;
+    if (cvCount > MIDI_CC_VOLUME_MAPPINGS_MAX) {
+        data->ccVolumeMappingCount = MIDI_CC_VOLUME_MAPPINGS_MAX;
+    }
+    uint32_t fxStateCount = data->effectStateCount;
+    if (fxStateCount > MIDI_EFFECT_STATES_MAX) {
+        data->effectStateCount = MIDI_EFFECT_STATES_MAX;
+    }
+    uint32_t fxCcCount = data->effectCcMappingCount;
+    if (fxCcCount > MIDI_EFFECT_CC_MAPPINGS_MAX) {
+        data->effectCcMappingCount = MIDI_EFFECT_CC_MAPPINGS_MAX;
+    }
+    uint32_t fxToggleCount = data->effectToggleMappingCount;
+    if (fxToggleCount > MIDI_EFFECT_TOGGLE_MAPPINGS_MAX) {
+        data->effectToggleMappingCount = MIDI_EFFECT_TOGGLE_MAPPINGS_MAX;
     }
     return writeMidiMapPath(MIDI_MAP_REAL_FILE_PATH, data);
 }

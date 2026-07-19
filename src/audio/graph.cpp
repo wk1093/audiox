@@ -253,8 +253,19 @@ size_t AudioContext::copyRoutingThings(AudioGraphThingInfo *out, size_t cap) con
 
     size_t count = 0;
     appendThing(out, cap, &count, "soundboard_out", "Soundboard Out", 0, 2);
-    appendThing(out, cap, &count, "fx_slot_0", "FX Slot 0", 2, 2);
-    appendThing(out, cap, &count, "soundboard_virtual_out", "Soundboard Virtual Out", 2, 0);
+    AudioEffectSlotState fxStates[32] = {};
+    int fxCount = listEffects(fxStates, sizeof(fxStates) / sizeof(fxStates[0]));
+    if (fxCount < 0) {
+        fxCount = 0;
+    }
+    for (int i = 0; i < fxCount; ++i) {
+        if (!fxStates[i].thingId[0]) {
+            continue;
+        }
+        char label[160];
+        snprintf(label, sizeof(label), "FX %s", fxStates[i].thingId);
+        appendThing(out, cap, &count, fxStates[i].thingId, label, 2, 2);
+    }
     if (!haveGadgetPlayback) {
         appendThing(out, cap, &count, "usb_gadget_out", "USB Gadget Out", cfg.playbackChannels, 0);
     }

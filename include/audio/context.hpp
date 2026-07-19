@@ -13,6 +13,8 @@
 #include <unordered_map>
 #include <mutex>
 
+#include "audio/effects/slot.hpp"
+
 #define AUDIO_GRAPH_MAX_THINGS 64
 #define AUDIO_GRAPH_MAX_EDGES 128
 #define AUDIO_SFX_MAX_FRAMES (SAMPLE_RATE * 8)
@@ -127,6 +129,16 @@ struct AudioSfxTriggerEvent {
     float pitchRatio;
 };
 
+struct AudioEffectSlotState {
+    char thingId[64];
+    uint8_t enabled;
+    uint8_t type;
+    float gain;
+    float drive;
+    float clip;
+    float output;
+};
+
 struct AudioContext {
     Audiox *app;
     AudioRegistry registry;
@@ -179,6 +191,10 @@ struct AudioContext {
     mutable std::mutex gainsMutex;
     std::unordered_map<std::string, float> thingGains;
 
+    std::unordered_map<std::string, audiox::effects::SlotParams> effectStates;
+    uint32_t nextEffectId;
+    mutable std::mutex effectsMutex;
+
     AudioContext(Audiox *context);
     ~AudioContext();
 
@@ -212,4 +228,15 @@ struct AudioContext {
     void snapshotGainsForGraph(const AudioGraphState &graph);
     // Load gains from volumes.txt into thingGains.
     void loadVolumesFromConfig();
+
+    void loadEffectsFromConfig();
+    int listEffects(AudioEffectSlotState *out, size_t cap) const;
+    int getEffectParams(const char *thingId, audiox::effects::SlotParams *out) const;
+    int setEffectType(const char *thingId, uint8_t type);
+    int setEffectEnabled(const char *thingId, uint8_t enabled);
+    int toggleEffectEnabled(const char *thingId);
+    int setEffectParam(const char *thingId, const char *paramName, float value);
+    int setEffectParamNormalized(const char *thingId, const char *paramName, float normalized);
+    int createEffect(const char *type, char *outId, size_t outIdSize);
+    int deleteEffect(const char *thingId);
 };

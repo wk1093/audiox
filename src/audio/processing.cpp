@@ -1,5 +1,6 @@
 #include "audio/context.hpp"
 #include "audio/alsa_pcm.h"
+#include "audio/effects/slot.hpp"
 #include "audio/processing_fx.hpp"
 
 #include <algorithm>
@@ -988,14 +989,6 @@ static bool thingIdEquals(const AudioGraphThingInfo &thing, const char *id) {
     return id && thing.id[0] && strcmp(thing.id, id) == 0;
 }
 
-static bool thingIdStartsWith(const AudioGraphThingInfo &thing, const char *prefix) {
-    if (!prefix || !thing.id[0]) {
-        return false;
-    }
-    size_t prefixLen = strlen(prefix);
-    return strncmp(thing.id, prefix, prefixLen) == 0;
-}
-
 static bool thingIdEndsWith(const AudioGraphThingInfo &thing, const char *suffix) {
     if (!suffix || !thing.id[0]) {
         return false;
@@ -1070,13 +1063,16 @@ static bool compileRoute(RuntimeGraph *rt,
     return true;
 }
 
-static uint16_t classifyNode(const AudioGraphThingInfo &thing) {
+static uint16_t classifyNode(AudioContext *ctx, const AudioGraphThingInfo &thing) {
     if (thing.outputs == 0) {
         return NODE_SINK;
     }
 
-    if (thingIdStartsWith(thing, "fx_slot_")) {
-        return NODE_EFFECT;
+    if (ctx) {
+        audiox::effects::SlotParams fxParams = {};
+        if (ctx->getEffectParams(thing.id, &fxParams) == RET_OK) {
+            return NODE_EFFECT;
+        }
     }
 
     if (thing.inputs == 0 ||
@@ -1291,8 +1287,8 @@ static void routeCompiledEdge(AudioContext *ctx, RuntimeGraph *rt, const Runtime
     }
 }
 
-static void processNode(RuntimeGraph *rt, uint16_t nodeIndex) {
-    if (!rt || nodeIndex >= rt->snapshot.thingCount) {
+static void processNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex) {
+    if (!ctx || !rt || nodeIndex >= rt->snapshot.thingCount) {
         return;
     }
 
@@ -1305,10 +1301,33 @@ static void processNode(RuntimeGraph *rt, uint16_t nodeIndex) {
         return;
     }
 
-    float gain = (rt->nodeKind[nodeIndex] == NODE_EFFECT) ? 0.85f : 1.0f;
+    if (rt->nodeKind[nodeIndex] == NODE_EFFECT) {
+        audiox::effects::SlotParams params = {};
+        if (ctx->getEffectParams(thing.id, &params) != RET_OK) {
+            params.enabled = 1U;
+            params.type = audiox::effects::EFFECT_GAIN;
+            params.gain = 1.0f;
+            params.drive = 1.5f;
+            params.clip = 0.6f;
+            params.output = 1.0f;
+        }
+
+        for (uint8_t ch = 0; ch < copyChannels; ++ch) {
+            audiox::effects::processSlot(params,
+                                         rt->inputs[nodeIndex][ch],
+                                         rt->outputs[nodeIndex][ch],
+                                         BUFFER_FRAMES);
+        }
+
+        for (uint8_t ch = copyChannels; ch < outChannels; ++ch) {
+            memset(rt->outputs[nodeIndex][ch], 0, sizeof(rt->outputs[nodeIndex][ch]));
+        }
+        return;
+    }
+
     for (uint8_t ch = 0; ch < copyChannels; ++ch) {
         for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
-            float s = rt->inputs[nodeIndex][ch][frame] * gain;
+            float s = rt->inputs[nodeIndex][ch][frame];
             if (s > 1.0f) {
                 s = 1.0f;
             }
@@ -1392,8 +1411,8 @@ static void publishPlayingSfxSet(AudioContext *ctx, RuntimeGraph *rt) {
     ctx->sfxPlayingSeq.fetch_add(1U, std::memory_order_release);
 }
 
-static void rebuildRuntimeGraph(RuntimeGraph *rt, const AudioGraphState &graph) {
-    if (!rt) {
+static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const AudioGraphState &graph) {
+    if (!ctx || !rt) {
         return;
     }
 
@@ -1419,7 +1438,7 @@ static void rebuildRuntimeGraph(RuntimeGraph *rt, const AudioGraphState &graph) 
     }
 
     for (uint16_t i = 0; i < rt->snapshot.thingCount; ++i) {
-        rt->nodeKind[i] = classifyNode(rt->snapshot.things[i]);
+        rt->nodeKind[i] = classifyNode(ctx, rt->snapshot.things[i]);
         if (thingIdEquals(rt->snapshot.things[i], "soundboard_out")) {
             rt->soundboardNodeIndex = (int16_t)i;
         }
@@ -1564,7 +1583,7 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
 
     // Process transform/effect nodes from their accumulated input.
     for (uint16_t i = 0; i < rt->processNodeCount; ++i) {
-        processNode(rt, rt->processNodes[i]);
+        processNode(ctx, rt, rt->processNodes[i]);
     }
 
     // Route transformed output onward (typically into sinks).
@@ -1687,7 +1706,7 @@ static void *audioProcessingThreadMain(void *arg) {
         }
 
         if (graphSnapshot.generation != runtime.snapshot.generation) {
-            rebuildRuntimeGraph(&runtime, graphSnapshot);
+            rebuildRuntimeGraph(ctx, &runtime, graphSnapshot);
             ctx->snapshotGainsForGraph(graphSnapshot);
         }
 

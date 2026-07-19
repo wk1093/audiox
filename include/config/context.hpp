@@ -18,6 +18,9 @@
 #define MIDI_SOUND_MODES_MAX MIDI_MAPPINGS_MAX
 #define MIDI_ACTION_MAPPINGS_MAX MIDI_MAPPINGS_MAX
 #define MIDI_CC_VOLUME_MAPPINGS_MAX 16
+#define MIDI_EFFECT_STATES_MAX 16
+#define MIDI_EFFECT_CC_MAPPINGS_MAX 64
+#define MIDI_EFFECT_TOGGLE_MAPPINGS_MAX 32
 #define VOLUME_ENTRIES_MAX 64
 
 struct VolumeEntry {
@@ -28,6 +31,27 @@ struct VolumeEntry {
 struct MidiCcVolumeMapping {
     uint8_t cc;
     char thingId[64];
+};
+
+struct MidiEffectState {
+    char effectId[64];
+    char type[24];
+    uint8_t enabled;
+    float gain;
+    float drive;
+    float clip;
+    float output;
+};
+
+struct MidiEffectCcMapping {
+    uint8_t cc;
+    char effectId[64];
+    char param[24];
+};
+
+struct MidiEffectToggleMapping {
+    uint8_t note;
+    char effectId[64];
 };
 
 struct RouterConfig {
@@ -114,6 +138,12 @@ struct MidiMapData {
     uint8_t samplerRootNote;
     uint32_t ccVolumeMappingCount;
     MidiCcVolumeMapping ccVolumeMappings[MIDI_CC_VOLUME_MAPPINGS_MAX];
+    uint32_t effectStateCount;
+    MidiEffectState effectStates[MIDI_EFFECT_STATES_MAX];
+    uint32_t effectCcMappingCount;
+    MidiEffectCcMapping effectCcMappings[MIDI_EFFECT_CC_MAPPINGS_MAX];
+    uint32_t effectToggleMappingCount;
+    MidiEffectToggleMapping effectToggleMappings[MIDI_EFFECT_TOGGLE_MAPPINGS_MAX];
 };
 
 struct ConfigStore {

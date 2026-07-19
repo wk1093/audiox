@@ -13,6 +13,33 @@
 
 namespace {
 
+static float mapNormalizedToEffectParam(const char *paramName, float normalized) {
+    if (!paramName) {
+        return normalized;
+    }
+    if (normalized < 0.0f) {
+        normalized = 0.0f;
+    }
+    if (normalized > 1.0f) {
+        normalized = 1.0f;
+    }
+
+    if (strcmp(paramName, "gain") == 0) {
+        return normalized * 4.0f;
+    }
+    if (strcmp(paramName, "drive") == 0) {
+        return normalized * 8.0f;
+    }
+    if (strcmp(paramName, "clip") == 0) {
+        return 0.05f + (normalized * 0.95f);
+    }
+    if (strcmp(paramName, "output") == 0) {
+        return normalized * 4.0f;
+    }
+
+    return normalized;
+}
+
 static uint64_t audioMonotonicMs() {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
@@ -323,11 +350,13 @@ AudioContext::AudioContext(Audiox *context) : app(context) {
     for (uint32_t i = 0; i < AUDIO_GRAPH_MAX_THINGS; ++i) {
         nodeGainAtomics[i].store(1.0f, std::memory_order_relaxed);
     }
+    nextEffectId = 1;
 
     if (app && app->config) {
         ConfigData cfg = app->config->readConfigFile();
         soundboardMode.store(cfg.soundboardMode, std::memory_order_relaxed);
         loadVolumesFromConfig();
+        loadEffectsFromConfig();
     }
 
     int preloadRc = reloadSfxBank();
@@ -599,4 +628,231 @@ void AudioContext::snapshotGainsForGraph(const AudioGraphState &graph) {
             nodeGainAtomics[i].store(it->second, std::memory_order_relaxed);
         }
     }
+}
+
+void AudioContext::loadEffectsFromConfig() {
+    if (!app || !app->config) {
+        return;
+    }
+
+    MidiMapData data = app->config->readMidiMapFile();
+
+    std::lock_guard<std::mutex> lock(effectsMutex);
+    effectStates.clear();
+
+    uint32_t maxId = 0;
+    uint32_t count = data.effectStateCount;
+    if (count > MIDI_EFFECT_STATES_MAX) {
+        count = MIDI_EFFECT_STATES_MAX;
+    }
+
+    for (uint32_t i = 0; i < count; ++i) {
+        const MidiEffectState &cfg = data.effectStates[i];
+        if (!cfg.effectId[0]) {
+            continue;
+        }
+
+        audiox::effects::SlotParams params = {};
+        params.enabled = cfg.enabled ? 1U : 0U;
+        params.type = audiox::effects::effectTypeFromString(cfg.type);
+        params.gain = cfg.gain;
+        params.drive = cfg.drive;
+        params.clip = cfg.clip;
+        params.output = cfg.output;
+        audiox::effects::clampSlotParams(&params);
+
+        effectStates[cfg.effectId] = params;
+
+        unsigned parsedId = 0;
+        if (sscanf(cfg.effectId, "fx_%u", &parsedId) == 1 && parsedId > maxId) {
+            maxId = parsedId;
+        }
+    }
+
+    nextEffectId = maxId + 1U;
+    if (nextEffectId == 0) {
+        nextEffectId = 1;
+    }
+}
+
+int AudioContext::listEffects(AudioEffectSlotState *out, size_t cap) const {
+    if (!out || cap == 0) {
+        return 0;
+    }
+
+    std::lock_guard<std::mutex> lock(effectsMutex);
+    size_t i = 0;
+    for (const auto &it : effectStates) {
+        if (i >= cap) {
+            break;
+        }
+        snprintf(out[i].thingId, sizeof(out[i].thingId), "%s", it.first.c_str());
+        out[i].enabled = it.second.enabled;
+        out[i].type = it.second.type;
+        out[i].gain = it.second.gain;
+        out[i].drive = it.second.drive;
+        out[i].clip = it.second.clip;
+        out[i].output = it.second.output;
+        ++i;
+    }
+    return (int)i;
+}
+
+int AudioContext::getEffectParams(const char *thingId, audiox::effects::SlotParams *out) const {
+    if (!thingId || !thingId[0] || !out) {
+        return RET_ERR;
+    }
+
+    std::lock_guard<std::mutex> lock(effectsMutex);
+    auto it = effectStates.find(thingId);
+    if (it == effectStates.end()) {
+        return RET_ERR;
+    }
+    *out = it->second;
+    audiox::effects::clampSlotParams(out);
+    return RET_OK;
+}
+
+int AudioContext::setEffectType(const char *thingId, uint8_t type) {
+    if (!thingId || !thingId[0]) {
+        return RET_ERR;
+    }
+
+    std::lock_guard<std::mutex> lock(effectsMutex);
+    auto it = effectStates.find(thingId);
+    if (it == effectStates.end()) {
+        return RET_ERR;
+    }
+    if (type != audiox::effects::EFFECT_GAIN && type != audiox::effects::EFFECT_DISTORTION) {
+        return RET_ERR;
+    }
+    it->second.type = type;
+    audiox::effects::clampSlotParams(&it->second);
+    return RET_OK;
+}
+
+int AudioContext::setEffectEnabled(const char *thingId, uint8_t enabled) {
+    if (!thingId || !thingId[0]) {
+        return RET_ERR;
+    }
+
+    std::lock_guard<std::mutex> lock(effectsMutex);
+    auto it = effectStates.find(thingId);
+    if (it == effectStates.end()) {
+        return RET_ERR;
+    }
+    it->second.enabled = enabled ? 1U : 0U;
+    return RET_OK;
+}
+
+int AudioContext::toggleEffectEnabled(const char *thingId) {
+    if (!thingId || !thingId[0]) {
+        return RET_ERR;
+    }
+
+    std::lock_guard<std::mutex> lock(effectsMutex);
+    auto it = effectStates.find(thingId);
+    if (it == effectStates.end()) {
+        return RET_ERR;
+    }
+    it->second.enabled = it->second.enabled ? 0U : 1U;
+    return RET_OK;
+}
+
+int AudioContext::setEffectParam(const char *thingId, const char *paramName, float value) {
+    if (!thingId || !thingId[0] || !paramName || !paramName[0]) {
+        return RET_ERR;
+    }
+
+    std::lock_guard<std::mutex> lock(effectsMutex);
+    auto it = effectStates.find(thingId);
+    if (it == effectStates.end()) {
+        return RET_ERR;
+    }
+
+    if (strcmp(paramName, "gain") == 0) {
+        if (value < 0.0f) value = 0.0f;
+        if (value > 4.0f) value = 4.0f;
+        it->second.gain = value;
+        return RET_OK;
+    }
+    if (strcmp(paramName, "drive") == 0) {
+        if (value < 0.0f) value = 0.0f;
+        if (value > 8.0f) value = 8.0f;
+        it->second.drive = value;
+        return RET_OK;
+    }
+    if (strcmp(paramName, "clip") == 0) {
+        if (value < 0.05f) value = 0.05f;
+        if (value > 1.0f) value = 1.0f;
+        it->second.clip = value;
+        return RET_OK;
+    }
+    if (strcmp(paramName, "output") == 0) {
+        if (value < 0.0f) value = 0.0f;
+        if (value > 4.0f) value = 4.0f;
+        it->second.output = value;
+        return RET_OK;
+    }
+
+    return RET_ERR;
+}
+
+int AudioContext::setEffectParamNormalized(const char *thingId, const char *paramName, float normalized) {
+    if (!thingId || !thingId[0] || !paramName || !paramName[0]) {
+        return RET_ERR;
+    }
+
+    float mapped = mapNormalizedToEffectParam(paramName, normalized);
+    return setEffectParam(thingId, paramName, mapped);
+}
+
+int AudioContext::createEffect(const char *type, char *outId, size_t outIdSize) {
+    if (!outId || outIdSize == 0) {
+        return RET_ERR;
+    }
+
+    uint8_t effectType = audiox::effects::effectTypeFromString(type ? type : "gain");
+    audiox::effects::SlotParams params = {};
+    params.enabled = 1U;
+    params.type = effectType;
+    params.gain = 1.0f;
+    params.drive = 4.0f;
+    params.clip = 0.35f;
+    params.output = 1.0f;
+    audiox::effects::clampSlotParams(&params);
+
+    std::lock_guard<std::mutex> lock(effectsMutex);
+
+    char idBuf[64];
+    for (;;) {
+        unsigned id = nextEffectId++;
+        if (nextEffectId == 0) {
+            nextEffectId = 1;
+        }
+        snprintf(idBuf, sizeof(idBuf), "fx_%u", id);
+        if (effectStates.find(idBuf) == effectStates.end()) {
+            break;
+        }
+    }
+
+    effectStates[idBuf] = params;
+    size_t n = strnlen(idBuf, outIdSize - 1);
+    memcpy(outId, idBuf, n);
+    outId[n] = '\0';
+    return RET_OK;
+}
+
+int AudioContext::deleteEffect(const char *thingId) {
+    if (!thingId || !thingId[0]) {
+        return RET_ERR;
+    }
+
+    std::lock_guard<std::mutex> lock(effectsMutex);
+    auto it = effectStates.find(thingId);
+    if (it == effectStates.end()) {
+        return RET_ERR;
+    }
+    effectStates.erase(it);
+    return RET_OK;
 }

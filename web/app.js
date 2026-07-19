@@ -12,6 +12,8 @@ const sbSamplerToggleMidiEl = document.getElementById('sb-sampler-toggle-midi');
 const midiActionCaptureStatusEl = document.getElementById('midi-action-capture-status');
 const volGridEl = document.getElementById('vol-grid');
 const volCcStatusEl = document.getElementById('vol-cc-status');
+const effectsMapGridEl = document.getElementById('effects-map-grid');
+const effectsMapStatusEl = document.getElementById('effects-map-status');
 const inspectorEl = document.getElementById('route-inspector');
 const nodeCountEl = document.getElementById('metric-node-count');
 const routeCountEl = document.getElementById('metric-route-count');
@@ -44,6 +46,7 @@ const state = {
   thingsPollTimer: null,
   thingsPollInFlight: false,
   thingsSignature: '',
+  effectsPollInFlight: false,
   soundboardModesBySfx: {},
   stopAllMidiNote: null,
   samplerToggleMidiNote: null,
@@ -63,6 +66,14 @@ function setStatus(text, kind = '') {
   statusEl.className = `status ${kind}`.trim();
 }
 
+const effectsManager = (window.AudioxEffects && typeof window.AudioxEffects.createManager === 'function')
+  ? window.AudioxEffects.createManager(setStatus)
+  : null;
+
+if (effectsManager) {
+  effectsManager.mountPanel(effectsMapGridEl, effectsMapStatusEl);
+}
+
 function setActiveTab(tab) {
   state.activeTab = tab;
   document.querySelectorAll('.tab-btn').forEach((el) => {
@@ -73,6 +84,7 @@ function setActiveTab(tab) {
   });
   if (tab === 'routing') {
     ensureRoutingGraph();
+    resizeRoutingCanvas();
     state.graphCanvas.setDirty(true, true);
     updateZoomLabel();
   }
@@ -85,6 +97,11 @@ function setActiveTab(tab) {
   if (tab === 'midi') {
     renderStopAllMidiStatus();
     renderSamplerToggleMidiStatus();
+  }
+  if (tab === 'effects' && effectsManager) {
+    effectsManager.loadEffects().catch((err) => {
+      setStatus(String(err), 'warn');
+    });
   }
 }
 
@@ -287,6 +304,52 @@ function isDeviceNode(node) {
   return String(node?.properties?.nodeKind || '') === 'device';
 }
 
+function isProtectedNode(node) {
+  const kind = String(node?.properties?.nodeKind || '');
+  return kind === 'device';
+}
+
+function isEffectNode(node) {
+  return String(node?.properties?.nodeKind || '') === 'effect';
+}
+
+function isEffectThingId(thingId) {
+  return /^fx_[a-zA-Z0-9_]+$/.test(String(thingId || '').trim());
+}
+
+async function createEffectFromTemplate(type) {
+  const safeType = (type === 'distortion') ? 'distortion' : 'gain';
+  const res = await fetch('/api/effect/create', {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: `type=${encodeURIComponent(safeType)}`,
+  });
+  const txt = await res.text();
+  if (!res.ok) {
+    throw new Error(`effect create failed: ${res.status} ${txt.trim()}`);
+  }
+  return JSON.parse(txt || '{}');
+}
+
+async function deleteEffectThing(thingId) {
+  const id = normalizeThingId(thingId);
+  if (!id || !isEffectThingId(id) || !effectsManager) {
+    return false;
+  }
+
+  try {
+    await effectsManager.deleteEffect(id);
+    await loadRoutingThingsWithOptions({ silent: true, force: true });
+    await loadRoutingFile();
+    await effectsManager.loadEffects();
+    setStatus(`effect ${id} deleted`, 'ok');
+    return true;
+  } catch (err) {
+    setStatus(String(err), 'warn');
+    return false;
+  }
+}
+
 function shortNodeTitle(label) {
   const txt = String(label || '').trim();
   if (!txt) {
@@ -433,10 +496,23 @@ function resizeRoutingCanvas() {
   const w = Math.max(320, Math.floor(rect.width));
   const h = Math.max(260, Math.floor(rect.height));
 
+  // Keep canvas backing store and CSS size in lockstep to avoid pointer offset drift.
+  if (graphCanvasEl.width !== w) {
+    graphCanvasEl.width = w;
+  }
+  if (graphCanvasEl.height !== h) {
+    graphCanvasEl.height = h;
+  }
   graphCanvasEl.style.width = `${w}px`;
   graphCanvasEl.style.height = `${h}px`;
 
   if (state.graphCanvas.bgcanvas) {
+    if (state.graphCanvas.bgcanvas.width !== w) {
+      state.graphCanvas.bgcanvas.width = w;
+    }
+    if (state.graphCanvas.bgcanvas.height !== h) {
+      state.graphCanvas.bgcanvas.height = h;
+    }
     state.graphCanvas.bgcanvas.style.width = `${w}px`;
     state.graphCanvas.bgcanvas.style.height = `${h}px`;
   }
@@ -579,13 +655,22 @@ function ensureRoutingGraph() {
   state.graph = new window.LGraph();
   const graphRemove = state.graph.remove.bind(state.graph);
   state.graph.remove = (node) => {
-    if (!state.internalGraphMutation && isDeviceNode(node)) {
+    if (!state.internalGraphMutation && isProtectedNode(node)) {
       setStatus('device nodes cannot be deleted', 'warn');
       return;
     }
+
+    if (!state.internalGraphMutation && isEffectNode(node)) {
+      const thingId = normalizeThingId(node?.properties?.thingId);
+      if (thingId) {
+        deleteEffectThing(thingId);
+      }
+      return;
+    }
+
     graphRemove(node);
   };
-  state.graphCanvas = new window.LGraphCanvas(graphCanvasEl, state.graph, { autoresize: true });
+  state.graphCanvas = new window.LGraphCanvas(graphCanvasEl, state.graph, { autoresize: false });
 
   if (!window.LiteGraph.registered_node_types['audiox/thing']) {
     function AudioxThingNode() {
@@ -600,6 +685,36 @@ function ensureRoutingGraph() {
   const thingCtor = window.LiteGraph.registered_node_types['audiox/thing'];
   if (thingCtor) {
     thingCtor.filter = 'audiox-internal';
+  }
+
+  if (!window.LiteGraph.registered_node_types['audiox/effect_gain']) {
+    function AudioxEffectGainNode() {
+      this.size = [220, 80];
+      this.properties = { effectTypeTemplate: 'gain', nodeKind: 'template' };
+      this.title = 'Add Gain Effect';
+      this.addInput('in 1', 'audio');
+      this.addInput('in 2', 'audio');
+      this.addOutput('out 1', 'audio');
+      this.addOutput('out 2', 'audio');
+    }
+    AudioxEffectGainNode.title = 'Gain Effect';
+    AudioxEffectGainNode.filter = 'audiox';
+    window.LiteGraph.registerNodeType('audiox/effect_gain', AudioxEffectGainNode);
+  }
+
+  if (!window.LiteGraph.registered_node_types['audiox/effect_distortion']) {
+    function AudioxEffectDistortionNode() {
+      this.size = [220, 80];
+      this.properties = { effectTypeTemplate: 'distortion', nodeKind: 'template' };
+      this.title = 'Add Distortion Effect';
+      this.addInput('in 1', 'audio');
+      this.addInput('in 2', 'audio');
+      this.addOutput('out 1', 'audio');
+      this.addOutput('out 2', 'audio');
+    }
+    AudioxEffectDistortionNode.title = 'Distortion Effect';
+    AudioxEffectDistortionNode.filter = 'audiox';
+    window.LiteGraph.registerNodeType('audiox/effect_distortion', AudioxEffectDistortionNode);
   }
   state.graphCanvas.background_image = null;
   window.LiteGraph.NODE_DEFAULT_COLOR = '#1f4a62';
@@ -628,14 +743,27 @@ function ensureRoutingGraph() {
   state.graphCanvas.render_curved_connections = true;
   state.graphCanvas.connections_width = 3;
   state.graphCanvas.getNodeMenuOptions = (node) => {
-    if (isDeviceNode(node)) {
+    if (isProtectedNode(node)) {
       return [];
+    }
+    if (isEffectNode(node)) {
+      return [
+        {
+          content: 'Delete Effect',
+          callback: () => {
+            const thingId = normalizeThingId(node?.properties?.thingId);
+            if (thingId) {
+              deleteEffectThing(thingId);
+            }
+          },
+        },
+      ];
     }
     return [
       {
         content: 'Remove Node',
         callback: () => {
-          if (isDeviceNode(node)) {
+          if (isProtectedNode(node)) {
             return;
           }
           state.graph.remove(node);
@@ -668,10 +796,38 @@ function ensureRoutingGraph() {
     state.graphCanvas.setDirty(true, true);
   };
 
-  state.graphCanvas.onNodeAdded = (node) => {
+  state.graph.onNodeAdded = (node) => {
     if (!node) {
       return;
     }
+
+    const templateType = String(node.properties?.effectTypeTemplate || '').trim();
+    if (templateType === 'gain' || templateType === 'distortion') {
+      const pos = Array.isArray(node.pos) ? { x: node.pos[0], y: node.pos[1] } : null;
+      state.internalGraphMutation = true;
+      state.graph.remove(node);
+      state.internalGraphMutation = false;
+
+      createEffectFromTemplate(templateType)
+        .then(async (created) => {
+          const createdId = normalizeThingId(created?.id);
+          await loadRoutingThingsWithOptions({ silent: true, force: true });
+          await loadRoutingFile();
+          if (pos && createdId && isEffectThingId(createdId)) {
+            state.positions[createdId] = { x: pos.x, y: pos.y };
+            rebuildRoutingGraph();
+          }
+          if (effectsManager) {
+            await effectsManager.loadEffects();
+          }
+          setStatus(`${templateType} effect created`, 'ok');
+        })
+        .catch((err) => {
+          setStatus(String(err), 'warn');
+        });
+      return;
+    }
+
     const thingId = normalizeThingId(node.properties?.thingId);
     if (!thingId) {
       return;
@@ -715,7 +871,7 @@ function ensureRoutingGraph() {
     if (!state.edgeDeleteEnabled) {
       return false;
     }
-    if (ev.type !== 'mousedown' || ev.button !== 0) {
+    if (ev.type !== 'mousedown' || ev.button !== 0 || !ev.altKey) {
       return false;
     }
 
@@ -752,11 +908,13 @@ function rebuildRoutingGraph() {
   state.internalGraphMutation = true;
   state.graph.clear();
   state.nodeByThingId.clear();
+  if (effectsManager) {
+    effectsManager.nodeById.clear();
+  }
 
   const known = {
     usb_mic_in: { x: 20, y: 20 },
     soundboard_out: { x: 20, y: 250 },
-    fx_slot_0: { x: 350, y: 120 },
     usb_gadget_out: { x: 680, y: 80 },
   };
 
@@ -767,8 +925,9 @@ function rebuildRoutingGraph() {
     }
     node.title = shortNodeTitle(thing.label);
     node.size = [260, 60];
-    node.properties = { thingId: thing.id, nodeKind: 'device' };
-    node.removable = false;
+    const isEffect = isEffectThingId(thing.id);
+    node.properties = { thingId: thing.id, nodeKind: isEffect ? 'effect' : 'device' };
+    node.removable = isEffect;
     node._baseInputCount = thing.inputs;
     node._inputChannelBySlot = [];
 
@@ -796,6 +955,9 @@ function rebuildRoutingGraph() {
 
     state.graph.add(node);
     state.nodeByThingId.set(thing.id, node);
+    if (isEffect && effectsManager) {
+      effectsManager.registerNode(node);
+    }
   });
 
   state.internalGraphMutation = false;
@@ -901,7 +1063,31 @@ function startRoutingThingsPolling() {
   }
   state.thingsPollTimer = setInterval(() => {
     pollRoutingThingsIfNeeded();
+    pollEffectsIfNeeded();
   }, 1000);
+}
+
+async function pollEffectsIfNeeded() {
+  if (!effectsManager) {
+    return;
+  }
+  if (state.activeTab !== 'routing' && state.activeTab !== 'effects') {
+    return;
+  }
+  if (document.visibilityState && document.visibilityState !== 'visible') {
+    return;
+  }
+  if (state.effectsPollInFlight) {
+    return;
+  }
+
+  state.effectsPollInFlight = true;
+  try {
+    await effectsManager.loadEffects();
+  } catch (_) {
+  } finally {
+    state.effectsPollInFlight = false;
+  }
 }
 
 async function loadRoutingFile() {
@@ -924,6 +1110,9 @@ async function loadRoutingFile() {
     setStatus(`routing load error: ${err}`, 'warn');
   }
 }
+
+window.loadRoutingFile = loadRoutingFile;
+window.loadRoutingThingsWithOptions = loadRoutingThingsWithOptions;
 
 async function reloadRoutingFast() {
   try {
@@ -1833,6 +2022,13 @@ async function initializeGraphFromConfig() {
   await loadMidiActions();
   await loadSamplerConfig();
   await loadRoutingThings();
+  if (effectsManager) {
+    try {
+      await effectsManager.loadEffects();
+    } catch (err) {
+      setStatus(String(err), 'warn');
+    }
+  }
   await loadRoutingFile();
   state.edgeDeleteEnabled = true;
   updateZoomLabel();
@@ -2136,6 +2332,17 @@ window.addEventListener('resize', () => {
   }
 });
 
+if (typeof ResizeObserver === 'function') {
+  const ro = new ResizeObserver(() => {
+    if (!state.graphCanvas) {
+      return;
+    }
+    resizeRoutingCanvas();
+    updateZoomLabel();
+  });
+  ro.observe(graphWrapEl);
+}
+
 document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Delete') {
     if (state.activeTab !== 'routing') {
@@ -2153,8 +2360,15 @@ document.addEventListener('keydown', (ev) => {
     if (!node) {
       return;
     }
-    if (isDeviceNode(node)) {
+    if (isProtectedNode(node)) {
       setStatus('device nodes cannot be deleted', 'warn');
+      return;
+    }
+    if (isEffectNode(node)) {
+      const thingId = normalizeThingId(node?.properties?.thingId);
+      if (thingId) {
+        deleteEffectThing(thingId);
+      }
       return;
     }
     state.graph.remove(node);

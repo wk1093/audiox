@@ -253,6 +253,19 @@ static uint8_t resolveMappedAction(const MidiMapData &data, uint8_t note) {
     return MIDI_ACTION_NONE;
 }
 
+static const char *resolveEffectToggleTarget(const MidiMapData &data, uint8_t note) {
+    uint32_t count = data.effectToggleMappingCount;
+    if (count > MIDI_EFFECT_TOGGLE_MAPPINGS_MAX) {
+        count = MIDI_EFFECT_TOGGLE_MAPPINGS_MAX;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        if (data.effectToggleMappings[i].note == note && data.effectToggleMappings[i].effectId[0]) {
+            return data.effectToggleMappings[i].effectId;
+        }
+    }
+    return NULL;
+}
+
 static void copyBounded(char *dst, size_t dstSz, const char *src) {
     if (!dst || dstSz == 0) {
         return;
@@ -612,6 +625,30 @@ void MidiContext::poll() {
                                    (double)gain);
                         }
                     }
+
+                    uint32_t fxCcCount = cachedMidiMap.effectCcMappingCount;
+                    if (fxCcCount > MIDI_EFFECT_CC_MAPPINGS_MAX) {
+                        fxCcCount = MIDI_EFFECT_CC_MAPPINGS_MAX;
+                    }
+                    for (uint32_t fxi = 0; fxi < fxCcCount; ++fxi) {
+                        const MidiEffectCcMapping &fxMap = cachedMidiMap.effectCcMappings[fxi];
+                        if (fxMap.cc != d0 || !fxMap.effectId[0] || !fxMap.param[0] || !app->audio) {
+                            continue;
+                        }
+
+                        float normalized = (float)d1 / 127.0f;
+                        if (app->audio->setEffectParamNormalized(fxMap.effectId,
+                                                                  fxMap.param,
+                                                                  normalized) == RET_OK) {
+                            printf("[MIDI] CC ch=%u n=%u v=%u -> effect %s.%s=%.3f\n",
+                                   (unsigned)channel,
+                                   (unsigned)d0,
+                                   (unsigned)d1,
+                                   fxMap.effectId,
+                                   fxMap.param,
+                                   (double)normalized);
+                        }
+                    }
                     continue;
                 }
 
@@ -690,6 +727,22 @@ void MidiContext::poll() {
                     heldNote = 255;
                     refreshLightingFromState();
                     printf("[MIDI] NOTE ON n=%u v=%u -> action stop_all\n", (unsigned)d0, (unsigned)d1);
+                    continue;
+                }
+
+                const char *effectToggleId = resolveEffectToggleTarget(cachedMidiMap, d0);
+                if (effectToggleId && app->audio) {
+                    int toggleRc = app->audio->toggleEffectEnabled(effectToggleId);
+                    if (toggleRc == RET_OK) {
+                        printf("[MIDI] NOTE ON n=%u v=%u -> toggled bypass %s\n",
+                               (unsigned)d0,
+                               (unsigned)d1,
+                               effectToggleId);
+                    } else {
+                        printf("[MIDI] [WARN] NOTE ON n=%u -> effect toggle failed for %s\n",
+                               (unsigned)d0,
+                               effectToggleId);
+                    }
                     continue;
                 }
                 if (mappedAction == MIDI_ACTION_SAMPLER_TOGGLE) {

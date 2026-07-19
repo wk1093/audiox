@@ -74,6 +74,7 @@
       this.lastNoteSeq = 0;
       this.paramUpdateTimers = new Map();
       this.mutationInFlight = 0;
+      this.loadEpoch = 0;
     }
 
     mountPanel(panelEl, statusEl) {
@@ -214,6 +215,7 @@
     }
 
     async loadEffects() {
+      const myEpoch = this.loadEpoch;
       const res = await fetch('/api/effects', { method: 'GET' });
       const txt = await res.text();
       if (!res.ok) {
@@ -226,6 +228,11 @@
         const id = normalizeEffectId(fx?.id);
         if (!id) continue;
         this.effectsById.set(id, fx);
+      }
+      // Skip updating nodes if a mutation started while we were fetching;
+      // the mutation's own loadEffects call will apply the correct state.
+      if (myEpoch !== this.loadEpoch) {
+        return;
       }
       this.refreshAllNodes();
       this.renderPanel();
@@ -270,6 +277,7 @@
     }
 
     async setEnabled(effectId, enabled) {
+      this.loadEpoch++;
       this.mutationInFlight++;
       try {
         await this.postSet({ id: effectId, enabled: enabled ? 1 : 0 });
@@ -281,6 +289,7 @@
     }
 
     async setType(effectId, type) {
+      this.loadEpoch++;
       this.mutationInFlight++;
       try {
         await this.postSet({ id: effectId, type });

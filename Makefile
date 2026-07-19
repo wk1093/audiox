@@ -1,5 +1,4 @@
 CC = aarch64-linux-gnu-gcc
-CFLAGS = -static -O2 -Wall -Wextra -Werror -Wno-error=format-truncation -pthread -std=gnu11
 CXX = aarch64-linux-gnu-g++
 CXXFLAGS = -static -O3 -Iinclude -Wall -Wextra -Werror -Wno-error=format-truncation -Wno-error=unused-parameter -pthread -fno-exceptions -fno-rtti -std=c++17
 LIBS = -lm -pthread
@@ -43,7 +42,7 @@ endif
 # Version information
 AUDIOX_VERSION_MAJOR = 1
 AUDIOX_VERSION_MINOR = 2
-AUDIOX_VERSION_PATCH = 0
+AUDIOX_VERSION_PATCH = 2
 
 # Auto-detected from firmware after fetch_deps runs.
 KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")
@@ -60,6 +59,9 @@ PROGRAM_STAGE_DIR = $(OUT_DIR)/program_stage
 INITRAMFS = $(OUT_DIR)/initramfs.cpio.gz
 PROGRAM_INITRAMFS = $(OUT_DIR)/program.cpio.gz
 COMBINED_INITRAMFS = $(OUT_DIR)/combined-initramfs.cpio.gz
+OBJ_DIR = $(OUT_DIR)/obj
+RUNTIME_OBJ_DIR = $(OBJ_DIR)/runtime
+BOOTLOADER_OBJ_DIR = $(OBJ_DIR)/bootloader
 MODULE_LOAD_LIST = $(OUT_DIR)/module-load.list
 MODULE_LOAD_BASE_LIST = $(OUT_DIR)/module-load.base.list
 MODULE_LOAD_NORMAL_LIST = $(OUT_DIR)/module-load.normal.list
@@ -82,7 +84,23 @@ SD_MOUNT_BOOT ?= /run/media/$(USER)/bootfs
 IMG_FILE = $(OUT_DIR)/audiox.img
 IMG_SIZE_MB = 128
 
-.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev FORCE alsa alsa_source show_alsa
+DEPFLAGS = -MMD -MP
+
+RUNTIME_DEFINES = \
+	-DKERNEL_VERSION='"$(KV)"' \
+	-DAUDIOX_VERSION_MAJOR=$(AUDIOX_VERSION_MAJOR) \
+	-DAUDIOX_VERSION_MINOR=$(AUDIOX_VERSION_MINOR) \
+	-DAUDIOX_VERSION_PATCH=$(AUDIOX_VERSION_PATCH) \
+	-DDEBUG_SHELL=$(DEBUG_SHELL)
+
+BOOTLOADER_DEFINES = -DKERNEL_VERSION='"$(KV)"'
+
+RUNTIME_OBJS := $(patsubst src/%.cpp,$(RUNTIME_OBJ_DIR)/%.o,$(RUNTIME_CPP_SRCS))
+BOOTLOADER_OBJS := $(patsubst src/%.cpp,$(BOOTLOADER_OBJ_DIR)/%.o,$(BOOTLOADER_SRCS))
+RUNTIME_DEPS_FILES := $(RUNTIME_OBJS:.o=.d)
+BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
+
+.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa
 
 all: initramfs
 
@@ -156,23 +174,25 @@ alsa_source:
 	@echo "ALSA static lib ready: $(ALSA_STATIC_LIB)"
 
 
-$(BOOTLOADER_ROOTFS_DIR)/init: FORCE $(BOOTLOADER_SRCS)
+$(BOOTLOADER_OBJ_DIR)/%.o: src/%.cpp
+	@mkdir -p $(dir $@)
+	$(BOOTLOADER_COMPILER) $(BOOTLOADER_FLAGS) $(BOOTLOADER_DEFINES) $(DEPFLAGS) -c -o $@ $<
+
+$(RUNTIME_OBJ_DIR)/%.o: src/%.cpp
+	@mkdir -p $(dir $@)
+	$(RUNTIME_COMPILER) $(RUNTIME_FLAGS) $(RUNTIME_DEFINES) $(DEPFLAGS) -c -o $@ $<
+
+$(BOOTLOADER_ROOTFS_DIR)/init: $(BOOTLOADER_OBJS)
 	@echo "Compiling bootloader init..."
 	mkdir -p $(BOOTLOADER_ROOTFS_DIR)
 	$(BOOTLOADER_COMPILER) $(BOOTLOADER_FLAGS) \
-		-DKERNEL_VERSION='"$(KV)"' \
-		-o $(BOOTLOADER_ROOTFS_DIR)/init $(BOOTLOADER_SRCS) $(LIBS)
+		-o $(BOOTLOADER_ROOTFS_DIR)/init $(BOOTLOADER_OBJS) $(LIBS)
 
-$(ROOTFS_DIR)/init: fetch_deps FORCE $(RUNTIME_DEPS) $(RUNTIME_SRCS)
+$(ROOTFS_DIR)/init: $(RUNTIME_DEPS) $(RUNTIME_OBJS)
 	@echo "Compiling runtime init..."
 	mkdir -p $(ROOTFS_DIR)
 	$(RUNTIME_COMPILER) $(RUNTIME_FLAGS) \
-		-DKERNEL_VERSION='"$(KV)"' \
-		-DAUDIOX_VERSION_MAJOR=$(AUDIOX_VERSION_MAJOR) \
-		-DAUDIOX_VERSION_MINOR=$(AUDIOX_VERSION_MINOR) \
-		-DAUDIOX_VERSION_PATCH=$(AUDIOX_VERSION_PATCH) \
-		-DDEBUG_SHELL=$(DEBUG_SHELL) \
-		-o $(ROOTFS_DIR)/init $(RUNTIME_SRCS) $(RUNTIME_LIBS)
+		-o $(ROOTFS_DIR)/init $(RUNTIME_OBJS) $(RUNTIME_LIBS)
 
 bootloader_rootfs: $(BOOTLOADER_ROOTFS_DIR)/init $(BOOT_MODULE_LOAD_LIST) $(BOOT_MODULE_LOAD_BASE_LIST)
 	@echo "Creating bootloader rootfs structure..."
@@ -307,3 +327,5 @@ image: initramfs
 
 clean:
 	rm -rf $(OUT_DIR)
+
+-include $(RUNTIME_DEPS_FILES) $(BOOTLOADER_DEPS_FILES)

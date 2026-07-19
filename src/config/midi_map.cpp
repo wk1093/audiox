@@ -82,7 +82,8 @@ static int parseSoundLightLine(const char *value,
     char buf[320];
     copyBounded(buf, sizeof(buf), value);
 
-    // format: sfxpath,mapped_vel,held_vel,playing_vel
+    // format: sfxpath,mapped_vel,playing_vel
+    // legacy format accepted: sfxpath,mapped_vel,held_vel,playing_vel
     char *p = buf;
     char *sfxEnd = strchr(p, ',');
     if (!sfxEnd) {
@@ -126,19 +127,23 @@ static int parseSoundLightLine(const char *value,
     };
 
     int mVel = nextField(NULL);
-    int hVel = nextField(NULL);
-    int pVel = nextField(NULL);
-    if (mVel < 0 || hVel < 0 || pVel < 0) {
+    int second = nextField(NULL);
+    int third = nextField(NULL);
+    if (mVel < 0 || second < 0) {
         return RET_ERR;
+    }
+
+    int pVel = second;
+    if (third >= 0) {
+        // Legacy 4-field format: third value is playing velocity.
+        pVel = third;
     }
 
     MidiSoundLight *sl = &out[*count_in_out];
     copyBounded(sl->sfxPath, MIDI_SFX_PATH_MAX, sfxPath);
     sl->hasMapped = 1;
-    sl->hasHeld = 1;
     sl->hasPlaying = 1;
     sl->mappedVel = (uint8_t)mVel;
-    sl->heldVel = (uint8_t)hVel;
     sl->playingVel = (uint8_t)pVel;
     ++(*count_in_out);
     return RET_OK;
@@ -272,15 +277,21 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             if (v >= 0 && v <= 127) {
                 data.globalLight.mappedVel = (uint8_t)v;
             }
-        } else if (strcmp(key, "light_held_vel") == 0) {
-            long v = strtol(value, NULL, 10);
-            if (v >= 0 && v <= 127) {
-                data.globalLight.heldVel = (uint8_t)v;
-            }
         } else if (strcmp(key, "light_playing_vel") == 0) {
             long v = strtol(value, NULL, 10);
             if (v >= 0 && v <= 127) {
                 data.globalLight.playingVel = (uint8_t)v;
+            }
+        } else if (strcmp(key, "light_stop_all_vel") == 0) {
+            long v = strtol(value, NULL, 10);
+            if (v >= 0 && v <= 127) {
+                data.globalLight.stopAllVel = (uint8_t)v;
+            }
+        } else if (strcmp(key, "light_held_vel") == 0) {
+            // Legacy key: if present, treat it as stop-all color during migration.
+            long v = strtol(value, NULL, 10);
+            if (v >= 0 && v <= 127) {
+                data.globalLight.stopAllVel = (uint8_t)v;
             }
         } else if (strcmp(key, "sound_light") == 0) {
             (void)parseSoundLightLine(value, data.soundLights, &data.soundLightCount);
@@ -368,24 +379,23 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
     dprintf(fd, "# lighting config (velocities 0-127; channel 0-15)\n");
     dprintf(fd, "light_channel=%u\n", (unsigned)data->globalLight.channel);
     dprintf(fd, "light_mapped_vel=%u\n", (unsigned)data->globalLight.mappedVel);
-    dprintf(fd, "light_held_vel=%u\n", (unsigned)data->globalLight.heldVel);
     dprintf(fd, "light_playing_vel=%u\n", (unsigned)data->globalLight.playingVel);
+    dprintf(fd, "light_stop_all_vel=%u\n", (unsigned)data->globalLight.stopAllVel);
 
     uint32_t slCount = data->soundLightCount;
     if (slCount > MIDI_SOUND_LIGHTS_MAX) {
         slCount = MIDI_SOUND_LIGHTS_MAX;
     }
     if (slCount > 0) {
-        dprintf(fd, "# per-sound lighting overrides: sfx,mapped_vel,held_vel,playing_vel\n");
+        dprintf(fd, "# per-sound lighting overrides: sfx,mapped_vel,playing_vel\n");
         for (uint32_t i = 0; i < slCount; ++i) {
             if (!data->soundLights[i].sfxPath[0]) {
                 continue;
             }
             dprintf(fd,
-                    "sound_light=%s,%u,%u,%u\n",
+                    "sound_light=%s,%u,%u\n",
                     data->soundLights[i].sfxPath,
                     (unsigned)data->soundLights[i].mappedVel,
-                    (unsigned)data->soundLights[i].heldVel,
                     (unsigned)data->soundLights[i].playingVel);
         }
     }

@@ -16,6 +16,8 @@
 #define AUDIO_GRAPH_MAX_THINGS 64
 #define AUDIO_GRAPH_MAX_EDGES 128
 #define AUDIO_SFX_MAX_FRAMES (SAMPLE_RATE * 8)
+#define AUDIO_SFX_SLOT_COUNT 64
+#define AUDIO_SFX_QUEUE_CAP 128
 
 struct AudioGraphThingInfo {
     char id[64];
@@ -110,10 +112,18 @@ struct AudioRegistry {
 };
 
 struct AudioSfxClipSlot {
+    uint8_t loaded;
+    char name[MIDI_SFX_PATH_MAX];
     uint32_t frames;
     uint32_t sampleRate;
     uint8_t channels;
-    int16_t pcm[AUDIO_SFX_MAX_FRAMES * 2];
+    uint32_t sampleCount;
+    int16_t *pcm;
+};
+
+struct AudioSfxTriggerEvent {
+    uint8_t slotIndex;
+    uint8_t holdStart;
 };
 
 struct AudioContext {
@@ -127,12 +137,16 @@ struct AudioContext {
     uint64_t nextHotplugScanMs;
     AudioHandle nextHandle;
     uint32_t deviceGeneration;
-    std::atomic<uint32_t> pendingSfxTriggers;
-    std::atomic<uint32_t> pendingSfxHoldStarts;
     std::atomic<uint32_t> pendingSfxHoldStops;
     std::atomic<uint32_t> pendingSfxStopAll;
-    AudioSfxClipSlot sfxSlots[2];
-    std::atomic<uint32_t> sfxActiveSlot;
+    AudioSfxClipSlot sfxSlots[AUDIO_SFX_SLOT_COUNT];
+    std::atomic<uint32_t> sfxSlotRefs[AUDIO_SFX_SLOT_COUNT];
+    AudioSfxTriggerEvent sfxQueue[AUDIO_SFX_QUEUE_CAP];
+    std::atomic<uint32_t> sfxQueueWrite;
+    std::atomic<uint32_t> sfxQueueRead;
+    std::atomic<uint32_t> sfxQueueDropped;
+    mutable std::mutex sfxQueueMutex;
+    mutable std::mutex sfxBankMutex;
     std::atomic<uint8_t> soundboardMode;
 
     // Soundboard play-state tracking for MIDI lighting.
@@ -143,6 +157,10 @@ struct AudioContext {
     std::atomic<uint32_t> sfxTriggerSeq;
     char sfxLastTriggeredBasename[256];
     mutable std::mutex sfxNameMutex;
+    std::atomic<uint32_t> sfxPlayingSeq;
+    uint32_t sfxPlayingCount;
+    char sfxPlayingBasenames[AUDIO_SFX_SLOT_COUNT][MIDI_SFX_PATH_MAX];
+    mutable std::mutex sfxPlayingMutex;
 
     std::unordered_map<std::string, AudioHandle> pathToHandle;
     std::unordered_map<AudioHandle, AudioDeviceInfo> devices;
@@ -159,6 +177,8 @@ struct AudioContext {
     int setupThreads() WARN_UNUSED;
     int triggerSfx(const char *sfxPath) WARN_UNUSED;
     int startHeldSfx(const char *sfxPath) WARN_UNUSED;
+    int reloadSfxBank() WARN_UNUSED;
+    uint32_t loadedSfxCount() const;
     void stopHeldSfx();
     void stopAllSfx();
     void setSoundboardMode(uint8_t mode);

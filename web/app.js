@@ -1180,7 +1180,14 @@ function sanitizeSfxName(name) {
   const raw = String(name || '').trim();
   if (!raw) return '';
   const base = raw.split('/').pop().split('\\').pop();
-  return base.replace(/[^a-zA-Z0-9._-]/g, '_');
+  let clean = base.replace(/[^a-zA-Z0-9._-]/g, '_');
+  if (!clean) {
+    return '';
+  }
+  if (!/\.wav$/i.test(clean)) {
+    clean = `${clean}.wav`;
+  }
+  return clean;
 }
 
 async function listSfxFiles() {
@@ -1206,6 +1213,30 @@ async function listSfxFiles() {
     return files;
   } catch (err) {
     return [];
+  }
+}
+
+async function reloadSoundboardBank() {
+  try {
+    const res = await fetch('/api/soundboard/reload', { method: 'POST' });
+    const txt = await res.text();
+    if (!res.ok) {
+      setStatus(`soundboard reload failed: ${res.status} ${txt.trim()}`, 'warn');
+      return false;
+    }
+
+    try {
+      const data = JSON.parse(txt);
+      const loaded = Number(data?.loaded || 0);
+      const max = Number(data?.max || 0);
+      setStatus(`soundboard cache loaded ${loaded}/${max}`, 'ok');
+    } catch (_) {
+      setStatus('soundboard cache reloaded', 'ok');
+    }
+    return true;
+  } catch (err) {
+    setStatus(`soundboard reload error: ${err}`, 'warn');
+    return false;
   }
 }
 
@@ -1342,6 +1373,27 @@ function renderSoundboardGrid() {
     delBtn.addEventListener('click', () => deleteSfxFile(file));
     actionsEl.appendChild(delBtn);
 
+    const replaceInput = document.createElement('input');
+    replaceInput.type = 'file';
+    replaceInput.accept = 'audio/*';
+    replaceInput.style.display = 'none';
+    replaceInput.addEventListener('change', async () => {
+      const selected = replaceInput.files && replaceInput.files[0] ? replaceInput.files[0] : null;
+      if (!selected) {
+        return;
+      }
+      await replaceSfxFile(file, selected);
+      replaceInput.value = '';
+    });
+
+    const replaceBtn = document.createElement('button');
+    replaceBtn.textContent = 'Replace';
+    replaceBtn.addEventListener('click', () => {
+      replaceInput.click();
+    });
+    actionsEl.appendChild(replaceBtn);
+    actionsEl.appendChild(replaceInput);
+
     card.appendChild(nameEl);
     card.appendChild(midiEl);
     card.appendChild(actionsEl);
@@ -1361,10 +1413,38 @@ async function deleteSfxFile(filename) {
       return;
     }
     await listSfxFiles();
+    await reloadSoundboardBank();
     await loadMappings();
     setStatus(`deleted ${filename}`, 'ok');
   } catch (err) {
     setStatus(`delete error: ${err}`, 'warn');
+  }
+}
+
+async function replaceSfxFile(filename, fileObj) {
+  if (!filename || !fileObj) {
+    return;
+  }
+
+  setStatus(`replacing ${filename}...`);
+  try {
+    const buf = await fileObj.arrayBuffer();
+    const res = await fetch(`/api/rootfs/sfx/${encodeURIComponent(filename)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: buf,
+    });
+    const txt = (await res.text()).trim();
+    if (!res.ok) {
+      setStatus(`replace failed: ${res.status} ${txt}`, 'warn');
+      return;
+    }
+
+    await reloadSoundboardBank();
+    await listSfxFiles();
+    setStatus(`replaced ${filename}`, 'ok');
+  } catch (err) {
+    setStatus(`replace error: ${err}`, 'warn');
   }
 }
 
@@ -1382,7 +1462,7 @@ async function uploadSfxFile() {
     return;
   }
 
-  setStatus(`uploading ${targetName}...`);
+  setStatus(`uploading ${targetName} (streaming)...`);
   try {
     const buf = await file.arrayBuffer();
     const res = await fetch(`/api/rootfs/sfx/${targetName}`, {
@@ -1397,6 +1477,7 @@ async function uploadSfxFile() {
     }
 
     await listSfxFiles();
+    await reloadSoundboardBank();
     setStatus(`uploaded ${targetName}`, 'ok');
   } catch (err) {
     setStatus(`upload error: ${err}`, 'warn');
@@ -1716,6 +1797,7 @@ document.getElementById('btn-upload-clear').addEventListener('click', () => {
 });
 
 document.getElementById('btn-sb-refresh').addEventListener('click', async () => {
+  await reloadSoundboardBank();
   await listSfxFiles();
   await loadMappings();
   await loadMidiActions();
@@ -1777,7 +1859,7 @@ async function loadLightConfig() {
     const data = JSON.parse(await res.text());
     document.getElementById('light_channel').value = String(data.channel ?? 0);
     document.getElementById('light_mapped_vel').value = String(data.mapped_vel ?? 0);
-    document.getElementById('light_held_vel').value = String(data.held_vel ?? 0);
+    document.getElementById('light_stop_all_vel').value = String(data.stop_all_vel ?? 0);
     document.getElementById('light_playing_vel').value = String(data.playing_vel ?? 0);
   } catch (err) {}
 }
@@ -1785,12 +1867,12 @@ async function loadLightConfig() {
 async function saveLightConfig() {
   const channel = Number(document.getElementById('light_channel').value) || 0;
   const mappedVel = Number(document.getElementById('light_mapped_vel').value) || 0;
-  const heldVel = Number(document.getElementById('light_held_vel').value) || 0;
+  const stopAllVel = Number(document.getElementById('light_stop_all_vel').value) || 0;
   const playingVel = Number(document.getElementById('light_playing_vel').value) || 0;
 
   setStatus('saving lighting config...');
   try {
-    const body = `channel=${channel}&mapped_vel=${mappedVel}&held_vel=${heldVel}&playing_vel=${playingVel}`;
+    const body = `channel=${channel}&mapped_vel=${mappedVel}&playing_vel=${playingVel}&stop_all_vel=${stopAllVel}`;
     const res = await fetch('/api/midi/light_config', {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },

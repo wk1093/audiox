@@ -19,6 +19,12 @@ namespace {
 constexpr uint64_t kProbeIntervalMs = 1200;
 constexpr uint64_t kMidiMapReloadIntervalMs = 1000;
 
+enum LightStateKind : uint8_t {
+    LIGHT_STATE_MAPPED = 0,
+    LIGHT_STATE_PLAYING = 1,
+    LIGHT_STATE_STOP_ALL = 2,
+};
+
 struct MidiCandidate {
     char path[256];
     int cardIndex;
@@ -259,6 +265,57 @@ static void copyBounded(char *dst, size_t dstSz, const char *src) {
     dst[n] = '\0';
 }
 
+static uint8_t resolveLightVelocity(const MidiMapData &data,
+                                    const char *sfxPath,
+                                    uint8_t stateKind) {
+    const MidiLightGlobal &gl = data.globalLight;
+    uint8_t fallback = gl.mappedVel;
+    if (stateKind == LIGHT_STATE_PLAYING) {
+        fallback = gl.playingVel;
+    } else if (stateKind == LIGHT_STATE_STOP_ALL) {
+        fallback = gl.stopAllVel;
+    }
+
+    if (!sfxPath || !sfxPath[0]) {
+        return fallback;
+    }
+
+    uint32_t count = data.soundLightCount;
+    if (count > MIDI_SOUND_LIGHTS_MAX) {
+        count = MIDI_SOUND_LIGHTS_MAX;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        if (strcmp(data.soundLights[i].sfxPath, sfxPath) != 0) {
+            continue;
+        }
+        if (stateKind == LIGHT_STATE_MAPPED && data.soundLights[i].hasMapped) {
+            return data.soundLights[i].mappedVel;
+        }
+        if (stateKind == LIGHT_STATE_PLAYING && data.soundLights[i].hasPlaying) {
+            return data.soundLights[i].playingVel;
+        }
+        return fallback;
+    }
+
+    return fallback;
+}
+
+static int sfxInPlayingList(const MidiContext *midi, const char *sfxPath) {
+    if (!midi || !sfxPath || !sfxPath[0]) {
+        return 0;
+    }
+    uint32_t count = midi->cachedPlayingCount;
+    if (count > MIDI_MAPPINGS_MAX) {
+        count = MIDI_MAPPINGS_MAX;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        if (strcmp(midi->cachedPlayingSfx[i], sfxPath) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 } // namespace
 
 MidiContext::MidiContext(Audiox *context)
@@ -276,9 +333,10 @@ MidiContext::MidiContext(Audiox *context)
       lastVelocity(0),
       cachedMidiMap(),
       nextMidiMapReloadMs(0),
-      currentLitNote(255),
-      sfxWasPlaying(0),
-            cachedTriggerSeq(0),
+      cachedPlayingSeq(0),
+      cachedPlayingCount(0),
+      cachedPlayingSfx(),
+      ledStateByNote(),
             heldNote(255),
             holdActive(0) {
     if (app) {
@@ -286,6 +344,9 @@ MidiContext::MidiContext(Audiox *context)
         if (app->config) {
             cachedMidiMap = app->config->readMidiMapFile();
         }
+    }
+    for (int i = 0; i < 128; ++i) {
+        ledStateByNote[i] = 255;
     }
 }
 
@@ -303,9 +364,11 @@ void MidiContext::disconnect() {
     dataHave = 0;
     dataNeed = 0;
     devPath[0] = '\0';
-    currentLitNote = 255;
     heldNote = 255;
     holdActive = 0;
+    for (int i = 0; i < 128; ++i) {
+        ledStateByNote[i] = 255;
+    }
 }
 
 void MidiContext::sendRawMidi(uint8_t b0, uint8_t b1, uint8_t b2) {
@@ -330,99 +393,65 @@ void MidiContext::refreshAllLighting() {
     if (fd < 0 || !connected) {
         return;
     }
-    const MidiLightGlobal &gl = cachedMidiMap.globalLight;
-    uint32_t count = cachedMidiMap.mappingCount;
-    if (count > MIDI_MAPPINGS_MAX) {
-        count = MIDI_MAPPINGS_MAX;
+    for (int i = 0; i < 128; ++i) {
+        ledStateByNote[i] = 255;
     }
-    if (count == 0) {
-        return;
-    }
-    for (uint32_t i = 0; i < count; ++i) {
-        uint8_t note = cachedMidiMap.mappings[i].note;
-        if (note == currentLitNote) {
-            // This note is currently in playing state; don't clobber it.
-            continue;
-        }
-        // Check per-sound override first, then fall back to global mappedVel.
-        uint8_t vel = gl.mappedVel;
-        const char *sfx = cachedMidiMap.mappings[i].sfxPath;
-        for (uint32_t j = 0; j < cachedMidiMap.soundLightCount; ++j) {
-            if (strcmp(cachedMidiMap.soundLights[j].sfxPath, sfx) == 0 &&
-                cachedMidiMap.soundLights[j].hasMapped) {
-                vel = cachedMidiMap.soundLights[j].mappedVel;
-                break;
-            }
-        }
-        sendLightNote(note, gl.channel, vel);
-    }
+    refreshLightingFromState();
 }
 
-void MidiContext::notifySoundStarted(const char *sfxBasename) {
-    if (!sfxBasename || !sfxBasename[0]) {
+void MidiContext::refreshLightingFromState() {
+    if (fd < 0 || !connected) {
         return;
     }
-    const MidiLightGlobal &gl = cachedMidiMap.globalLight;
-    // Find the MIDI note for this sound.
-    uint32_t count = cachedMidiMap.mappingCount;
-    if (count > MIDI_MAPPINGS_MAX) {
-        count = MIDI_MAPPINGS_MAX;
-    }
-    for (uint32_t i = 0; i < count; ++i) {
-        if (strcmp(cachedMidiMap.mappings[i].sfxPath, sfxBasename) != 0) {
-            continue;
-        }
-        uint8_t note = cachedMidiMap.mappings[i].note;
-        uint8_t vel = gl.playingVel;
-        for (uint32_t j = 0; j < cachedMidiMap.soundLightCount; ++j) {
-            if (strcmp(cachedMidiMap.soundLights[j].sfxPath, sfxBasename) == 0 &&
-                cachedMidiMap.soundLights[j].hasPlaying) {
-                vel = cachedMidiMap.soundLights[j].playingVel;
-                break;
-            }
-        }
-        // Return previously playing note to mapped state if different.
-        if (currentLitNote != 255 && currentLitNote != note) {
-            uint8_t prevVel = gl.mappedVel;
-            sendLightNote(currentLitNote, gl.channel, prevVel);
-        }
-        currentLitNote = note;
-        sendLightNote(note, gl.channel, vel);
-        printf("[MIDI] LIGHT play note=%u vel=%u sfx=%s\n",
-               (unsigned)note, (unsigned)vel, sfxBasename);
-        return;
-    }
-    printf("[MIDI] LIGHT no mapping for sfx=%s (mappingCount=%u)\n",
-           sfxBasename, (unsigned)count);
-}
 
-void MidiContext::notifySoundStopped() {
-    if (currentLitNote == 255) {
-        return;
-    }
     const MidiLightGlobal &gl = cachedMidiMap.globalLight;
-    uint8_t vel = gl.mappedVel;
+    uint8_t desired[128];
+    memset(desired, 0, sizeof(desired));
+
     uint32_t count = cachedMidiMap.mappingCount;
     if (count > MIDI_MAPPINGS_MAX) {
         count = MIDI_MAPPINGS_MAX;
     }
+
     for (uint32_t i = 0; i < count; ++i) {
-        if (cachedMidiMap.mappings[i].note != currentLitNote) {
+        const MidiMapData::MidiMapping &m = cachedMidiMap.mappings[i];
+        if (!m.sfxPath[0]) {
             continue;
         }
-        const char *sfx = cachedMidiMap.mappings[i].sfxPath;
-        for (uint32_t j = 0; j < cachedMidiMap.soundLightCount; ++j) {
-            if (strcmp(cachedMidiMap.soundLights[j].sfxPath, sfx) == 0 &&
-                cachedMidiMap.soundLights[j].hasMapped) {
-                vel = cachedMidiMap.soundLights[j].mappedVel;
-                break;
-            }
+        uint8_t note = m.note & 0x7Fu;
+
+        uint8_t stateKind = LIGHT_STATE_MAPPED;
+        uint8_t mode = resolveSoundMode(cachedMidiMap, m.sfxPath);
+        if (mode == SOUNDBOARD_MODE_HOLD && holdActive && heldNote == note) {
+            stateKind = LIGHT_STATE_PLAYING;
+        } else if (sfxInPlayingList(this, m.sfxPath)) {
+            stateKind = LIGHT_STATE_PLAYING;
         }
-        break;
+
+        desired[note] = resolveLightVelocity(cachedMidiMap, m.sfxPath, stateKind);
     }
-    printf("[MIDI] LIGHT stop note=%u vel=%u\n", (unsigned)currentLitNote, (unsigned)vel);
-    sendLightNote(currentLitNote, gl.channel, vel);
-    currentLitNote = 255;
+
+    uint32_t actionCount = cachedMidiMap.actionMappingCount;
+    if (actionCount > MIDI_ACTION_MAPPINGS_MAX) {
+        actionCount = MIDI_ACTION_MAPPINGS_MAX;
+    }
+    for (uint32_t i = 0; i < actionCount; ++i) {
+        const MidiActionMapping &a = cachedMidiMap.actionMappings[i];
+        if (a.action != MIDI_ACTION_STOP_ALL) {
+            continue;
+        }
+        uint8_t note = a.note & 0x7Fu;
+        desired[note] = resolveLightVelocity(cachedMidiMap, NULL, LIGHT_STATE_STOP_ALL);
+    }
+
+    for (int note = 0; note < 128; ++note) {
+        uint8_t target = desired[note];
+        if (ledStateByNote[note] == target) {
+            continue;
+        }
+        sendLightNote((uint8_t)note, gl.channel, target);
+        ledStateByNote[note] = target;
+    }
 }
 
 void MidiContext::poll() {
@@ -434,32 +463,28 @@ void MidiContext::poll() {
     if (now >= nextMidiMapReloadMs) {
         cachedMidiMap = app->config->readMidiMapFile();
         nextMidiMapReloadMs = now + kMidiMapReloadIntervalMs;
+        refreshLightingFromState();
     }
 
-    // Check for MIDI lighting state changes from the audio subsystem.
     if (app->audio) {
-        uint32_t trigSeq = app->audio->sfxTriggerSeq.load(std::memory_order_acquire);
-        int nowPlaying = app->audio->sfxIsPlaying.load(std::memory_order_acquire);
-
-        if (trigSeq != cachedTriggerSeq) {
-            cachedTriggerSeq = trigSeq;
-            char basename[256] = {};
+        uint32_t playingSeq = app->audio->sfxPlayingSeq.load(std::memory_order_acquire);
+        if (playingSeq != cachedPlayingSeq) {
+            cachedPlayingSeq = playingSeq;
             {
-                std::lock_guard<std::mutex> lock(app->audio->sfxNameMutex);
-                size_t n = strnlen(app->audio->sfxLastTriggeredBasename,
-                                   sizeof(app->audio->sfxLastTriggeredBasename) - 1);
-                memcpy(basename, app->audio->sfxLastTriggeredBasename, n);
-                basename[n] = '\0';
+                std::lock_guard<std::mutex> lock(app->audio->sfxPlayingMutex);
+                cachedPlayingCount = app->audio->sfxPlayingCount;
+                if (cachedPlayingCount > MIDI_MAPPINGS_MAX) {
+                    cachedPlayingCount = MIDI_MAPPINGS_MAX;
+                }
+                memset(cachedPlayingSfx, 0, sizeof(cachedPlayingSfx));
+                for (uint32_t i = 0; i < cachedPlayingCount; ++i) {
+                    size_t n = strnlen(app->audio->sfxPlayingBasenames[i], MIDI_SFX_PATH_MAX - 1);
+                    memcpy(cachedPlayingSfx[i], app->audio->sfxPlayingBasenames[i], n);
+                    cachedPlayingSfx[i][n] = '\0';
+                }
             }
-            notifySoundStarted(basename);
-            // Force sfxWasPlaying=1 so if the clip ends before the next poll,
-            // notifySoundStopped is still called to restore the LED.
-            sfxWasPlaying = 1;
-        } else if (sfxWasPlaying && !nowPlaying) {
-            notifySoundStopped();
+            refreshLightingFromState();
         }
-
-        sfxWasPlaying = nowPlaying;
     }
 
     if (fd < 0) {
@@ -557,6 +582,7 @@ void MidiContext::poll() {
                         app->audio->stopHeldSfx();
                         holdActive = 0;
                         heldNote = 255;
+                        refreshLightingFromState();
                         printf("[MIDI] NOTE OFF status=0x%02X n=%u v=%u -> hold release\n",
                                (unsigned)status,
                                (unsigned)d0,
@@ -583,6 +609,7 @@ void MidiContext::poll() {
                     }
                     holdActive = 0;
                     heldNote = 255;
+                    refreshLightingFromState();
                     printf("[MIDI] NOTE ON n=%u v=%u -> action stop_all\n", (unsigned)d0, (unsigned)d1);
                     continue;
                 }
@@ -631,6 +658,7 @@ void MidiContext::poll() {
                     if (triggerRc == RET_OK) {
                         holdActive = 1;
                         heldNote = d0;
+                        refreshLightingFromState();
                         printf("[MIDI] NOTE ON n=%u v=%u -> hold %s\n", (unsigned)d0, (unsigned)d1, sfxPath);
                     }
                 } else {

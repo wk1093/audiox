@@ -28,6 +28,7 @@
 #define HTTP_SOUNDBOARD_MODE_PATH HTTP_API_PREFIX "soundboard/mode"
 #define HTTP_SOUNDBOARD_MODES_PATH HTTP_API_PREFIX "soundboard/modes"
 #define HTTP_SOUNDBOARD_MODE_SET_PATH HTTP_API_PREFIX "soundboard/mode/set"
+#define HTTP_SOUNDBOARD_RELOAD_PATH HTTP_API_PREFIX "soundboard/reload"
 #define HTTP_CONFIG_RELOAD_PATH HTTP_API_PREFIX "config/reload"
 #define HTTP_ROUTING_RELOAD_PATH HTTP_API_PREFIX "routing/reload"
 #define HTTP_ROUTING_THINGS_PATH HTTP_API_PREFIX "routing/things"
@@ -435,6 +436,49 @@ static int handleSoundboardStopAll(HttpServer *server,
 	server->app->audio->stopAllSfx();
 	static const char ok[] = "ok\n";
 	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
+}
+
+static int handleSoundboardReload(HttpServer *server,
+								 int cfd,
+								 const char *method,
+								 const char *path) {
+	(void)path;
+	if (!server || !server->app || !method) {
+		return -1;
+	}
+
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	if (!server->app->audio) {
+		static const char err[] = "audio subsystem unavailable\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	int rc = server->app->audio->reloadSfxBank();
+	uint32_t loaded = server->app->audio->loadedSfxCount();
+	char out[128];
+	int n = snprintf(out,
+					 sizeof(out),
+					 "{\"ok\":%s,\"loaded\":%u,\"max\":%u}\n",
+					 (rc == RET_ERR) ? "false" : "true",
+					 (unsigned)loaded,
+					 (unsigned)AUDIO_SFX_SLOT_COUNT);
+	if (n < 0) {
+		n = 0;
+	}
+	if ((size_t)n >= sizeof(out)) {
+		n = (int)(sizeof(out) - 1);
+	}
+
+	if (rc == RET_ERR) {
+		return server->sendResponse(cfd, "500 Internal Server Error", "application/json; charset=utf-8", out, (size_t)n);
+	}
+	if (rc == RET_WARN) {
+		return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
 }
 
 static int handleSoundboardMode(HttpServer *server,
@@ -1607,11 +1651,11 @@ static int handleMidiLightConfig(HttpServer *server,
 		MidiMapData data = server->app->config->readMidiMapFile();
 		char out[256];
 		int n = snprintf(out, sizeof(out),
-						 "{\"channel\":%u,\"mapped_vel\":%u,\"held_vel\":%u,\"playing_vel\":%u}\n",
+						 "{\"channel\":%u,\"mapped_vel\":%u,\"playing_vel\":%u,\"stop_all_vel\":%u}\n",
 						 (unsigned)data.globalLight.channel,
 						 (unsigned)data.globalLight.mappedVel,
-						 (unsigned)data.globalLight.heldVel,
-						 (unsigned)data.globalLight.playingVel);
+						 (unsigned)data.globalLight.playingVel,
+						 (unsigned)data.globalLight.stopAllVel);
 		if (n < 0 || (size_t)n >= sizeof(out)) {
 			n = 0;
 		}
@@ -1627,7 +1671,7 @@ static int handleMidiLightConfig(HttpServer *server,
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
 	}
 
-	char ch_buf[16], mapped_buf[16], held_buf[16], playing_buf[16];
+	char ch_buf[16], mapped_buf[16], stop_all_buf[16], playing_buf[16];
 	MidiMapData data = server->app->config->readMidiMapFile();
 
 	if (body_get_value(body, body_len, "channel", ch_buf, sizeof(ch_buf))) {
@@ -1644,18 +1688,18 @@ static int handleMidiLightConfig(HttpServer *server,
 			data.globalLight.mappedVel = (uint8_t)v;
 		}
 	}
-	if (body_get_value(body, body_len, "held_vel", held_buf, sizeof(held_buf))) {
-		char *ep = NULL;
-		long v = strtol(held_buf, &ep, 10);
-		if (ep && *ep == '\0' && v >= 0 && v <= 127) {
-			data.globalLight.heldVel = (uint8_t)v;
-		}
-	}
 	if (body_get_value(body, body_len, "playing_vel", playing_buf, sizeof(playing_buf))) {
 		char *ep = NULL;
 		long v = strtol(playing_buf, &ep, 10);
 		if (ep && *ep == '\0' && v >= 0 && v <= 127) {
 			data.globalLight.playingVel = (uint8_t)v;
+		}
+	}
+	if (body_get_value(body, body_len, "stop_all_vel", stop_all_buf, sizeof(stop_all_buf))) {
+		char *ep = NULL;
+		long v = strtol(stop_all_buf, &ep, 10);
+		if (ep && *ep == '\0' && v >= 0 && v <= 127) {
+			data.globalLight.stopAllVel = (uint8_t)v;
 		}
 	}
 
@@ -1705,11 +1749,10 @@ static int handleMidiLightSounds(HttpServer *server, int cfd, const char *method
 			continue;
 		}
 		n = snprintf(out + off, sizeof(out) - off,
-					 "%s{\"sfx\":\"%s\",\"mapped_vel\":%u,\"held_vel\":%u,\"playing_vel\":%u}",
+					 "%s{\"sfx\":\"%s\",\"mapped_vel\":%u,\"playing_vel\":%u}",
 					 first ? "" : ",",
 					 data.soundLights[i].sfxPath,
 					 (unsigned)data.soundLights[i].mappedVel,
-					 (unsigned)data.soundLights[i].heldVel,
 					 (unsigned)data.soundLights[i].playingVel);
 		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
 			break;
@@ -1741,7 +1784,7 @@ static int handleMidiLightSoundSet(HttpServer *server,
 	}
 
 	char sfx_buf[MIDI_SFX_PATH_MAX];
-	char mapped_buf[16], held_buf[16], playing_buf[16];
+	char mapped_buf[16], playing_buf[16];
 	if (!body_get_value(body, body_len, "sfx", sfx_buf, sizeof(sfx_buf))) {
 		static const char bad[] = "expected sfx\n";
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
@@ -1787,14 +1830,6 @@ static int handleMidiLightSoundSet(HttpServer *server,
 		if (ep && *ep == '\0' && v >= 0 && v <= 127) {
 			sl.mappedVel = (uint8_t)v;
 			sl.hasMapped = 1;
-		}
-	}
-	if (body_get_value(body, body_len, "held_vel", held_buf, sizeof(held_buf))) {
-		char *ep = NULL;
-		long v = strtol(held_buf, &ep, 10);
-		if (ep && *ep == '\0' && v >= 0 && v <= 127) {
-			sl.heldVel = (uint8_t)v;
-			sl.hasHeld = 1;
 		}
 	}
 	if (body_get_value(body, body_len, "playing_vel", playing_buf, sizeof(playing_buf))) {
@@ -1968,6 +2003,10 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_SOUNDBOARD_MODE_SET_PATH) == 0) {
 		return handleSoundboardModeSet(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_SOUNDBOARD_RELOAD_PATH) == 0) {
+		return handleSoundboardReload(server, cfd, method, path);
 	}
 
 	if (strcmp(path, HTTP_CONFIG_RELOAD_PATH) == 0) {

@@ -41,8 +41,8 @@ endif
 
 # Version information
 AUDIOX_VERSION_MAJOR = 1
-AUDIOX_VERSION_MINOR = 3
-AUDIOX_VERSION_PATCH = 6
+AUDIOX_VERSION_MINOR = 4
+AUDIOX_VERSION_PATCH = 0
 
 # Auto-detected from firmware after fetch_deps runs.
 KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")
@@ -75,6 +75,11 @@ BOOT_LOGO_PPM ?= $(CURDIR)/logo_boot.ppm
 WEB_LOGO_SVG ?= $(CURDIR)/logo.svg
 WEB_LOGO_PNG ?= $(CURDIR)/logo.png
 WEB_INDEX_HTML ?= $(CURDIR)/web/index.html
+FFMPEG_BIN ?= $(CURDIR)/third_party/ffmpeg/ffmpeg
+FFMPEG_URL ?= https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-19-13-12/ffmpeg-n8.1.2-22-g94138f6973-linuxarm64-gpl-8.1.tar.xz
+FFMPEG_ARCHIVE ?= $(OUT_DIR)/downloads/ffmpeg.pkg
+FFMPEG_CROSS_LIB_DIR ?= /usr/aarch64-linux-gnu/lib
+FFMPEG_RUNTIME_LIBS ?= ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 librt.so.1 libpthread.so.0 libgcc_s.so.1
 FIRMWARE_GIT_URL ?= https://github.com/raspberrypi/firmware.git
 PI_HOST ?= 169.254.1.2
 PI_PORT ?= 80
@@ -100,7 +105,7 @@ BOOTLOADER_OBJS := $(patsubst src/%.cpp,$(BOOTLOADER_OBJ_DIR)/%.o,$(BOOTLOADER_S
 RUNTIME_DEPS_FILES := $(RUNTIME_OBJS:.o=.d)
 BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
-.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa
+.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa ffmpeg
 
 all: initramfs
 
@@ -173,6 +178,41 @@ alsa_source:
 	$(MAKE) -C "$(ALSA_BUILD_DIR)" DESTDIR="$(ALSA_SYSROOT)" install
 	@echo "ALSA static lib ready: $(ALSA_STATIC_LIB)"
 
+ffmpeg:
+	@if [ -x "$(FFMPEG_BIN)" ]; then \
+		echo "Using existing ffmpeg at $(FFMPEG_BIN)"; \
+	elif [ -n "$(FFMPEG_URL)" ]; then \
+		echo "Fetching ffmpeg from $(FFMPEG_URL)..."; \
+		mkdir -p "$(dir $(FFMPEG_BIN))" "$(OUT_DIR)/downloads"; \
+		tmpdir=$$(mktemp -d); \
+		if ! $(PKG_FETCH) "$(FFMPEG_URL)" -o "$(FFMPEG_ARCHIVE)"; then \
+			rm -rf "$$tmpdir"; \
+			echo "Error: failed to download ffmpeg from $(FFMPEG_URL)"; \
+			exit 1; \
+		fi; \
+		if tar -tf "$(FFMPEG_ARCHIVE)" >/dev/null 2>&1; then \
+			if ! tar -xf "$(FFMPEG_ARCHIVE)" -C "$$tmpdir"; then \
+				rm -rf "$$tmpdir"; \
+				echo "Error: failed to extract ffmpeg archive $(FFMPEG_ARCHIVE)"; \
+				exit 1; \
+			fi; \
+			found=$$(find "$$tmpdir" -type f -name ffmpeg | head -n 1); \
+			if [ -z "$$found" ]; then \
+				rm -rf "$$tmpdir"; \
+				echo "Error: archive does not contain an ffmpeg binary"; \
+				exit 1; \
+			fi; \
+			cp "$$found" "$(FFMPEG_BIN)"; \
+		else \
+			cp "$(FFMPEG_ARCHIVE)" "$(FFMPEG_BIN)"; \
+		fi; \
+		rm -rf "$$tmpdir"; \
+		chmod 0755 "$(FFMPEG_BIN)"; \
+		echo "Fetched ffmpeg to $(FFMPEG_BIN)"; \
+	else \
+		echo "Warning: ffmpeg missing at $(FFMPEG_BIN). Set FFMPEG_URL to auto-fetch or place binary manually."; \
+	fi
+
 
 $(BOOTLOADER_OBJ_DIR)/%.o: src/%.cpp
 	@mkdir -p $(dir $@)
@@ -202,7 +242,7 @@ bootloader_rootfs: $(BOOTLOADER_ROOTFS_DIR)/init $(BOOT_MODULE_LOAD_LIST) $(BOOT
 	cp -r $(OUT_DIR)/bootmodules_staging/* $(BOOTLOADER_ROOTFS_DIR)/lib/modules/
 	cp $(BOOT_MODULE_LOAD_BASE_LIST) $(BOOTLOADER_ROOTFS_DIR)/etc/bootmodule-load.list
 
-rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST)
+rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) ffmpeg
 	@echo "Creating runtime rootfs structure..."
 	mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/sbin $(ROOTFS_DIR)/etc
 	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev
@@ -244,6 +284,27 @@ rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE
 	@if [ -f "$(WEB_LOGO_PNG)" ]; then \
 		echo "Staging web logo png from $(WEB_LOGO_PNG)..."; \
 		cp "$(WEB_LOGO_PNG)" "$(ROOTFS_DIR)/etc/www/logo.png"; \
+	fi
+	@if [ -f "$(FFMPEG_BIN)" ]; then \
+		echo "Staging ffmpeg from $(FFMPEG_BIN)..."; \
+		mkdir -p "$(ROOTFS_DIR)/usr/bin"; \
+		cp "$(FFMPEG_BIN)" "$(ROOTFS_DIR)/usr/bin/ffmpeg"; \
+		chmod 0755 "$(ROOTFS_DIR)/usr/bin/ffmpeg"; \
+		if readelf -l "$(FFMPEG_BIN)" 2>/dev/null | grep -q "Requesting program interpreter"; then \
+			echo "ffmpeg is dynamically linked; staging runtime libs from $(FFMPEG_CROSS_LIB_DIR)..."; \
+			mkdir -p "$(ROOTFS_DIR)/lib"; \
+			for lib in $(FFMPEG_RUNTIME_LIBS); do \
+				if [ ! -e "$(FFMPEG_CROSS_LIB_DIR)/$$lib" ]; then \
+					echo "Error: missing $$lib in $(FFMPEG_CROSS_LIB_DIR)"; \
+					exit 1; \
+				fi; \
+				cp -Lf "$(FFMPEG_CROSS_LIB_DIR)/$$lib" "$(ROOTFS_DIR)/lib/$$lib"; \
+			done; \
+		else \
+			echo "ffmpeg appears statically linked; no extra runtime libs staged."; \
+		fi; \
+	else \
+		echo "Warning: ffmpeg binary not found at $(FFMPEG_BIN) (sfx preprocessing disabled)"; \
 	fi
 	@if [ "$(ENABLE_ALSA)" = "1" ]; then \
 		if [ -f "$(ALSA_CONF_DIR)/alsa.conf" ]; then \

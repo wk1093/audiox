@@ -1,4 +1,5 @@
 #include "http/context.hpp"
+#include "audio/context.hpp"
 #include "system.hpp"
 
 #include <arpa/inet.h>
@@ -14,6 +15,7 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define HTTP_REQ_MAX 65536
@@ -270,6 +272,178 @@ static int ensureParentDirs(const char *path) {
     return 0;
 }
 
+static int isSfxUploadSuffix(const char *suffix) {
+    return (suffix && strncmp(suffix, "sfx/", 4) == 0 && suffix[4] != '\0') ? 1 : 0;
+}
+
+static int buildSfxFinalWavPath(const char *inputPath, char *out, size_t outSz) {
+    if (!inputPath || !out || outSz == 0) {
+        return -1;
+    }
+
+    size_t n = strnlen(inputPath, outSz - 1);
+    if (n == 0 || n >= outSz - 1) {
+        return -1;
+    }
+    memcpy(out, inputPath, n);
+    out[n] = '\0';
+
+    char *slash = strrchr(out, '/');
+    char *leaf = slash ? slash + 1 : out;
+    if (!leaf[0]) {
+        return -1;
+    }
+
+    char *dot = strrchr(leaf, '.');
+    if (dot) {
+        *dot = '\0';
+    }
+
+    size_t stemLen = strlen(out);
+    if (stemLen + 4 >= outSz) {
+        return -1;
+    }
+    memcpy(out + stemLen, ".wav", 5);
+    return 0;
+}
+
+static int runFfmpegTranscodeToWav(const char *inputPath, const char *outputPath) {
+    if (!inputPath || !outputPath || !inputPath[0] || !outputPath[0]) {
+        return -1;
+    }
+
+    static const char *ffmpegCandidates[] = {
+        "/usr/bin/ffmpeg",
+        "/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+        "/ffmpeg",
+        NULL
+    };
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        return -1;
+    }
+
+    if (pid == 0) {
+        int devNull = open("/dev/null", O_WRONLY);
+        if (devNull >= 0) {
+            (void)dup2(devNull, STDOUT_FILENO);
+            (void)dup2(devNull, STDERR_FILENO);
+            if (devNull > STDERR_FILENO) {
+                close(devNull);
+            }
+        }
+
+        for (size_t i = 0; ffmpegCandidates[i] != NULL; ++i) {
+            const char *ffmpeg = ffmpegCandidates[i];
+            if (access(ffmpeg, X_OK) != 0) {
+                continue;
+            }
+
+            execl(ffmpeg,
+                  "ffmpeg",
+                  "-hide_banner",
+                  "-loglevel", "error",
+                  "-y",
+                  "-i", inputPath,
+                  "-vn",
+                  "-acodec", "pcm_s16le",
+                  "-ar", "48000",
+                  "-ac", "2",
+                  "-f", "wav",
+                  outputPath,
+                  (char *)NULL);
+        }
+
+        _exit(127);
+    }
+
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno == EINTR) {
+            continue;
+        }
+        return -1;
+    }
+
+    if (!WIFEXITED(status)) {
+        return -1;
+    }
+    if (WEXITSTATUS(status) != 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int maybePreprocessSfxUpload(HttpServer *server,
+                                    int cfd,
+                                    const char *suffix,
+                                    const char *uploadedPath,
+                                    char *finalPath,
+                                    size_t finalPathSz) {
+    if (!uploadedPath || !uploadedPath[0] || !finalPath || finalPathSz == 0) {
+        return -1;
+    }
+
+    size_t n = strnlen(uploadedPath, finalPathSz - 1);
+    memcpy(finalPath, uploadedPath, n);
+    finalPath[n] = '\0';
+
+    if (!isSfxUploadSuffix(suffix)) {
+        return 0;
+    }
+
+    char wavPath[512];
+    if (buildSfxFinalWavPath(uploadedPath, wavPath, sizeof(wavPath)) < 0) {
+        static const char bad[] = "bad sfx path\n";
+        (void)unlink(uploadedPath);
+        (void)server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+        return -1;
+    }
+
+    char tempWavPath[512];
+    int tn = snprintf(tempWavPath, sizeof(tempWavPath), "%s.fftmp", wavPath);
+    if (tn <= 0 || (size_t)tn >= sizeof(tempWavPath)) {
+        static const char bad[] = "sfx path too long\n";
+        (void)unlink(uploadedPath);
+        (void)server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+        return -1;
+    }
+
+    if (runFfmpegTranscodeToWav(uploadedPath, tempWavPath) != 0) {
+        (void)unlink(tempWavPath);
+        (void)unlink(uploadedPath);
+        static const char err[] = "ffmpeg conversion failed\n";
+        (void)server->sendResponse(cfd, "415 Unsupported Media Type", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+        return -1;
+    }
+
+    if (rename(tempWavPath, wavPath) < 0) {
+        int saved = errno;
+        (void)unlink(tempWavPath);
+        (void)unlink(uploadedPath);
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "sfx finalize failed", saved);
+    }
+
+    if (strcmp(uploadedPath, wavPath) != 0) {
+        (void)unlink(uploadedPath);
+    }
+
+    if (server && server->app && server->app->audio) {
+        int reloadRc = server->app->audio->reloadSfxBank();
+        if (reloadRc == RET_ERR) {
+            printf("[INIT] [WARN] soundboard bank reload failed after ffmpeg preprocess\n");
+        }
+    }
+
+    size_t wn = strnlen(wavPath, finalPathSz - 1);
+    memcpy(finalPath, wavPath, wn);
+    finalPath[wn] = '\0';
+    return 1;
+}
+
 static int handleRootfsUpload(HttpServer *server,
                               int cfd,
                               const char *path,
@@ -361,6 +535,31 @@ static int handleRootfsUpload(HttpServer *server,
         return sendErrnoResponse(server, cfd, "500 Internal Server Error", "fsync failed", saved_errno);
     }
     close(fd);
+
+    char finalPath[512];
+    int preprocessRc = maybePreprocessSfxUpload(server,
+                                                cfd,
+                                                suffix,
+                                                fs_path,
+                                                finalPath,
+                                                sizeof(finalPath));
+    if (preprocessRc < 0) {
+        return 0;
+    }
+
+    if (preprocessRc > 0) {
+        const char *leaf = strrchr(finalPath, '/');
+        leaf = leaf ? (leaf + 1) : finalPath;
+        char okBody[256];
+        int on = snprintf(okBody, sizeof(okBody), "ok converted %s\n", leaf);
+        if (on < 0) {
+            on = 0;
+        }
+        if ((size_t)on >= sizeof(okBody)) {
+            on = (int)(sizeof(okBody) - 1);
+        }
+        return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", okBody, (size_t)on);
+    }
 
     static const char ok[] = "ok\n";
     return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);

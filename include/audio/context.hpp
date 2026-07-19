@@ -124,6 +124,7 @@ struct AudioSfxClipSlot {
 struct AudioSfxTriggerEvent {
     uint8_t slotIndex;
     uint8_t holdStart;
+    float pitchRatio;
 };
 
 struct AudioContext {
@@ -176,6 +177,7 @@ struct AudioContext {
 
     int setupThreads() WARN_UNUSED;
     int triggerSfx(const char *sfxPath) WARN_UNUSED;
+    int triggerSfxPitch(const char *sfxPath, float pitchRatio) WARN_UNUSED;
     int startHeldSfx(const char *sfxPath) WARN_UNUSED;
     int reloadSfxBank() WARN_UNUSED;
     uint32_t loadedSfxCount() const;

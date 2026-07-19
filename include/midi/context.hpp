@@ -28,6 +28,9 @@ struct MidiContext {
     uint8_t ledStateByNote[128];
     uint8_t heldNote;
     int holdActive;
+    uint8_t samplerModeActive;
+    uint8_t samplerSelectedValid;
+    char samplerSelectedSfx[MIDI_SFX_PATH_MAX];
 
     MidiContext(Audiox *context);
 

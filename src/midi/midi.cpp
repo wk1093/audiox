@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include "audio/context.hpp"
+#include "audio/processing_fx.hpp"
 #include "config/context.hpp"
 
 namespace {
@@ -23,6 +24,7 @@ enum LightStateKind : uint8_t {
     LIGHT_STATE_MAPPED = 0,
     LIGHT_STATE_PLAYING = 1,
     LIGHT_STATE_STOP_ALL = 2,
+    LIGHT_STATE_ACTION = 3,
 };
 
 struct MidiCandidate {
@@ -272,7 +274,7 @@ static uint8_t resolveLightVelocity(const MidiMapData &data,
     uint8_t fallback = gl.mappedVel;
     if (stateKind == LIGHT_STATE_PLAYING) {
         fallback = gl.playingVel;
-    } else if (stateKind == LIGHT_STATE_STOP_ALL) {
+    } else if (stateKind == LIGHT_STATE_STOP_ALL || stateKind == LIGHT_STATE_ACTION) {
         fallback = gl.stopAllVel;
     }
 
@@ -337,8 +339,11 @@ MidiContext::MidiContext(Audiox *context)
       cachedPlayingCount(0),
       cachedPlayingSfx(),
       ledStateByNote(),
-            heldNote(255),
-            holdActive(0) {
+    heldNote(255),
+    holdActive(0),
+    samplerModeActive(0),
+    samplerSelectedValid(0),
+    samplerSelectedSfx() {
     if (app) {
         app->midi = this;
         if (app->config) {
@@ -420,6 +425,11 @@ void MidiContext::refreshLightingFromState() {
         }
         uint8_t note = m.note & 0x7Fu;
 
+        if (samplerModeActive) {
+            desired[note] = resolveLightVelocity(cachedMidiMap, m.sfxPath, LIGHT_STATE_PLAYING);
+            continue;
+        }
+
         uint8_t stateKind = LIGHT_STATE_MAPPED;
         uint8_t mode = resolveSoundMode(cachedMidiMap, m.sfxPath);
         if (mode == SOUNDBOARD_MODE_HOLD && holdActive && heldNote == note) {
@@ -437,11 +447,15 @@ void MidiContext::refreshLightingFromState() {
     }
     for (uint32_t i = 0; i < actionCount; ++i) {
         const MidiActionMapping &a = cachedMidiMap.actionMappings[i];
-        if (a.action != MIDI_ACTION_STOP_ALL) {
+        if (a.action != MIDI_ACTION_STOP_ALL && a.action != MIDI_ACTION_SAMPLER_TOGGLE) {
             continue;
         }
         uint8_t note = a.note & 0x7Fu;
-        desired[note] = resolveLightVelocity(cachedMidiMap, NULL, LIGHT_STATE_STOP_ALL);
+        if (a.action == MIDI_ACTION_STOP_ALL) {
+            desired[note] = resolveLightVelocity(cachedMidiMap, NULL, LIGHT_STATE_STOP_ALL);
+        } else {
+            desired[note] = resolveLightVelocity(cachedMidiMap, NULL, LIGHT_STATE_ACTION);
+        }
     }
 
     for (int note = 0; note < 128; ++note) {
@@ -567,6 +581,7 @@ void MidiContext::poll() {
                 }
 
                 const uint8_t kind = (uint8_t)(status & 0xF0);
+                const uint8_t channel = (uint8_t)(status & 0x0F);
                 int isNoteOn = (kind == 0x90 && d1 > 0);
                 int isNoteOff = (kind == 0x80) || (kind == 0x90 && d1 == 0);
                 if (!isNoteOn && !isNoteOff) {
@@ -602,6 +617,39 @@ void MidiContext::poll() {
                     lastVelocity = d1;
                 }
 
+                int samplerKeyboardChannel = -1;
+                uint8_t samplerRootNote = cachedMidiMap.samplerRootNote;
+                if (cachedMidiMap.samplerKeyboardEnabled) {
+                    samplerKeyboardChannel = (int)(cachedMidiMap.samplerKeyboardChannel & 0x0Fu);
+                }
+
+                if (isNoteOn && samplerSelectedValid &&
+                    samplerKeyboardChannel >= 0 &&
+                    channel == (uint8_t)samplerKeyboardChannel &&
+                    app->audio) {
+                    char samplerSfxPath[256];
+                    if (buildAbsoluteSfxPath(samplerSelectedSfx, samplerSfxPath, sizeof(samplerSfxPath)) == RET_OK) {
+                        int semitones = (int)d0 - (int)samplerRootNote;
+                        float pitchRatio = audiox::processing::semitoneToPitchRatio(semitones);
+                        int samplerRc = app->audio->triggerSfxPitch(samplerSfxPath, pitchRatio);
+                        if (samplerRc == RET_OK) {
+                            printf("[MIDI] NOTE ON ch=%u n=%u v=%u -> sampler %s ratio=%.3f\n",
+                                   (unsigned)channel,
+                                   (unsigned)d0,
+                                   (unsigned)d1,
+                                   samplerSfxPath,
+                                   (double)pitchRatio);
+                        } else {
+                            printf("[MIDI] [WARN] sampler trigger failed ch=%u n=%u sfx=%s rc=%d\n",
+                                   (unsigned)channel,
+                                   (unsigned)d0,
+                                   samplerSfxPath,
+                                   samplerRc);
+                        }
+                    }
+                    continue;
+                }
+
                 uint8_t mappedAction = resolveMappedAction(cachedMidiMap, d0);
                 if (mappedAction == MIDI_ACTION_STOP_ALL) {
                     if (app->audio) {
@@ -611,6 +659,15 @@ void MidiContext::poll() {
                     heldNote = 255;
                     refreshLightingFromState();
                     printf("[MIDI] NOTE ON n=%u v=%u -> action stop_all\n", (unsigned)d0, (unsigned)d1);
+                    continue;
+                }
+                if (mappedAction == MIDI_ACTION_SAMPLER_TOGGLE) {
+                    samplerModeActive = samplerModeActive ? 0U : 1U;
+                    refreshLightingFromState();
+                    printf("[MIDI] NOTE ON n=%u v=%u -> action sampler_toggle (%s)\n",
+                           (unsigned)d0,
+                           (unsigned)d1,
+                           samplerModeActive ? "on" : "off");
                     continue;
                 }
 
@@ -628,6 +685,17 @@ void MidiContext::poll() {
                     }
                 }
                 if (!mapping) {
+                    continue;
+                }
+
+                if (samplerModeActive) {
+                    copyBounded(samplerSelectedSfx, sizeof(samplerSelectedSfx), mapping->sfxPath);
+                    samplerSelectedValid = mapping->sfxPath[0] ? 1U : 0U;
+                    refreshLightingFromState();
+                    printf("[MIDI] NOTE ON n=%u v=%u -> sampler selected %s\n",
+                           (unsigned)d0,
+                           (unsigned)d1,
+                           samplerSelectedSfx);
                     continue;
                 }
 

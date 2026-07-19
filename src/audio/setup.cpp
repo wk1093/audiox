@@ -208,7 +208,7 @@ static int findLoadedSfxSlot(const AudioContext *ctx, const char *basename) {
     return -1;
 }
 
-static int enqueueSfxEvent(AudioContext *ctx, uint8_t slotIndex, int holdStart) {
+static int enqueueSfxEvent(AudioContext *ctx, uint8_t slotIndex, int holdStart, float pitchRatio) {
     if (!ctx || slotIndex >= AUDIO_SFX_SLOT_COUNT) {
         return RET_ERR;
     }
@@ -224,11 +224,12 @@ static int enqueueSfxEvent(AudioContext *ctx, uint8_t slotIndex, int holdStart) 
     uint32_t idx = write % AUDIO_SFX_QUEUE_CAP;
     ctx->sfxQueue[idx].slotIndex = slotIndex;
     ctx->sfxQueue[idx].holdStart = holdStart ? 1U : 0U;
+    ctx->sfxQueue[idx].pitchRatio = pitchRatio;
     ctx->sfxQueueWrite.store(write + 1U, std::memory_order_release);
     return RET_OK;
 }
 
-static int queueSfxByPath(AudioContext *ctx, const char *sfxPath, int holdStart) {
+static int queueSfxByPath(AudioContext *ctx, const char *sfxPath, int holdStart, float pitchRatio) {
     if (!ctx || !sfxPath || !sfxPath[0]) {
         return RET_ERR;
     }
@@ -270,7 +271,7 @@ static int queueSfxByPath(AudioContext *ctx, const char *sfxPath, int holdStart)
     }
     ctx->sfxTriggerSeq.fetch_add(1U, std::memory_order_release);
 
-    int queueRc = enqueueSfxEvent(ctx, (uint8_t)slotIndex, holdStart);
+    int queueRc = enqueueSfxEvent(ctx, (uint8_t)slotIndex, holdStart, pitchRatio);
     if (queueRc != RET_OK) {
         ctx->sfxSlotRefs[(uint32_t)slotIndex].fetch_sub(1U, std::memory_order_acq_rel);
         if (queueRc == RET_WARN) {
@@ -340,11 +341,18 @@ AudioContext::~AudioContext() {
 }
 
 int AudioContext::triggerSfx(const char *sfxPath) {
-    return queueSfxByPath(this, sfxPath, 0);
+    return queueSfxByPath(this, sfxPath, 0, 1.0f);
+}
+
+int AudioContext::triggerSfxPitch(const char *sfxPath, float pitchRatio) {
+    if (!(pitchRatio > 0.0f)) {
+        pitchRatio = 1.0f;
+    }
+    return queueSfxByPath(this, sfxPath, 0, pitchRatio);
 }
 
 int AudioContext::startHeldSfx(const char *sfxPath) {
-    return queueSfxByPath(this, sfxPath, 1);
+    return queueSfxByPath(this, sfxPath, 1, 1.0f);
 }
 
 int AudioContext::reloadSfxBank() {

@@ -1313,7 +1313,9 @@ static void processNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex)
         }
 
         for (uint8_t ch = 0; ch < copyChannels; ++ch) {
-            audiox::effects::processSlot(params,
+            audiox::effects::processSlot(thing.id,
+                                         ch,
+                                         params,
                                          rt->inputs[nodeIndex][ch],
                                          rt->outputs[nodeIndex][ch],
                                          BUFFER_FRAMES);

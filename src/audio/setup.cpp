@@ -13,7 +13,7 @@
 
 namespace {
 
-static float mapNormalizedToEffectParam(const char *paramName, float normalized) {
+static float mapNormalizedToEffectParam(uint8_t effectType, const char *paramName, float normalized) {
     if (!paramName) {
         return normalized;
     }
@@ -28,12 +28,24 @@ static float mapNormalizedToEffectParam(const char *paramName, float normalized)
         return normalized * 4.0f;
     }
     if (strcmp(paramName, "drive") == 0) {
+        if (effectType == audiox::effects::EFFECT_PITCH) {
+            return -12.0f + (normalized * 24.0f);
+        }
+        if (effectType == audiox::effects::EFFECT_REVERB) {
+            return 0.05f + (normalized * 0.90f);
+        }
         return normalized * 8.0f;
     }
     if (strcmp(paramName, "clip") == 0) {
-        return 0.05f + (normalized * 0.95f);
+        if (effectType == audiox::effects::EFFECT_DISTORTION) {
+            return 0.05f + (normalized * 0.95f);
+        }
+        return normalized;
     }
     if (strcmp(paramName, "output") == 0) {
+        if (effectType == audiox::effects::EFFECT_REVERB) {
+            return normalized;
+        }
         return normalized * 4.0f;
     }
 
@@ -723,7 +735,10 @@ int AudioContext::setEffectType(const char *thingId, uint8_t type) {
     if (it == effectStates.end()) {
         return RET_ERR;
     }
-    if (type != audiox::effects::EFFECT_GAIN && type != audiox::effects::EFFECT_DISTORTION) {
+    if (type != audiox::effects::EFFECT_GAIN &&
+        type != audiox::effects::EFFECT_DISTORTION &&
+        type != audiox::effects::EFFECT_PITCH &&
+        type != audiox::effects::EFFECT_REVERB) {
         return RET_ERR;
     }
     it->second.type = type;
@@ -777,18 +792,35 @@ int AudioContext::setEffectParam(const char *thingId, const char *paramName, flo
         return RET_OK;
     }
     if (strcmp(paramName, "drive") == 0) {
-        if (value < 0.0f) value = 0.0f;
-        if (value > 8.0f) value = 8.0f;
+        if (it->second.type == audiox::effects::EFFECT_PITCH) {
+            if (value < -12.0f) value = -12.0f;
+            if (value > 12.0f) value = 12.0f;
+        } else if (it->second.type == audiox::effects::EFFECT_REVERB) {
+            if (value < 0.05f) value = 0.05f;
+            if (value > 0.95f) value = 0.95f;
+        } else {
+            if (value < 0.0f) value = 0.0f;
+            if (value > 8.0f) value = 8.0f;
+        }
         it->second.drive = value;
         return RET_OK;
     }
     if (strcmp(paramName, "clip") == 0) {
-        if (value < 0.05f) value = 0.05f;
+        if (it->second.type == audiox::effects::EFFECT_DISTORTION && value < 0.05f) {
+            value = 0.05f;
+        }
+        if (value < 0.0f) value = 0.0f;
         if (value > 1.0f) value = 1.0f;
         it->second.clip = value;
         return RET_OK;
     }
     if (strcmp(paramName, "output") == 0) {
+        if (it->second.type == audiox::effects::EFFECT_REVERB) {
+            if (value < 0.0f) value = 0.0f;
+            if (value > 1.0f) value = 1.0f;
+            it->second.output = value;
+            return RET_OK;
+        }
         if (value < 0.0f) value = 0.0f;
         if (value > 4.0f) value = 4.0f;
         it->second.output = value;
@@ -803,7 +835,17 @@ int AudioContext::setEffectParamNormalized(const char *thingId, const char *para
         return RET_ERR;
     }
 
-    float mapped = mapNormalizedToEffectParam(paramName, normalized);
+    uint8_t effectType = audiox::effects::EFFECT_GAIN;
+    {
+        std::lock_guard<std::mutex> lock(effectsMutex);
+        auto it = effectStates.find(thingId);
+        if (it == effectStates.end()) {
+            return RET_ERR;
+        }
+        effectType = it->second.type;
+    }
+
+    float mapped = mapNormalizedToEffectParam(effectType, paramName, normalized);
     return setEffectParam(thingId, paramName, mapped);
 }
 
@@ -817,9 +859,23 @@ int AudioContext::createEffect(const char *type, char *outId, size_t outIdSize) 
     params.enabled = 1U;
     params.type = effectType;
     params.gain = 1.0f;
-    params.drive = 4.0f;
-    params.clip = 0.35f;
+    params.drive = 1.0f;
+    params.clip = 1.0f;
     params.output = 1.0f;
+
+    if (effectType == audiox::effects::EFFECT_DISTORTION) {
+        params.drive = 4.0f;
+        params.clip = 0.35f;
+        params.output = 1.0f;
+    } else if (effectType == audiox::effects::EFFECT_PITCH) {
+        params.drive = 0.0f;
+        params.clip = 1.0f;
+        params.output = 1.0f;
+    } else if (effectType == audiox::effects::EFFECT_REVERB) {
+        params.drive = 0.55f;
+        params.clip = 0.35f;
+        params.output = 0.35f;
+    }
     audiox::effects::clampSlotParams(&params);
 
     std::lock_guard<std::mutex> lock(effectsMutex);

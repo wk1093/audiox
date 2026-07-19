@@ -25,6 +25,40 @@
     return Number.isFinite(n) ? n : fallback;
   }
 
+  function paramMetaForType(type) {
+    const t = String(type || 'gain').trim();
+    if (t === 'pitch') {
+      return {
+        gain: { label: 'Input Gain', min: 0, max: 4, step: 0.01, precision: 2 },
+        drive: { label: 'Semitones', min: -12, max: 12, step: 0.01, precision: 2 },
+        clip: { label: 'Mix', min: 0, max: 1, step: 0.01, precision: 2 },
+        output: { label: 'Output Gain', min: 0, max: 4, step: 0.01, precision: 2 },
+      };
+    }
+    if (t === 'reverb') {
+      return {
+        gain: { label: 'Input Gain', min: 0, max: 4, step: 0.01, precision: 2 },
+        drive: { label: 'Feedback', min: 0.05, max: 0.95, step: 0.01, precision: 2 },
+        clip: { label: 'Damping', min: 0, max: 1, step: 0.01, precision: 2 },
+        output: { label: 'Wet Mix', min: 0, max: 1, step: 0.01, precision: 2 },
+      };
+    }
+    if (t === 'distortion') {
+      return {
+        gain: { label: 'Input Gain', min: 0, max: 4, step: 0.01, precision: 2 },
+        drive: { label: 'Drive', min: 0, max: 8, step: 0.01, precision: 2 },
+        clip: { label: 'Clip', min: 0.05, max: 1, step: 0.01, precision: 2 },
+        output: { label: 'Output', min: 0, max: 4, step: 0.01, precision: 2 },
+      };
+    }
+    return {
+      gain: { label: 'Gain', min: 0, max: 4, step: 0.01, precision: 2 },
+      drive: { label: 'Drive', min: 0, max: 8, step: 0.01, precision: 2 },
+      clip: { label: 'Clip', min: 0, max: 1, step: 0.01, precision: 2 },
+      output: { label: 'Output', min: 0, max: 4, step: 0.01, precision: 2 },
+    };
+  }
+
   class EffectsManager {
     constructor(setStatus) {
       this.setStatus = typeof setStatus === 'function' ? setStatus : (() => {});
@@ -78,6 +112,7 @@
         const params = fx.params || {};
         const midi = fx.midi || {};
         const cc = midi.cc || {};
+        const meta = paramMetaForType(fx.type);
 
         const card = document.createElement('section');
         card.className = 'card fx-card';
@@ -88,10 +123,10 @@
         card.appendChild(header);
 
         const rows = [
-          { key: 'gain', label: 'Gain', value: params.gain, cc: cc.gain },
-          { key: 'drive', label: 'Drive', value: params.drive, cc: cc.drive },
-          { key: 'clip', label: 'Clip', value: params.clip, cc: cc.clip },
-          { key: 'output', label: 'Output', value: params.output, cc: cc.output },
+          { key: 'gain', label: meta.gain.label, value: params.gain, cc: cc.gain },
+          { key: 'drive', label: meta.drive.label, value: params.drive, cc: cc.drive },
+          { key: 'clip', label: meta.clip.label, value: params.clip, cc: cc.clip },
+          { key: 'output', label: meta.output.label, value: params.output, cc: cc.output },
         ];
 
         for (const row of rows) {
@@ -462,6 +497,7 @@
       const enabled = !!fx?.enabled;
       const params = fx?.params || {};
       const midi = fx?.midi || {};
+      const meta = paramMetaForType(type);
 
       node.widgets = [];
       node.size = [320, hasFx ? 370 : 130];
@@ -494,23 +530,23 @@
         } catch (err) {
           this.setStatus(String(err), 'warn');
         }
-      }, { values: ['gain', 'distortion'] });
+      }, { values: ['gain', 'distortion', 'pitch', 'reverb'] });
 
-      node.addWidget('slider', 'Gain', toNumber(params.gain, 1), (v) => {
+      node.addWidget('slider', meta.gain.label, toNumber(params.gain, 1), (v) => {
         this.queueParamUpdate(effectId, 'gain', v);
-      }, { min: 0, max: 4, step: 0.01, precision: 2 });
+      }, { min: meta.gain.min, max: meta.gain.max, step: meta.gain.step, precision: meta.gain.precision });
 
-      node.addWidget('slider', 'Drive', toNumber(params.drive, 1.5), (v) => {
+      node.addWidget('slider', meta.drive.label, toNumber(params.drive, 1.5), (v) => {
         this.queueParamUpdate(effectId, 'drive', v);
-      }, { min: 0, max: 8, step: 0.01, precision: 2 });
+      }, { min: meta.drive.min, max: meta.drive.max, step: meta.drive.step, precision: meta.drive.precision });
 
-      node.addWidget('slider', 'Clip', toNumber(params.clip, 0.6), (v) => {
+      node.addWidget('slider', meta.clip.label, toNumber(params.clip, 0.6), (v) => {
         this.queueParamUpdate(effectId, 'clip', v);
-      }, { min: 0.05, max: 1, step: 0.01, precision: 2 });
+      }, { min: meta.clip.min, max: meta.clip.max, step: meta.clip.step, precision: meta.clip.precision });
 
-      node.addWidget('slider', 'Output', toNumber(params.output, 1), (v) => {
+      node.addWidget('slider', meta.output.label, toNumber(params.output, 1), (v) => {
         this.queueParamUpdate(effectId, 'output', v);
-      }, { min: 0, max: 4, step: 0.01, precision: 2 });
+      }, { min: meta.output.min, max: meta.output.max, step: meta.output.step, precision: meta.output.precision });
 
       node.addWidget('button', 'Open Effects Mapping Page', '', () => {
         const btn = document.querySelector('.tab-btn[data-tab="effects"]');

@@ -1278,15 +1278,16 @@ static void renderSourceNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeI
     }
 }
 
-static void routeCompiledEdge(RuntimeGraph *rt, const RuntimeGraph::CompiledRoute &route) {
+static void routeCompiledEdge(AudioContext *ctx, RuntimeGraph *rt, const RuntimeGraph::CompiledRoute &route) {
     if (!rt) {
         return;
     }
 
+    float gain = ctx ? ctx->nodeGainAtomics[route.srcNode].load(std::memory_order_relaxed) : 1.0f;
     const float *src = rt->outputs[route.srcNode][route.srcChannel];
     float *dst = rt->inputs[route.dstNode][route.dstChannel];
     for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
-        dst[frame] += src[frame];
+        dst[frame] += src[frame] * gain;
     }
 }
 
@@ -1558,7 +1559,7 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
 
     // Route source output into downstream node inputs.
     for (uint16_t i = 0; i < rt->sourceRouteCount; ++i) {
-        routeCompiledEdge(rt, rt->sourceRoutes[i]);
+        routeCompiledEdge(ctx, rt, rt->sourceRoutes[i]);
     }
 
     // Process transform/effect nodes from their accumulated input.
@@ -1568,7 +1569,7 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
 
     // Route transformed output onward (typically into sinks).
     for (uint16_t i = 0; i < rt->processRouteCount; ++i) {
-        routeCompiledEdge(rt, rt->processRoutes[i]);
+        routeCompiledEdge(ctx, rt, rt->processRoutes[i]);
     }
 
     rt->blocksProcessed++;
@@ -1687,6 +1688,7 @@ static void *audioProcessingThreadMain(void *arg) {
 
         if (graphSnapshot.generation != runtime.snapshot.generation) {
             rebuildRuntimeGraph(&runtime, graphSnapshot);
+            ctx->snapshotGainsForGraph(graphSnapshot);
         }
 
         if (runtime.snapshot.generation > 0 && runtime.snapshot.thingCount > 0) {

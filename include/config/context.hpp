@@ -9,6 +9,7 @@
 #define CONFIG_STAGING_FILE_PATH ROOT_MOUNT_POINT "/config.staging.txt"
 #define ROUTING_REAL_FILE_PATH ROOT_MOUNT_POINT "/routing.txt"
 #define MIDI_MAP_REAL_FILE_PATH ROOT_MOUNT_POINT "/midi_map.txt"
+#define VOLUMES_FILE_PATH ROOT_MOUNT_POINT "/volumes.txt"
 #define SFX_ROOT_DIR ROOT_MOUNT_POINT "/sfx"
 
 #define MIDI_MAPPINGS_MAX 64
@@ -16,6 +17,18 @@
 #define MIDI_SOUND_LIGHTS_MAX MIDI_MAPPINGS_MAX
 #define MIDI_SOUND_MODES_MAX MIDI_MAPPINGS_MAX
 #define MIDI_ACTION_MAPPINGS_MAX MIDI_MAPPINGS_MAX
+#define MIDI_CC_VOLUME_MAPPINGS_MAX 16
+#define VOLUME_ENTRIES_MAX 64
+
+struct VolumeEntry {
+    char thingId[64];
+    float gain; // 0.0 - 1.0
+};
+
+struct MidiCcVolumeMapping {
+    uint8_t cc;
+    char thingId[64];
+};
 
 struct RouterConfig {
     RouterConfig();
@@ -99,6 +112,8 @@ struct MidiMapData {
     uint8_t samplerKeyboardEnabled;
     uint8_t samplerKeyboardChannel;
     uint8_t samplerRootNote;
+    uint32_t ccVolumeMappingCount;
+    MidiCcVolumeMapping ccVolumeMappings[MIDI_CC_VOLUME_MAPPINGS_MAX];
 };
 
 struct ConfigStore {
@@ -113,6 +128,10 @@ struct ConfigStore {
     // midi_map.txt: note→sfx mappings + lighting config (separate from config.txt)
     MidiMapData readMidiMapFile() const;
     int writeMidiMapFile(MidiMapData *data);
+
+    // volumes.txt: per-thing output gain values
+    int readVolumesFile(VolumeEntry *out, uint32_t *count_out, uint32_t cap) const;
+    int writeVolumesFile(const VolumeEntry *entries, uint32_t count);
 
     RouterConfig router() const;
 

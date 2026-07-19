@@ -630,6 +630,128 @@ select {
   align-items: start;
 }
 
+/* Volume page */
+.vol-layout {
+  display: grid;
+  gap: 12px;
+}
+
+.vol-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.vol-header-left {
+  min-width: 0;
+}
+
+.vol-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+
+.vol-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-solid);
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.vol-card.cc-target {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(127, 209, 255, 0.35) inset;
+}
+
+.vol-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vol-card-id {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: -6px;
+}
+
+.vol-slider-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.vol-slider-row input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+  border: none;
+  background: none;
+  padding: 0;
+}
+
+.vol-pct {
+  font-size: 13px;
+  font-weight: 600;
+  min-width: 3.5em;
+  text-align: right;
+  color: var(--accent);
+}
+
+.vol-cc-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.vol-cc-badge {
+  font-size: 11px;
+  color: var(--accent-2);
+}
+
+.vol-cc-badge.unset {
+  color: var(--muted);
+}
+
+/* MIDI page */
+.midi-layout {
+  display: grid;
+  gap: 12px;
+}
+
+.midi-action-row {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.midi-action-info {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.midi-action-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
 @media (max-width: 1280px) {
   .routing-grid {
     flex-direction: column;
@@ -673,5 +795,10 @@ select {
 
   .node {
     width: 236px;
+  }
+
+  .midi-action-row {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }

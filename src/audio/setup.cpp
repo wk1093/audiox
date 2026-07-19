@@ -320,9 +320,14 @@ AudioContext::AudioContext(Audiox *context) : app(context) {
     routingGraphSeq.store(0, std::memory_order_relaxed);
     memset(&nodeChannelLevels, 0, sizeof(nodeChannelLevels));
 
+    for (uint32_t i = 0; i < AUDIO_GRAPH_MAX_THINGS; ++i) {
+        nodeGainAtomics[i].store(1.0f, std::memory_order_relaxed);
+    }
+
     if (app && app->config) {
         ConfigData cfg = app->config->readConfigFile();
         soundboardMode.store(cfg.soundboardMode, std::memory_order_relaxed);
+        loadVolumesFromConfig();
     }
 
     int preloadRc = reloadSfxBank();
@@ -525,4 +530,73 @@ float AudioContext::getChannelLevel(AudioHandle handle, int channelIndex, bool i
     }
     
     return 0.0f;
+}
+
+void AudioContext::loadVolumesFromConfig() {
+    if (!app || !app->config) {
+        return;
+    }
+
+    VolumeEntry entries[VOLUME_ENTRIES_MAX];
+    uint32_t count = 0;
+    int rc = app->config->readVolumesFile(entries, &count, VOLUME_ENTRIES_MAX);
+    if (rc == RET_ERR) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(gainsMutex);
+    for (uint32_t i = 0; i < count; ++i) {
+        if (entries[i].thingId[0]) {
+            thingGains[entries[i].thingId] = entries[i].gain;
+        }
+    }
+}
+
+void AudioContext::setThingGain(const char *thingId, float gain) {
+    if (!thingId || !thingId[0]) {
+        return;
+    }
+    if (gain < 0.0f) gain = 0.0f;
+    if (gain > 2.0f) gain = 2.0f;
+
+    {
+        std::lock_guard<std::mutex> lock(gainsMutex);
+        thingGains[thingId] = gain;
+    }
+
+    // Update the atomic for the node's current index so the change takes effect immediately.
+    std::lock_guard<std::mutex> graphLock(routingGraphMutex);
+    for (uint16_t i = 0; i < routingGraphPublished.thingCount; ++i) {
+        if (strcmp(routingGraphPublished.things[i].id, thingId) == 0) {
+            nodeGainAtomics[i].store(gain, std::memory_order_relaxed);
+            break;
+        }
+    }
+}
+
+float AudioContext::getThingGain(const char *thingId) const {
+    if (!thingId || !thingId[0]) {
+        return 1.0f;
+    }
+    std::lock_guard<std::mutex> lock(gainsMutex);
+    auto it = thingGains.find(thingId);
+    if (it != thingGains.end()) {
+        return it->second;
+    }
+    return 1.0f;
+}
+
+void AudioContext::snapshotGainsForGraph(const AudioGraphState &graph) {
+    // Reset all to 1.0, then apply known gains indexed by the new snapshot.
+    for (uint32_t i = 0; i < AUDIO_GRAPH_MAX_THINGS; ++i) {
+        nodeGainAtomics[i].store(1.0f, std::memory_order_relaxed);
+    }
+
+    std::lock_guard<std::mutex> lock(gainsMutex);
+    for (uint16_t i = 0; i < graph.thingCount; ++i) {
+        auto it = thingGains.find(graph.things[i].id);
+        if (it != thingGains.end()) {
+            nodeGainAtomics[i].store(it->second, std::memory_order_relaxed);
+        }
+    }
 }

@@ -333,6 +333,9 @@ MidiContext::MidiContext(Audiox *context)
       lastNoteSeq(0),
       lastNote(0),
       lastVelocity(0),
+      lastCcSeq(0),
+      lastCc(0),
+      lastCcValue(0),
       cachedMidiMap(),
       nextMidiMapReloadMs(0),
       cachedPlayingSeq(0),
@@ -584,6 +587,34 @@ void MidiContext::poll() {
                 const uint8_t channel = (uint8_t)(status & 0x0F);
                 int isNoteOn = (kind == 0x90 && d1 > 0);
                 int isNoteOff = (kind == 0x80) || (kind == 0x90 && d1 == 0);
+                int isCc = (kind == 0xB0);
+
+                if (isCc) {
+                    ++lastCcSeq;
+                    lastCc = d0;
+                    lastCcValue = d1;
+
+                    float gain = ((float)d1 / 127.0f) * 2.0f;
+                    uint32_t cvCount = cachedMidiMap.ccVolumeMappingCount;
+                    if (cvCount > MIDI_CC_VOLUME_MAPPINGS_MAX) {
+                        cvCount = MIDI_CC_VOLUME_MAPPINGS_MAX;
+                    }
+                    for (uint32_t cvi = 0; cvi < cvCount; ++cvi) {
+                        if (cachedMidiMap.ccVolumeMappings[cvi].cc == d0 &&
+                            cachedMidiMap.ccVolumeMappings[cvi].thingId[0] &&
+                            app->audio) {
+                            app->audio->setThingGain(cachedMidiMap.ccVolumeMappings[cvi].thingId, gain);
+                            printf("[MIDI] CC ch=%u n=%u v=%u -> volume %s=%.3f\n",
+                                   (unsigned)channel,
+                                   (unsigned)d0,
+                                   (unsigned)d1,
+                                   cachedMidiMap.ccVolumeMappings[cvi].thingId,
+                                   (double)gain);
+                        }
+                    }
+                    continue;
+                }
+
                 if (!isNoteOn && !isNoteOff) {
                     continue;
                 }

@@ -12,6 +12,8 @@ const sbSamplerToggleMidiEl = document.getElementById('sb-sampler-toggle-midi');
 const midiActionCaptureStatusEl = document.getElementById('midi-action-capture-status');
 const volGridEl = document.getElementById('vol-grid');
 const volCcStatusEl = document.getElementById('vol-cc-status');
+const effectsMapGridEl = document.getElementById('effects-map-grid');
+const effectsMapStatusEl = document.getElementById('effects-map-status');
 const inspectorEl = document.getElementById('route-inspector');
 const nodeCountEl = document.getElementById('metric-node-count');
 const routeCountEl = document.getElementById('metric-route-count');
@@ -67,6 +69,10 @@ const effectsManager = (window.AudioxEffects && typeof window.AudioxEffects.crea
   ? window.AudioxEffects.createManager(setStatus)
   : null;
 
+if (effectsManager) {
+  effectsManager.mountPanel(effectsMapGridEl, effectsMapStatusEl);
+}
+
 function setActiveTab(tab) {
   state.activeTab = tab;
   document.querySelectorAll('.tab-btn').forEach((el) => {
@@ -90,6 +96,11 @@ function setActiveTab(tab) {
   if (tab === 'midi') {
     renderStopAllMidiStatus();
     renderSamplerToggleMidiStatus();
+  }
+  if (tab === 'effects' && effectsManager) {
+    effectsManager.loadEffects().catch((err) => {
+      setStatus(String(err), 'warn');
+    });
   }
 }
 

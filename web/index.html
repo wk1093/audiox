@@ -23,6 +23,7 @@
 
       <nav class="tabs" id="tabs">
         <button class="tab-btn active" data-tab="routing">Routing</button>
+        <button class="tab-btn" data-tab="effects">Effects</button>
         <button class="tab-btn" data-tab="volume">Volume</button>
         <button class="tab-btn" data-tab="soundboard">Soundboard</button>
         <button class="tab-btn" data-tab="midi">MIDI</button>
@@ -80,6 +81,18 @@
             <div id="edge-list" class="edge-list" style="margin-top: 8px;"></div>
           </section>
         </aside>
+      </div>
+    </section>
+
+    <section class="page" data-page="effects">
+      <div class="effects-layout">
+        <section class="card">
+          <h2>Effect Mapping</h2>
+          <div id="effects-map-status" class="small" style="margin-top:8px;">
+            Map MIDI CCs and bypass notes per effect.
+          </div>
+        </section>
+        <div id="effects-map-grid" class="effects-map-grid"></div>
       </div>
     </section>
 

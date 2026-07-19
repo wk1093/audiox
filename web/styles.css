@@ -522,6 +522,62 @@ select {
   color: var(--warn);
 }
 
+.effects-layout {
+  display: grid;
+  gap: 10px;
+}
+
+.effects-map-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 10px;
+}
+
+.fx-card {
+  display: grid;
+  gap: 8px;
+}
+
+.fx-card-head {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.03em;
+}
+
+.fx-map-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid #2d5065;
+  border-radius: 8px;
+  background: #0d2230;
+  padding: 7px;
+}
+
+.fx-map-meta {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.fx-map-badge {
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #ddffe9;
+  border: 1px solid #3b6f55;
+  border-radius: 999px;
+  background: #163629;
+  padding: 4px 8px;
+}
+
+.fx-map-badge.unset {
+  color: var(--muted);
+  border-color: #3a5e73;
+  background: #0f2a3a;
+}
+
 .soundboard-layout {
   display: grid;
   gap: 12px;

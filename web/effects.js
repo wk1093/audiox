@@ -30,6 +30,8 @@
       this.setStatus = typeof setStatus === 'function' ? setStatus : (() => {});
       this.effectsById = new Map();
       this.nodeById = new Map();
+      this.panelEl = null;
+      this.panelStatusEl = null;
       this.ccPoll = null;
       this.notePoll = null;
       this.ccTarget = null;
@@ -37,6 +39,142 @@
       this.lastCcSeq = 0;
       this.lastNoteSeq = 0;
       this.paramUpdateTimers = new Map();
+    }
+
+    mountPanel(panelEl, statusEl) {
+      this.panelEl = panelEl || null;
+      this.panelStatusEl = statusEl || null;
+      this.renderPanel();
+    }
+
+    setPanelStatus(text, kind = '') {
+      if (!this.panelStatusEl) {
+        return;
+      }
+      this.panelStatusEl.textContent = String(text || '');
+      this.panelStatusEl.className = `small ${kind}`.trim();
+    }
+
+    renderPanel() {
+      if (!this.panelEl) {
+        return;
+      }
+
+      this.panelEl.innerHTML = '';
+      const effects = [...this.effectsById.values()]
+        .filter((fx) => normalizeEffectId(fx?.id))
+        .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+
+      if (!effects.length) {
+        const empty = document.createElement('div');
+        empty.className = 'small';
+        empty.textContent = 'No effects yet. Add one from Routing > Add menu.';
+        this.panelEl.appendChild(empty);
+        return;
+      }
+
+      for (const fx of effects) {
+        const effectId = normalizeEffectId(fx.id);
+        const params = fx.params || {};
+        const midi = fx.midi || {};
+        const cc = midi.cc || {};
+
+        const card = document.createElement('section');
+        card.className = 'card fx-card';
+
+        const header = document.createElement('div');
+        header.className = 'fx-card-head';
+        header.textContent = `${effectId} (${fx.type || 'gain'})`;
+        card.appendChild(header);
+
+        const rows = [
+          { key: 'gain', label: 'Gain', value: params.gain, cc: cc.gain },
+          { key: 'drive', label: 'Drive', value: params.drive, cc: cc.drive },
+          { key: 'clip', label: 'Clip', value: params.clip, cc: cc.clip },
+          { key: 'output', label: 'Output', value: params.output, cc: cc.output },
+        ];
+
+        for (const row of rows) {
+          const line = document.createElement('div');
+          line.className = 'fx-map-row';
+
+          const left = document.createElement('div');
+          left.className = 'fx-map-meta';
+          left.textContent = `${row.label}: ${toNumber(row.value, 0).toFixed(2)}`;
+
+          const badge = document.createElement('span');
+          badge.className = `fx-map-badge${toNumber(row.cc, -1) >= 0 ? '' : ' unset'}`;
+          badge.textContent = toNumber(row.cc, -1) >= 0 ? `CC ${row.cc}` : 'unmapped';
+
+          const mapBtn = document.createElement('button');
+          mapBtn.textContent = 'Map';
+          mapBtn.addEventListener('click', async () => {
+            await this.beginCcCapture(effectId, row.key);
+            this.setPanelStatus(`Move a MIDI CC for ${effectId}.${row.key}`, 'ok');
+          });
+
+          const clearBtn = document.createElement('button');
+          clearBtn.className = 'flat';
+          clearBtn.textContent = 'Clear';
+          clearBtn.disabled = toNumber(row.cc, -1) < 0;
+          clearBtn.addEventListener('click', async () => {
+            const ccNum = toNumber(row.cc, -1);
+            if (ccNum < 0) {
+              return;
+            }
+            try {
+              await this.deleteEffectCc(ccNum);
+              this.setPanelStatus(`Cleared CC ${ccNum}`, 'ok');
+            } catch (err) {
+              this.setPanelStatus(String(err), 'warn');
+            }
+          });
+
+          line.appendChild(left);
+          line.appendChild(badge);
+          line.appendChild(mapBtn);
+          line.appendChild(clearBtn);
+          card.appendChild(line);
+        }
+
+        const bypassRow = document.createElement('div');
+        bypassRow.className = 'fx-map-row';
+        const bypassMeta = document.createElement('div');
+        bypassMeta.className = 'fx-map-meta';
+        bypassMeta.textContent = 'Bypass Toggle';
+        const note = toNumber(midi.toggle_note, -1);
+        const bypassBadge = document.createElement('span');
+        bypassBadge.className = `fx-map-badge${note >= 0 ? '' : ' unset'}`;
+        bypassBadge.textContent = note >= 0 ? `Note ${note}` : 'unmapped';
+        const bypassMap = document.createElement('button');
+        bypassMap.textContent = 'Map';
+        bypassMap.addEventListener('click', async () => {
+          await this.beginNoteCapture(effectId);
+          this.setPanelStatus(`Press a MIDI note for ${effectId} bypass`, 'ok');
+        });
+        const bypassClear = document.createElement('button');
+        bypassClear.className = 'flat';
+        bypassClear.textContent = 'Clear';
+        bypassClear.disabled = note < 0;
+        bypassClear.addEventListener('click', async () => {
+          if (note < 0) {
+            return;
+          }
+          try {
+            await this.deleteEffectToggle(note);
+            this.setPanelStatus(`Cleared bypass note ${note}`, 'ok');
+          } catch (err) {
+            this.setPanelStatus(String(err), 'warn');
+          }
+        });
+        bypassRow.appendChild(bypassMeta);
+        bypassRow.appendChild(bypassBadge);
+        bypassRow.appendChild(bypassMap);
+        bypassRow.appendChild(bypassClear);
+        card.appendChild(bypassRow);
+
+        this.panelEl.appendChild(card);
+      }
     }
 
     async loadEffects() {
@@ -54,6 +192,7 @@
         this.effectsById.set(id, fx);
       }
       this.refreshAllNodes();
+      this.renderPanel();
     }
 
     registerNode(node) {
@@ -140,7 +279,7 @@
     async setEffectCc(effectId, param, cc) {
       const res = await fetch('/api/effect/midi_cc/set', {
         method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
         body: formBody({ id: effectId, param, cc }),
       });
       const txt = await res.text();
@@ -154,7 +293,7 @@
     async deleteEffectCc(cc) {
       const res = await fetch('/api/effect/midi_cc/delete', {
         method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
         body: formBody({ cc }),
       });
       const txt = await res.text();
@@ -168,7 +307,7 @@
     async setEffectToggle(effectId, note) {
       const res = await fetch('/api/effect/midi_toggle/set', {
         method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
         body: formBody({ id: effectId, note }),
       });
       const txt = await res.text();
@@ -182,7 +321,7 @@
     async deleteEffectToggle(note) {
       const res = await fetch('/api/effect/midi_toggle/delete', {
         method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
         body: formBody({ note }),
       });
       const txt = await res.text();
@@ -196,7 +335,7 @@
     async deleteEffect(effectId) {
       const res = await fetch('/api/effect/delete', {
         method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
         body: formBody({ id: effectId }),
       });
       const txt = await res.text();
@@ -222,6 +361,7 @@
       }
 
       this.setStatus(`Move a MIDI CC to map ${effectId}.${param}...`, 'ok');
+      this.renderPanel();
       this.ccPoll = setInterval(() => this.pollCcCapture(), 220);
     }
 
@@ -252,6 +392,7 @@
             this.ccPoll = null;
           }
           await this.setEffectCc(target.effectId, target.param, cc);
+          this.setPanelStatus(`Mapped CC ${cc} to ${target.effectId}.${target.param}`, 'ok');
         }
       } catch (_) {}
     }
@@ -271,6 +412,7 @@
       }
 
       this.setStatus(`Press a MIDI note to map ${effectId} bypass toggle...`, 'ok');
+      this.renderPanel();
       this.notePoll = setInterval(() => this.pollNoteCapture(), 220);
     }
 
@@ -301,6 +443,7 @@
             this.notePoll = null;
           }
           await this.setEffectToggle(target.effectId, note);
+          this.setPanelStatus(`Mapped note ${note} to ${target.effectId} bypass`, 'ok');
         }
       } catch (_) {}
     }
@@ -319,7 +462,6 @@
       const enabled = !!fx?.enabled;
       const params = fx?.params || {};
       const midi = fx?.midi || {};
-      const cc = midi.cc || {};
 
       node.widgets = [];
       node.size = [320, hasFx ? 370 : 130];
@@ -370,68 +512,10 @@
         this.queueParamUpdate(effectId, 'output', v);
       }, { min: 0, max: 4, step: 0.01, precision: 2 });
 
-      node.addWidget('button', `Map Gain CC${cc.gain >= 0 ? ` (CC ${cc.gain})` : ''}`, '', async () => {
-        try {
-          await this.beginCcCapture(effectId, 'gain');
-        } catch (err) {
-          this.setStatus(String(err), 'warn');
-        }
-      });
-
-      node.addWidget('button', `Map Drive CC${cc.drive >= 0 ? ` (CC ${cc.drive})` : ''}`, '', async () => {
-        try {
-          await this.beginCcCapture(effectId, 'drive');
-        } catch (err) {
-          this.setStatus(String(err), 'warn');
-        }
-      });
-
-      node.addWidget('button', `Map Clip CC${cc.clip >= 0 ? ` (CC ${cc.clip})` : ''}`, '', async () => {
-        try {
-          await this.beginCcCapture(effectId, 'clip');
-        } catch (err) {
-          this.setStatus(String(err), 'warn');
-        }
-      });
-
-      node.addWidget('button', `Map Output CC${cc.output >= 0 ? ` (CC ${cc.output})` : ''}`, '', async () => {
-        try {
-          await this.beginCcCapture(effectId, 'output');
-        } catch (err) {
-          this.setStatus(String(err), 'warn');
-        }
-      });
-
-      node.addWidget('button', `Map Bypass Note${toNumber(midi.toggle_note, -1) >= 0 ? ` (N ${midi.toggle_note})` : ''}`, '', async () => {
-        try {
-          await this.beginNoteCapture(effectId);
-        } catch (err) {
-          this.setStatus(String(err), 'warn');
-        }
-      });
-
-      node.addWidget('button', 'Clear CC Mappings', '', async () => {
-        try {
-          const ccMap = [cc.gain, cc.drive, cc.clip, cc.output];
-          for (const ccNum of ccMap) {
-            if (toNumber(ccNum, -1) >= 0) {
-              // eslint-disable-next-line no-await-in-loop
-              await this.deleteEffectCc(ccNum);
-            }
-          }
-        } catch (err) {
-          this.setStatus(String(err), 'warn');
-        }
-      });
-
-      node.addWidget('button', 'Clear Bypass Note', '', async () => {
-        try {
-          const note = toNumber(midi.toggle_note, -1);
-          if (note >= 0) {
-            await this.deleteEffectToggle(note);
-          }
-        } catch (err) {
-          this.setStatus(String(err), 'warn');
+      node.addWidget('button', 'Open Effects Mapping Page', '', () => {
+        const btn = document.querySelector('.tab-btn[data-tab="effects"]');
+        if (btn) {
+          btn.click();
         }
       });
 

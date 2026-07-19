@@ -232,6 +232,19 @@ static uint8_t resolveSoundMode(const MidiMapData &data, const char *sfxPath) {
     return SOUNDBOARD_MODE_PLAY;
 }
 
+static uint8_t resolveMappedAction(const MidiMapData &data, uint8_t note) {
+    uint32_t count = data.actionMappingCount;
+    if (count > MIDI_ACTION_MAPPINGS_MAX) {
+        count = MIDI_ACTION_MAPPINGS_MAX;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        if (data.actionMappings[i].note == note) {
+            return data.actionMappings[i].action;
+        }
+    }
+    return MIDI_ACTION_NONE;
+}
+
 static void copyBounded(char *dst, size_t dstSz, const char *src) {
     if (!dst || dstSz == 0) {
         return;
@@ -561,6 +574,17 @@ void MidiContext::poll() {
                     ++lastNoteSeq;
                     lastNote = d0;
                     lastVelocity = d1;
+                }
+
+                uint8_t mappedAction = resolveMappedAction(cachedMidiMap, d0);
+                if (mappedAction == MIDI_ACTION_STOP_ALL) {
+                    if (app->audio) {
+                        app->audio->stopAllSfx();
+                    }
+                    holdActive = 0;
+                    heldNote = 255;
+                    printf("[MIDI] NOTE ON n=%u v=%u -> action stop_all\n", (unsigned)d0, (unsigned)d1);
+                    continue;
                 }
 
                 // Look up note in midi_map.txt.

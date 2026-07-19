@@ -176,6 +176,63 @@ static int parseSoundModeLine(const char *value,
     return RET_OK;
 }
 
+static uint8_t midiActionFromString(const char *value) {
+    if (!value) {
+        return MIDI_ACTION_NONE;
+    }
+    if (strcmp(value, "stop_all") == 0) {
+        return MIDI_ACTION_STOP_ALL;
+    }
+    return MIDI_ACTION_NONE;
+}
+
+static const char *midiActionToString(uint8_t action) {
+    switch (action) {
+        case MIDI_ACTION_STOP_ALL:
+            return "stop_all";
+        default:
+            return NULL;
+    }
+}
+
+static int parseMidiActionLine(const char *value,
+                               MidiActionMapping *out,
+                               uint32_t *count_in_out) {
+    if (!value || !out || !count_in_out || *count_in_out >= MIDI_ACTION_MAPPINGS_MAX) {
+        return RET_ERR;
+    }
+
+    char buf[256];
+    copyBounded(buf, sizeof(buf), value);
+
+    char *comma = strchr(buf, ',');
+    if (!comma) {
+        return RET_ERR;
+    }
+    *comma = '\0';
+
+    char *noteStr = trimLeft(buf);
+    char *actionStr = trimLeft(comma + 1);
+    trimRight(noteStr);
+    trimRight(actionStr);
+
+    char *endp = NULL;
+    long note = strtol(noteStr, &endp, 10);
+    if (!endp || *endp != '\0' || note < 0 || note > 127) {
+        return RET_ERR;
+    }
+
+    uint8_t action = midiActionFromString(actionStr);
+    if (action == MIDI_ACTION_NONE) {
+        return RET_ERR;
+    }
+
+    out[*count_in_out].note = (uint8_t)note;
+    out[*count_in_out].action = action;
+    ++(*count_in_out);
+    return RET_OK;
+}
+
 static int readMidiMapPath(const char *path, MidiMapData *out) {
     if (!path || !out) {
         return RET_ERR;
@@ -229,6 +286,8 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             (void)parseSoundLightLine(value, data.soundLights, &data.soundLightCount);
         } else if (strcmp(key, "sound_mode") == 0) {
             (void)parseSoundModeLine(value, data.soundModes, &data.soundModeCount);
+        } else if (strcmp(key, "note_action") == 0) {
+            (void)parseMidiActionLine(value, data.actionMappings, &data.actionMappingCount);
         }
     }
 
@@ -348,6 +407,24 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         }
     }
 
+    uint32_t actionCount = data->actionMappingCount;
+    if (actionCount > MIDI_ACTION_MAPPINGS_MAX) {
+        actionCount = MIDI_ACTION_MAPPINGS_MAX;
+    }
+    if (actionCount > 0) {
+        dprintf(fd, "# action mappings: note,action(stop_all)\n");
+        for (uint32_t i = 0; i < actionCount; ++i) {
+            const char *action = midiActionToString(data->actionMappings[i].action);
+            if (!action) {
+                continue;
+            }
+            dprintf(fd,
+                    "note_action=%u,%s\n",
+                    (unsigned)data->actionMappings[i].note,
+                    action);
+        }
+    }
+
     close(fd);
     return RET_OK;
 }
@@ -381,6 +458,10 @@ int ConfigStore::writeMidiMapFile(MidiMapData *data) {
     uint32_t smCount = data->soundModeCount;
     if (smCount > MIDI_SOUND_MODES_MAX) {
         data->soundModeCount = MIDI_SOUND_MODES_MAX;
+    }
+    uint32_t actionCount = data->actionMappingCount;
+    if (actionCount > MIDI_ACTION_MAPPINGS_MAX) {
+        data->actionMappingCount = MIDI_ACTION_MAPPINGS_MAX;
     }
     return writeMidiMapPath(MIDI_MAP_REAL_FILE_PATH, data);
 }

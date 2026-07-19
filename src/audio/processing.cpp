@@ -760,6 +760,19 @@ static void consumeSoundboardTriggers(AudioContext *ctx, RuntimeGraph *rt) {
         return;
     }
 
+    uint32_t stopAll = ctx->pendingSfxStopAll.exchange(0U, std::memory_order_acq_rel);
+    if (stopAll > 0U) {
+        ctx->pendingSfxTriggers.exchange(0U, std::memory_order_acq_rel);
+        ctx->pendingSfxHoldStarts.exchange(0U, std::memory_order_acq_rel);
+        ctx->pendingSfxHoldStops.exchange(0U, std::memory_order_acq_rel);
+        rt->soundboardHoldActive = 0;
+        rt->soundboardClipActive = 0;
+        rt->activeClipPos = rt->activeClipFrames;
+        rt->activeClipFrac = 0.0f;
+        ctx->sfxIsPlaying.store(0, std::memory_order_release);
+        return;
+    }
+
     uint32_t holdStarts = ctx->pendingSfxHoldStarts.exchange(0U, std::memory_order_acq_rel);
     uint32_t holdStops = ctx->pendingSfxHoldStops.exchange(0U, std::memory_order_acq_rel);
 

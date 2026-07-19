@@ -189,6 +189,11 @@ rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE
 	mkdir -p $(ROOTFS_DIR)/etc/www
 	mkdir -p $(ROOTFS_DIR)/lib/modules
 	
+	@echo "Staging root folder contents..."
+	@if [ -d "$(CURDIR)/root" ]; then \
+		cp -a $(CURDIR)/root/* $(ROOTFS_DIR)/; \
+	fi
+	
 	@echo "Staging kernel objects into target lib tree..."
 	cp -r $(OUT_DIR)/modules_staging/* $(ROOTFS_DIR)/lib/modules/
 	cp $(MODULE_LOAD_LIST) $(ROOTFS_DIR)/etc/module-load.list

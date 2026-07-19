@@ -1,4 +1,4 @@
-# audiox - v1.1
+# AudioX
 
 `audiox` is a custom Raspberry Pi audio workstation project that combines a low-level initramfs software stack with a long-term plan for purpose-built audio hardware.
 

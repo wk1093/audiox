@@ -11,8 +11,6 @@
 namespace {
 
 constexpr uint32_t kMaxChannelsPerThing = 16;
-constexpr float kTwoPi = 6.28318530717958647692f;
-constexpr float kSourceToneHz = 220.0f;
 constexpr float kSrcRatioMin = 0.97f;
 constexpr float kSrcRatioMax = 1.03f;
 constexpr float kSrcP = 0.035f;
@@ -22,6 +20,7 @@ constexpr uint32_t kMaxPlaybackStreams = 4;
 constexpr uint32_t kCaptureRingFrames = BUFFER_FRAMES * 16U;
 constexpr uint32_t kReopenRetryBlocks = 200;
 constexpr float kSoundboardClipGain = 0.35f;
+constexpr uint32_t kMaxSoundboardVoices = 64;
 
 struct AdaptiveSrcController {
     float ratio;
@@ -42,6 +41,18 @@ enum NodeKind {
 };
 
 struct RuntimeGraph {
+    struct SoundboardVoice {
+        uint8_t active;
+        uint8_t hold;
+        uint8_t slotIndex;
+        uint8_t channels;
+        uint32_t frames;
+        uint32_t sampleRate;
+        uint32_t pos;
+        float frac;
+        uint64_t startedAtBlock;
+    };
+
     struct CompiledRoute {
         uint16_t srcNode;
         uint16_t dstNode;
@@ -102,16 +113,8 @@ struct RuntimeGraph {
     uint16_t processRouteCount;
     float inputs[AUDIO_GRAPH_MAX_THINGS][kMaxChannelsPerThing][BUFFER_FRAMES];
     float outputs[AUDIO_GRAPH_MAX_THINGS][kMaxChannelsPerThing][BUFFER_FRAMES];
-    float soundboardPhase;
-    float soundboardEnv;
-    uint8_t soundboardClipActive;
-    uint8_t soundboardHoldActive;
-    uint32_t activeClipSlot;
-    uint32_t activeClipFrames;
-    uint32_t activeClipRate;
-    uint8_t activeClipChannels;
-    uint32_t activeClipPos;
-    float activeClipFrac;
+    SoundboardVoice soundboardVoices[kMaxSoundboardVoices];
+    int16_t holdVoiceIndex;
     int16_t nodeToCaptureStream[AUDIO_GRAPH_MAX_THINGS];
     int16_t nodeToPlaybackStream[AUDIO_GRAPH_MAX_THINGS];
     int16_t soundboardNodeIndex;
@@ -121,6 +124,8 @@ struct RuntimeGraph {
     uint16_t playbackCount;
     uint64_t blocksProcessed;
     uint64_t nextStatsBlock;
+    uint32_t publishedPlayingCount;
+    char publishedPlayingBasenames[AUDIO_SFX_SLOT_COUNT][MIDI_SFX_PATH_MAX];
     std::atomic<float> channelLevels[AUDIO_GRAPH_MAX_THINGS][kMaxChannelsPerThing];
 };
 
@@ -755,6 +760,111 @@ static void closeAllStreams(RuntimeGraph *rt) {
     rt->playbackCount = 0;
 }
 
+static void releaseSfxSlotRef(AudioContext *ctx, uint8_t slotIndex) {
+    if (!ctx || slotIndex >= AUDIO_SFX_SLOT_COUNT) {
+        return;
+    }
+
+    while (1) {
+        uint32_t current = ctx->sfxSlotRefs[slotIndex].load(std::memory_order_acquire);
+        if (current == 0U) {
+            return;
+        }
+        if (ctx->sfxSlotRefs[slotIndex].compare_exchange_weak(current,
+                                                              current - 1U,
+                                                              std::memory_order_acq_rel,
+                                                              std::memory_order_acquire)) {
+            return;
+        }
+    }
+}
+
+static void stopVoice(AudioContext *ctx, RuntimeGraph *rt, uint32_t voiceIndex) {
+    if (!ctx || !rt || voiceIndex >= kMaxSoundboardVoices) {
+        return;
+    }
+
+    RuntimeGraph::SoundboardVoice &voice = rt->soundboardVoices[voiceIndex];
+    if (!voice.active) {
+        return;
+    }
+
+    releaseSfxSlotRef(ctx, voice.slotIndex);
+    voice.active = 0;
+    voice.hold = 0;
+    if (rt->holdVoiceIndex == (int16_t)voiceIndex) {
+        rt->holdVoiceIndex = -1;
+    }
+}
+
+static void stopAllVoices(AudioContext *ctx, RuntimeGraph *rt) {
+    if (!ctx || !rt) {
+        return;
+    }
+    for (uint32_t i = 0; i < kMaxSoundboardVoices; ++i) {
+        stopVoice(ctx, rt, i);
+    }
+    rt->holdVoiceIndex = -1;
+}
+
+static void drainQueuedSfxEvents(AudioContext *ctx) {
+    if (!ctx) {
+        return;
+    }
+
+    uint32_t read = ctx->sfxQueueRead.load(std::memory_order_relaxed);
+    uint32_t write = ctx->sfxQueueWrite.load(std::memory_order_acquire);
+    while (read < write) {
+        const AudioSfxTriggerEvent &ev = ctx->sfxQueue[read % AUDIO_SFX_QUEUE_CAP];
+        releaseSfxSlotRef(ctx, ev.slotIndex);
+        ++read;
+    }
+    ctx->sfxQueueRead.store(read, std::memory_order_release);
+}
+
+static int pickVoiceForStart(const RuntimeGraph *rt, bool forHold) {
+    if (!rt) {
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < kMaxSoundboardVoices; ++i) {
+        if (!rt->soundboardVoices[i].active) {
+            return (int)i;
+        }
+    }
+
+    int selected = -1;
+    uint64_t oldest = UINT64_MAX;
+    for (uint32_t i = 0; i < kMaxSoundboardVoices; ++i) {
+        const RuntimeGraph::SoundboardVoice &v = rt->soundboardVoices[i];
+        if (!v.active) {
+            continue;
+        }
+        if (!forHold && v.hold) {
+            continue;
+        }
+        if (v.startedAtBlock < oldest) {
+            oldest = v.startedAtBlock;
+            selected = (int)i;
+        }
+    }
+
+    if (selected >= 0) {
+        return selected;
+    }
+
+    oldest = UINT64_MAX;
+    for (uint32_t i = 0; i < kMaxSoundboardVoices; ++i) {
+        const RuntimeGraph::SoundboardVoice &v = rt->soundboardVoices[i];
+        if (v.active && v.startedAtBlock < oldest) {
+            oldest = v.startedAtBlock;
+            selected = (int)i;
+        }
+    }
+
+    return selected;
+}
+
 static void consumeSoundboardTriggers(AudioContext *ctx, RuntimeGraph *rt) {
     if (!ctx || !rt) {
         return;
@@ -762,69 +872,70 @@ static void consumeSoundboardTriggers(AudioContext *ctx, RuntimeGraph *rt) {
 
     uint32_t stopAll = ctx->pendingSfxStopAll.exchange(0U, std::memory_order_acq_rel);
     if (stopAll > 0U) {
-        ctx->pendingSfxTriggers.exchange(0U, std::memory_order_acq_rel);
-        ctx->pendingSfxHoldStarts.exchange(0U, std::memory_order_acq_rel);
         ctx->pendingSfxHoldStops.exchange(0U, std::memory_order_acq_rel);
-        rt->soundboardHoldActive = 0;
-        rt->soundboardClipActive = 0;
-        rt->activeClipPos = rt->activeClipFrames;
-        rt->activeClipFrac = 0.0f;
+        stopAllVoices(ctx, rt);
+        drainQueuedSfxEvents(ctx);
         ctx->sfxIsPlaying.store(0, std::memory_order_release);
         return;
     }
 
-    uint32_t holdStarts = ctx->pendingSfxHoldStarts.exchange(0U, std::memory_order_acq_rel);
     uint32_t holdStops = ctx->pendingSfxHoldStops.exchange(0U, std::memory_order_acq_rel);
-
     if (holdStops > 0U) {
-        rt->soundboardHoldActive = 0;
-        rt->soundboardClipActive = 0;
-        rt->activeClipPos = rt->activeClipFrames;
-        rt->activeClipFrac = 0.0f;
-        ctx->sfxIsPlaying.store(0, std::memory_order_release);
+        if (rt->holdVoiceIndex >= 0) {
+            stopVoice(ctx, rt, (uint32_t)rt->holdVoiceIndex);
+        }
+        rt->holdVoiceIndex = -1;
     }
 
-    if (holdStarts > 0U) {
-        uint32_t activeSlot = ctx->sfxActiveSlot.load(std::memory_order_acquire) & 1U;
-        const AudioSfxClipSlot &clip = ctx->sfxSlots[activeSlot];
-        rt->activeClipSlot = activeSlot;
-        rt->activeClipFrames = clip.frames;
-        rt->activeClipRate = clip.sampleRate;
-        rt->activeClipChannels = clip.channels;
-        rt->activeClipPos = 0;
-        rt->activeClipFrac = 0.0f;
-        rt->soundboardClipActive = (clip.frames > 0U) ? 1U : 0U;
-        rt->soundboardHoldActive = rt->soundboardClipActive;
-        if (rt->soundboardClipActive) {
-            ctx->sfxIsPlaying.store(1, std::memory_order_release);
+    uint32_t read = ctx->sfxQueueRead.load(std::memory_order_relaxed);
+    uint32_t write = ctx->sfxQueueWrite.load(std::memory_order_acquire);
+    while (read < write) {
+        const AudioSfxTriggerEvent ev = ctx->sfxQueue[read % AUDIO_SFX_QUEUE_CAP];
+        ++read;
+
+        if (ev.slotIndex >= AUDIO_SFX_SLOT_COUNT) {
+            continue;
+        }
+
+        const AudioSfxClipSlot &clip = ctx->sfxSlots[ev.slotIndex];
+        if (!clip.loaded ||
+            !clip.pcm ||
+            clip.frames == 0U ||
+            clip.sampleRate == 0U ||
+            (clip.channels != 1U && clip.channels != 2U)) {
+            releaseSfxSlotRef(ctx, ev.slotIndex);
+            continue;
+        }
+
+        bool startAsHold = (ev.holdStart != 0U);
+        if (startAsHold && rt->holdVoiceIndex >= 0) {
+            stopVoice(ctx, rt, (uint32_t)rt->holdVoiceIndex);
+        }
+
+        int voiceIndex = pickVoiceForStart(rt, startAsHold);
+        if (voiceIndex < 0) {
+            releaseSfxSlotRef(ctx, ev.slotIndex);
+            continue;
+        }
+
+        stopVoice(ctx, rt, (uint32_t)voiceIndex);
+        RuntimeGraph::SoundboardVoice &voice = rt->soundboardVoices[(uint32_t)voiceIndex];
+        voice.active = 1U;
+        voice.hold = startAsHold ? 1U : 0U;
+        voice.slotIndex = ev.slotIndex;
+        voice.channels = clip.channels;
+        voice.frames = clip.frames;
+        voice.sampleRate = clip.sampleRate;
+        voice.pos = 0U;
+        voice.frac = 0.0f;
+        voice.startedAtBlock = rt->blocksProcessed;
+
+        if (startAsHold) {
+            rt->holdVoiceIndex = (int16_t)voiceIndex;
         }
     }
 
-    uint32_t pending = ctx->pendingSfxTriggers.exchange(0U, std::memory_order_acq_rel);
-    if (pending == 0) {
-        return;
-    }
-
-    uint32_t activeSlot = ctx->sfxActiveSlot.load(std::memory_order_acquire) & 1U;
-    const AudioSfxClipSlot &clip = ctx->sfxSlots[activeSlot];
-    rt->activeClipSlot = activeSlot;
-    rt->activeClipFrames = clip.frames;
-    rt->activeClipRate = clip.sampleRate;
-    rt->activeClipChannels = clip.channels;
-    rt->activeClipPos = 0;
-    rt->activeClipFrac = 0.0f;
-    rt->soundboardClipActive = (clip.frames > 0U) ? 1U : 0U;
-    rt->soundboardHoldActive = 0;
-
-    if (rt->soundboardClipActive) {
-        ctx->sfxIsPlaying.store(1, std::memory_order_release);
-    }
-
-    if (holdStops > 0U && rt->soundboardHoldActive) {
-        rt->soundboardHoldActive = 0;
-        rt->soundboardClipActive = 0;
-        ctx->sfxIsPlaying.store(0, std::memory_order_release);
-    }
+    ctx->sfxQueueRead.store(read, std::memory_order_release);
 }
 
 static bool tryReadPublishedGraph(const AudioContext *ctx,
@@ -1031,7 +1142,7 @@ static void updateChannelLevels(AudioContext *ctx, RuntimeGraph *rt) {
     }
 }
 
-static void renderSourceNode(const AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex) {
+static void renderSourceNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex) {
     if (!ctx || !rt || nodeIndex >= rt->snapshot.thingCount) {
         return;
     }
@@ -1099,79 +1210,58 @@ static void renderSourceNode(const AudioContext *ctx, RuntimeGraph *rt, uint16_t
     }
 
     if (thingIdEquals(thing, "soundboard_out")) {
-        float phase = rt->soundboardPhase;
-        float inc = (kTwoPi * kSourceToneHz) / (float)SAMPLE_RATE;
-        float env = rt->soundboardEnv;
-        uint32_t clipFrames = rt->activeClipFrames;
-        uint32_t clipRate = rt->activeClipRate;
-        uint8_t clipChannels = rt->activeClipChannels;
-        const AudioSfxClipSlot &clip = ctx->sfxSlots[rt->activeClipSlot & 1U];
-
         for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
-            float target = rt->soundboardClipActive ? 1.0f : 0.0f;
-            if (target > env) {
-                env += 0.02f;
-                if (env > target) {
-                    env = target;
-                }
-            } else {
-                env *= 0.997f;
-                if (env < 0.0001f) {
-                    env = 0.0f;
-                }
-            }
-
             float s = 0.0f;
 
-            if (rt->soundboardClipActive &&
-                clipFrames > 0U &&
-                clipRate > 0U &&
-                (clipChannels == 1U || clipChannels == 2U)) {
-                if (rt->activeClipPos >= clipFrames) {
-                    rt->soundboardClipActive = 0;
+            for (uint32_t voiceIndex = 0; voiceIndex < kMaxSoundboardVoices; ++voiceIndex) {
+                RuntimeGraph::SoundboardVoice &voice = rt->soundboardVoices[voiceIndex];
+                if (!voice.active) {
+                    continue;
+                }
+
+                if (voice.slotIndex >= AUDIO_SFX_SLOT_COUNT ||
+                    voice.frames == 0U ||
+                    voice.sampleRate == 0U ||
+                    (voice.channels != 1U && voice.channels != 2U) ||
+                    voice.pos >= voice.frames) {
+                    stopVoice(ctx, rt, voiceIndex);
+                    continue;
+                }
+
+                const AudioSfxClipSlot &clip = ctx->sfxSlots[voice.slotIndex];
+                if (!clip.loaded || !clip.pcm) {
+                    stopVoice(ctx, rt, voiceIndex);
+                    continue;
+                }
+                uint32_t posA = voice.pos;
+                uint32_t posB = (posA + 1U < voice.frames) ? (posA + 1U) : posA;
+                float a = (float)clip.pcm[posA * voice.channels] / 32768.0f;
+                float b = (float)clip.pcm[posB * voice.channels] / 32768.0f;
+                s += (a + ((b - a) * voice.frac)) * kSoundboardClipGain;
+
+                float clipStep = (float)voice.sampleRate / (float)SAMPLE_RATE;
+                voice.frac += clipStep;
+                while (voice.frac >= 1.0f && voice.pos < voice.frames) {
+                    ++voice.pos;
+                    voice.frac -= 1.0f;
+                }
+
+                if (voice.pos >= voice.frames) {
+                    stopVoice(ctx, rt, voiceIndex);
                 }
             }
 
-            if (rt->soundboardClipActive &&
-                clipFrames > 0U &&
-                clipRate > 0U &&
-                (clipChannels == 1U || clipChannels == 2U) &&
-                rt->activeClipPos < clipFrames) {
-                uint32_t posA = rt->activeClipPos;
-                uint32_t posB = (posA + 1U < clipFrames) ? (posA + 1U) : posA;
-                uint8_t ch0 = 0;
-                float a = (float)clip.pcm[posA * clipChannels + ch0] / 32768.0f;
-                float b = (float)clip.pcm[posB * clipChannels + ch0] / 32768.0f;
-                s = (a + ((b - a) * rt->activeClipFrac)) * env * kSoundboardClipGain;
-                if (s > 0.98f) {
-                    s = 0.98f;
-                }
-                if (s < -0.98f) {
-                    s = -0.98f;
-                }
-
-                float clipStep = (float)clipRate / (float)SAMPLE_RATE;
-                rt->activeClipFrac += clipStep;
-                while (rt->activeClipFrac >= 1.0f && rt->activeClipPos < clipFrames) {
-                    ++rt->activeClipPos;
-                    rt->activeClipFrac -= 1.0f;
-                }
-
-                if (rt->activeClipPos >= clipFrames) {
-                    rt->soundboardClipActive = 0;
-                }
+            if (s > 0.98f) {
+                s = 0.98f;
+            }
+            if (s < -0.98f) {
+                s = -0.98f;
             }
 
             for (uint8_t ch = 0; ch < outChannels; ++ch) {
                 rt->outputs[nodeIndex][ch][frame] = s;
             }
-            phase += inc;
-            if (phase >= kTwoPi) {
-                phase -= kTwoPi;
-            }
         }
-        rt->soundboardPhase = phase;
-        rt->soundboardEnv = env;
         return;
     }
 
@@ -1222,6 +1312,78 @@ static void processNode(RuntimeGraph *rt, uint16_t nodeIndex) {
             rt->outputs[nodeIndex][ch][frame] = s;
         }
     }
+}
+
+static void publishPlayingSfxSet(AudioContext *ctx, RuntimeGraph *rt) {
+    if (!ctx || !rt) {
+        return;
+    }
+
+    char names[AUDIO_SFX_SLOT_COUNT][MIDI_SFX_PATH_MAX];
+    uint32_t count = 0;
+    memset(names, 0, sizeof(names));
+
+    for (uint32_t i = 0; i < kMaxSoundboardVoices && count < AUDIO_SFX_SLOT_COUNT; ++i) {
+        const RuntimeGraph::SoundboardVoice &voice = rt->soundboardVoices[i];
+        if (!voice.active || voice.hold || voice.slotIndex >= AUDIO_SFX_SLOT_COUNT) {
+            continue;
+        }
+
+        const AudioSfxClipSlot &slot = ctx->sfxSlots[voice.slotIndex];
+        if (!slot.loaded || !slot.name[0]) {
+            continue;
+        }
+
+        bool exists = false;
+        for (uint32_t j = 0; j < count; ++j) {
+            if (strcmp(names[j], slot.name) == 0) {
+                exists = true;
+                break;
+            }
+        }
+        if (exists) {
+            continue;
+        }
+
+        size_t n = strnlen(slot.name, MIDI_SFX_PATH_MAX - 1);
+        memcpy(names[count], slot.name, n);
+        names[count][n] = '\0';
+        ++count;
+    }
+
+    bool changed = (count != rt->publishedPlayingCount);
+    if (!changed) {
+        for (uint32_t i = 0; i < count; ++i) {
+            if (strcmp(rt->publishedPlayingBasenames[i], names[i]) != 0) {
+                changed = true;
+                break;
+            }
+        }
+    }
+
+    if (!changed) {
+        return;
+    }
+
+    rt->publishedPlayingCount = count;
+    memset(rt->publishedPlayingBasenames, 0, sizeof(rt->publishedPlayingBasenames));
+    for (uint32_t i = 0; i < count; ++i) {
+        size_t n = strnlen(names[i], MIDI_SFX_PATH_MAX - 1);
+        memcpy(rt->publishedPlayingBasenames[i], names[i], n);
+        rt->publishedPlayingBasenames[i][n] = '\0';
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(ctx->sfxPlayingMutex);
+        ctx->sfxPlayingCount = count;
+        memset(ctx->sfxPlayingBasenames, 0, sizeof(ctx->sfxPlayingBasenames));
+        for (uint32_t i = 0; i < count; ++i) {
+            size_t n = strnlen(names[i], MIDI_SFX_PATH_MAX - 1);
+            memcpy(ctx->sfxPlayingBasenames[i], names[i], n);
+            ctx->sfxPlayingBasenames[i][n] = '\0';
+        }
+    }
+    ctx->sfxPlayingSeq.fetch_add(1U, std::memory_order_release);
 }
 
 static void rebuildRuntimeGraph(RuntimeGraph *rt, const AudioGraphState &graph) {
@@ -1409,10 +1571,19 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
 
     servicePlaybackIo(rt);
 
-    // Update play-state for MIDI lighting.  If no clip is running, clear the flag.
-    bool clipActive = (rt->soundboardClipActive &&
-                       rt->activeClipFrames > 0 &&
-                       rt->activeClipPos < rt->activeClipFrames);
+    publishPlayingSfxSet(ctx, rt);
+
+    bool clipActive = false;
+    for (uint32_t i = 0; i < kMaxSoundboardVoices; ++i) {
+        if (rt->soundboardVoices[i].active) {
+            clipActive = true;
+            break;
+        }
+    }
+
+    if (clipActive && !ctx->sfxIsPlaying.load(std::memory_order_relaxed)) {
+        ctx->sfxIsPlaying.store(1, std::memory_order_release);
+    }
     if (!clipActive && ctx->sfxIsPlaying.load(std::memory_order_relaxed)) {
         ctx->sfxIsPlaying.store(0, std::memory_order_release);
     }
@@ -1484,6 +1655,7 @@ static void *audioProcessingThreadMain(void *arg) {
     }
 
     RuntimeGraph runtime = {};
+    runtime.holdVoiceIndex = -1;
     uint32_t lastGraphGeneration = 0;
     uint32_t lastGraphSeq = 0;
     timespec nextDeadline = monotonicNow();

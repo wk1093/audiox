@@ -52,13 +52,13 @@ uint8_t soundboardModeFromString(const char *value);
 
 // Global MIDI lighting config: one velocity per state, one channel for all output.
 // "mapped"  = button is assigned to a sound but not active
-// "held"    = button is physically held (for future hold mode)
 // "playing" = clip is playing in non-hold mode but button is no longer held
+// "stop_all" = button assigned to stop-all action
 struct MidiLightGlobal {
     uint8_t channel;    // MIDI channel 0-15
     uint8_t mappedVel;  // note-on velocity for mapped/idle state (0 = off)
-    uint8_t heldVel;    // note-on velocity for held state
     uint8_t playingVel; // note-on velocity for playing state
+    uint8_t stopAllVel; // note-on velocity for stop-all action mapping
 };
 
 // Per-sound lighting override.  If present, these velocities replace global values
@@ -66,10 +66,8 @@ struct MidiLightGlobal {
 struct MidiSoundLight {
     char sfxPath[MIDI_SFX_PATH_MAX]; // basename, e.g. "kick.wav"
     uint8_t hasMapped;
-    uint8_t hasHeld;
     uint8_t hasPlaying;
     uint8_t mappedVel;
-    uint8_t heldVel;
     uint8_t playingVel;
 };
 

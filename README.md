@@ -4,6 +4,10 @@
 
 Right now it boots through a tiny custom bootloader initramfs into a separate runtime initramfs, brings up a USB UAC2 gadget, plays local WAV voices, routes audio with real-time metering, and renders touchscreen + MIDI control with a responsive framebuffer UI; long term the same software will drive multiple reverse-HAT board variants with patchable analog/digital routing, effects, and persistent user configuration.
 
+Warning: This is very work-in-progress and not yet stable. The `make dev` target will build and upload a new runtime image, but be warned that certain updates require a full reflash (via `make fancyexport` or `make image`) to work properly. The bootloader is very simple and does not have a recovery mode, so if you break the runtime image you will need to reflash the SD card.
+
+Once I believe this is stable enough for general use, I will release v2.0.0
+
 ## What it does
 
 - Loads boot-critical modules first from `/etc/module-load.base.list`, then normal modules from `/etc/module-load.normal.list`

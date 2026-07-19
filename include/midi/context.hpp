@@ -22,9 +22,10 @@ struct MidiContext {
     // Lighting state
     MidiMapData cachedMidiMap;
     uint64_t nextMidiMapReloadMs;
-    uint8_t  currentLitNote;  // note currently in "playing" state; 255 = none
-    int      sfxWasPlaying;   // previous sfxIsPlaying value
-    uint32_t cachedTriggerSeq;
+    uint32_t cachedPlayingSeq;
+    uint32_t cachedPlayingCount;
+    char cachedPlayingSfx[MIDI_MAPPINGS_MAX][MIDI_SFX_PATH_MAX];
+    uint8_t ledStateByNote[128];
     uint8_t heldNote;
     int holdActive;
 
@@ -42,7 +43,5 @@ struct MidiContext {
     // Refresh all mapped buttons to their "mapped" (idle) lighting state.
     void refreshAllLighting();
 
-    // Called when a sound starts/stops playing so lighting can be updated.
-    void notifySoundStarted(const char *sfxBasename);
-    void notifySoundStopped();
+    void refreshLightingFromState();
 };

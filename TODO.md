@@ -32,10 +32,9 @@ Roadmap for future audiox development.
 
 ## More Later - v1.3+
 
-- [ ] Polyphonic soundboard playback
+- [x] Polyphonic soundboard playback
 - [ ] Ability to set a certain midi channel as "keyboard" so that those notes don't map to soundboard or other triggers, but are used for a sampler instrument.
 - [ ] Ability to set a certain midi button to be a "sampler mode" toggle, where soundboard buttons don't trigger clips, but set the current sample to be played by the keyboard notes.
-- [ ] More "modes" for advanced functionality, like mixing, routing, and effects. These modes would be accessible via the WebUI and/or MIDI buttons.
 
 The above last two features are mainly to improve my setup, but could probably be useful for others as well. This is kinda tailored to my midi controller (AKAI APC Key 25) which has an upper section with a bunch of buttons on one channel (which I will use for soundboard clips, and control buttons for sampler mode, muting, effect, etc), and also has knobs which i can use to control effects and volumes. the lower section is a keyboard on a separate midi channel, which I would like to use as a sampler keyboard, so I can select a soundboard clip and play it at different pitches. If sample mode is enabled, and we select clip X for example, and then we disable sampler mode, than the soundboard buttons will trigger clips again, but the keyboard will still play the last selected clip X at different pitches.
 
@@ -48,7 +47,8 @@ The above last two features are mainly to improve my setup, but could probably b
 ## Very Later - v1.5+
 
 - [ ] Add audio effects (reverb, delay, etc) to the audio engine, and make it so they can be routed to any output, and have their parameters controlled via the HTTP API as well as bindable MIDI CCs and buttons (for toggling effects on/off)
-- [ ] Allow controlling routes with MIDI CCs and buttons
+- [ ] Allow controlling routes/effects with MIDI CCs and buttons
+- [ ] Improve the bootloader to be able to do a bit more like changing boot files, not just the initram. Create a custom format (or just use a tar or something) and a web ui for updating the firmware. Also implement a recovery, where the previous working initramfs will be backed up, and if the bootloader detects that the new one is broken it will boot into the previous one. This is mainly to make it easier to recover from a broken initram (sometimes I cause kernel panics).
 
 ## Perhaps - v1.6+
 

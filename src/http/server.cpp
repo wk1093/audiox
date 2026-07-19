@@ -21,6 +21,8 @@
 #define HTTP_INITRAM_PATH "/api/initram"
 #define HTTP_INITRAM_MAX (64u * 1024u * 1024u)
 #define HTTP_INITRAM_RCV_TIMEOUT_SEC 10
+#define HTTP_ROOTFS_PREFIX "/api/rootfs/"
+#define HTTP_ROOTFS_UPLOAD_MAX (32u * 1024u * 1024u)
 
 #define HTTP_API_PREFIX "/api/"
 #define HTTP_DEFAULT_HTML_PATH "/etc/www/index.html"
@@ -225,6 +227,145 @@ static int handleInitramUpload(HttpServer *server,
     return 0;
 }
 
+static int safeApiSuffix(const char *suffix) {
+    if (!suffix) {
+        return 0;
+    }
+    if (!suffix[0]) {
+        return 1;
+    }
+    if (strstr(suffix, "..") != NULL) {
+        return 0;
+    }
+    if (strchr(suffix, '\\') != NULL) {
+        return 0;
+    }
+    return 1;
+}
+
+static int ensureParentDirs(const char *path) {
+    if (!path || !path[0]) {
+        return -1;
+    }
+
+    char tmp[512];
+    size_t n = strnlen(path, sizeof(tmp) - 1);
+    if (n == 0 || n >= sizeof(tmp) - 1) {
+        return -1;
+    }
+    memcpy(tmp, path, n);
+    tmp[n] = '\0';
+
+    for (char *p = tmp + 1; *p; ++p) {
+        if (*p != '/') {
+            continue;
+        }
+        *p = '\0';
+        if (mkdir(tmp, 0755) < 0 && errno != EEXIST) {
+            return -1;
+        }
+        *p = '/';
+    }
+
+    return 0;
+}
+
+static int handleRootfsUpload(HttpServer *server,
+                              int cfd,
+                              const char *path,
+                              const char *initial_body,
+                              size_t initial_body_len,
+                              size_t content_length) {
+    if (!server || !path || strncmp(path, HTTP_ROOTFS_PREFIX, strlen(HTTP_ROOTFS_PREFIX)) != 0) {
+        return -1;
+    }
+
+    const char *suffix = path + strlen(HTTP_ROOTFS_PREFIX);
+    if (!safeApiSuffix(suffix) || !suffix[0] || suffix[strlen(suffix) - 1] == '/') {
+        static const char bad[] = "bad file path\n";
+        return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+    }
+
+    if (content_length == 0) {
+        static const char bad[] = "missing body\n";
+        return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+    }
+
+    if (content_length > HTTP_ROOTFS_UPLOAD_MAX) {
+        static const char too_large[] = "payload too large\n";
+        return server->sendResponse(cfd, "413 Payload Too Large", "text/plain; charset=utf-8", too_large, sizeof(too_large) - 1);
+    }
+
+    char fs_path[512];
+    int pn = snprintf(fs_path, sizeof(fs_path), "%s%s", ROOT_MOUNT_POINT "/", suffix);
+    if (pn <= 0 || (size_t)pn >= sizeof(fs_path)) {
+        static const char bad[] = "path too long\n";
+        return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+    }
+
+    if (ensureParentDirs(fs_path) < 0) {
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "mkdir failed", errno);
+    }
+
+    int fd = open(fs_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "open failed", errno);
+    }
+
+    size_t written = 0;
+    size_t initial_write = initial_body_len;
+    if (initial_write > content_length) {
+        initial_write = content_length;
+    }
+    if (initial_write > 0 && writeAllToFd(fd, initial_body, initial_write) < 0) {
+        int saved_errno = errno;
+        close(fd);
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "write failed", saved_errno);
+    }
+    written = initial_write;
+
+    char buf[16384];
+    while (written < content_length) {
+        size_t want = content_length - written;
+        if (want > sizeof(buf)) {
+            want = sizeof(buf);
+        }
+
+        ssize_t nr = recv(cfd, buf, want, 0);
+        if (nr < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            int saved_errno = errno;
+            close(fd);
+            return sendErrnoResponse(server, cfd, "500 Internal Server Error", "upload read failed", saved_errno);
+        }
+        if (nr == 0) {
+            close(fd);
+            static const char err[] = "incomplete upload\n";
+            return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+        }
+
+        if (writeAllToFd(fd, buf, (size_t)nr) < 0) {
+            int saved_errno = errno;
+            close(fd);
+            return sendErrnoResponse(server, cfd, "500 Internal Server Error", "write failed", saved_errno);
+        }
+
+        written += (size_t)nr;
+    }
+
+    if (fsync(fd) < 0) {
+        int saved_errno = errno;
+        close(fd);
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "fsync failed", saved_errno);
+    }
+    close(fd);
+
+    static const char ok[] = "ok\n";
+    return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
+}
+
 static ssize_t findHeaderEnd(const char *buf, size_t len) {
     if (!buf || len < 4) {
         return -1;
@@ -391,6 +532,20 @@ static void handleClient(HttpServer *server, int cfd) {
                                   req + body_off,
                                   initial_body_len,
                                   (size_t)content_length);
+        return;
+    }
+
+    if (strcmp(method, "PUT") == 0 &&
+        strncmp(path, HTTP_ROOTFS_PREFIX, strlen(HTTP_ROOTFS_PREFIX)) == 0) {
+        if (setSocketTimeouts(cfd, 10000, 5000) < 0) {
+            printf("[INIT] [WARN] failed to set rootfs upload socket timeout: %s\n", strerror(errno));
+        }
+        (void)handleRootfsUpload(server,
+                                 cfd,
+                                 path,
+                                 req + body_off,
+                                 initial_body_len,
+                                 (size_t)content_length);
         return;
     }
 

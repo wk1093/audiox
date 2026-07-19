@@ -7,6 +7,7 @@ const tabsEl = document.getElementById('tabs');
 const appVersionEl = document.getElementById('app-version');
 const sbGridEl = document.getElementById('sb-grid');
 const sbMappingStatusEl = document.getElementById('sb-mapping-status');
+const sbStopAllMidiEl = document.getElementById('sb-stop-all-midi');
 const inspectorEl = document.getElementById('route-inspector');
 const nodeCountEl = document.getElementById('metric-node-count');
 const routeCountEl = document.getElementById('metric-route-count');
@@ -40,6 +41,7 @@ const state = {
   thingsPollInFlight: false,
   thingsSignature: '',
   soundboardModesBySfx: {},
+  stopAllMidiNote: null,
 };
 
 function setStatus(text, kind = '') {
@@ -1084,6 +1086,32 @@ async function triggerSfx(fileName, action = 'trigger') {
   }
 }
 
+async function triggerStopAll() {
+  setStatus('stopping all clips...');
+  try {
+    const res = await fetch('/api/soundboard/stop_all', { method: 'POST' });
+    const txt = await res.text();
+    if (!res.ok) {
+      setStatus(`error: ${res.status} ${txt.trim()}`, 'warn');
+      return;
+    }
+    setStatus(txt.trim() || 'all clips stopped', 'ok');
+  } catch (err) {
+    setStatus(`request failed: ${err}`, 'warn');
+  }
+}
+
+function renderStopAllMidiStatus() {
+  if (!sbStopAllMidiEl) {
+    return;
+  }
+  if (state.stopAllMidiNote === null || state.stopAllMidiNote === undefined) {
+    sbStopAllMidiEl.textContent = 'Stop All MIDI: unassigned';
+    return;
+  }
+  sbStopAllMidiEl.textContent = `Stop All MIDI: note ${state.stopAllMidiNote}`;
+}
+
 async function loadSoundboardModes() {
   try {
     const res = await fetch('/api/soundboard/modes', { method: 'GET' });
@@ -1395,6 +1423,88 @@ async function loadMappings() {
   } catch (err) {}
 }
 
+async function loadMidiActions() {
+  try {
+    const res = await fetch('/api/midi/actions', { method: 'GET' });
+    const txt = await res.text();
+    if (!res.ok) {
+      state.stopAllMidiNote = null;
+      renderStopAllMidiStatus();
+      return;
+    }
+
+    const data = JSON.parse(txt);
+    state.stopAllMidiNote = null;
+    const actions = Array.isArray(data?.actions) ? data.actions : [];
+    for (const item of actions) {
+      if (String(item?.action || '') !== 'stop_all') {
+        continue;
+      }
+      const note = Number(item?.note);
+      if (Number.isFinite(note) && note >= 0 && note <= 127) {
+        state.stopAllMidiNote = note;
+        break;
+      }
+    }
+    renderStopAllMidiStatus();
+  } catch (_) {
+    state.stopAllMidiNote = null;
+    renderStopAllMidiStatus();
+  }
+}
+
+async function saveStopAllActionMapping(note) {
+  if (!Number.isFinite(note) || note < 0 || note > 127) {
+    setStatus('invalid midi note, expected 0-127', 'warn');
+    return;
+  }
+
+  try {
+    const body = `note=${note}&action=stop_all`;
+    const res = await fetch('/api/midi/action/set', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body,
+    });
+    const txt = (await res.text()).trim();
+    if (!res.ok) {
+      setStatus(`action mapping save failed: ${res.status} ${txt}`, 'warn');
+      return;
+    }
+
+    await loadMappings();
+    await loadMidiActions();
+    setStatus(`mapped note ${note} -> stop all`, 'ok');
+  } catch (err) {
+    setStatus(`action mapping save error: ${err}`, 'warn');
+  }
+}
+
+async function deleteStopAllActionMapping() {
+  if (!Number.isFinite(state.stopAllMidiNote)) {
+    setStatus('no stop-all MIDI mapping to remove', 'warn');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/midi/action/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: `note=${state.stopAllMidiNote}`,
+    });
+    const txt = (await res.text()).trim();
+    if (!res.ok) {
+      setStatus(`action mapping delete failed: ${res.status} ${txt}`, 'warn');
+      return;
+    }
+
+    await loadMidiActions();
+    setStatus('stop-all MIDI mapping removed', 'ok');
+  } catch (err) {
+    setStatus(`action mapping delete error: ${err}`, 'warn');
+  }
+}
+
 async function saveMapping(note, sfx) {
   if (!Number.isFinite(note) || note < 0 || note > 127) {
     setStatus('invalid midi note, expected 0-127', 'warn');
@@ -1482,8 +1592,13 @@ async function pollMappingCapture() {
         clearInterval(state.mappingPollTimer);
         state.mappingPollTimer = null;
       }
-      await saveMapping(note, target);
-      sbMappingStatusEl.textContent = `Assigned note ${note} to "${target}".`;
+      if (target === '__action_stop_all__') {
+        await saveStopAllActionMapping(note);
+        sbMappingStatusEl.textContent = `Assigned note ${note} to stop all.`;
+      } else {
+        await saveMapping(note, target);
+        sbMappingStatusEl.textContent = `Assigned note ${note} to "${target}".`;
+      }
       renderSoundboardGrid();
     }
   } catch (err) {}
@@ -1495,6 +1610,7 @@ async function initializeGraphFromConfig() {
   await loadSoundboardModes();
   await listSfxFiles();
   await loadMappings();
+  await loadMidiActions();
   await loadRoutingThings();
   await loadRoutingFile();
   state.edgeDeleteEnabled = true;
@@ -1602,9 +1718,44 @@ document.getElementById('btn-upload-clear').addEventListener('click', () => {
 document.getElementById('btn-sb-refresh').addEventListener('click', async () => {
   await listSfxFiles();
   await loadMappings();
+  await loadMidiActions();
   await loadLightConfig();
   await loadSoundboardModes();
   setStatus('soundboard refreshed', 'ok');
+});
+
+document.getElementById('btn-sb-stop-all').addEventListener('click', triggerStopAll);
+
+document.getElementById('btn-sb-assign-stop-all').addEventListener('click', async () => {
+  const isTarget = state.mappingAssignTarget === '__action_stop_all__';
+  if (isTarget) {
+    state.mappingAssignTarget = null;
+    if (state.mappingPollTimer) {
+      clearInterval(state.mappingPollTimer);
+      state.mappingPollTimer = null;
+    }
+    sbMappingStatusEl.textContent = 'Assignment cancelled.';
+    return;
+  }
+
+  try {
+    const r = await fetch('/api/midi/last_note', { method: 'GET' });
+    if (r.ok) {
+      const d = JSON.parse(await r.text());
+      state.mappingLastSeq = Number(d.last_seq || 0);
+    }
+  } catch (_) {}
+
+  state.mappingAssignTarget = '__action_stop_all__';
+  if (!state.mappingPollTimer) {
+    state.mappingPollTimer = setInterval(pollMappingCapture, 220);
+  }
+  sbMappingStatusEl.textContent = 'Press a MIDI button to map stop all.';
+  renderSoundboardGrid();
+});
+
+document.getElementById('btn-sb-clear-stop-all').addEventListener('click', async () => {
+  await deleteStopAllActionMapping();
 });
 
 document.getElementById('btn-system-sync').addEventListener('click', async () => {

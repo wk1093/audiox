@@ -149,8 +149,16 @@
     <section class="page" data-page="soundboard">
       <div class="soundboard-layout">
         <div class="sb-topbar card">
-          <span class="small" id="sb-mapping-status">Click &ldquo;Assign MIDI&rdquo; on a sound card to map a button.</span>
-          <button id="btn-sb-refresh" class="flat">Refresh</button>
+          <div class="sb-topbar-left">
+            <span class="small" id="sb-mapping-status">Click &ldquo;Assign MIDI&rdquo; on a sound card to map a button.</span>
+            <span class="small" id="sb-stop-all-midi">Stop All MIDI: unassigned</span>
+          </div>
+          <div class="grid-2">
+            <button id="btn-sb-stop-all" class="warn">Stop All</button>
+            <button id="btn-sb-refresh" class="flat">Refresh</button>
+            <button id="btn-sb-assign-stop-all">Assign MIDI Stop All</button>
+            <button id="btn-sb-clear-stop-all" class="flat">Clear Stop All MIDI</button>
+          </div>
         </div>
 
         <div id="sb-grid" class="sb-grid"></div>

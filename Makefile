@@ -42,8 +42,8 @@ endif
 
 # Version information
 AUDIOX_VERSION_MAJOR = 1
-AUDIOX_VERSION_MINOR = 1
-AUDIOX_VERSION_PATCH = 6
+AUDIOX_VERSION_MINOR = 2
+AUDIOX_VERSION_PATCH = 0
 
 # Auto-detected from firmware after fetch_deps runs.
 KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")
@@ -188,6 +188,11 @@ rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE
 	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev
 	mkdir -p $(ROOTFS_DIR)/etc/www
 	mkdir -p $(ROOTFS_DIR)/lib/modules
+	
+	@echo "Staging root folder contents..."
+	@if [ -d "$(CURDIR)/root" ]; then \
+		cp -a $(CURDIR)/root/* $(ROOTFS_DIR)/; \
+	fi
 	
 	@echo "Staging kernel objects into target lib tree..."
 	cp -r $(OUT_DIR)/modules_staging/* $(ROOTFS_DIR)/lib/modules/

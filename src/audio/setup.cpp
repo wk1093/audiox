@@ -201,6 +201,7 @@ AudioContext::AudioContext(Audiox *context) : app(context) {
     pendingSfxTriggers.store(0, std::memory_order_relaxed);
     pendingSfxHoldStarts.store(0, std::memory_order_relaxed);
     pendingSfxHoldStops.store(0, std::memory_order_relaxed);
+    pendingSfxStopAll.store(0, std::memory_order_relaxed);
     memset(&sfxSlots, 0, sizeof(sfxSlots));
     sfxActiveSlot.store(0, std::memory_order_relaxed);
     soundboardMode.store(SOUNDBOARD_MODE_PLAY, std::memory_order_relaxed);
@@ -232,6 +233,10 @@ int AudioContext::startHeldSfx(const char *sfxPath) {
 
 void AudioContext::stopHeldSfx() {
     pendingSfxHoldStops.fetch_add(1U, std::memory_order_relaxed);
+}
+
+void AudioContext::stopAllSfx() {
+    pendingSfxStopAll.fetch_add(1U, std::memory_order_relaxed);
 }
 
 void AudioContext::setSoundboardMode(uint8_t mode) {

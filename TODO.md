@@ -24,10 +24,10 @@ Roadmap for future audiox development.
 ## Later - v1.2+
 
 - [x] Random thing: Resize device containers on fbui depending on # of channels so channel levels don't clip out of the device box.
-- [ ] Make soundboard more flexible
+- [x] Make soundboard more flexible
   - [x] Make soundboard able to output midi as well to display lights on a connected controller
   - [x] Make soundboard have two play modes: "play" and "hold" (where "hold" mode will play the clip as long as the button is held down, and "play" mode will play the clip once and then stop)
-  - [ ] Add the ability to map a button to a "stop all" function that will stop all currently playing clips
+  - [x] Add the ability to map a button to a "stop all" function that will stop all currently playing clips
 
 
 ## More Later - v1.3+
@@ -43,6 +43,7 @@ The above last two features are mainly to improve my setup, but could probably b
 
 - [ ] Volume sliders for all devices, with proper gain control for USB gadget input
 - [ ] Add a static ffmpeg build to the initramfs so that uploaded audio files can be converted to wav (which I can easily parse and play)
+- [ ] Add a "midi passthrough" feature that allows non-mapped midi messages to be passed through via a USB gadget to a connected host. This should be configurable via the WebUI, to also allow passing through messages that are mapped to soundboard clips, but the default is to only pass through non-mapped messages. This feature should also be able to be disabled entirely, which would fully remove the gadget entirely to save USB bandwidth (this is for people using like 6+ in/out audio channels to the gadget, where bandwidth could start to matter)
 
 ## Very Later - v1.5+
 

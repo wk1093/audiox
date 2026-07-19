@@ -130,6 +130,7 @@ struct AudioContext {
     std::atomic<uint32_t> pendingSfxTriggers;
     std::atomic<uint32_t> pendingSfxHoldStarts;
     std::atomic<uint32_t> pendingSfxHoldStops;
+    std::atomic<uint32_t> pendingSfxStopAll;
     AudioSfxClipSlot sfxSlots[2];
     std::atomic<uint32_t> sfxActiveSlot;
     std::atomic<uint8_t> soundboardMode;
@@ -159,6 +160,7 @@ struct AudioContext {
     int triggerSfx(const char *sfxPath) WARN_UNUSED;
     int startHeldSfx(const char *sfxPath) WARN_UNUSED;
     void stopHeldSfx();
+    void stopAllSfx();
     void setSoundboardMode(uint8_t mode);
     uint8_t getSoundboardMode() const;
 

@@ -15,6 +15,7 @@
 #define MIDI_SFX_PATH_MAX 160
 #define MIDI_SOUND_LIGHTS_MAX MIDI_MAPPINGS_MAX
 #define MIDI_SOUND_MODES_MAX MIDI_MAPPINGS_MAX
+#define MIDI_ACTION_MAPPINGS_MAX MIDI_MAPPINGS_MAX
 
 struct RouterConfig {
     RouterConfig();
@@ -38,6 +39,11 @@ struct ConfigData {
 enum SoundboardMode : uint8_t {
     SOUNDBOARD_MODE_PLAY = 0,
     SOUNDBOARD_MODE_HOLD = 1,
+};
+
+enum MidiActionType : uint8_t {
+    MIDI_ACTION_NONE = 0,
+    MIDI_ACTION_STOP_ALL = 1,
 };
 
 const char *soundboardModeToString(uint8_t mode);
@@ -72,6 +78,11 @@ struct MidiSoundMode {
     uint8_t mode;                    // SoundboardMode
 };
 
+struct MidiActionMapping {
+    uint8_t note;
+    uint8_t action; // MidiActionType
+};
+
 // Contents of midi_map.txt: note→sfx mappings plus lighting config.
 struct MidiMapData {
     uint32_t mappingCount;
@@ -84,6 +95,8 @@ struct MidiMapData {
     MidiSoundLight soundLights[MIDI_SOUND_LIGHTS_MAX];
     uint32_t soundModeCount;
     MidiSoundMode soundModes[MIDI_SOUND_MODES_MAX];
+    uint32_t actionMappingCount;
+    MidiActionMapping actionMappings[MIDI_ACTION_MAPPINGS_MAX];
 };
 
 struct ConfigStore {

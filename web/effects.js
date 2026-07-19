@@ -73,6 +73,7 @@
       this.lastCcSeq = 0;
       this.lastNoteSeq = 0;
       this.paramUpdateTimers = new Map();
+      this.mutationInFlight = 0;
     }
 
     mountPanel(panelEl, statusEl) {
@@ -269,15 +270,25 @@
     }
 
     async setEnabled(effectId, enabled) {
-      await this.postSet({ id: effectId, enabled: enabled ? 1 : 0 });
-      await this.loadEffects();
-      this.setStatus(`${effectId} ${enabled ? 'enabled' : 'bypassed'}`, 'ok');
+      this.mutationInFlight++;
+      try {
+        await this.postSet({ id: effectId, enabled: enabled ? 1 : 0 });
+        await this.loadEffects();
+        this.setStatus(`${effectId} ${enabled ? 'enabled' : 'bypassed'}`, 'ok');
+      } finally {
+        this.mutationInFlight--;
+      }
     }
 
     async setType(effectId, type) {
-      await this.postSet({ id: effectId, type });
-      await this.loadEffects();
-      this.setStatus(`${effectId} type set to ${type}`, 'ok');
+      this.mutationInFlight++;
+      try {
+        await this.postSet({ id: effectId, type });
+        await this.loadEffects();
+        this.setStatus(`${effectId} type set to ${type}`, 'ok');
+      } finally {
+        this.mutationInFlight--;
+      }
     }
 
     async setParam(effectId, param, value) {
@@ -500,7 +511,7 @@
       const meta = paramMetaForType(type);
 
       node.widgets = [];
-      node.size = [320, hasFx ? 370 : 130];
+      node.size = [320, hasFx ? 340 : 130];
       node.title = hasFx
         ? `${effectId} (${type}${enabled ? '' : ' bypass'})`
         : `${effectId} (loading...)`;
@@ -523,14 +534,6 @@
           this.setStatus(String(err), 'warn');
         }
       }, { on: 'on', off: 'bypass' });
-
-      node.addWidget('combo', 'Type', type, async (v) => {
-        try {
-          await this.setType(effectId, String(v || 'gain'));
-        } catch (err) {
-          this.setStatus(String(err), 'warn');
-        }
-      }, { values: ['gain', 'distortion', 'pitch', 'reverb'] });
 
       node.addWidget('slider', meta.gain.label, toNumber(params.gain, 1), (v) => {
         this.queueParamUpdate(effectId, 'gain', v);

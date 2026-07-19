@@ -121,7 +121,7 @@ void processSlot(const char *effectId,
             processDistortion(in, out, frames, params.drive, params.clip, params.output);
             return;
         case EFFECT_PITCH:
-            processPitch(in, out, frames, params.gain, params.drive, params.clip, params.output);
+            processPitch(effectId, channel, in, out, frames, params.gain, params.drive, params.clip, params.output);
             return;
         case EFFECT_REVERB:
             processReverb(in,

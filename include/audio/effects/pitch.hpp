@@ -4,7 +4,9 @@
 
 namespace audiox::effects {
 
-void processPitch(const float *in,
+void processPitch(const char *effectId,
+                  uint8_t channel,
+                  const float *in,
                   float *out,
                   uint32_t frames,
                   float inputGain,

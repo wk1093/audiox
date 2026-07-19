@@ -48,7 +48,7 @@ The above last two features are mainly to improve my setup, but could probably b
 - [-] Add audio effects (reverb, delay, etc) to the audio engine, and make it so they can be routed to any output, and have their parameters controlled via the HTTP API as well as bindable MIDI CCs and buttons (for toggling effects on/off)
 - [x] Allow controlling routes/effects with MIDI CCs and buttons
 
-## Perhaps - v1.6+
+## Release - v2.0+
 
 - [ ] Revisit temporary DHCP for better host plug-and-play on Linux
 - [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)

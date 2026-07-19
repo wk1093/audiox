@@ -905,7 +905,7 @@ function ensureRoutingGraph() {
     if (!state.edgeDeleteEnabled) {
       return false;
     }
-    if (ev.type !== 'mousedown' || ev.button !== 0 || !ev.altKey) {
+    if (ev.type !== 'mousedown' || ev.button !== 0) {
       return false;
     }
 
@@ -1103,6 +1103,9 @@ function startRoutingThingsPolling() {
 
 async function pollEffectsIfNeeded() {
   if (!effectsManager) {
+    return;
+  }
+  if (effectsManager.mutationInFlight > 0) {
     return;
   }
   if (state.activeTab !== 'routing' && state.activeTab !== 'effects') {

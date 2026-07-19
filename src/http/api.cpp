@@ -49,6 +49,7 @@
 #define HTTP_MIDI_LIGHT_SOUND_SET_PATH HTTP_API_PREFIX "midi/light_sound/set"
 #define HTTP_MIDI_LIGHT_SOUND_DELETE_PATH HTTP_API_PREFIX "midi/light_sound/delete"
 #define HTTP_MIDI_LIGHT_REFRESH_PATH HTTP_API_PREFIX "midi/light_refresh"
+#define HTTP_MIDI_SAMPLER_CONFIG_PATH HTTP_API_PREFIX "midi/sampler_config"
 #define HTTP_AUDIO_DEVICES_PATH HTTP_API_PREFIX "audio/devices"
 #define HTTP_AUDIO_RESCAN_PATH HTTP_API_PREFIX "audio/rescan"
 #define HTTP_FS_ROOT ROOT_MOUNT_POINT "/"
@@ -878,6 +879,9 @@ static uint8_t midi_action_from_string(const char *value) {
 	if (strcmp(value, "stop_all") == 0) {
 		return MIDI_ACTION_STOP_ALL;
 	}
+	if (strcmp(value, "sampler_toggle") == 0) {
+		return MIDI_ACTION_SAMPLER_TOGGLE;
+	}
 	return MIDI_ACTION_NONE;
 }
 
@@ -885,9 +889,94 @@ static const char *midi_action_to_string(uint8_t action) {
 	switch (action) {
 		case MIDI_ACTION_STOP_ALL:
 			return "stop_all";
+		case MIDI_ACTION_SAMPLER_TOGGLE:
+			return "sampler_toggle";
 		default:
 			return NULL;
 	}
+}
+
+static int handleMidiSamplerConfig(HttpServer *server,
+								 int cfd,
+								 const char *method,
+								 const char *path,
+								 const char *body,
+								 size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method) {
+		return -1;
+	}
+
+	if (strcmp(method, "GET") == 0) {
+		MidiMapData data = server->app->config->readMidiMapFile();
+		char out[256];
+		int n = snprintf(out,
+						 sizeof(out),
+						 "{\"keyboard_enabled\":%s,\"keyboard_channel\":%u,\"root_note\":%u}\n",
+						 data.samplerKeyboardEnabled ? "true" : "false",
+						 (unsigned)(data.samplerKeyboardChannel & 0x0Fu),
+						 (unsigned)data.samplerRootNote);
+		if (n < 0 || (size_t)n >= sizeof(out)) {
+			n = 0;
+		}
+		return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+	}
+
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+	if (!body) {
+		static const char bad[] = "missing body\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	MidiMapData data = server->app->config->readMidiMapFile();
+	char enabled_buf[16];
+	char channel_buf[16];
+	char root_buf[16];
+
+	if (body_get_value(body, body_len, "keyboard_enabled", enabled_buf, sizeof(enabled_buf))) {
+		char *ep = NULL;
+		long v = strtol(enabled_buf, &ep, 10);
+		if (ep && *ep == '\0') {
+			data.samplerKeyboardEnabled = (v != 0) ? 1U : 0U;
+		}
+	}
+	if (body_get_value(body, body_len, "keyboard_channel", channel_buf, sizeof(channel_buf))) {
+		char *ep = NULL;
+		long v = strtol(channel_buf, &ep, 10);
+		if (ep && *ep == '\0' && v >= 0 && v <= 15) {
+			data.samplerKeyboardChannel = (uint8_t)v;
+		}
+	}
+	if (body_get_value(body, body_len, "root_note", root_buf, sizeof(root_buf))) {
+		char *ep = NULL;
+		long v = strtol(root_buf, &ep, 10);
+		if (ep && *ep == '\0' && v >= 0 && v <= 127) {
+			data.samplerRootNote = (uint8_t)v;
+		}
+	}
+
+	if (server->app->config->writeMidiMapFile(&data) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = data;
+	}
+
+	char out[256];
+	int n = snprintf(out,
+					 sizeof(out),
+					 "{\"ok\":true,\"keyboard_enabled\":%s,\"keyboard_channel\":%u,\"root_note\":%u}\n",
+					 data.samplerKeyboardEnabled ? "true" : "false",
+					 (unsigned)(data.samplerKeyboardChannel & 0x0Fu),
+					 (unsigned)data.samplerRootNote);
+	if (n < 0 || (size_t)n >= sizeof(out)) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
 }
 
 static int handleMidiLastNote(HttpServer *server,
@@ -2147,6 +2236,10 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_MIDI_LIGHT_REFRESH_PATH) == 0) {
 		return handleMidiLightRefresh(server, cfd, method, path);
+	}
+
+	if (strcmp(path, HTTP_MIDI_SAMPLER_CONFIG_PATH) == 0) {
+		return handleMidiSamplerConfig(server, cfd, method, path, body, body_len);
 	}
 
 	if (pathIsRootfs(path)) {

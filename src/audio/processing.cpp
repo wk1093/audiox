@@ -1,5 +1,6 @@
 #include "audio/context.hpp"
 #include "audio/alsa_pcm.h"
+#include "audio/processing_fx.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -50,6 +51,7 @@ struct RuntimeGraph {
         uint32_t sampleRate;
         uint32_t pos;
         float frac;
+        float pitchRatio;
         uint64_t startedAtBlock;
     };
 
@@ -928,6 +930,7 @@ static void consumeSoundboardTriggers(AudioContext *ctx, RuntimeGraph *rt) {
         voice.sampleRate = clip.sampleRate;
         voice.pos = 0U;
         voice.frac = 0.0f;
+        voice.pitchRatio = audiox::processing::clampPitchRatio(ev.pitchRatio);
         voice.startedAtBlock = rt->blocksProcessed;
 
         if (startAsHold) {
@@ -1239,7 +1242,9 @@ static void renderSourceNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeI
                 float b = (float)clip.pcm[posB * voice.channels] / 32768.0f;
                 s += (a + ((b - a) * voice.frac)) * kSoundboardClipGain;
 
-                float clipStep = (float)voice.sampleRate / (float)SAMPLE_RATE;
+                float clipStep = audiox::processing::computePlaybackStep(voice.sampleRate,
+                                                                         SAMPLE_RATE,
+                                                                         voice.pitchRatio);
                 voice.frac += clipStep;
                 while (voice.frac >= 1.0f && voice.pos < voice.frames) {
                     ++voice.pos;

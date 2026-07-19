@@ -8,6 +8,7 @@ const appVersionEl = document.getElementById('app-version');
 const sbGridEl = document.getElementById('sb-grid');
 const sbMappingStatusEl = document.getElementById('sb-mapping-status');
 const sbStopAllMidiEl = document.getElementById('sb-stop-all-midi');
+const sbSamplerToggleMidiEl = document.getElementById('sb-sampler-toggle-midi');
 const inspectorEl = document.getElementById('route-inspector');
 const nodeCountEl = document.getElementById('metric-node-count');
 const routeCountEl = document.getElementById('metric-route-count');
@@ -42,6 +43,10 @@ const state = {
   thingsSignature: '',
   soundboardModesBySfx: {},
   stopAllMidiNote: null,
+  samplerToggleMidiNote: null,
+  samplerKeyboardEnabled: true,
+  samplerKeyboardChannel: 0,
+  samplerRootNote: 60,
 };
 
 function setStatus(text, kind = '') {
@@ -1112,6 +1117,17 @@ function renderStopAllMidiStatus() {
   sbStopAllMidiEl.textContent = `Stop All MIDI: note ${state.stopAllMidiNote}`;
 }
 
+function renderSamplerToggleMidiStatus() {
+  if (!sbSamplerToggleMidiEl) {
+    return;
+  }
+  if (state.samplerToggleMidiNote === null || state.samplerToggleMidiNote === undefined) {
+    sbSamplerToggleMidiEl.textContent = 'Sampler Toggle MIDI: unassigned';
+    return;
+  }
+  sbSamplerToggleMidiEl.textContent = `Sampler Toggle MIDI: note ${state.samplerToggleMidiNote}`;
+}
+
 async function loadSoundboardModes() {
   try {
     const res = await fetch('/api/soundboard/modes', { method: 'GET' });
@@ -1510,38 +1526,54 @@ async function loadMidiActions() {
     const txt = await res.text();
     if (!res.ok) {
       state.stopAllMidiNote = null;
+      state.samplerToggleMidiNote = null;
       renderStopAllMidiStatus();
+      renderSamplerToggleMidiStatus();
       return;
     }
 
     const data = JSON.parse(txt);
     state.stopAllMidiNote = null;
+    state.samplerToggleMidiNote = null;
     const actions = Array.isArray(data?.actions) ? data.actions : [];
     for (const item of actions) {
-      if (String(item?.action || '') !== 'stop_all') {
+      const action = String(item?.action || '');
+      if (action !== 'stop_all' && action !== 'sampler_toggle') {
         continue;
       }
       const note = Number(item?.note);
       if (Number.isFinite(note) && note >= 0 && note <= 127) {
-        state.stopAllMidiNote = note;
-        break;
+        if (action === 'stop_all' && state.stopAllMidiNote === null) {
+          state.stopAllMidiNote = note;
+        }
+        if (action === 'sampler_toggle' && state.samplerToggleMidiNote === null) {
+          state.samplerToggleMidiNote = note;
+        }
       }
     }
     renderStopAllMidiStatus();
+    renderSamplerToggleMidiStatus();
   } catch (_) {
     state.stopAllMidiNote = null;
+    state.samplerToggleMidiNote = null;
     renderStopAllMidiStatus();
+    renderSamplerToggleMidiStatus();
   }
 }
 
-async function saveStopAllActionMapping(note) {
+async function saveActionMapping(note, actionName) {
   if (!Number.isFinite(note) || note < 0 || note > 127) {
     setStatus('invalid midi note, expected 0-127', 'warn');
     return;
   }
 
+  if (!actionName) {
+    setStatus('invalid action mapping', 'warn');
+    return;
+  }
+
   try {
-    const body = `note=${note}&action=stop_all`;
+    const body = `note=${note}&action=${actionName}`;
     const res = await fetch('/api/midi/action/set', {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
@@ -1555,10 +1587,18 @@ async function saveStopAllActionMapping(note) {
 
     await loadMappings();
     await loadMidiActions();
-    setStatus(`mapped note ${note} -> stop all`, 'ok');
+    setStatus(`mapped note ${note} -> ${actionName}`, 'ok');
   } catch (err) {
     setStatus(`action mapping save error: ${err}`, 'warn');
   }
+}
+
+async function saveStopAllActionMapping(note) {
+  await saveActionMapping(note, 'stop_all');
+}
+
+async function saveSamplerToggleActionMapping(note) {
+  await saveActionMapping(note, 'sampler_toggle');
 }
 
 async function deleteStopAllActionMapping() {
@@ -1581,6 +1621,31 @@ async function deleteStopAllActionMapping() {
 
     await loadMidiActions();
     setStatus('stop-all MIDI mapping removed', 'ok');
+  } catch (err) {
+    setStatus(`action mapping delete error: ${err}`, 'warn');
+  }
+}
+
+async function deleteSamplerToggleActionMapping() {
+  if (!Number.isFinite(state.samplerToggleMidiNote)) {
+    setStatus('no sampler-toggle MIDI mapping to remove', 'warn');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/midi/action/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: `note=${state.samplerToggleMidiNote}`,
+    });
+    const txt = (await res.text()).trim();
+    if (!res.ok) {
+      setStatus(`action mapping delete failed: ${res.status} ${txt}`, 'warn');
+      return;
+    }
+
+    await loadMidiActions();
+    setStatus('sampler-toggle MIDI mapping removed', 'ok');
   } catch (err) {
     setStatus(`action mapping delete error: ${err}`, 'warn');
   }
@@ -1676,6 +1741,9 @@ async function pollMappingCapture() {
       if (target === '__action_stop_all__') {
         await saveStopAllActionMapping(note);
         sbMappingStatusEl.textContent = `Assigned note ${note} to stop all.`;
+      } else if (target === '__action_sampler_toggle__') {
+        await saveSamplerToggleActionMapping(note);
+        sbMappingStatusEl.textContent = `Assigned note ${note} to sampler toggle.`;
       } else {
         await saveMapping(note, target);
         sbMappingStatusEl.textContent = `Assigned note ${note} to "${target}".`;
@@ -1685,6 +1753,61 @@ async function pollMappingCapture() {
   } catch (err) {}
 }
 
+async function loadSamplerConfig() {
+  try {
+    const res = await fetch('/api/midi/sampler_config', { method: 'GET' });
+    const txt = await res.text();
+    if (!res.ok) {
+      return;
+    }
+    const data = JSON.parse(txt);
+    state.samplerKeyboardEnabled = !!data.keyboard_enabled;
+    state.samplerKeyboardChannel = Number(data.keyboard_channel ?? 0);
+    state.samplerRootNote = Number(data.root_note ?? 60);
+
+    const enabledEl = document.getElementById('sampler_keyboard_enabled');
+    const channelEl = document.getElementById('sampler_keyboard_channel');
+    const rootEl = document.getElementById('sampler_root_note');
+    if (enabledEl) enabledEl.value = state.samplerKeyboardEnabled ? '1' : '0';
+    if (channelEl) channelEl.value = String(state.samplerKeyboardChannel);
+    if (rootEl) rootEl.value = String(state.samplerRootNote);
+  } catch (_) {
+  }
+}
+
+async function saveSamplerConfig() {
+  const enabled = document.getElementById('sampler_keyboard_enabled')?.value === '1' ? 1 : 0;
+  const channel = Number(document.getElementById('sampler_keyboard_channel')?.value ?? 0);
+  const rootNote = Number(document.getElementById('sampler_root_note')?.value ?? 60);
+
+  if (!Number.isFinite(channel) || channel < 0 || channel > 15) {
+    setStatus('invalid sampler keyboard channel, expected 0-15', 'warn');
+    return;
+  }
+  if (!Number.isFinite(rootNote) || rootNote < 0 || rootNote > 127) {
+    setStatus('invalid sampler root note, expected 0-127', 'warn');
+    return;
+  }
+
+  try {
+    const body = `keyboard_enabled=${enabled}&keyboard_channel=${Math.trunc(channel)}&root_note=${Math.trunc(rootNote)}`;
+    const res = await fetch('/api/midi/sampler_config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body,
+    });
+    const txt = (await res.text()).trim();
+    if (!res.ok) {
+      setStatus(`sampler config save failed: ${res.status} ${txt}`, 'warn');
+      return;
+    }
+    await loadSamplerConfig();
+    setStatus('sampler config saved', 'ok');
+  } catch (err) {
+    setStatus(`sampler config save error: ${err}`, 'warn');
+  }
+}
+
 async function initializeGraphFromConfig() {
   ensureRoutingGraph();
   await loadConfig();
@@ -1692,6 +1815,7 @@ async function initializeGraphFromConfig() {
   await listSfxFiles();
   await loadMappings();
   await loadMidiActions();
+  await loadSamplerConfig();
   await loadRoutingThings();
   await loadRoutingFile();
   state.edgeDeleteEnabled = true;
@@ -1801,6 +1925,7 @@ document.getElementById('btn-sb-refresh').addEventListener('click', async () => 
   await listSfxFiles();
   await loadMappings();
   await loadMidiActions();
+  await loadSamplerConfig();
   await loadLightConfig();
   await loadSoundboardModes();
   setStatus('soundboard refreshed', 'ok');
@@ -1839,6 +1964,41 @@ document.getElementById('btn-sb-assign-stop-all').addEventListener('click', asyn
 document.getElementById('btn-sb-clear-stop-all').addEventListener('click', async () => {
   await deleteStopAllActionMapping();
 });
+
+document.getElementById('btn-sb-assign-sampler-toggle').addEventListener('click', async () => {
+  const isTarget = state.mappingAssignTarget === '__action_sampler_toggle__';
+  if (isTarget) {
+    state.mappingAssignTarget = null;
+    if (state.mappingPollTimer) {
+      clearInterval(state.mappingPollTimer);
+      state.mappingPollTimer = null;
+    }
+    sbMappingStatusEl.textContent = 'Assignment cancelled.';
+    return;
+  }
+
+  try {
+    const r = await fetch('/api/midi/last_note', { method: 'GET' });
+    if (r.ok) {
+      const d = JSON.parse(await r.text());
+      state.mappingLastSeq = Number(d.last_seq || 0);
+    }
+  } catch (_) {}
+
+  state.mappingAssignTarget = '__action_sampler_toggle__';
+  if (!state.mappingPollTimer) {
+    state.mappingPollTimer = setInterval(pollMappingCapture, 220);
+  }
+  sbMappingStatusEl.textContent = 'Press a MIDI button to map sampler toggle.';
+  renderSoundboardGrid();
+});
+
+document.getElementById('btn-sb-clear-sampler-toggle').addEventListener('click', async () => {
+  await deleteSamplerToggleActionMapping();
+});
+
+document.getElementById('btn-sampler-config-save').addEventListener('click', saveSamplerConfig);
+document.getElementById('btn-sampler-config-load').addEventListener('click', loadSamplerConfig);
 
 document.getElementById('btn-system-sync').addEventListener('click', async () => {
   await runSystemAction('/api/system/sync', 'sync');
@@ -1909,3 +2069,4 @@ document.getElementById('btn-light-refresh').addEventListener('click', async () 
 initializeGraphFromConfig();
 loadVersion();
 loadLightConfig();
+loadSamplerConfig();

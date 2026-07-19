@@ -44,6 +44,7 @@ enum SoundboardMode : uint8_t {
 enum MidiActionType : uint8_t {
     MIDI_ACTION_NONE = 0,
     MIDI_ACTION_STOP_ALL = 1,
+    MIDI_ACTION_SAMPLER_TOGGLE = 2,
 };
 
 const char *soundboardModeToString(uint8_t mode);
@@ -95,6 +96,9 @@ struct MidiMapData {
     MidiSoundMode soundModes[MIDI_SOUND_MODES_MAX];
     uint32_t actionMappingCount;
     MidiActionMapping actionMappings[MIDI_ACTION_MAPPINGS_MAX];
+    uint8_t samplerKeyboardEnabled;
+    uint8_t samplerKeyboardChannel;
+    uint8_t samplerRootNote;
 };
 
 struct ConfigStore {

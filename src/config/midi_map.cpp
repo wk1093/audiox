@@ -188,6 +188,9 @@ static uint8_t midiActionFromString(const char *value) {
     if (strcmp(value, "stop_all") == 0) {
         return MIDI_ACTION_STOP_ALL;
     }
+    if (strcmp(value, "sampler_toggle") == 0) {
+        return MIDI_ACTION_SAMPLER_TOGGLE;
+    }
     return MIDI_ACTION_NONE;
 }
 
@@ -195,6 +198,8 @@ static const char *midiActionToString(uint8_t action) {
     switch (action) {
         case MIDI_ACTION_STOP_ALL:
             return "stop_all";
+        case MIDI_ACTION_SAMPLER_TOGGLE:
+            return "sampler_toggle";
         default:
             return NULL;
     }
@@ -244,6 +249,9 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
     }
 
     MidiMapData data = {};
+    data.samplerKeyboardEnabled = 0;
+    data.samplerKeyboardChannel = 0;
+    data.samplerRootNote = 60;
     // defaults: channel 0, all states off (vel=0)
 
     FILE *fp = fopen(path, "r");
@@ -299,6 +307,20 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             (void)parseSoundModeLine(value, data.soundModes, &data.soundModeCount);
         } else if (strcmp(key, "note_action") == 0) {
             (void)parseMidiActionLine(value, data.actionMappings, &data.actionMappingCount);
+        } else if (strcmp(key, "sampler_keyboard_channel") == 0) {
+            long v = strtol(value, NULL, 10);
+            if (v >= 0 && v <= 15) {
+                data.samplerKeyboardEnabled = 1;
+                data.samplerKeyboardChannel = (uint8_t)v;
+            }
+        } else if (strcmp(key, "sampler_keyboard_enabled") == 0) {
+            long v = strtol(value, NULL, 10);
+            data.samplerKeyboardEnabled = (v != 0) ? 1 : 0;
+        } else if (strcmp(key, "sampler_root_note") == 0) {
+            long v = strtol(value, NULL, 10);
+            if (v >= 0 && v <= 127) {
+                data.samplerRootNote = (uint8_t)v;
+            }
         }
     }
 
@@ -422,7 +444,7 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         actionCount = MIDI_ACTION_MAPPINGS_MAX;
     }
     if (actionCount > 0) {
-        dprintf(fd, "# action mappings: note,action(stop_all)\n");
+        dprintf(fd, "# action mappings: note,action(stop_all|sampler_toggle)\n");
         for (uint32_t i = 0; i < actionCount; ++i) {
             const char *action = midiActionToString(data->actionMappings[i].action);
             if (!action) {
@@ -434,6 +456,11 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
                     action);
         }
     }
+
+    dprintf(fd, "# sampler keyboard config\n");
+    dprintf(fd, "sampler_keyboard_enabled=%u\n", (unsigned)data->samplerKeyboardEnabled);
+    dprintf(fd, "sampler_keyboard_channel=%u\n", (unsigned)data->samplerKeyboardChannel);
+    dprintf(fd, "sampler_root_note=%u\n", (unsigned)data->samplerRootNote);
 
     close(fd);
     return RET_OK;

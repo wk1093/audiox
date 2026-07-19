@@ -34,6 +34,7 @@ Once I believe this is stable enough for general use, I will release v2.0.0
 	- `POST /api/system/shutdown` - powers off
 - Exposes a web soundboard with per-card MIDI assignment and automatic polling
 - Supports MIDI note-to-SFX mappings from config stored in `/audiox/config.txt` and targeting files in `/audiox/sfx/`
+- Preprocesses uploaded soundboard files under `/audiox/sfx/` through `ffmpeg` into 48kHz stereo PCM16 WAV so MP3/OGG/etc work with the current WAV-only loader
 - Web UI with 4 main pages: Routing (graph + metrics), Config (audio settings), Soundboard (cards + upload/assign/remove), System (device stats)
 
 ## Build
@@ -75,6 +76,46 @@ Useful override:
 ```bash
 # pin upstream alsa-lib source version
 make ALSA_VERSION=1.2.14 alsa
+```
+
+### Optional ffmpeg binary for soundboard preprocessing
+
+If you want non-WAV soundboard uploads (mp3/ogg/flac/etc) to auto-convert on the device, place an aarch64 static ffmpeg binary at:
+
+```bash
+third_party/ffmpeg/ffmpeg
+```
+
+`make initramfs` will stage it as `/usr/bin/ffmpeg` in the runtime image.
+
+You can override the source path:
+
+```bash
+make FFMPEG_BIN=/absolute/path/to/your/ffmpeg initramfs
+```
+
+Or let Make fetch it automatically when missing:
+
+```bash
+make FFMPEG_URL='https://your-source.example/ffmpeg-aarch64-static.tar.xz' initramfs
+```
+
+Notes:
+
+- If the download is an archive, Make extracts it and picks the first `ffmpeg` binary found.
+- If the download is a raw binary file, Make copies it directly.
+
+If your ffmpeg binary is dynamically linked (not fully static), the build now auto-stages required runtime libs into the image from a cross-lib directory.
+
+Defaults:
+
+- `FFMPEG_CROSS_LIB_DIR=/usr/aarch64-linux-gnu/lib`
+- `FFMPEG_RUNTIME_LIBS=ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 librt.so.1 libpthread.so.0 libgcc_s.so.1`
+
+Override example:
+
+```bash
+make FFMPEG_CROSS_LIB_DIR=/path/to/aarch64/sysroot/lib initramfs
 ```
 
 ## Notes

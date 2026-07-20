@@ -75,6 +75,7 @@
       this.paramUpdateTimers = new Map();
       this.mutationInFlight = 0;
       this.loadEpoch = 0;
+      this.effectsSignature = '';
     }
 
     mountPanel(panelEl, statusEl) {
@@ -229,6 +230,11 @@
         if (!id) continue;
         this.effectsById.set(id, fx);
       }
+      const nextSig = this.buildEffectsSignature();
+      if (nextSig === this.effectsSignature) {
+        return;
+      }
+      this.effectsSignature = nextSig;
       // Skip updating nodes if a mutation started while we were fetching;
       // the mutation's own loadEffects call will apply the correct state.
       if (myEpoch !== this.loadEpoch) {
@@ -277,12 +283,24 @@
     }
 
     async setEnabled(effectId, enabled) {
+      const current = this.effectsById.get(effectId);
+      const nextEnabled = !!enabled;
+      if (current && !!current.enabled === nextEnabled) {
+        return;
+      }
+
+      if (current) {
+        current.enabled = nextEnabled;
+        this.refreshAllNodes();
+        this.renderPanel();
+      }
+
       this.loadEpoch++;
       this.mutationInFlight++;
       try {
-        await this.postSet({ id: effectId, enabled: enabled ? 1 : 0 });
+        await this.postSet({ id: effectId, enabled: nextEnabled ? 1 : 0 });
         await this.loadEffects();
-        this.setStatus(`${effectId} ${enabled ? 'enabled' : 'bypassed'}`, 'ok');
+        this.setStatus(`${effectId} ${nextEnabled ? 'enabled' : 'bypassed'}`, 'ok');
       } finally {
         this.mutationInFlight--;
       }
@@ -305,12 +323,49 @@
       if (!Number.isFinite(numeric)) {
         return;
       }
-      await this.postSet({ id: effectId, param, value: numeric.toFixed(4) });
 
       const fx = this.effectsById.get(effectId);
+      const prev = Number(fx?.params?.[param]);
+      if (Number.isFinite(prev) && Math.abs(prev - numeric) < 0.0005) {
+        return;
+      }
+
+      await this.postSet({ id: effectId, param, value: numeric.toFixed(4) });
+
       if (fx && fx.params) {
         fx.params[param] = numeric;
       }
+    }
+
+    buildEffectsSignature() {
+      const rows = [];
+      for (const fx of this.effectsById.values()) {
+        const id = normalizeEffectId(fx?.id);
+        if (!id) {
+          continue;
+        }
+        const type = String(fx?.type || 'gain');
+        const enabled = fx?.enabled ? 1 : 0;
+        const params = fx?.params || {};
+        const midi = fx?.midi || {};
+        const cc = midi?.cc || {};
+        rows.push([
+          id,
+          type,
+          enabled,
+          toNumber(params.gain, 0).toFixed(4),
+          toNumber(params.drive, 0).toFixed(4),
+          toNumber(params.clip, 0).toFixed(4),
+          toNumber(params.output, 0).toFixed(4),
+          toNumber(midi.toggle_note, -1),
+          toNumber(cc.gain, -1),
+          toNumber(cc.drive, -1),
+          toNumber(cc.clip, -1),
+          toNumber(cc.output, -1),
+        ].join('|'));
+      }
+      rows.sort((a, b) => a.localeCompare(b));
+      return rows.join('\n');
     }
 
     queueParamUpdate(effectId, param, value) {
@@ -536,13 +591,14 @@
         return;
       }
 
-      node.addWidget('toggle', 'Enabled', enabled, async (v) => {
+      node.addWidget('button', enabled ? 'Bypass (ON)' : 'Enable (BYPASSED)', '', async () => {
         try {
-          await this.setEnabled(effectId, !!v);
+          const currentEnabled = !!this.effectsById.get(effectId)?.enabled;
+          await this.setEnabled(effectId, !currentEnabled);
         } catch (err) {
           this.setStatus(String(err), 'warn');
         }
-      }, { on: 'on', off: 'bypass' });
+      });
 
       node.addWidget('slider', meta.gain.label, toNumber(params.gain, 1), (v) => {
         this.queueParamUpdate(effectId, 'gain', v);

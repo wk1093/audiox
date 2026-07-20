@@ -1,4 +1,5 @@
 #include "http/context.hpp"
+#include "http/ffmpeg.hpp"
 #include "audio/context.hpp"
 #include "system.hpp"
 
@@ -24,7 +25,7 @@
 #define HTTP_INITRAM_MAX (64u * 1024u * 1024u)
 #define HTTP_INITRAM_RCV_TIMEOUT_SEC 10
 #define HTTP_ROOTFS_PREFIX "/api/rootfs/"
-#define HTTP_ROOTFS_UPLOAD_MAX (32u * 1024u * 1024u)
+#define HTTP_ROOTFS_UPLOAD_MAX (150u * 1024u * 1024u)
 
 #define HTTP_API_PREFIX "/api/"
 #define HTTP_DEFAULT_HTML_PATH "/etc/www/index.html"
@@ -312,13 +313,10 @@ static int runFfmpegTranscodeToWav(const char *inputPath, const char *outputPath
         return -1;
     }
 
-    static const char *ffmpegCandidates[] = {
-        "/usr/bin/ffmpeg",
-        "/bin/ffmpeg",
-        "/usr/local/bin/ffmpeg",
-        "/ffmpeg",
-        NULL
-    };
+    const char *ffmpeg_path = getFfmpegPath();
+    if (!ffmpeg_path) {
+        return -1;
+    }
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -335,27 +333,20 @@ static int runFfmpegTranscodeToWav(const char *inputPath, const char *outputPath
             }
         }
 
-        for (size_t i = 0; ffmpegCandidates[i] != NULL; ++i) {
-            const char *ffmpeg = ffmpegCandidates[i];
-            if (access(ffmpeg, X_OK) != 0) {
-                continue;
-            }
-
-            execl(ffmpeg,
-                  "ffmpeg",
-                  "-hide_banner",
-                  "-loglevel", "error",
-                  "-y",
-                  "-i", inputPath,
-                  "-vn",
-                  "-acodec", "pcm_s16le",
-                  "-ar", "48000",
-                  "-ac", "2",
-                  "-f", "wav",
-                  outputPath,
-                  (char *)NULL);
-        }
-
+        execl(ffmpeg_path,
+              "ffmpeg",
+              "-hide_banner",
+              "-loglevel", "error",
+              "-y",
+              "-i", inputPath,
+              "-vn",
+              "-acodec", "pcm_s16le",
+              "-ar", "48000",
+              "-ac", "2",
+              "-f", "wav",
+              outputPath,
+              (char *)NULL);
+        
         _exit(127);
     }
 
@@ -535,6 +526,15 @@ static int handleRootfsUpload(HttpServer *server,
         return sendErrnoResponse(server, cfd, "500 Internal Server Error", "fsync failed", saved_errno);
     }
     close(fd);
+
+    // Auto-set executable permissions for common binary paths
+    const char *leaf = strrchr(suffix, '/');
+    leaf = leaf ? (leaf + 1) : suffix;
+    if (strncmp(leaf, "ffmpeg", 6) == 0 ||
+        strstr(suffix, "/bin/") != NULL ||
+        strstr(suffix, "/sbin/") != NULL) {
+        chmod(fs_path, 0755);
+    }
 
     char finalPath[512];
     int preprocessRc = maybePreprocessSfxUpload(server,

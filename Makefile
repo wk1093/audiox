@@ -42,7 +42,7 @@ endif
 # Version information
 AUDIOX_VERSION_MAJOR = 1
 AUDIOX_VERSION_MINOR = 4
-AUDIOX_VERSION_PATCH = 8
+AUDIOX_VERSION_PATCH = 10
 
 # Auto-detected from firmware after fetch_deps runs.
 KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")
@@ -80,6 +80,7 @@ FFMPEG_URL ?= https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-
 FFMPEG_ARCHIVE ?= $(OUT_DIR)/downloads/ffmpeg.pkg
 FFMPEG_CROSS_LIB_DIR ?= /usr/aarch64-linux-gnu/lib
 FFMPEG_RUNTIME_LIBS ?= ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 librt.so.1 libpthread.so.0 libgcc_s.so.1
+FFMPEG_STAGE_DIR ?= $(OUT_DIR)/ffmpeg_stage
 FIRMWARE_GIT_URL ?= https://github.com/raspberrypi/firmware.git
 PI_HOST ?= 169.254.1.2
 PI_PORT ?= 80
@@ -105,7 +106,7 @@ BOOTLOADER_OBJS := $(patsubst src/%.cpp,$(BOOTLOADER_OBJ_DIR)/%.o,$(BOOTLOADER_S
 RUNTIME_DEPS_FILES := $(RUNTIME_OBJS:.o=.d)
 BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
-.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa ffmpeg
+.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa ffmpeg upload_ffmpeg stage_ffmpeg
 
 all: initramfs
 
@@ -242,7 +243,7 @@ bootloader_rootfs: $(BOOTLOADER_ROOTFS_DIR)/init $(BOOT_MODULE_LOAD_LIST) $(BOOT
 	cp -r $(OUT_DIR)/bootmodules_staging/* $(BOOTLOADER_ROOTFS_DIR)/lib/modules/
 	cp $(BOOT_MODULE_LOAD_BASE_LIST) $(BOOTLOADER_ROOTFS_DIR)/etc/bootmodule-load.list
 
-rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) ffmpeg
+rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST)
 	@echo "Creating runtime rootfs structure..."
 	mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/sbin $(ROOTFS_DIR)/etc
 	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev
@@ -285,13 +286,24 @@ rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE
 		echo "Staging web logo png from $(WEB_LOGO_PNG)..."; \
 		cp "$(WEB_LOGO_PNG)" "$(ROOTFS_DIR)/etc/www/logo.png"; \
 	fi
+	@if [ "$(ENABLE_ALSA)" = "1" ]; then \
+		if [ -f "$(ALSA_CONF_DIR)/alsa.conf" ]; then \
+			echo "Staging ALSA config from $(ALSA_CONF_DIR)..."; \
+			mkdir -p "$(ROOTFS_DIR)$(ALSA_PREFIX)/share"; \
+			cp -a "$(ALSA_CONF_DIR)" "$(ROOTFS_DIR)$(ALSA_PREFIX)/share/"; \
+		else \
+			echo "Warning: ALSA config not found at $(ALSA_CONF_DIR)"; \
+		fi; \
+	fi
+
+stage_ffmpeg: ffmpeg
+	@echo "Staging ffmpeg for rootfs deployment..."
 	@if [ -f "$(FFMPEG_BIN)" ]; then \
-		echo "Staging ffmpeg from $(FFMPEG_BIN)..."; \
-		mkdir -p "$(ROOTFS_DIR)/usr/bin"; \
-		cp "$(FFMPEG_BIN)" "$(ROOTFS_DIR)/usr/bin/ffmpeg"; \
-		chmod 0755 "$(ROOTFS_DIR)/usr/bin/ffmpeg"; \
+		mkdir -p "$(ROOTFS_DIR)" "$(FFMPEG_STAGE_DIR)"; \
+		cp "$(FFMPEG_BIN)" "$(FFMPEG_STAGE_DIR)/ffmpeg"; \
+		chmod 0755 "$(FFMPEG_STAGE_DIR)/ffmpeg"; \
 		if readelf -l "$(FFMPEG_BIN)" 2>/dev/null | grep -q "Requesting program interpreter"; then \
-			echo "ffmpeg is dynamically linked; staging runtime libs from $(FFMPEG_CROSS_LIB_DIR)..."; \
+			echo "ffmpeg is dynamically linked; staging runtime libs in rootfs from $(FFMPEG_CROSS_LIB_DIR)..."; \
 			mkdir -p "$(ROOTFS_DIR)/lib"; \
 			for lib in $(FFMPEG_RUNTIME_LIBS); do \
 				if [ ! -e "$(FFMPEG_CROSS_LIB_DIR)/$$lib" ]; then \
@@ -301,19 +313,10 @@ rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE
 				cp -Lf "$(FFMPEG_CROSS_LIB_DIR)/$$lib" "$(ROOTFS_DIR)/lib/$$lib"; \
 			done; \
 		else \
-			echo "ffmpeg appears statically linked; no extra runtime libs staged."; \
+			echo "ffmpeg appears statically linked; no extra runtime libs needed."; \
 		fi; \
 	else \
-		echo "Warning: ffmpeg binary not found at $(FFMPEG_BIN) (sfx preprocessing disabled)"; \
-	fi
-	@if [ "$(ENABLE_ALSA)" = "1" ]; then \
-		if [ -f "$(ALSA_CONF_DIR)/alsa.conf" ]; then \
-			echo "Staging ALSA config from $(ALSA_CONF_DIR)..."; \
-			mkdir -p "$(ROOTFS_DIR)$(ALSA_PREFIX)/share"; \
-			cp -a "$(ALSA_CONF_DIR)" "$(ROOTFS_DIR)$(ALSA_PREFIX)/share/"; \
-		else \
-			echo "Warning: ALSA config not found at $(ALSA_CONF_DIR)"; \
-		fi; \
+		echo "Warning: ffmpeg binary not found at $(FFMPEG_BIN) (ffmpeg deployment disabled)"; \
 	fi
 
 bootloader_initramfs: bootloader_rootfs
@@ -346,6 +349,17 @@ qemu: $(COMBINED_INITRAMFS)
 		-initrd $(COMBINED_INITRAMFS) \
 		-append "console=fbcon console=tty1 quiet loglevel=3 rdinit=/init" \
 		-display sdl,gl=on
+
+upload_ffmpeg: stage_ffmpeg
+	@if [ ! -f "$(FFMPEG_STAGE_DIR)/ffmpeg" ]; then \
+		echo "Error: ffmpeg binary not found at $(FFMPEG_STAGE_DIR)/ffmpeg"; \
+		exit 1; \
+	fi
+	@echo "Uploading ffmpeg to device at $(PI_HOST):$(PI_PORT)..."
+	curl -X PUT \
+		--data-binary @$(FFMPEG_STAGE_DIR)/ffmpeg \
+		http://$(PI_HOST):$(PI_PORT)/api/rootfs/ffmpeg
+	@echo "ffmpeg uploaded successfully."
 
 fancyexport: initramfs
 	@$(SCRIPTS_DIR)/wait_and_export.sh "$(SD_MOUNT_BOOT)" "$(CURDIR)"

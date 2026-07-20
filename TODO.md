@@ -46,7 +46,14 @@ The above last two features are mainly to improve my setup, but could probably b
 ## Very Later - v1.5+
 
 - [-] Add audio effects (reverb, delay, etc) to the audio engine, and make it so they can be routed to any output, and have their parameters controlled via the HTTP API as well as bindable MIDI CCs and buttons (for toggling effects on/off)
-- [x] Allow controlling routes/effects with MIDI CCs and buttons
+  - [ ] Phase Vocoder based pitch shifting (FFT window of 512, 75% overlap, hop size of 128, hann or hanning window. phase unwrapping.)
+  - [ ] Reverb
+  - [ ] Delay
+  - [x] Gain
+  - [x] Distortion
+- [-] Effect midi integration
+  - [x] Allow controlling effects with MIDI CCs and buttons
+  - [ ] Midi lights for the effect enable/disable buttons
 
 ## Release - v2.0+
 

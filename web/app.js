@@ -1217,6 +1217,7 @@ async function loadSystemInfo() {
     const uEl = document.getElementById('sysinfo-uptime');
     const mEl = document.getElementById('sysinfo-memory');
     const lEl = document.getElementById('sysinfo-load');
+    const fEl = document.getElementById('sysinfo-ffmpeg');
     if (!vEl) return;
 
     vEl.textContent = data.version ? `v${data.version}` : '\u2014';
@@ -1233,6 +1234,10 @@ async function loadSystemInfo() {
     mEl.textContent = `${availMb} / ${totalMb} MB`;
 
     lEl.textContent = Number(data.load1 || 0).toFixed(2);
+
+    if (fEl) {
+      fEl.textContent = data.ffmpeg || '\u2014';
+    }
   } catch (err) {}
 }
 

@@ -25,6 +25,21 @@
     return Number.isFinite(n) ? n : fallback;
   }
 
+  function toEnabled(v) {
+    if (typeof v === 'boolean') return v;
+    if (typeof v === 'number') return v !== 0;
+    if (typeof v === 'string') {
+      const s = v.trim().toLowerCase();
+      if (!s) return false;
+      if (s === '0' || s === 'false' || s === 'off' || s === 'no') return false;
+      if (s === '1' || s === 'true' || s === 'on' || s === 'yes') return true;
+      const n = Number(s);
+      if (Number.isFinite(n)) return n !== 0;
+      return true;
+    }
+    return !!v;
+  }
+
   function paramMetaForType(type) {
     const t = String(type || 'gain').trim();
     if (t === 'pitch') {
@@ -116,6 +131,7 @@
         const midi = fx.midi || {};
         const cc = midi.cc || {};
         const meta = paramMetaForType(fx.type);
+        const enabled = toEnabled(fx.enabled);
 
         const card = document.createElement('section');
         card.className = 'card fx-card';
@@ -124,6 +140,28 @@
         header.className = 'fx-card-head';
         header.textContent = `${effectId} (${fx.type || 'gain'})`;
         card.appendChild(header);
+
+        const enabledRow = document.createElement('div');
+        enabledRow.className = 'fx-map-row';
+        const enabledMeta = document.createElement('div');
+        enabledMeta.className = 'fx-map-meta';
+        enabledMeta.textContent = `State: ${enabled ? 'Enabled' : 'Bypassed'}`;
+        const enabledBtn = document.createElement('button');
+        enabledBtn.textContent = enabled ? 'Bypass' : 'Enable';
+        enabledBtn.addEventListener('click', async () => {
+          try {
+            enabledBtn.disabled = true;
+            await this.setEnabled(effectId, !toEnabled(this.effectsById.get(effectId)?.enabled));
+            this.setPanelStatus(`${effectId} ${toEnabled(this.effectsById.get(effectId)?.enabled) ? 'enabled' : 'bypassed'}`, 'ok');
+          } catch (err) {
+            this.setPanelStatus(String(err), 'warn');
+          } finally {
+            enabledBtn.disabled = false;
+          }
+        });
+        enabledRow.appendChild(enabledMeta);
+        enabledRow.appendChild(enabledBtn);
+        card.appendChild(enabledRow);
 
         const rows = [
           { key: 'gain', label: meta.gain.label, value: params.gain, cc: cc.gain },
@@ -270,6 +308,9 @@
     }
 
     async postSet(body) {
+      if (body && body.id && Object.prototype.hasOwnProperty.call(body, 'enabled')) {
+        this.setStatus(`sending enable request for ${body.id}: ${body.enabled}`, 'ok');
+      }
       const res = await fetch('/api/effect/set', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
@@ -284,10 +325,8 @@
 
     async setEnabled(effectId, enabled) {
       const current = this.effectsById.get(effectId);
-      const nextEnabled = !!enabled;
-      if (current && !!current.enabled === nextEnabled) {
-        return;
-      }
+      const nextEnabled = toEnabled(enabled);
+      this.setStatus(`setEnabled(${effectId}) -> ${nextEnabled ? 1 : 0}`, 'ok');
 
       if (current) {
         current.enabled = nextEnabled;
@@ -569,7 +608,7 @@
 
       const hasFx = !!fx;
       const type = String(fx?.type || 'gain');
-      const enabled = !!fx?.enabled;
+      const enabled = toEnabled(fx?.enabled);
       const params = fx?.params || {};
       const midi = fx?.midi || {};
       const meta = paramMetaForType(type);
@@ -581,7 +620,7 @@
         : `${effectId} (loading...)`;
 
       if (!hasFx) {
-        node.addWidget('button', 'Reload Effect State', '', async () => {
+        node.addWidget('button', 'Reload Effect State', null, async () => {
           try {
             await this.loadEffects();
           } catch (err) {
@@ -590,15 +629,6 @@
         });
         return;
       }
-
-      node.addWidget('button', enabled ? 'Bypass (ON)' : 'Enable (BYPASSED)', '', async () => {
-        try {
-          const currentEnabled = !!this.effectsById.get(effectId)?.enabled;
-          await this.setEnabled(effectId, !currentEnabled);
-        } catch (err) {
-          this.setStatus(String(err), 'warn');
-        }
-      });
 
       node.addWidget('slider', meta.gain.label, toNumber(params.gain, 1), (v) => {
         this.queueParamUpdate(effectId, 'gain', v);
@@ -616,14 +646,14 @@
         this.queueParamUpdate(effectId, 'output', v);
       }, { min: meta.output.min, max: meta.output.max, step: meta.output.step, precision: meta.output.precision });
 
-      node.addWidget('button', 'Open Effects Mapping Page', '', () => {
+      node.addWidget('button', 'Open Effects Mapping Page', null, () => {
         const btn = document.querySelector('.tab-btn[data-tab="effects"]');
         if (btn) {
           btn.click();
         }
       });
 
-      node.addWidget('button', 'Delete Effect', '', async () => {
+      node.addWidget('button', 'Delete Effect', null, async () => {
         try {
           await this.deleteEffect(effectId);
           if (typeof window.loadRoutingThingsWithOptions === 'function') {

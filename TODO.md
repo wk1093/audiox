@@ -68,6 +68,7 @@ The above last two features are mainly to improve my setup, but could probably b
 - [ ] Investigate lower latency (smaller buffer sizes like 64 or 32 samples instead of 128) to see if we can go below 5ms latency.
 - [ ] Smarter bootloader that can detect bad initramfs and boot into a backup one:
   - [ ] File for storing the number of bad boots, and a feature in the main initramfs that will reset that counter once everything has booted properly. If the bootloader sees that this counter is above 2 or 3, it will boot into a backup initramfs instead of the main one.
+  - [ ] Make it so that the bootloader can update the kernel as well.
   - [ ] Is it possible to add a custom listener or hook into a kernel panic? Maybe automatically make a kernel panic trigger a reboot into the backup initramfs?
 - [ ] Somehow be able to update the bootloader itself. This could be done by having the main initram update the bootloader, since the bootloader updates the main initram.
 
@@ -76,7 +77,6 @@ The above last two features are mainly to improve my setup, but could probably b
 - [ ] Revisit temporary DHCP for better host plug-and-play on Linux
 - [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)
 - [ ] Add a "midi passthrough" feature that allows non-mapped midi messages to be passed through via a USB gadget to a connected host. This should be configurable via the WebUI, to also allow passing through messages that are mapped to soundboard clips, but the default is to only pass through non-mapped messages. This feature should also be able to be disabled entirely, which would fully remove the gadget entirely to save USB bandwidth (this is for people using like 6+ in/out audio channels to the gadget, where bandwidth could start to matter)
-- [ ] Improve the bootloader to be able to do a bit more like changing boot files, not just the initram. Create a custom format (or just use a tar or something) and a web ui for updating the firmware. Also implement a recovery, where the previous working initramfs will be backed up, and if the bootloader detects that the new one is broken it will boot into the previous one. This is mainly to make it easier to recover from a broken initram (sometimes I cause kernel panics).
 
 ## Hardware dream stuff
 

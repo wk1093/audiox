@@ -46,9 +46,32 @@ The above last two features are mainly to improve my setup, but could probably b
 ## Very Later - v1.5+
 
 - [-] Add audio effects (reverb, delay, etc) to the audio engine, and make it so they can be routed to any output, and have their parameters controlled via the HTTP API as well as bindable MIDI CCs and buttons (for toggling effects on/off)
-- [x] Allow controlling routes/effects with MIDI CCs and buttons
+  - [-] Phase Vocoder based pitch shifting (FFT window of 512, 75% overlap, hop size of 128, hann or hanning window. phase unwrapping.)
+  - [-] Reverb
+  - [ ] Delay
+  - [x] Gain
+  - [x] Distortion
+- [-] Effect midi integration
+  - [x] Allow controlling effects with MIDI CCs and buttons
+  - [ ] Midi lights for the effect enable/disable buttons
 
-## Perhaps - v1.6+
+## Very Very Later - v1.6+
+
+- [ ] More advanced effects
+  - [ ] Noice gate
+  - [ ] Voice noise cancellation/reduction
+  - [ ] Compressor
+  - [ ] Limiter
+  - [ ] Parametric EQ
+  - [ ] Multi-band compressor
+- [ ] Investigate using LV2 plugins for effects, and if possible, make it so that the user can upload their own LV2 plugins to the device and use them in the audio engine. This would allow for a lot more flexibility and customization for users who want to use their own effects.
+- [ ] Investigate lower latency (smaller buffer sizes like 64 or 32 samples instead of 128) to see if we can go below 5ms latency.
+- [ ] Smarter bootloader that can detect bad initramfs and boot into a backup one:
+  - [ ] File for storing the number of bad boots, and a feature in the main initramfs that will reset that counter once everything has booted properly. If the bootloader sees that this counter is above 2 or 3, it will boot into a backup initramfs instead of the main one.
+  - [ ] Is it possible to add a custom listener or hook into a kernel panic? Maybe automatically make a kernel panic trigger a reboot into the backup initramfs?
+- [ ] Somehow be able to update the bootloader itself. This could be done by having the main initram update the bootloader, since the bootloader updates the main initram.
+
+## Release - v2.0+
 
 - [ ] Revisit temporary DHCP for better host plug-and-play on Linux
 - [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)

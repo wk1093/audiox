@@ -1,4 +1,5 @@
 #include "http/context.hpp"
+#include "http/ffmpeg.hpp"
 #include "audio/context.hpp"
 #include "audio/effects/slot.hpp"
 #include "config/context.hpp"
@@ -14,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <sys/reboot.h>
 #include <sys/sysinfo.h>
 #include <sys/utsname.h>
@@ -2669,6 +2671,84 @@ static int handleSystemShutdown(HttpServer *server,
 	return ret;
 }
 
+static void getFfmpegVersion(char *out, size_t out_sz) {
+	if (!out || out_sz < 2) {
+		printf("[API] getFfmpegVersion: invalid output buffer\n");
+		return;
+	}
+
+	const char *ffmpeg_path = getFfmpegPath();
+	if (!ffmpeg_path) {
+		printf("[API] getFfmpegVersion: ffmpeg path not found\n");
+		snprintf(out, out_sz, "Unavailable");
+		return;
+	}
+	printf("[API] getFfmpegVersion: using ffmpeg at %s\n", ffmpeg_path);
+
+	int pipefd[2];
+	if (pipe(pipefd) < 0) {
+		printf("[API] getFfmpegVersion: pipe() failed\n");
+		snprintf(out, out_sz, "Unavailable");
+		return;
+	}
+
+	pid_t pid = fork();
+	if (pid < 0) {
+		printf("[API] getFfmpegVersion: fork() failed\n");
+		close(pipefd[0]);
+		close(pipefd[1]);
+		snprintf(out, out_sz, "Unavailable");
+		return;
+	}
+
+	if (pid == 0) {
+		// Child process
+		close(pipefd[0]); // close read end
+		dup2(pipefd[1], STDOUT_FILENO); // redirect stdout to pipe
+		int devnull = open("/dev/null", O_WRONLY);
+		if (devnull >= 0) {
+			dup2(devnull, STDERR_FILENO);
+			close(devnull);
+		}
+		close(pipefd[1]); // close original pipe write end after dup2
+		execl(ffmpeg_path, "ffmpeg", "-version", (char *)NULL);
+		_exit(127);
+	}
+
+	// Parent process
+	close(pipefd[1]); // close write end
+	
+	FILE *fp = fdopen(pipefd[0], "r");
+	if (!fp) {
+		printf("[API] getFfmpegVersion: fdopen() failed\n");
+		close(pipefd[0]);
+		snprintf(out, out_sz, "Unavailable");
+		return;
+	}
+
+	char line[256] = {0};
+	if (fgets(line, sizeof(line), fp)) {
+		printf("[API] getFfmpegVersion: got line: %s\n", line);
+		line[strcspn(line, "\r\n")] = '\0';
+		if (line[0]) {
+			printf("[API] getFfmpegVersion: returning version: %s\n", line);
+			snprintf(out, out_sz, "%s", line);
+			fclose(fp);
+			int status;
+			waitpid(pid, &status, 0);
+			return;
+		}
+	} else {
+		printf("[API] getFfmpegVersion: fgets returned nothing\n");
+	}
+
+	fclose(fp);
+	int status;
+	waitpid(pid, &status, 0);
+	printf("[API] getFfmpegVersion: setting to Unavailable\n");
+	snprintf(out, out_sz, "Unavailable");
+}
+
 static int handleSystemInfo(HttpServer *server,
 							 int cfd,
 							 const char *method,
@@ -2704,15 +2784,20 @@ static int handleSystemInfo(HttpServer *server,
 		load1 = (float)si.loads[0] / 65536.0f;
 	}
 
-	char out[384];
+	char ffmpeg_version[256];
+	getFfmpegVersion(ffmpeg_version, sizeof(ffmpeg_version));
+
+	char out[640];
 	int n = snprintf(out, sizeof(out),
 					 "{\"version\":\"%s\",\"kernel\":\"%s\","
 					 "\"uptime_secs\":%ld,"
 					 "\"mem_total_mb\":%ld,"
 					 "\"mem_avail_mb\":%ld,"
-					 "\"load1\":%.2f}\n",
+					 "\"load1\":%.2f,"
+					 "\"ffmpeg\":\"%s\"}\n",
 					 version_str, kernel_buf,
-					 uptime_secs, mem_total_mb, mem_avail_mb, load1);
+					 uptime_secs, mem_total_mb, mem_avail_mb, load1,
+					 ffmpeg_version);
 	if (n < 0 || n >= (int)sizeof(out)) n = 0;
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
 }

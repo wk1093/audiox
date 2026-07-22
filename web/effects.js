@@ -25,6 +25,55 @@
     return Number.isFinite(n) ? n : fallback;
   }
 
+  function toEnabled(v) {
+    if (typeof v === 'boolean') return v;
+    if (typeof v === 'number') return v !== 0;
+    if (typeof v === 'string') {
+      const s = v.trim().toLowerCase();
+      if (!s) return false;
+      if (s === '0' || s === 'false' || s === 'off' || s === 'no') return false;
+      if (s === '1' || s === 'true' || s === 'on' || s === 'yes') return true;
+      const n = Number(s);
+      if (Number.isFinite(n)) return n !== 0;
+      return true;
+    }
+    return !!v;
+  }
+
+  function paramMetaForType(type) {
+    const t = String(type || 'gain').trim();
+    if (t === 'pitch') {
+      return {
+        gain: { label: 'Input Gain', min: 0, max: 4, step: 0.01, precision: 2 },
+        drive: { label: 'Semitones', min: -12, max: 12, step: 0.01, precision: 2 },
+        clip: { label: 'Mix', min: 0, max: 1, step: 0.01, precision: 2 },
+        output: { label: 'Output Gain', min: 0, max: 4, step: 0.01, precision: 2 },
+      };
+    }
+    if (t === 'reverb') {
+      return {
+        gain: { label: 'Input Gain', min: 0, max: 4, step: 0.01, precision: 2 },
+        drive: { label: 'Feedback', min: 0.05, max: 0.95, step: 0.01, precision: 2 },
+        clip: { label: 'Damping', min: 0, max: 1, step: 0.01, precision: 2 },
+        output: { label: 'Wet Mix', min: 0, max: 1, step: 0.01, precision: 2 },
+      };
+    }
+    if (t === 'distortion') {
+      return {
+        gain: { label: 'Input Gain', min: 0, max: 4, step: 0.01, precision: 2 },
+        drive: { label: 'Drive', min: 0, max: 8, step: 0.01, precision: 2 },
+        clip: { label: 'Clip', min: 0.05, max: 1, step: 0.01, precision: 2 },
+        output: { label: 'Output', min: 0, max: 4, step: 0.01, precision: 2 },
+      };
+    }
+    return {
+      gain: { label: 'Gain', min: 0, max: 4, step: 0.01, precision: 2 },
+      drive: { label: 'Drive', min: 0, max: 8, step: 0.01, precision: 2 },
+      clip: { label: 'Clip', min: 0, max: 1, step: 0.01, precision: 2 },
+      output: { label: 'Output', min: 0, max: 4, step: 0.01, precision: 2 },
+    };
+  }
+
   class EffectsManager {
     constructor(setStatus) {
       this.setStatus = typeof setStatus === 'function' ? setStatus : (() => {});
@@ -39,6 +88,9 @@
       this.lastCcSeq = 0;
       this.lastNoteSeq = 0;
       this.paramUpdateTimers = new Map();
+      this.mutationInFlight = 0;
+      this.loadEpoch = 0;
+      this.effectsSignature = '';
     }
 
     mountPanel(panelEl, statusEl) {
@@ -78,6 +130,8 @@
         const params = fx.params || {};
         const midi = fx.midi || {};
         const cc = midi.cc || {};
+        const meta = paramMetaForType(fx.type);
+        const enabled = toEnabled(fx.enabled);
 
         const card = document.createElement('section');
         card.className = 'card fx-card';
@@ -87,11 +141,33 @@
         header.textContent = `${effectId} (${fx.type || 'gain'})`;
         card.appendChild(header);
 
+        const enabledRow = document.createElement('div');
+        enabledRow.className = 'fx-map-row';
+        const enabledMeta = document.createElement('div');
+        enabledMeta.className = 'fx-map-meta';
+        enabledMeta.textContent = `State: ${enabled ? 'Enabled' : 'Bypassed'}`;
+        const enabledBtn = document.createElement('button');
+        enabledBtn.textContent = enabled ? 'Bypass' : 'Enable';
+        enabledBtn.addEventListener('click', async () => {
+          try {
+            enabledBtn.disabled = true;
+            await this.setEnabled(effectId, !toEnabled(this.effectsById.get(effectId)?.enabled));
+            this.setPanelStatus(`${effectId} ${toEnabled(this.effectsById.get(effectId)?.enabled) ? 'enabled' : 'bypassed'}`, 'ok');
+          } catch (err) {
+            this.setPanelStatus(String(err), 'warn');
+          } finally {
+            enabledBtn.disabled = false;
+          }
+        });
+        enabledRow.appendChild(enabledMeta);
+        enabledRow.appendChild(enabledBtn);
+        card.appendChild(enabledRow);
+
         const rows = [
-          { key: 'gain', label: 'Gain', value: params.gain, cc: cc.gain },
-          { key: 'drive', label: 'Drive', value: params.drive, cc: cc.drive },
-          { key: 'clip', label: 'Clip', value: params.clip, cc: cc.clip },
-          { key: 'output', label: 'Output', value: params.output, cc: cc.output },
+          { key: 'gain', label: meta.gain.label, value: params.gain, cc: cc.gain },
+          { key: 'drive', label: meta.drive.label, value: params.drive, cc: cc.drive },
+          { key: 'clip', label: meta.clip.label, value: params.clip, cc: cc.clip },
+          { key: 'output', label: meta.output.label, value: params.output, cc: cc.output },
         ];
 
         for (const row of rows) {
@@ -178,6 +254,7 @@
     }
 
     async loadEffects() {
+      const myEpoch = this.loadEpoch;
       const res = await fetch('/api/effects', { method: 'GET' });
       const txt = await res.text();
       if (!res.ok) {
@@ -190,6 +267,16 @@
         const id = normalizeEffectId(fx?.id);
         if (!id) continue;
         this.effectsById.set(id, fx);
+      }
+      const nextSig = this.buildEffectsSignature();
+      if (nextSig === this.effectsSignature) {
+        return;
+      }
+      this.effectsSignature = nextSig;
+      // Skip updating nodes if a mutation started while we were fetching;
+      // the mutation's own loadEffects call will apply the correct state.
+      if (myEpoch !== this.loadEpoch) {
+        return;
       }
       this.refreshAllNodes();
       this.renderPanel();
@@ -221,6 +308,9 @@
     }
 
     async postSet(body) {
+      if (body && body.id && Object.prototype.hasOwnProperty.call(body, 'enabled')) {
+        this.setStatus(`sending enable request for ${body.id}: ${body.enabled}`, 'ok');
+      }
       const res = await fetch('/api/effect/set', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
@@ -234,15 +324,37 @@
     }
 
     async setEnabled(effectId, enabled) {
-      await this.postSet({ id: effectId, enabled: enabled ? 1 : 0 });
-      await this.loadEffects();
-      this.setStatus(`${effectId} ${enabled ? 'enabled' : 'bypassed'}`, 'ok');
+      const current = this.effectsById.get(effectId);
+      const nextEnabled = toEnabled(enabled);
+      this.setStatus(`setEnabled(${effectId}) -> ${nextEnabled ? 1 : 0}`, 'ok');
+
+      if (current) {
+        current.enabled = nextEnabled;
+        this.refreshAllNodes();
+        this.renderPanel();
+      }
+
+      this.loadEpoch++;
+      this.mutationInFlight++;
+      try {
+        await this.postSet({ id: effectId, enabled: nextEnabled ? 1 : 0 });
+        await this.loadEffects();
+        this.setStatus(`${effectId} ${nextEnabled ? 'enabled' : 'bypassed'}`, 'ok');
+      } finally {
+        this.mutationInFlight--;
+      }
     }
 
     async setType(effectId, type) {
-      await this.postSet({ id: effectId, type });
-      await this.loadEffects();
-      this.setStatus(`${effectId} type set to ${type}`, 'ok');
+      this.loadEpoch++;
+      this.mutationInFlight++;
+      try {
+        await this.postSet({ id: effectId, type });
+        await this.loadEffects();
+        this.setStatus(`${effectId} type set to ${type}`, 'ok');
+      } finally {
+        this.mutationInFlight--;
+      }
     }
 
     async setParam(effectId, param, value) {
@@ -250,12 +362,49 @@
       if (!Number.isFinite(numeric)) {
         return;
       }
-      await this.postSet({ id: effectId, param, value: numeric.toFixed(4) });
 
       const fx = this.effectsById.get(effectId);
+      const prev = Number(fx?.params?.[param]);
+      if (Number.isFinite(prev) && Math.abs(prev - numeric) < 0.0005) {
+        return;
+      }
+
+      await this.postSet({ id: effectId, param, value: numeric.toFixed(4) });
+
       if (fx && fx.params) {
         fx.params[param] = numeric;
       }
+    }
+
+    buildEffectsSignature() {
+      const rows = [];
+      for (const fx of this.effectsById.values()) {
+        const id = normalizeEffectId(fx?.id);
+        if (!id) {
+          continue;
+        }
+        const type = String(fx?.type || 'gain');
+        const enabled = fx?.enabled ? 1 : 0;
+        const params = fx?.params || {};
+        const midi = fx?.midi || {};
+        const cc = midi?.cc || {};
+        rows.push([
+          id,
+          type,
+          enabled,
+          toNumber(params.gain, 0).toFixed(4),
+          toNumber(params.drive, 0).toFixed(4),
+          toNumber(params.clip, 0).toFixed(4),
+          toNumber(params.output, 0).toFixed(4),
+          toNumber(midi.toggle_note, -1),
+          toNumber(cc.gain, -1),
+          toNumber(cc.drive, -1),
+          toNumber(cc.clip, -1),
+          toNumber(cc.output, -1),
+        ].join('|'));
+      }
+      rows.sort((a, b) => a.localeCompare(b));
+      return rows.join('\n');
     }
 
     queueParamUpdate(effectId, param, value) {
@@ -459,18 +608,19 @@
 
       const hasFx = !!fx;
       const type = String(fx?.type || 'gain');
-      const enabled = !!fx?.enabled;
+      const enabled = toEnabled(fx?.enabled);
       const params = fx?.params || {};
       const midi = fx?.midi || {};
+      const meta = paramMetaForType(type);
 
       node.widgets = [];
-      node.size = [320, hasFx ? 370 : 130];
+      node.size = [320, hasFx ? 340 : 130];
       node.title = hasFx
         ? `${effectId} (${type}${enabled ? '' : ' bypass'})`
         : `${effectId} (loading...)`;
 
       if (!hasFx) {
-        node.addWidget('button', 'Reload Effect State', '', async () => {
+        node.addWidget('button', 'Reload Effect State', null, async () => {
           try {
             await this.loadEffects();
           } catch (err) {
@@ -480,46 +630,30 @@
         return;
       }
 
-      node.addWidget('toggle', 'Enabled', enabled, async (v) => {
-        try {
-          await this.setEnabled(effectId, !!v);
-        } catch (err) {
-          this.setStatus(String(err), 'warn');
-        }
-      }, { on: 'on', off: 'bypass' });
-
-      node.addWidget('combo', 'Type', type, async (v) => {
-        try {
-          await this.setType(effectId, String(v || 'gain'));
-        } catch (err) {
-          this.setStatus(String(err), 'warn');
-        }
-      }, { values: ['gain', 'distortion'] });
-
-      node.addWidget('slider', 'Gain', toNumber(params.gain, 1), (v) => {
+      node.addWidget('slider', meta.gain.label, toNumber(params.gain, 1), (v) => {
         this.queueParamUpdate(effectId, 'gain', v);
-      }, { min: 0, max: 4, step: 0.01, precision: 2 });
+      }, { min: meta.gain.min, max: meta.gain.max, step: meta.gain.step, precision: meta.gain.precision });
 
-      node.addWidget('slider', 'Drive', toNumber(params.drive, 1.5), (v) => {
+      node.addWidget('slider', meta.drive.label, toNumber(params.drive, 1.5), (v) => {
         this.queueParamUpdate(effectId, 'drive', v);
-      }, { min: 0, max: 8, step: 0.01, precision: 2 });
+      }, { min: meta.drive.min, max: meta.drive.max, step: meta.drive.step, precision: meta.drive.precision });
 
-      node.addWidget('slider', 'Clip', toNumber(params.clip, 0.6), (v) => {
+      node.addWidget('slider', meta.clip.label, toNumber(params.clip, 0.6), (v) => {
         this.queueParamUpdate(effectId, 'clip', v);
-      }, { min: 0.05, max: 1, step: 0.01, precision: 2 });
+      }, { min: meta.clip.min, max: meta.clip.max, step: meta.clip.step, precision: meta.clip.precision });
 
-      node.addWidget('slider', 'Output', toNumber(params.output, 1), (v) => {
+      node.addWidget('slider', meta.output.label, toNumber(params.output, 1), (v) => {
         this.queueParamUpdate(effectId, 'output', v);
-      }, { min: 0, max: 4, step: 0.01, precision: 2 });
+      }, { min: meta.output.min, max: meta.output.max, step: meta.output.step, precision: meta.output.precision });
 
-      node.addWidget('button', 'Open Effects Mapping Page', '', () => {
+      node.addWidget('button', 'Open Effects Mapping Page', null, () => {
         const btn = document.querySelector('.tab-btn[data-tab="effects"]');
         if (btn) {
           btn.click();
         }
       });
 
-      node.addWidget('button', 'Delete Effect', '', async () => {
+      node.addWidget('button', 'Delete Effect', null, async () => {
         try {
           await this.deleteEffect(effectId);
           if (typeof window.loadRoutingThingsWithOptions === 'function') {

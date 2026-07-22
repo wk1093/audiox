@@ -306,7 +306,10 @@ static int parseEffectStateLine(const char *value,
     if (strncmp(parts[0], "fx_", 3) != 0) {
         return RET_ERR;
     }
-    if (strcmp(parts[1], "gain") != 0 && strcmp(parts[1], "distortion") != 0) {
+    if (strcmp(parts[1], "gain") != 0 &&
+        strcmp(parts[1], "distortion") != 0 &&
+        strcmp(parts[1], "pitch") != 0 &&
+        strcmp(parts[1], "reverb") != 0) {
         return RET_ERR;
     }
 

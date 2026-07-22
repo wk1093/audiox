@@ -13,6 +13,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <vector>
 
 namespace {
 
@@ -413,12 +414,28 @@ size_t AudioContext::copyDeviceInfos(AudioDeviceInfo *out, size_t cap) const {
     }
 
     std::lock_guard<std::mutex> lock(devicesMutex);
-    size_t copied = 0;
+    
+    // Collect devices into a vector for deterministic sorting
+    std::vector<AudioDeviceInfo> collected;
     for (const auto &it : devices) {
+        collected.push_back(it.second);
+    }
+    
+    // Sort by card/device index for deterministic order
+    std::sort(collected.begin(), collected.end(),
+        [](const AudioDeviceInfo &a, const AudioDeviceInfo &b) {
+            if (a.cardIndex != b.cardIndex) {
+                return a.cardIndex < b.cardIndex;
+            }
+            return a.deviceIndex < b.deviceIndex;
+        });
+    
+    size_t copied = 0;
+    for (const auto &info : collected) {
         if (copied >= cap) {
             break;
         }
-        out[copied++] = it.second;
+        out[copied++] = info;
     }
 
     return copied;
@@ -437,9 +454,22 @@ int AudioContext::buildDevicesJson(char *out, size_t out_sz) const {
     used += (size_t)n;
 
     std::lock_guard<std::mutex> lock(devicesMutex);
-    size_t idx = 0;
+    
+    // Collect and sort devices for deterministic JSON output
+    std::vector<AudioDeviceInfo> sorted;
     for (const auto &it : devices) {
-        const AudioDeviceInfo &d = it.second;
+        sorted.push_back(it.second);
+    }
+    std::sort(sorted.begin(), sorted.end(),
+        [](const AudioDeviceInfo &a, const AudioDeviceInfo &b) {
+            if (a.cardIndex != b.cardIndex) {
+                return a.cardIndex < b.cardIndex;
+            }
+            return a.deviceIndex < b.deviceIndex;
+        });
+    
+    size_t idx = 0;
+    for (const auto &d : sorted) {
         n = snprintf(
             out + used,
             out_sz - used,
@@ -545,7 +575,16 @@ int AudioContext::rescanDevices() {
     std::unordered_map<AudioHandle, AudioDeviceInfo> next;
     std::unordered_map<std::string, AudioHandle> nextPath;
 
+    // Sort devices deterministically by card/device index to ensure
+    // consistent enumeration order regardless of ALSA hotplug timing
+    std::vector<std::pair<uint64_t, ProbeItem>> sortedDevices;
     for (const auto &it : grouped) {
+        sortedDevices.emplace_back(it.first, it.second);
+    }
+    std::sort(sortedDevices.begin(), sortedDevices.end(),
+        [](const auto &a, const auto &b) { return a.first < b.first; });
+
+    for (const auto &it : sortedDevices) {
         const ProbeItem &p = it.second;
         const char *preferredPath = p.hasPlayback ? p.playbackPath : p.capturePath;
 

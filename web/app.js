@@ -318,7 +318,8 @@ function isEffectThingId(thingId) {
 }
 
 async function createEffectFromTemplate(type) {
-  const safeType = (type === 'distortion') ? 'distortion' : 'gain';
+  const allowed = new Set(['gain', 'distortion', 'pitch', 'reverb']);
+  const safeType = allowed.has(String(type || '').trim()) ? String(type).trim() : 'gain';
   const res = await fetch('/api/effect/create', {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain' },
@@ -716,6 +717,36 @@ function ensureRoutingGraph() {
     AudioxEffectDistortionNode.filter = 'audiox';
     window.LiteGraph.registerNodeType('audiox/effect_distortion', AudioxEffectDistortionNode);
   }
+
+  if (!window.LiteGraph.registered_node_types['audiox/effect_pitch']) {
+    function AudioxEffectPitchNode() {
+      this.size = [220, 80];
+      this.properties = { effectTypeTemplate: 'pitch', nodeKind: 'template' };
+      this.title = 'Add Pitch Effect';
+      this.addInput('in 1', 'audio');
+      this.addInput('in 2', 'audio');
+      this.addOutput('out 1', 'audio');
+      this.addOutput('out 2', 'audio');
+    }
+    AudioxEffectPitchNode.title = 'Pitch Effect';
+    AudioxEffectPitchNode.filter = 'audiox';
+    window.LiteGraph.registerNodeType('audiox/effect_pitch', AudioxEffectPitchNode);
+  }
+
+  if (!window.LiteGraph.registered_node_types['audiox/effect_reverb']) {
+    function AudioxEffectReverbNode() {
+      this.size = [220, 80];
+      this.properties = { effectTypeTemplate: 'reverb', nodeKind: 'template' };
+      this.title = 'Add Reverb Effect';
+      this.addInput('in 1', 'audio');
+      this.addInput('in 2', 'audio');
+      this.addOutput('out 1', 'audio');
+      this.addOutput('out 2', 'audio');
+    }
+    AudioxEffectReverbNode.title = 'Reverb Effect';
+    AudioxEffectReverbNode.filter = 'audiox';
+    window.LiteGraph.registerNodeType('audiox/effect_reverb', AudioxEffectReverbNode);
+  }
   state.graphCanvas.background_image = null;
   window.LiteGraph.NODE_DEFAULT_COLOR = '#1f4a62';
   window.LiteGraph.NODE_DEFAULT_BGCOLOR = '#102635';
@@ -802,7 +833,10 @@ function ensureRoutingGraph() {
     }
 
     const templateType = String(node.properties?.effectTypeTemplate || '').trim();
-    if (templateType === 'gain' || templateType === 'distortion') {
+    if (templateType === 'gain' ||
+      templateType === 'distortion' ||
+      templateType === 'pitch' ||
+      templateType === 'reverb') {
       const pos = Array.isArray(node.pos) ? { x: node.pos[0], y: node.pos[1] } : null;
       state.internalGraphMutation = true;
       state.graph.remove(node);
@@ -871,7 +905,7 @@ function ensureRoutingGraph() {
     if (!state.edgeDeleteEnabled) {
       return false;
     }
-    if (ev.type !== 'mousedown' || ev.button !== 0 || !ev.altKey) {
+    if (ev.type !== 'mousedown' || ev.button !== 0) {
       return false;
     }
 
@@ -1071,6 +1105,9 @@ async function pollEffectsIfNeeded() {
   if (!effectsManager) {
     return;
   }
+  if (effectsManager.mutationInFlight > 0) {
+    return;
+  }
   if (state.activeTab !== 'routing' && state.activeTab !== 'effects') {
     return;
   }
@@ -1180,6 +1217,7 @@ async function loadSystemInfo() {
     const uEl = document.getElementById('sysinfo-uptime');
     const mEl = document.getElementById('sysinfo-memory');
     const lEl = document.getElementById('sysinfo-load');
+    const fEl = document.getElementById('sysinfo-ffmpeg');
     if (!vEl) return;
 
     vEl.textContent = data.version ? `v${data.version}` : '\u2014';
@@ -1196,6 +1234,10 @@ async function loadSystemInfo() {
     mEl.textContent = `${availMb} / ${totalMb} MB`;
 
     lEl.textContent = Number(data.load1 || 0).toFixed(2);
+
+    if (fEl) {
+      fEl.textContent = data.ffmpeg || '\u2014';
+    }
   } catch (err) {}
 }
 

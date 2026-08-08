@@ -1659,14 +1659,19 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
         routeCompiledEdge(ctx, rt, rt->sourceRoutes[i]);
     }
 
-    // Process transform/effect nodes from their accumulated input.
+    // Process transform/effect nodes in deterministic order and route each
+    // node's output forward immediately so chained effects work in one block.
     for (uint16_t i = 0; i < rt->processNodeCount; ++i) {
-        processNode(ctx, rt, rt->processNodes[i]);
-    }
+        uint16_t nodeIndex = rt->processNodes[i];
+        processNode(ctx, rt, nodeIndex);
 
-    // Route transformed output onward (typically into sinks).
-    for (uint16_t i = 0; i < rt->processRouteCount; ++i) {
-        routeCompiledEdge(ctx, rt, rt->processRoutes[i]);
+        for (uint16_t routeIndex = 0; routeIndex < rt->processRouteCount; ++routeIndex) {
+            const RuntimeGraph::CompiledRoute &route = rt->processRoutes[routeIndex];
+            if (route.srcNode != nodeIndex) {
+                continue;
+            }
+            routeCompiledEdge(ctx, rt, route);
+        }
     }
 
     rt->blocksProcessed++;

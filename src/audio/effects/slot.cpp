@@ -3,6 +3,7 @@
 #include "defs.hpp"
 
 #include "audio/effects/distortion.hpp"
+#include "audio/effects/gate.hpp"
 #include "audio/effects/gain.hpp"
 #include "audio/effects/pitch.hpp"
 #include "audio/effects/reverb.hpp"
@@ -41,9 +42,17 @@ constexpr EffectParamSpec kPitchParams[kPitchParamCount] = {
 constexpr uint8_t kReverbParamCount = 4;
 constexpr EffectParamSpec kReverbParams[kReverbParamCount] = {
     {"input_gain", "Input Gain", 0.0f, 4.0f, 1.0f},
-    {"feedback", "Feedback", 0.05f, 0.95f, 0.72f},
-    {"damping", "Damping", 0.0f, 1.0f, 0.35f},
-    {"wet_mix", "Wet Mix", 0.0f, 1.0f, 0.28f},
+    {"feedback", "Feedback", 0.05f, 0.95f, 0.64f},
+    {"damping", "Damping", 0.0f, 1.0f, 0.48f},
+    {"wet_mix", "Wet Mix", 0.0f, 1.0f, 0.26f},
+};
+
+constexpr uint8_t kGateParamCount = 4;
+constexpr EffectParamSpec kGateParams[kGateParamCount] = {
+    {"threshold_db", "Threshold dB", -80.0f, 0.0f, -62.0f},
+    {"attack_ms", "Attack ms", 0.2f, 100.0f, 2.0f},
+    {"release_ms", "Release ms", 5.0f, 600.0f, 160.0f},
+    {"range_db", "Range dB", 0.0f, 80.0f, 30.0f},
 };
 
 constexpr EffectTypeSpec kTypeSpecs[] = {
@@ -51,6 +60,7 @@ constexpr EffectTypeSpec kTypeSpecs[] = {
     {EFFECT_DISTORTION, kDistortionParams, kDistortionParamCount},
     {EFFECT_PITCH, kPitchParams, kPitchParamCount},
     {EFFECT_REVERB, kReverbParams, kReverbParamCount},
+    {EFFECT_GATE, kGateParams, kGateParamCount},
 };
 
 inline float clampValue(float value, float minValue, float maxValue) {
@@ -68,7 +78,13 @@ const char *resolveParamAlias(uint8_t type, const char *name) {
         return nullptr;
     }
     if (strcmp(name, "gain") == 0) {
-        return type == EFFECT_GAIN ? "level" : "input_gain";
+        if (type == EFFECT_GAIN) {
+            return "level";
+        }
+        if (type == EFFECT_GATE) {
+            return "threshold_db";
+        }
+        return "input_gain";
     }
     if (strcmp(name, "drive") == 0) {
         if (type == EFFECT_PITCH) {
@@ -76,6 +92,9 @@ const char *resolveParamAlias(uint8_t type, const char *name) {
         }
         if (type == EFFECT_REVERB) {
             return "feedback";
+        }
+        if (type == EFFECT_GATE) {
+            return "attack_ms";
         }
         return "drive";
     }
@@ -86,11 +105,17 @@ const char *resolveParamAlias(uint8_t type, const char *name) {
         if (type == EFFECT_REVERB) {
             return "damping";
         }
+        if (type == EFFECT_GATE) {
+            return "release_ms";
+        }
         return "clip";
     }
     if (strcmp(name, "output") == 0) {
         if (type == EFFECT_REVERB) {
             return "wet_mix";
+        }
+        if (type == EFFECT_GATE) {
+            return "range_db";
         }
         return "output_gain";
     }
@@ -103,6 +128,23 @@ ReverbState *getReverbStateFor(const char *effectId, uint8_t channel) {
     key.push_back('#');
     key += std::to_string((unsigned)channel);
     return &states[key];
+}
+
+GateState *getGateStateFor(const char *effectId, uint8_t channel) {
+    static std::unordered_map<std::string, GateState> states;
+    std::string key = effectId ? effectId : "fx";
+    key.push_back('#');
+    key += std::to_string((unsigned)channel);
+
+    auto it = states.find(key);
+    if (it != states.end()) {
+        return &it->second;
+    }
+
+    GateState state = {};
+    state.gain = 1.0f;
+    auto inserted = states.emplace(key, state);
+    return &inserted.first->second;
 }
 
 } // namespace
@@ -123,6 +165,9 @@ uint8_t effectTypeFromString(const char *text) {
     if (strcmp(text, "reverb") == 0) {
         return EFFECT_REVERB;
     }
+    if (strcmp(text, "gate") == 0) {
+        return EFFECT_GATE;
+    }
     return EFFECT_GAIN;
 }
 
@@ -134,6 +179,8 @@ const char *effectTypeToString(uint8_t type) {
             return "pitch";
         case EFFECT_REVERB:
             return "reverb";
+        case EFFECT_GATE:
+            return "gate";
         case EFFECT_GAIN:
         default:
             return "gain";
@@ -236,7 +283,8 @@ void clampSlotParams(SlotParams *params) {
     if (params->type != EFFECT_GAIN &&
         params->type != EFFECT_DISTORTION &&
         params->type != EFFECT_PITCH &&
-        params->type != EFFECT_REVERB) {
+        params->type != EFFECT_REVERB &&
+        params->type != EFFECT_GATE) {
         params->type = EFFECT_GAIN;
     }
 
@@ -303,6 +351,16 @@ void processSlot(const char *effectId,
                           clamped.values[2],
                           clamped.values[3],
                           getReverbStateFor(effectId, channel));
+            return;
+        case EFFECT_GATE:
+            processGate(in,
+                        out,
+                        frames,
+                        clamped.values[0],
+                        clamped.values[1],
+                        clamped.values[2],
+                        clamped.values[3],
+                        getGateStateFor(effectId, channel));
             return;
         case EFFECT_GAIN:
         default:

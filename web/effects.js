@@ -58,6 +58,14 @@
         output: { label: 'Wet Mix', min: 0, max: 1, step: 0.01, precision: 2 },
       };
     }
+    if (t === 'gate') {
+      return {
+        gain: { label: 'Threshold dB', min: -80, max: 0, step: 0.1, precision: 1 },
+        drive: { label: 'Attack ms', min: 0.2, max: 100, step: 0.1, precision: 1 },
+        clip: { label: 'Release ms', min: 5, max: 600, step: 1, precision: 0 },
+        output: { label: 'Range dB', min: 0, max: 80, step: 0.1, precision: 1 },
+      };
+    }
     if (t === 'distortion') {
       return {
         gain: { label: 'Input Gain', min: 0, max: 4, step: 0.01, precision: 2 },
@@ -281,6 +289,32 @@
         bypassRow.appendChild(bypassMap);
         bypassRow.appendChild(bypassClear);
         card.appendChild(bypassRow);
+
+        const deleteRow = document.createElement('div');
+        deleteRow.className = 'fx-map-row';
+        const deleteMeta = document.createElement('div');
+        deleteMeta.className = 'fx-map-meta';
+        deleteMeta.textContent = 'Delete Effect';
+        const deleteBtn = document.createElement('button');
+        deleteBtn.textContent = 'Delete';
+        deleteBtn.addEventListener('click', async () => {
+          try {
+            deleteBtn.disabled = true;
+            if (typeof window.deleteEffectThing === 'function') {
+              await window.deleteEffectThing(effectId);
+            } else {
+              await this.deleteEffect(effectId);
+            }
+            this.setPanelStatus(`Deleted ${effectId}`, 'ok');
+          } catch (err) {
+            this.setPanelStatus(String(err), 'warn');
+          } finally {
+            deleteBtn.disabled = false;
+          }
+        });
+        deleteRow.appendChild(deleteMeta);
+        deleteRow.appendChild(deleteBtn);
+        card.appendChild(deleteRow);
 
         this.panelEl.appendChild(card);
       }
@@ -673,19 +707,7 @@
         }
       });
 
-      node.addWidget('button', 'Delete Effect', null, async () => {
-        try {
-          await this.deleteEffect(effectId);
-          if (typeof window.loadRoutingThingsWithOptions === 'function') {
-            await window.loadRoutingThingsWithOptions({ silent: true, force: true });
-          }
-          if (typeof window.loadRoutingFile === 'function') {
-            await window.loadRoutingFile();
-          }
-        } catch (err) {
-          this.setStatus(String(err), 'warn');
-        }
-      });
+      // Deletion is handled from the Effects page panel, not routing-node widgets.
     }
   }
 

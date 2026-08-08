@@ -8,6 +8,8 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <stdint.h>
+#include <algorithm>
+#include <vector>
 
 #include "config/context.hpp"
 
@@ -671,16 +673,27 @@ int AudioContext::listEffects(AudioEffectSlotState *out, size_t cap) const {
     }
 
     std::lock_guard<std::mutex> lock(effectsMutex);
-    size_t i = 0;
+    std::vector<std::string> ids;
+    ids.reserve(effectStates.size());
     for (const auto &it : effectStates) {
+        ids.push_back(it.first);
+    }
+    std::sort(ids.begin(), ids.end());
+
+    size_t i = 0;
+    for (const std::string &id : ids) {
         if (i >= cap) {
             break;
         }
-        snprintf(out[i].thingId, sizeof(out[i].thingId), "%s", it.first.c_str());
-        out[i].enabled = it.second.enabled;
-        out[i].type = it.second.type;
+        auto it = effectStates.find(id);
+        if (it == effectStates.end()) {
+            continue;
+        }
+        snprintf(out[i].thingId, sizeof(out[i].thingId), "%s", it->first.c_str());
+        out[i].enabled = it->second.enabled;
+        out[i].type = it->second.type;
 
-        const audiox::effects::EffectTypeSpec *spec = audiox::effects::effectTypeSpecFor(it.second.type);
+        const audiox::effects::EffectTypeSpec *spec = audiox::effects::effectTypeSpecFor(it->second.type);
         uint8_t paramCount = spec ? spec->paramCount : 0;
         if (paramCount > audiox::effects::EFFECT_PARAM_MAX) {
             paramCount = audiox::effects::EFFECT_PARAM_MAX;
@@ -693,7 +706,7 @@ int AudioContext::listEffects(AudioEffectSlotState *out, size_t cap) const {
         }
         for (uint8_t p = 0; p < paramCount; ++p) {
             snprintf(out[i].paramNames[p], sizeof(out[i].paramNames[p]), "%s", spec->params[p].name);
-            out[i].paramValues[p] = it.second.values[p];
+            out[i].paramValues[p] = it->second.values[p];
         }
         ++i;
     }
@@ -728,7 +741,8 @@ int AudioContext::setEffectType(const char *thingId, uint8_t type) {
     if (type != audiox::effects::EFFECT_GAIN &&
         type != audiox::effects::EFFECT_DISTORTION &&
         type != audiox::effects::EFFECT_PITCH &&
-        type != audiox::effects::EFFECT_REVERB) {
+        type != audiox::effects::EFFECT_REVERB &&
+        type != audiox::effects::EFFECT_GATE) {
         return RET_ERR;
     }
     const uint8_t enabled = it->second.enabled;

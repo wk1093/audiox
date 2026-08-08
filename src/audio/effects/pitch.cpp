@@ -12,8 +12,6 @@
 #define AUDIOX_PITCH_VOCODER_HOP_SIZE \
     ((AUDIOX_PITCH_VOCODER_FFT_SIZE * (AUDIOX_PITCH_VOCODER_OVERLAP_DEN - AUDIOX_PITCH_VOCODER_OVERLAP_NUM)) / AUDIOX_PITCH_VOCODER_OVERLAP_DEN)
 #define AUDIOX_PITCH_VOCODER_MAX_SEMITONES 12.0f
-#define AUDIOX_PITCH_VOCODER_NOISE_FLOOR_RATIO 0.0015f
-#define AUDIOX_PITCH_VOCODER_WET_LPF_HZ 9000.0f
 
 namespace audiox::effects {
 
@@ -106,7 +104,7 @@ inline void fftComplex(float *data, uint32_t n, bool inverse) {
     }
 }
 
-inline void processFrame(PitchState *s, float pitchRatio) {
+inline void processFrame(PitchState *s, float pitchRatio, float noiseFloorRatio) {
     const uint32_t fftSize = PitchState::FFT_SIZE;
     const uint32_t hop = PitchState::HOP_SIZE;
     const uint32_t halfBins = PitchState::HALF_BINS;
@@ -148,7 +146,7 @@ inline void processFrame(PitchState *s, float pitchRatio) {
         }
     }
 
-    const float noiseFloor = maxAnaMag * AUDIOX_PITCH_VOCODER_NOISE_FLOOR_RATIO;
+    const float noiseFloor = maxAnaMag * noiseFloorRatio;
 
     for (uint32_t k = 0U; k < halfBins; ++k) {
         s->synMag[k] = 0.0f;
@@ -160,13 +158,25 @@ inline void processFrame(PitchState *s, float pitchRatio) {
             continue;
         }
 
-        const uint32_t mapped = (uint32_t)((float)k * pitchRatio);
-        if (mapped >= halfBins) {
+        const float mappedFloat = (float)k * pitchRatio;
+        const uint32_t mapped0 = (uint32_t)mappedFloat;
+        if (mapped0 >= halfBins) {
             continue;
         }
 
-        s->synMag[mapped] += s->anaMag[k];
-        s->synFreqAcc[mapped] += s->anaFreq[k] * pitchRatio * s->anaMag[k];
+        const float frac = mappedFloat - (float)mapped0;
+        const float mag0 = s->anaMag[k] * (1.0f - frac);
+        const float mag1 = s->anaMag[k] * frac;
+        const float freq = s->anaFreq[k] * pitchRatio;
+
+        s->synMag[mapped0] += mag0;
+        s->synFreqAcc[mapped0] += freq * mag0;
+
+        const uint32_t mapped1 = mapped0 + 1U;
+        if (mapped1 < halfBins) {
+            s->synMag[mapped1] += mag1;
+            s->synFreqAcc[mapped1] += freq * mag1;
+        }
     }
 
     for (uint32_t k = 0U; k < halfBins; ++k) {
@@ -238,7 +248,9 @@ void processPitch(const char *effectId,
                   float inputGain,
                   float semitoneShift,
                   float mix,
-                  float outputGain) {
+                  float outputGain,
+                  float noiseFloorRatio,
+                  float wetLpfHz) {
     if (!in || !out || frames == 0) {
         return;
     }
@@ -251,6 +263,10 @@ void processPitch(const char *effectId,
     if (mix > 1.0f) mix = 1.0f;
     if (outputGain < 0.0f) outputGain = 0.0f;
     if (outputGain > 4.0f) outputGain = 4.0f;
+    if (noiseFloorRatio < 0.0001f) noiseFloorRatio = 0.0001f;
+    if (noiseFloorRatio > 0.02f) noiseFloorRatio = 0.02f;
+    if (wetLpfHz < 1000.0f) wetLpfHz = 1000.0f;
+    if (wetLpfHz > 18000.0f) wetLpfHz = 18000.0f;
 
     PitchState *s = getStateFor(effectId, channel);
 
@@ -265,7 +281,7 @@ void processPitch(const char *effectId,
 
     const float pitchRatio = powf(2.0f, semitoneShift / 12.0f);
     const uint32_t inFifoLatency = PitchState::FFT_SIZE - PitchState::HOP_SIZE;
-    const float wetLpfAlpha = expf(-2.0f * kPi * AUDIOX_PITCH_VOCODER_WET_LPF_HZ / (float)SAMPLE_RATE);
+    const float wetLpfAlpha = expf(-2.0f * kPi * wetLpfHz / (float)SAMPLE_RATE);
 
     for (uint32_t i = 0; i < frames; ++i) {
         s->inFifo[s->rover] = in[i] * inputGain;
@@ -283,7 +299,7 @@ void processPitch(const char *effectId,
 
         s->rover++;
         if (s->rover >= PitchState::FFT_SIZE) {
-            processFrame(s, pitchRatio);
+            processFrame(s, pitchRatio, noiseFloorRatio);
             s->rover = inFifoLatency;
         }
     }

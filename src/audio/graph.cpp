@@ -106,6 +106,63 @@ static const AudioGraphThingInfo *findThing(const AudioGraphThingInfo *things,
     return nullptr;
 }
 
+static bool normalizeRouteThingId(AudioContext *ctx,
+                                 const AudioGraphThingInfo *things,
+                                 size_t thingCount,
+                                 const char *id,
+                                 char *out,
+                                 size_t outSize) {
+    if (!ctx || !things || !id || !out || outSize == 0) {
+        return false;
+    }
+
+    if (findThing(things, thingCount, id)) {
+        copyBounded(out, outSize, id);
+        return true;
+    }
+
+    unsigned card = 0;
+    unsigned device = 0;
+    char dir[8] = {};
+    if (sscanf(id, "alsa_card%u_dev%u_%7s", &card, &device, dir) != 3) {
+        copyBounded(out, outSize, id);
+        return false;
+    }
+
+    const bool wantCapture = strcmp(dir, "in") == 0;
+    const bool wantPlayback = strcmp(dir, "out") == 0;
+    if (!wantCapture && !wantPlayback) {
+        copyBounded(out, outSize, id);
+        return false;
+    }
+
+    AudioDeviceInfo infos[32];
+    size_t deviceCount = ctx->copyDeviceInfos(infos, sizeof(infos) / sizeof(infos[0]));
+    for (size_t i = 0; i < deviceCount; ++i) {
+        const AudioDeviceInfo &info = infos[i];
+        if (info.cardIndex != card || info.deviceIndex != device) {
+            continue;
+        }
+        if (wantCapture && !info.hasCapture) {
+            continue;
+        }
+        if (wantPlayback && !info.hasPlayback) {
+            continue;
+        }
+
+        const char *slug = info.stableCardId[0] ? info.stableCardId : nullptr;
+        if (slug) {
+            snprintf(out, outSize, "alsa_%s_dev%u_%s", slug, device, dir);
+        } else {
+            copyBounded(out, outSize, id);
+        }
+        return true;
+    }
+
+    copyBounded(out, outSize, id);
+    return false;
+}
+
 static int parseRouteString(const char *route,
                             AudioGraphEdgeInfo *edgeOut,
                             char *errorOut,
@@ -276,12 +333,17 @@ size_t AudioContext::copyRoutingThings(AudioGraphThingInfo *out, size_t cap) con
     for (size_t i = 0; i < deviceCount; ++i) {
         char id[64];
         char label[160];
+        const char *slug = infos[i].stableCardId[0] ? infos[i].stableCardId : nullptr;
         if (infos[i].hasCapture) {
-            snprintf(id,
-                     sizeof(id),
-                     "alsa_card%u_dev%u_in",
-                     (unsigned)infos[i].cardIndex,
-                     (unsigned)infos[i].deviceIndex);
+            if (slug) {
+                snprintf(id, sizeof(id), "alsa_%s_dev%u_in", slug, (unsigned)infos[i].deviceIndex);
+            } else {
+                snprintf(id,
+                         sizeof(id),
+                         "alsa_card%u_dev%u_in",
+                         (unsigned)infos[i].cardIndex,
+                         (unsigned)infos[i].deviceIndex);
+            }
             snprintf(label, sizeof(label), "%s In", infos[i].displayName);
             appendThing(out,
                         cap,
@@ -292,11 +354,15 @@ size_t AudioContext::copyRoutingThings(AudioGraphThingInfo *out, size_t cap) con
                         infos[i].captureChannels ? infos[i].captureChannels : 2);
         }
         if (infos[i].hasPlayback) {
-            snprintf(id,
-                     sizeof(id),
-                     "alsa_card%u_dev%u_out",
-                     (unsigned)infos[i].cardIndex,
-                     (unsigned)infos[i].deviceIndex);
+            if (slug) {
+                snprintf(id, sizeof(id), "alsa_%s_dev%u_out", slug, (unsigned)infos[i].deviceIndex);
+            } else {
+                snprintf(id,
+                         sizeof(id),
+                         "alsa_card%u_dev%u_out",
+                         (unsigned)infos[i].cardIndex,
+                         (unsigned)infos[i].deviceIndex);
+            }
             snprintf(label, sizeof(label), "%s Out", infos[i].displayName);
             appendThing(out,
                         cap,
@@ -339,6 +405,13 @@ int AudioContext::reloadRoutingGraph() {
             copyBounded(next.status, sizeof(next.status), parseError);
             continue;
         }
+
+        char normalizedSrc[64];
+        char normalizedDst[64];
+        normalizeRouteThingId(this, next.things, next.thingCount, edge.src, normalizedSrc, sizeof(normalizedSrc));
+        normalizeRouteThingId(this, next.things, next.thingCount, edge.dst, normalizedDst, sizeof(normalizedDst));
+        copyBounded(edge.src, sizeof(edge.src), normalizedSrc);
+        copyBounded(edge.dst, sizeof(edge.dst), normalizedDst);
 
         const AudioGraphThingInfo *src = findThing(next.things, next.thingCount, edge.src);
         const AudioGraphThingInfo *dst = findThing(next.things, next.thingCount, edge.dst);

@@ -7,6 +7,7 @@ namespace audiox::effects {
 void processDistortion(const float *in,
                        float *out,
                        uint32_t frames,
+                       float inputGain,
                        float drive,
                        float clip,
                        float output) {
@@ -14,6 +15,12 @@ void processDistortion(const float *in,
         return;
     }
 
+    if (inputGain < 0.0f) {
+        inputGain = 0.0f;
+    }
+    if (inputGain > 4.0f) {
+        inputGain = 4.0f;
+    }
     if (drive < 0.0f) {
         drive = 0.0f;
     }
@@ -35,7 +42,7 @@ void processDistortion(const float *in,
 
     const float shapedDrive = 1.0f + (drive * 6.0f);
     for (uint32_t frame = 0; frame < frames; ++frame) {
-        float s = in[frame] * shapedDrive;
+        float s = in[frame] * inputGain * shapedDrive;
         s = tanhf(s);
 
         if (s > clip) {

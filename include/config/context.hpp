@@ -19,6 +19,7 @@
 #define MIDI_ACTION_MAPPINGS_MAX MIDI_MAPPINGS_MAX
 #define MIDI_CC_VOLUME_MAPPINGS_MAX 16
 #define MIDI_EFFECT_STATES_MAX 16
+#define MIDI_EFFECT_PARAMS_MAX 192
 #define MIDI_EFFECT_CC_MAPPINGS_MAX 64
 #define MIDI_EFFECT_TOGGLE_MAPPINGS_MAX 32
 #define VOLUME_ENTRIES_MAX 64
@@ -41,6 +42,12 @@ struct MidiEffectState {
     float drive;
     float clip;
     float output;
+};
+
+struct MidiEffectParam {
+    char effectId[64];
+    char param[24];
+    float value;
 };
 
 struct MidiEffectCcMapping {
@@ -140,6 +147,8 @@ struct MidiMapData {
     MidiCcVolumeMapping ccVolumeMappings[MIDI_CC_VOLUME_MAPPINGS_MAX];
     uint32_t effectStateCount;
     MidiEffectState effectStates[MIDI_EFFECT_STATES_MAX];
+    uint32_t effectParamCount;
+    MidiEffectParam effectParams[MIDI_EFFECT_PARAMS_MAX];
     uint32_t effectCcMappingCount;
     MidiEffectCcMapping effectCcMappings[MIDI_EFFECT_CC_MAPPINGS_MAX];
     uint32_t effectToggleMappingCount;

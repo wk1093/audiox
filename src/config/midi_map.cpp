@@ -366,11 +366,13 @@ static int parseEffectCcLine(const char *value,
     if (!parts[1][0] || strncmp(parts[1], "fx_", 3) != 0) {
         return RET_ERR;
     }
-    if (strcmp(parts[2], "gain") != 0 &&
-        strcmp(parts[2], "drive") != 0 &&
-        strcmp(parts[2], "clip") != 0 &&
-        strcmp(parts[2], "output") != 0) {
-        return RET_ERR;
+    for (char *p = parts[2]; *p; ++p) {
+        if (((*p >= 'a' && *p <= 'z') ||
+             (*p >= 'A' && *p <= 'Z') ||
+             (*p >= '0' && *p <= '9') ||
+             *p == '_') == 0) {
+            return RET_ERR;
+        }
     }
 
     MidiEffectCcMapping *map = &out[*count_in_out];
@@ -378,6 +380,65 @@ static int parseEffectCcLine(const char *value,
     map->cc = (uint8_t)cc;
     copyBounded(map->effectId, sizeof(map->effectId), parts[1]);
     copyBounded(map->param, sizeof(map->param), parts[2]);
+    ++(*count_in_out);
+    return RET_OK;
+}
+
+static int parseEffectParamLine(const char *value,
+                                MidiEffectParam *out,
+                                uint32_t *count_in_out) {
+    if (!value || !out || !count_in_out || *count_in_out >= MIDI_EFFECT_PARAMS_MAX) {
+        return RET_ERR;
+    }
+
+    char buf[256];
+    copyBounded(buf, sizeof(buf), value);
+
+    // format: effect_id,param,value
+    char *parts[3] = {};
+    size_t partCount = 0;
+    char *cursor = buf;
+    while (partCount < 3) {
+        parts[partCount++] = cursor;
+        char *comma = strchr(cursor, ',');
+        if (!comma) {
+            break;
+        }
+        *comma = '\0';
+        cursor = comma + 1;
+    }
+    if (partCount != 3 || strchr(parts[2], ',') != NULL) {
+        return RET_ERR;
+    }
+
+    for (size_t i = 0; i < 3; ++i) {
+        parts[i] = trimLeft(parts[i]);
+        trimRight(parts[i]);
+    }
+
+    if (!parts[0][0] || strncmp(parts[0], "fx_", 3) != 0 || !parts[1][0]) {
+        return RET_ERR;
+    }
+    for (char *p = parts[1]; *p; ++p) {
+        if (((*p >= 'a' && *p <= 'z') ||
+             (*p >= 'A' && *p <= 'Z') ||
+             (*p >= '0' && *p <= '9') ||
+             *p == '_') == 0) {
+            return RET_ERR;
+        }
+    }
+
+    char *ep = NULL;
+    float parsed = strtof(parts[2], &ep);
+    if (!ep || *ep != '\0') {
+        return RET_ERR;
+    }
+
+    MidiEffectParam *entry = &out[*count_in_out];
+    memset(entry, 0, sizeof(*entry));
+    copyBounded(entry->effectId, sizeof(entry->effectId), parts[0]);
+    copyBounded(entry->param, sizeof(entry->param), parts[1]);
+    entry->value = parsed;
     ++(*count_in_out);
     return RET_OK;
 }
@@ -539,6 +600,8 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             (void)parseCcVolumeLine(value, data.ccVolumeMappings, &data.ccVolumeMappingCount);
         } else if (strcmp(key, "fx_state") == 0) {
             (void)parseEffectStateLine(value, data.effectStates, &data.effectStateCount);
+        } else if (strcmp(key, "fx_param") == 0) {
+            (void)parseEffectParamLine(value, data.effectParams, &data.effectParamCount);
         } else if (strcmp(key, "fx_cc") == 0) {
             (void)parseEffectCcLine(value, data.effectCcMappings, &data.effectCcMappingCount);
         } else if (strcmp(key, "fx_toggle") == 0) {
@@ -720,6 +783,24 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
                     (double)data->effectStates[i].drive,
                     (double)data->effectStates[i].clip,
                     (double)data->effectStates[i].output);
+        }
+    }
+
+    uint32_t fxParamCount = data->effectParamCount;
+    if (fxParamCount > MIDI_EFFECT_PARAMS_MAX) {
+        fxParamCount = MIDI_EFFECT_PARAMS_MAX;
+    }
+    if (fxParamCount > 0) {
+        dprintf(fd, "# effect parameters: effect_id,param,value\n");
+        for (uint32_t i = 0; i < fxParamCount; ++i) {
+            if (!data->effectParams[i].effectId[0] || !data->effectParams[i].param[0]) {
+                continue;
+            }
+            dprintf(fd,
+                    "fx_param=%s,%s,%.6f\n",
+                    data->effectParams[i].effectId,
+                    data->effectParams[i].param,
+                    (double)data->effectParams[i].value);
         }
     }
 

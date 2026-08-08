@@ -932,13 +932,18 @@ static int effect_id_valid(const char *effectId) {
 }
 
 static int effect_param_valid(const char *param) {
-	if (!param) {
+	if (!param || !param[0]) {
 		return 0;
 	}
-	return (strcmp(param, "gain") == 0 ||
-			strcmp(param, "drive") == 0 ||
-			strcmp(param, "clip") == 0 ||
-			strcmp(param, "output") == 0) ? 1 : 0;
+	for (const char *p = param; *p; ++p) {
+		if (((*p >= 'a' && *p <= 'z') ||
+			 (*p >= 'A' && *p <= 'Z') ||
+			 (*p >= '0' && *p <= '9') ||
+			 *p == '_') == 0) {
+			return 0;
+		}
+	}
+	return 1;
 }
 
 static void upsertEffectStateFromRuntime(MidiMapData *map,
@@ -973,10 +978,47 @@ static void upsertEffectStateFromRuntime(MidiMapData *map,
 	MidiEffectState &state = map->effectStates[(uint32_t)idx];
 	copy_bound(state.type, sizeof(state.type), audiox::effects::effectTypeToString(params.type));
 	state.enabled = params.enabled ? 1U : 0U;
-	state.gain = params.gain;
-	state.drive = params.drive;
-	state.clip = params.clip;
-	state.output = params.output;
+
+	float value = 0.0f;
+	state.gain = (audiox::effects::getSlotParamValue(params, "gain", &value) == RET_OK) ? value : 1.0f;
+	state.drive = (audiox::effects::getSlotParamValue(params, "drive", &value) == RET_OK) ? value : 1.0f;
+	state.clip = (audiox::effects::getSlotParamValue(params, "clip", &value) == RET_OK) ? value : 1.0f;
+	state.output = (audiox::effects::getSlotParamValue(params, "output", &value) == RET_OK) ? value : 1.0f;
+
+	uint32_t writeCount = 0;
+	uint32_t oldCount = map->effectParamCount;
+	if (oldCount > MIDI_EFFECT_PARAMS_MAX) {
+		oldCount = MIDI_EFFECT_PARAMS_MAX;
+	}
+	for (uint32_t i = 0; i < oldCount; ++i) {
+		const MidiEffectParam &p = map->effectParams[i];
+		if (strcmp(p.effectId, effectId) == 0) {
+			continue;
+		}
+		if (writeCount >= MIDI_EFFECT_PARAMS_MAX) {
+			break;
+		}
+		map->effectParams[writeCount++] = p;
+	}
+
+	const audiox::effects::EffectTypeSpec *spec = audiox::effects::effectTypeSpecFor(params.type);
+	if (spec) {
+		uint8_t paramCount = spec->paramCount;
+		if (paramCount > audiox::effects::EFFECT_PARAM_MAX) {
+			paramCount = audiox::effects::EFFECT_PARAM_MAX;
+		}
+		for (uint8_t i = 0; i < paramCount; ++i) {
+			if (writeCount >= MIDI_EFFECT_PARAMS_MAX) {
+				break;
+			}
+			MidiEffectParam &dst = map->effectParams[writeCount++];
+			memset(&dst, 0, sizeof(dst));
+			copy_bound(dst.effectId, sizeof(dst.effectId), effectId);
+			copy_bound(dst.param, sizeof(dst.param), spec->params[i].name);
+			dst.value = params.values[i];
+		}
+	}
+	map->effectParamCount = writeCount;
 }
 
 static int handleMidiSamplerConfig(HttpServer *server,
@@ -1460,46 +1502,114 @@ static int handleEffects(HttpServer *server,
 			}
 		}
 
-		int ccGain = -1;
-		int ccDrive = -1;
-		int ccClip = -1;
-		int ccOutput = -1;
+		int ccByParam[audiox::effects::EFFECT_PARAM_MAX];
+		for (uint8_t p = 0; p < audiox::effects::EFFECT_PARAM_MAX; ++p) {
+			ccByParam[p] = -1;
+		}
 		uint32_t ccCount = map.effectCcMappingCount;
 		if (ccCount > MIDI_EFFECT_CC_MAPPINGS_MAX) {
 			ccCount = MIDI_EFFECT_CC_MAPPINGS_MAX;
+		}
+		const audiox::effects::EffectTypeSpec *typeSpec = audiox::effects::effectTypeSpecFor(params.type);
+		uint8_t paramCount = typeSpec ? typeSpec->paramCount : 0;
+		if (paramCount > audiox::effects::EFFECT_PARAM_MAX) {
+			paramCount = audiox::effects::EFFECT_PARAM_MAX;
 		}
 		for (uint32_t c = 0; c < ccCount; ++c) {
 			const MidiEffectCcMapping &m = map.effectCcMappings[c];
 			if (strcmp(m.effectId, slots[i].thingId) != 0) {
 				continue;
 			}
-			if (strcmp(m.param, "gain") == 0) {
-				ccGain = (int)m.cc;
-			} else if (strcmp(m.param, "drive") == 0) {
-				ccDrive = (int)m.cc;
-			} else if (strcmp(m.param, "clip") == 0) {
-				ccClip = (int)m.cc;
-			} else if (strcmp(m.param, "output") == 0) {
-				ccOutput = (int)m.cc;
+			uint8_t resolvedIdx = 0;
+			if (audiox::effects::effectParamSpecFor(params.type, m.param, &resolvedIdx) != nullptr &&
+				resolvedIdx < paramCount) {
+				ccByParam[resolvedIdx] = (int)m.cc;
 			}
 		}
 
 		n = snprintf(out + off,
 					 sizeof(out) - off,
-					 "%s{\"id\":\"%s\",\"type\":\"%s\",\"enabled\":%s,\"params\":{\"gain\":%.4f,\"drive\":%.4f,\"clip\":%.4f,\"output\":%.4f},\"midi\":{\"toggle_note\":%d,\"cc\":{\"gain\":%d,\"drive\":%d,\"clip\":%d,\"output\":%d}}}",
+					 "%s{\"id\":\"%s\",\"type\":\"%s\",\"enabled\":%s,\"params\":{",
 					 first ? "" : ",",
 					 slots[i].thingId,
 					 audiox::effects::effectTypeToString(params.type),
-					 params.enabled ? "true" : "false",
-					 (double)params.gain,
-					 (double)params.drive,
-					 (double)params.clip,
-					 (double)params.output,
-					 toggleNote,
-					 ccGain,
-					 ccDrive,
-					 ccClip,
-					 ccOutput);
+					 params.enabled ? "true" : "false");
+		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+			break;
+		}
+		off += (size_t)n;
+
+		for (uint8_t p = 0; p < paramCount; ++p) {
+			float value = 0.0f;
+			if (audiox::effects::getSlotParamValue(params, typeSpec->params[p].name, &value) != RET_OK) {
+				value = typeSpec->params[p].defaultValue;
+			}
+			n = snprintf(out + off,
+						 sizeof(out) - off,
+						 "%s\"%s\":%.4f",
+						 (p == 0U) ? "" : ",",
+						 typeSpec->params[p].name,
+						 (double)value);
+			if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+				off = sizeof(out);
+				break;
+			}
+			off += (size_t)n;
+		}
+		if (off >= sizeof(out)) {
+			break;
+		}
+
+		n = snprintf(out + off, sizeof(out) - off, "},\"param_meta\":[");
+		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+			break;
+		}
+		off += (size_t)n;
+
+		for (uint8_t p = 0; p < paramCount; ++p) {
+			n = snprintf(out + off,
+						 sizeof(out) - off,
+						 "%s{\"name\":\"%s\",\"label\":\"%s\",\"min\":%.4f,\"max\":%.4f,\"default\":%.4f}",
+						 (p == 0U) ? "" : ",",
+						 typeSpec->params[p].name,
+						 typeSpec->params[p].label,
+						 (double)typeSpec->params[p].minValue,
+						 (double)typeSpec->params[p].maxValue,
+						 (double)typeSpec->params[p].defaultValue);
+			if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+				off = sizeof(out);
+				break;
+			}
+			off += (size_t)n;
+		}
+		if (off >= sizeof(out)) {
+			break;
+		}
+
+		n = snprintf(out + off, sizeof(out) - off, "],\"midi\":{\"toggle_note\":%d,\"cc\":{", toggleNote);
+		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+			break;
+		}
+		off += (size_t)n;
+
+		for (uint8_t p = 0; p < paramCount; ++p) {
+			n = snprintf(out + off,
+						 sizeof(out) - off,
+						 "%s\"%s\":%d",
+						 (p == 0U) ? "" : ",",
+						 typeSpec->params[p].name,
+						 ccByParam[p]);
+			if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+				off = sizeof(out);
+				break;
+			}
+			off += (size_t)n;
+		}
+		if (off >= sizeof(out)) {
+			break;
+		}
+
+		n = snprintf(out + off, sizeof(out) - off, "}}}");
 		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
 			break;
 		}
@@ -1599,21 +1709,47 @@ static int handleEffectSet(HttpServer *server,
 		server->app->midi->cachedMidiMap = map;
 	}
 
-	char out[256];
+	char out[1024];
+	size_t off = 0;
 	int n = snprintf(out,
 					 sizeof(out),
-					 "{\"ok\":true,\"id\":\"%s\",\"type\":\"%s\",\"enabled\":%s,\"gain\":%.4f,\"drive\":%.4f,\"clip\":%.4f,\"output\":%.4f}\n",
+					 "{\"ok\":true,\"id\":\"%s\",\"type\":\"%s\",\"enabled\":%s,\"params\":{",
 					 idBuf,
 					 audiox::effects::effectTypeToString(params.type),
-					 params.enabled ? "true" : "false",
-					 (double)params.gain,
-					 (double)params.drive,
-					 (double)params.clip,
-					 (double)params.output);
-	if (n < 0 || (size_t)n >= sizeof(out)) {
+					 params.enabled ? "true" : "false");
+	if (n <= 0 || (size_t)n >= sizeof(out)) {
 		n = 0;
+		return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
 	}
-	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+	off += (size_t)n;
+
+	const audiox::effects::EffectTypeSpec *spec = audiox::effects::effectTypeSpecFor(params.type);
+	uint8_t paramCount = spec ? spec->paramCount : 0;
+	if (paramCount > audiox::effects::EFFECT_PARAM_MAX) {
+		paramCount = audiox::effects::EFFECT_PARAM_MAX;
+	}
+	for (uint8_t p = 0; p < paramCount; ++p) {
+		float v = 0.0f;
+		if (audiox::effects::getSlotParamValue(params, spec->params[p].name, &v) != RET_OK) {
+			v = spec->params[p].defaultValue;
+		}
+		n = snprintf(out + off,
+					 sizeof(out) - off,
+					 "%s\"%s\":%.4f",
+					 (p == 0U) ? "" : ",",
+					 spec->params[p].name,
+					 (double)v);
+		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+			break;
+		}
+		off += (size_t)n;
+	}
+
+	n = snprintf(out + off, sizeof(out) - off, "}}\n");
+	if (n > 0 && (size_t)n < sizeof(out) - off) {
+		off += (size_t)n;
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, off);
 }
 
 static int handleEffectCreate(HttpServer *server,
@@ -1721,6 +1857,15 @@ static int handleEffectDelete(HttpServer *server,
 	}
 	map.effectCcMappingCount = outCcCount;
 
+	uint32_t outParamCount = 0;
+	for (uint32_t i = 0; i < map.effectParamCount && i < MIDI_EFFECT_PARAMS_MAX; ++i) {
+		if (strcmp(map.effectParams[i].effectId, idBuf) == 0) {
+			continue;
+		}
+		map.effectParams[outParamCount++] = map.effectParams[i];
+	}
+	map.effectParamCount = outParamCount;
+
 	uint32_t outToggleCount = 0;
 	for (uint32_t i = 0; i < map.effectToggleMappingCount && i < MIDI_EFFECT_TOGGLE_MAPPINGS_MAX; ++i) {
 		if (strcmp(map.effectToggleMappings[i].effectId, idBuf) == 0) {
@@ -1782,6 +1927,13 @@ static int handleEffectMidiCcSet(HttpServer *server,
 	long cc = strtol(ccBuf, &ep, 10);
 	if (!ep || *ep != '\0' || cc < 0 || cc > 127 || !effect_id_valid(idBuf) || !effect_param_valid(paramBuf)) {
 		static const char bad[] = "invalid cc/id/param\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	audiox::effects::SlotParams effectParams = {};
+	if (!server->app->audio || server->app->audio->getEffectParams(idBuf, &effectParams) != RET_OK ||
+		audiox::effects::effectParamSpecFor(effectParams.type, paramBuf, nullptr) == nullptr) {
+		static const char bad[] = "unknown effect param for this effect type\n";
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
 	}
 

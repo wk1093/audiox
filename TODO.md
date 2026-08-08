@@ -46,14 +46,16 @@ The above last two features are mainly to improve my setup, but could probably b
 ## Very Later - v1.5+
 
 - [-] Add audio effects (reverb, delay, etc) to the audio engine, and make it so they can be routed to any output, and have their parameters controlled via the HTTP API as well as bindable MIDI CCs and buttons (for toggling effects on/off)
-  - [-] Phase Vocoder based pitch shifting (FFT window of 512, 75% overlap, hop size of 128, hann or hanning window. phase unwrapping.)
+  - [-] Phase Vocoder based pitch shifting
   - [-] Reverb
   - [ ] Delay
+  - [ ] Basic Noise cancellation (probably just a gate for now, more advanced later)
   - [x] Gain
   - [x] Distortion
 - [-] Effect midi integration
   - [x] Allow controlling effects with MIDI CCs and buttons
   - [ ] Midi lights for the effect enable/disable buttons
+- [ ] change routing config to identify devices differently, since alsa device numbers can change on reboot, which messes up the persistent routing config. Maybe use device name, or USB serial (for usb devices).
 
 ## Very Very Later - v1.6+
 
@@ -70,18 +72,21 @@ The above last two features are mainly to improve my setup, but could probably b
   - [ ] File for storing the number of bad boots, and a feature in the main initramfs that will reset that counter once everything has booted properly. If the bootloader sees that this counter is above 2 or 3, it will boot into a backup initramfs instead of the main one.
   - [ ] Make it so that the bootloader can update the kernel as well.
   - [ ] Is it possible to add a custom listener or hook into a kernel panic? Maybe automatically make a kernel panic trigger a reboot into the backup initramfs?
-- [ ] Somehow be able to update the bootloader itself. This could be done by having the main initram update the bootloader, since the bootloader updates the main initram.
+- [ ] Somehow be able to update the bootloader itself. This could be done by having the main initram update the bootloader, since the bootloader updates the main initram, but they can't edit themselves. So maybe just update the bootloader first from the main initramfs right when the update is triggered, and then reboot into the new bootloader to update the main initramfs. Or I could make them two separate processes, where you could choose to update one or the other. That is probably better since the bootloader won't be updated as often, and we won't have to require a larger update file. The update file will eventually be a custom format that is kinda like a tar, it contains a bit of metadata, and then two separate files (or just one). The update metadata will contain a version number, and then it will also tell the program if it is a bootloader update, initram update, or both.
 
 ## Release - v2.0+
 
+- [ ] IMPORTANT: Verify windows functionality.
+  - [ ] Right now the network gadget is only tested on Linux, and it is possible that it won't work on windows.
+  - [ ] Verify that the Audio gadget works on Windows, I checked once, and it didn't show up with the right name ("Showed Sink/Source" instead of "AudioX").
 - [ ] Revisit temporary DHCP for better host plug-and-play on Linux
 - [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)
 - [ ] Add a "midi passthrough" feature that allows non-mapped midi messages to be passed through via a USB gadget to a connected host. This should be configurable via the WebUI, to also allow passing through messages that are mapped to soundboard clips, but the default is to only pass through non-mapped messages. This feature should also be able to be disabled entirely, which would fully remove the gadget entirely to save USB bandwidth (this is for people using like 6+ in/out audio channels to the gadget, where bandwidth could start to matter)
 
-## Hardware dream stuff
+## Hardware stuff
 
 - Reverse-HAT style board that the Pi sits on top of
-- 4 in / 4 out minimum, probably more on the premium boards
+- 4 in / 4 out minimum, probably more on the premium boards 8 in / 8 out
 - 48V mic input
 - A few instrument inputs with proper gain staging
 - Headphone and monitor outputs

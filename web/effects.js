@@ -74,6 +74,45 @@
     };
   }
 
+  function dynamicParamList(fx) {
+    const params = fx?.params || {};
+    const out = [];
+
+    const explicit = Array.isArray(fx?.param_meta) ? fx.param_meta : [];
+    for (const raw of explicit) {
+      const name = String(raw?.name || '').trim();
+      if (!name) continue;
+      out.push({
+        name,
+        label: String(raw?.label || name),
+        min: Number.isFinite(Number(raw?.min)) ? Number(raw.min) : 0,
+        max: Number.isFinite(Number(raw?.max)) ? Number(raw.max) : 1,
+        step: 0.01,
+        precision: 2,
+        value: toNumber(params[name], Number(raw?.default) || 0),
+      });
+    }
+    if (out.length) {
+      return out;
+    }
+
+    const fallback = paramMetaForType(fx?.type || 'gain');
+    const keys = Object.keys(fallback);
+    for (const key of keys) {
+      const m = fallback[key];
+      out.push({
+        name: key,
+        label: m.label,
+        min: m.min,
+        max: m.max,
+        step: m.step,
+        precision: m.precision,
+        value: toNumber(params[key], m.min),
+      });
+    }
+    return out;
+  }
+
   class EffectsManager {
     constructor(setStatus) {
       this.setStatus = typeof setStatus === 'function' ? setStatus : (() => {});
@@ -130,7 +169,7 @@
         const params = fx.params || {};
         const midi = fx.midi || {};
         const cc = midi.cc || {};
-        const meta = paramMetaForType(fx.type);
+        const paramList = dynamicParamList(fx);
         const enabled = toEnabled(fx.enabled);
 
         const card = document.createElement('section');
@@ -163,14 +202,7 @@
         enabledRow.appendChild(enabledBtn);
         card.appendChild(enabledRow);
 
-        const rows = [
-          { key: 'gain', label: meta.gain.label, value: params.gain, cc: cc.gain },
-          { key: 'drive', label: meta.drive.label, value: params.drive, cc: cc.drive },
-          { key: 'clip', label: meta.clip.label, value: params.clip, cc: cc.clip },
-          { key: 'output', label: meta.output.label, value: params.output, cc: cc.output },
-        ];
-
-        for (const row of rows) {
+        for (const row of paramList) {
           const line = document.createElement('div');
           line.className = 'fx-map-row';
 
@@ -179,22 +211,23 @@
           left.textContent = `${row.label}: ${toNumber(row.value, 0).toFixed(2)}`;
 
           const badge = document.createElement('span');
-          badge.className = `fx-map-badge${toNumber(row.cc, -1) >= 0 ? '' : ' unset'}`;
-          badge.textContent = toNumber(row.cc, -1) >= 0 ? `CC ${row.cc}` : 'unmapped';
+          const rowCc = toNumber(cc[row.name], -1);
+          badge.className = `fx-map-badge${rowCc >= 0 ? '' : ' unset'}`;
+          badge.textContent = rowCc >= 0 ? `CC ${rowCc}` : 'unmapped';
 
           const mapBtn = document.createElement('button');
           mapBtn.textContent = 'Map';
           mapBtn.addEventListener('click', async () => {
-            await this.beginCcCapture(effectId, row.key);
-            this.setPanelStatus(`Move a MIDI CC for ${effectId}.${row.key}`, 'ok');
+            await this.beginCcCapture(effectId, row.name);
+            this.setPanelStatus(`Move a MIDI CC for ${effectId}.${row.name}`, 'ok');
           });
 
           const clearBtn = document.createElement('button');
           clearBtn.className = 'flat';
           clearBtn.textContent = 'Clear';
-          clearBtn.disabled = toNumber(row.cc, -1) < 0;
+          clearBtn.disabled = rowCc < 0;
           clearBtn.addEventListener('click', async () => {
-            const ccNum = toNumber(row.cc, -1);
+            const ccNum = rowCc;
             if (ccNum < 0) {
               return;
             }
@@ -386,21 +419,18 @@
         const type = String(fx?.type || 'gain');
         const enabled = fx?.enabled ? 1 : 0;
         const params = fx?.params || {};
+        const paramList = dynamicParamList(fx);
         const midi = fx?.midi || {};
         const cc = midi?.cc || {};
+        const paramSig = paramList.map((p) => `${p.name}:${toNumber(params[p.name], p.value).toFixed(4)}`).join(';');
+        const ccSig = paramList.map((p) => `${p.name}:${toNumber(cc[p.name], -1)}`).join(';');
         rows.push([
           id,
           type,
           enabled,
-          toNumber(params.gain, 0).toFixed(4),
-          toNumber(params.drive, 0).toFixed(4),
-          toNumber(params.clip, 0).toFixed(4),
-          toNumber(params.output, 0).toFixed(4),
+          paramSig,
           toNumber(midi.toggle_note, -1),
-          toNumber(cc.gain, -1),
-          toNumber(cc.drive, -1),
-          toNumber(cc.clip, -1),
-          toNumber(cc.output, -1),
+          ccSig,
         ].join('|'));
       }
       rows.sort((a, b) => a.localeCompare(b));
@@ -611,10 +641,10 @@
       const enabled = toEnabled(fx?.enabled);
       const params = fx?.params || {};
       const midi = fx?.midi || {};
-      const meta = paramMetaForType(type);
+      const paramList = dynamicParamList(fx);
 
       node.widgets = [];
-      node.size = [320, hasFx ? 340 : 130];
+      node.size = [340, hasFx ? Math.max(210, 150 + (paramList.length * 36)) : 130];
       node.title = hasFx
         ? `${effectId} (${type}${enabled ? '' : ' bypass'})`
         : `${effectId} (loading...)`;
@@ -630,21 +660,11 @@
         return;
       }
 
-      node.addWidget('slider', meta.gain.label, toNumber(params.gain, 1), (v) => {
-        this.queueParamUpdate(effectId, 'gain', v);
-      }, { min: meta.gain.min, max: meta.gain.max, step: meta.gain.step, precision: meta.gain.precision });
-
-      node.addWidget('slider', meta.drive.label, toNumber(params.drive, 1.5), (v) => {
-        this.queueParamUpdate(effectId, 'drive', v);
-      }, { min: meta.drive.min, max: meta.drive.max, step: meta.drive.step, precision: meta.drive.precision });
-
-      node.addWidget('slider', meta.clip.label, toNumber(params.clip, 0.6), (v) => {
-        this.queueParamUpdate(effectId, 'clip', v);
-      }, { min: meta.clip.min, max: meta.clip.max, step: meta.clip.step, precision: meta.clip.precision });
-
-      node.addWidget('slider', meta.output.label, toNumber(params.output, 1), (v) => {
-        this.queueParamUpdate(effectId, 'output', v);
-      }, { min: meta.output.min, max: meta.output.max, step: meta.output.step, precision: meta.output.precision });
+      for (const p of paramList) {
+        node.addWidget('slider', p.label, toNumber(params[p.name], p.value), (v) => {
+          this.queueParamUpdate(effectId, p.name, v);
+        }, { min: p.min, max: p.max, step: p.step, precision: p.precision });
+      }
 
       node.addWidget('button', 'Open Effects Mapping Page', null, () => {
         const btn = document.querySelector('.tab-btn[data-tab="effects"]');

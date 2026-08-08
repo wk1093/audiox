@@ -12,9 +12,9 @@ struct ReverbState {
 
     std::array<std::array<float, kMaxCombLength>, kCombCount> comb{};
     std::array<uint32_t, kCombCount> combIndex{};
+    std::array<float, kCombCount> combFilter{};
     std::array<float, kAllpassLength> allpass{};
     uint32_t allpassIndex = 0;
-    float lowpass = 0.0f;
 };
 
 void processReverb(const float *in,

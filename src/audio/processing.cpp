@@ -287,6 +287,90 @@ static bool parsePlaybackThing(const char *id, uint32_t *card, uint32_t *device)
                                 device);
 }
 
+static bool parseStableThing(const char *id,
+                             const char *suffix,
+                             char *stableCardId,
+                             size_t stableCardIdSize,
+                             uint32_t *device) {
+    if (!id || !suffix || !stableCardId || stableCardIdSize == 0 || !device) {
+        return false;
+    }
+
+    const char *prefix = "alsa_";
+    const char *devTag = strstr(id, "_dev");
+    if (!devTag || strncmp(id, prefix, strlen(prefix)) != 0) {
+        return false;
+    }
+
+    const char *tail = strstr(devTag, suffix);
+    if (!tail || tail != id + strlen(id) - strlen(suffix)) {
+        return false;
+    }
+
+    size_t slugLen = (size_t)(devTag - (id + strlen(prefix)));
+    if (slugLen == 0 || slugLen >= stableCardIdSize) {
+        return false;
+    }
+
+    memcpy(stableCardId, id + strlen(prefix), slugLen);
+    stableCardId[slugLen] = '\0';
+
+    unsigned parsedDevice = 0;
+    if (sscanf(devTag, "_dev%u", &parsedDevice) != 1) {
+        return false;
+    }
+    *device = (uint32_t)parsedDevice;
+    return true;
+}
+
+static bool resolveThingCardDevice(AudioContext *ctx,
+                                   const char *thingId,
+                                   bool isCapture,
+                                   uint32_t *card,
+                                   uint32_t *device) {
+    if (!ctx || !thingId || !card || !device) {
+        return false;
+    }
+
+    if (isCapture) {
+        if (parseCaptureThing(thingId, card, device)) {
+            return true;
+        }
+    } else {
+        if (parsePlaybackThing(thingId, card, device)) {
+            return true;
+        }
+    }
+
+    char stableCardId[64] = {};
+    const char *suffix = isCapture ? "_in" : "_out";
+    if (!parseStableThing(thingId, suffix, stableCardId, sizeof(stableCardId), device)) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(ctx->devicesMutex);
+    for (const auto &entry : ctx->devices) {
+        const AudioDeviceInfo &info = entry.second;
+        if (strcmp(info.stableCardId, stableCardId) != 0) {
+            continue;
+        }
+        if (info.deviceIndex != *device) {
+            continue;
+        }
+        if (isCapture && !info.hasCapture) {
+            continue;
+        }
+        if (!isCapture && !info.hasPlayback) {
+            continue;
+        }
+        *card = info.cardIndex;
+        *device = info.deviceIndex;
+        return true;
+    }
+
+    return false;
+}
+
 static void captureRingReset(RuntimeGraph::AlsaCaptureStream *s) {
     if (!s) {
         return;
@@ -1306,10 +1390,7 @@ static void processNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex)
         if (ctx->getEffectParams(thing.id, &params) != RET_OK) {
             params.enabled = 1U;
             params.type = audiox::effects::EFFECT_GAIN;
-            params.gain = 1.0f;
-            params.drive = 1.5f;
-            params.clip = 0.6f;
-            params.output = 1.0f;
+            audiox::effects::setSlotDefaultsForType(&params, params.type);
         }
 
         for (uint8_t ch = 0; ch < copyChannels; ++ch) {
@@ -1463,7 +1544,7 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
             if (rt->nodeKind[i] == NODE_SOURCE && rt->captureCount < kMaxCaptureStreams) {
                 uint32_t card = 0;
                 uint32_t device = 0;
-                if (parseCaptureThing(thing.id, &card, &device)) {
+                if (resolveThingCardDevice(ctx, thing.id, true, &card, &device)) {
                     RuntimeGraph::AlsaCaptureStream &s = rt->capture[rt->captureCount];
                     memset(&s, 0, sizeof(s));
                     s.active = 1;
@@ -1487,7 +1568,7 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
             if (rt->nodeKind[i] == NODE_SINK && rt->playbackCount < kMaxPlaybackStreams) {
                 uint32_t card = 0;
                 uint32_t device = 0;
-                if (parsePlaybackThing(thing.id, &card, &device)) {
+                if (resolveThingCardDevice(ctx, thing.id, false, &card, &device)) {
                     RuntimeGraph::AlsaPlaybackStream &s = rt->playback[rt->playbackCount];
                     memset(&s, 0, sizeof(s));
                     s.active = 1;
@@ -1516,7 +1597,7 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
             if (rt->nodeKind[node] == NODE_SOURCE) {
                 uint32_t card = 0;
                 uint32_t device = 0;
-                if (parseCaptureThing(thing.id, &card, &device)) {
+                if (resolveThingCardDevice(ctx, thing.id, true, &card, &device)) {
                     for (uint16_t i = 0; i < rt->captureCount; ++i) {
                         RuntimeGraph::AlsaCaptureStream &s = rt->capture[i];
                         if (s.active && s.card == card && s.device == device) {
@@ -1530,7 +1611,7 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
             if (rt->nodeKind[node] == NODE_SINK) {
                 uint32_t card = 0;
                 uint32_t device = 0;
-                if (parsePlaybackThing(thing.id, &card, &device)) {
+                if (resolveThingCardDevice(ctx, thing.id, false, &card, &device)) {
                     for (uint16_t i = 0; i < rt->playbackCount; ++i) {
                         RuntimeGraph::AlsaPlaybackStream &s = rt->playback[i];
                         if (s.active && s.card == card && s.device == device) {

@@ -340,6 +340,15 @@ async function deleteEffectThing(thingId) {
 
   try {
     await effectsManager.deleteEffect(id);
+    const node = state.nodeByThingId.get(id);
+    if (node && state.graph && state.graphCanvas) {
+      state.internalGraphMutation = true;
+      state.graph.remove(node);
+      state.internalGraphMutation = false;
+      state.nodeByThingId.delete(id);
+      syncEdgesFromGraph();
+      state.graphCanvas.setDirty(true, true);
+    }
     await loadRoutingThingsWithOptions({ silent: true, force: true });
     await loadRoutingFile();
     await effectsManager.loadEffects();

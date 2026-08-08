@@ -59,22 +59,23 @@ void processReverb(const float *in,
         for (uint32_t c = 0; c < kCombCount; ++c) {
             uint32_t idx = state->combIndex[c];
             float y = state->comb[c][idx];
-            state->comb[c][idx] = x + (y * feedback);
+            float filtered = (state->combFilter[c] * damping) + (y * (1.0f - damping));
+            state->combFilter[c] = filtered;
+            state->comb[c][idx] = x + (filtered * feedback);
 
             ++idx;
             if (idx >= kCombLengths[c]) {
                 idx = 0;
             }
             state->combIndex[c] = idx;
-            sum += y;
+            sum += filtered;
         }
 
         sum *= 0.25f;
-        state->lowpass = (state->lowpass * damping) + (sum * (1.0f - damping));
 
         uint32_t apIdx = state->allpassIndex;
         float apBuf = state->allpass[apIdx];
-        float apIn = state->lowpass;
+        float apIn = sum;
         float apOut = -apIn + apBuf;
         state->allpass[apIdx] = apIn + (apBuf * 0.5f);
 
@@ -85,12 +86,6 @@ void processReverb(const float *in,
         state->allpassIndex = apIdx;
 
         float s = (x * (1.0f - wetMix)) + (apOut * wetMix);
-        if (s > 1.0f) {
-            s = 1.0f;
-        }
-        if (s < -1.0f) {
-            s = -1.0f;
-        }
         out[frame] = s;
     }
 }

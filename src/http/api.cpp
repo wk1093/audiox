@@ -65,6 +65,8 @@
 #define HTTP_EFFECT_MIDI_CC_DELETE_PATH HTTP_API_PREFIX "effect/midi_cc/delete"
 #define HTTP_EFFECT_MIDI_TOGGLE_SET_PATH HTTP_API_PREFIX "effect/midi_toggle/set"
 #define HTTP_EFFECT_MIDI_TOGGLE_DELETE_PATH HTTP_API_PREFIX "effect/midi_toggle/delete"
+#define HTTP_EFFECT_MIDI_LIGHT_SET_PATH HTTP_API_PREFIX "effect/midi_light/set"
+#define HTTP_EFFECT_MIDI_LIGHT_DELETE_PATH HTTP_API_PREFIX "effect/midi_light/delete"
 #define HTTP_AUDIO_VOLUMES_PATH HTTP_API_PREFIX "audio/volumes"
 #define HTTP_AUDIO_VOLUME_SET_PATH HTTP_API_PREFIX "audio/volume/set"
 #define HTTP_AUDIO_DEVICES_PATH HTTP_API_PREFIX "audio/devices"
@@ -1502,6 +1504,20 @@ static int handleEffects(HttpServer *server,
 			}
 		}
 
+		uint8_t lightEnabledVel = map.globalLight.playingVel;
+		uint8_t lightBypassedVel = map.globalLight.mappedVel;
+		uint32_t lightCount = map.effectLightMappingCount;
+		if (lightCount > MIDI_EFFECT_LIGHT_MAPPINGS_MAX) {
+			lightCount = MIDI_EFFECT_LIGHT_MAPPINGS_MAX;
+		}
+		for (uint32_t l = 0; l < lightCount; ++l) {
+			if (strcmp(map.effectLightMappings[l].effectId, slots[i].thingId) == 0) {
+				lightEnabledVel = map.effectLightMappings[l].enabledVel;
+				lightBypassedVel = map.effectLightMappings[l].bypassedVel;
+				break;
+			}
+		}
+
 		int ccByParam[audiox::effects::EFFECT_PARAM_MAX];
 		for (uint8_t p = 0; p < audiox::effects::EFFECT_PARAM_MAX; ++p) {
 			ccByParam[p] = -1;
@@ -1609,7 +1625,11 @@ static int handleEffects(HttpServer *server,
 			break;
 		}
 
-		n = snprintf(out + off, sizeof(out) - off, "}}}");
+		n = snprintf(out + off,
+					 sizeof(out) - off,
+					 "},\"light\":{\"enabled_vel\":%u,\"bypassed_vel\":%u}}}",
+					 (unsigned)lightEnabledVel,
+					 (unsigned)lightBypassedVel);
 		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
 			break;
 		}
@@ -1874,6 +1894,15 @@ static int handleEffectDelete(HttpServer *server,
 		map.effectToggleMappings[outToggleCount++] = map.effectToggleMappings[i];
 	}
 	map.effectToggleMappingCount = outToggleCount;
+
+	uint32_t outLightCount = 0;
+	for (uint32_t i = 0; i < map.effectLightMappingCount && i < MIDI_EFFECT_LIGHT_MAPPINGS_MAX; ++i) {
+		if (strcmp(map.effectLightMappings[i].effectId, idBuf) == 0) {
+			continue;
+		}
+		map.effectLightMappings[outLightCount++] = map.effectLightMappings[i];
+	}
+	map.effectLightMappingCount = outLightCount;
 
 	if (server->app->config->writeMidiMapFile(&map) != RET_OK) {
 		static const char err[] = "failed to write midi_map\n";
@@ -2147,6 +2176,131 @@ static int handleEffectMidiToggleDelete(HttpServer *server,
 
 	char out[80];
 	int n = snprintf(out, sizeof(out), "{\"ok\":true,\"note\":%u}\n", (unsigned)note);
+	if (n < 0 || (size_t)n >= sizeof(out)) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
+static int handleEffectMidiLightSet(HttpServer *server,
+									int cfd,
+									const char *method,
+									const char *path,
+									const char *body,
+									size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method) {
+		return -1;
+	}
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char idBuf[64] = {};
+	char enabledBuf[16] = {};
+	char bypassedBuf[16] = {};
+	if (!body ||
+		!body_get_value(body, body_len, "id", idBuf, sizeof(idBuf)) ||
+		!body_get_value(body, body_len, "enabled_vel", enabledBuf, sizeof(enabledBuf)) ||
+		!body_get_value(body, body_len, "bypassed_vel", bypassedBuf, sizeof(bypassedBuf))) {
+		static const char bad[] = "expected id,enabled_vel,bypassed_vel\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char *ep = NULL;
+	long enabledVel = strtol(enabledBuf, &ep, 10);
+	if (!ep || *ep != '\0' || enabledVel < 0 || enabledVel > 127 || !effect_id_valid(idBuf)) {
+		static const char bad[] = "invalid id/enabled_vel\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+	ep = NULL;
+	long bypassedVel = strtol(bypassedBuf, &ep, 10);
+	if (!ep || *ep != '\0' || bypassedVel < 0 || bypassedVel > 127) {
+		static const char bad[] = "invalid bypassed_vel\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	MidiMapData map = server->app->config->readMidiMapFile();
+	uint32_t outCount = 0;
+	for (uint32_t i = 0; i < map.effectLightMappingCount && i < MIDI_EFFECT_LIGHT_MAPPINGS_MAX; ++i) {
+		if (strcmp(map.effectLightMappings[i].effectId, idBuf) == 0) {
+			continue;
+		}
+		map.effectLightMappings[outCount++] = map.effectLightMappings[i];
+	}
+	if (outCount < MIDI_EFFECT_LIGHT_MAPPINGS_MAX) {
+		copy_bound(map.effectLightMappings[outCount].effectId,
+				   sizeof(map.effectLightMappings[outCount].effectId),
+				   idBuf);
+		map.effectLightMappings[outCount].enabledVel = (uint8_t)enabledVel;
+		map.effectLightMappings[outCount].bypassedVel = (uint8_t)bypassedVel;
+		++outCount;
+	}
+	map.effectLightMappingCount = outCount;
+
+	if (server->app->config->writeMidiMapFile(&map) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = map;
+		server->app->midi->refreshLightingFromState();
+	}
+
+	char out[128];
+	int n = snprintf(out,
+				 sizeof(out),
+				 "{\"ok\":true,\"id\":\"%s\",\"enabled_vel\":%u,\"bypassed_vel\":%u}\n",
+				 idBuf,
+				 (unsigned)enabledVel,
+				 (unsigned)bypassedVel);
+	if (n < 0 || (size_t)n >= sizeof(out)) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
+static int handleEffectMidiLightDelete(HttpServer *server,
+								   int cfd,
+								   const char *method,
+								   const char *path,
+								   const char *body,
+								   size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method) {
+		return -1;
+	}
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char idBuf[64] = {};
+	if (!body || !body_get_value(body, body_len, "id", idBuf, sizeof(idBuf)) || !effect_id_valid(idBuf)) {
+		static const char bad[] = "expected valid id\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	MidiMapData map = server->app->config->readMidiMapFile();
+	uint32_t outCount = 0;
+	for (uint32_t i = 0; i < map.effectLightMappingCount && i < MIDI_EFFECT_LIGHT_MAPPINGS_MAX; ++i) {
+		if (strcmp(map.effectLightMappings[i].effectId, idBuf) == 0) {
+			continue;
+		}
+		map.effectLightMappings[outCount++] = map.effectLightMappings[i];
+	}
+	map.effectLightMappingCount = outCount;
+
+	if (server->app->config->writeMidiMapFile(&map) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = map;
+		server->app->midi->refreshLightingFromState();
+	}
+
+	char out[96];
+	int n = snprintf(out, sizeof(out), "{\"ok\":true,\"id\":\"%s\"}\n", idBuf);
 	if (n < 0 || (size_t)n >= sizeof(out)) {
 		n = 0;
 	}
@@ -3545,6 +3699,14 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_EFFECT_MIDI_TOGGLE_DELETE_PATH) == 0) {
 		return handleEffectMidiToggleDelete(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_EFFECT_MIDI_LIGHT_SET_PATH) == 0) {
+		return handleEffectMidiLightSet(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_EFFECT_MIDI_LIGHT_DELETE_PATH) == 0) {
+		return handleEffectMidiLightDelete(server, cfd, method, path, body, body_len);
 	}
 
 	if (strcmp(path, HTTP_AUDIO_VOLUMES_PATH) == 0) {

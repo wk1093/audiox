@@ -481,6 +481,62 @@ static int parseEffectToggleLine(const char *value,
     return RET_OK;
 }
 
+static int parseEffectLightLine(const char *value,
+                                MidiEffectLightMapping *out,
+                                uint32_t *count_in_out) {
+    if (!value || !out || !count_in_out || *count_in_out >= MIDI_EFFECT_LIGHT_MAPPINGS_MAX) {
+        return RET_ERR;
+    }
+
+    char buf[320];
+    copyBounded(buf, sizeof(buf), value);
+
+    // format: effect_id,enabled_vel,bypassed_vel
+    char *parts[3] = {};
+    size_t partCount = 0;
+    char *cursor = buf;
+    while (partCount < 3) {
+        parts[partCount++] = cursor;
+        char *comma = strchr(cursor, ',');
+        if (!comma) {
+            break;
+        }
+        *comma = '\0';
+        cursor = comma + 1;
+    }
+    if (partCount != 3 || strchr(parts[2], ',') != NULL) {
+        return RET_ERR;
+    }
+
+    for (size_t i = 0; i < 3; ++i) {
+        parts[i] = trimLeft(parts[i]);
+        trimRight(parts[i]);
+    }
+
+    if (!parts[0][0] || strncmp(parts[0], "fx_", 3) != 0) {
+        return RET_ERR;
+    }
+
+    char *ep = NULL;
+    long enabledVel = strtol(parts[1], &ep, 10);
+    if (!ep || *ep != '\0' || enabledVel < 0 || enabledVel > 127) {
+        return RET_ERR;
+    }
+    ep = NULL;
+    long bypassedVel = strtol(parts[2], &ep, 10);
+    if (!ep || *ep != '\0' || bypassedVel < 0 || bypassedVel > 127) {
+        return RET_ERR;
+    }
+
+    MidiEffectLightMapping *map = &out[*count_in_out];
+    memset(map, 0, sizeof(*map));
+    copyBounded(map->effectId, sizeof(map->effectId), parts[0]);
+    map->enabledVel = (uint8_t)enabledVel;
+    map->bypassedVel = (uint8_t)bypassedVel;
+    ++(*count_in_out);
+    return RET_OK;
+}
+
 static int parseMidiActionLine(const char *value,
                                MidiActionMapping *out,
                                uint32_t *count_in_out) {
@@ -607,6 +663,8 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             (void)parseEffectCcLine(value, data.effectCcMappings, &data.effectCcMappingCount);
         } else if (strcmp(key, "fx_toggle") == 0) {
             (void)parseEffectToggleLine(value, data.effectToggleMappings, &data.effectToggleMappingCount);
+        } else if (strcmp(key, "fx_light") == 0) {
+            (void)parseEffectLightLine(value, data.effectLightMappings, &data.effectLightMappingCount);
         }
     }
 
@@ -840,6 +898,24 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         }
     }
 
+    uint32_t fxLightCount = data->effectLightMappingCount;
+    if (fxLightCount > MIDI_EFFECT_LIGHT_MAPPINGS_MAX) {
+        fxLightCount = MIDI_EFFECT_LIGHT_MAPPINGS_MAX;
+    }
+    if (fxLightCount > 0) {
+        dprintf(fd, "# effect light mappings: effect_id,enabled_vel,bypassed_vel\n");
+        for (uint32_t i = 0; i < fxLightCount; ++i) {
+            if (!data->effectLightMappings[i].effectId[0]) {
+                continue;
+            }
+            dprintf(fd,
+                    "fx_light=%s,%u,%u\n",
+                    data->effectLightMappings[i].effectId,
+                    (unsigned)data->effectLightMappings[i].enabledVel,
+                    (unsigned)data->effectLightMappings[i].bypassedVel);
+        }
+    }
+
     close(fd);
     return RET_OK;
 }
@@ -893,6 +969,10 @@ int ConfigStore::writeMidiMapFile(MidiMapData *data) {
     uint32_t fxToggleCount = data->effectToggleMappingCount;
     if (fxToggleCount > MIDI_EFFECT_TOGGLE_MAPPINGS_MAX) {
         data->effectToggleMappingCount = MIDI_EFFECT_TOGGLE_MAPPINGS_MAX;
+    }
+    uint32_t fxLightCount = data->effectLightMappingCount;
+    if (fxLightCount > MIDI_EFFECT_LIGHT_MAPPINGS_MAX) {
+        data->effectLightMappingCount = MIDI_EFFECT_LIGHT_MAPPINGS_MAX;
     }
     return writeMidiMapPath(MIDI_MAP_REAL_FILE_PATH, data);
 }

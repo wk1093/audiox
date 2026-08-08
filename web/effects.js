@@ -177,6 +177,7 @@
         const params = fx.params || {};
         const midi = fx.midi || {};
         const cc = midi.cc || {};
+        const light = midi.light || {};
         const paramList = dynamicParamList(fx);
         const enabled = toEnabled(fx.enabled);
 
@@ -289,6 +290,66 @@
         bypassRow.appendChild(bypassMap);
         bypassRow.appendChild(bypassClear);
         card.appendChild(bypassRow);
+
+        const lightRow = document.createElement('div');
+        lightRow.className = 'fx-map-row';
+        const lightMeta = document.createElement('div');
+        lightMeta.className = 'fx-map-meta';
+        lightMeta.textContent = 'LED Colors (enabled / bypassed)';
+
+        const enabledInput = document.createElement('input');
+        enabledInput.type = 'number';
+        enabledInput.min = '0';
+        enabledInput.max = '127';
+        enabledInput.step = '1';
+        enabledInput.value = String(toNumber(light.enabled_vel, 0));
+        enabledInput.style.width = '62px';
+
+        const bypassedInput = document.createElement('input');
+        bypassedInput.type = 'number';
+        bypassedInput.min = '0';
+        bypassedInput.max = '127';
+        bypassedInput.step = '1';
+        bypassedInput.value = String(toNumber(light.bypassed_vel, 0));
+        bypassedInput.style.width = '62px';
+
+        const lightSave = document.createElement('button');
+        lightSave.textContent = 'Save';
+        lightSave.addEventListener('click', async () => {
+          const enabledVel = Math.max(0, Math.min(127, Math.round(toNumber(enabledInput.value, 0))));
+          const bypassedVel = Math.max(0, Math.min(127, Math.round(toNumber(bypassedInput.value, 0))));
+          try {
+            lightSave.disabled = true;
+            await this.setEffectLight(effectId, enabledVel, bypassedVel);
+            this.setPanelStatus(`Saved LED colors for ${effectId}`, 'ok');
+          } catch (err) {
+            this.setPanelStatus(String(err), 'warn');
+          } finally {
+            lightSave.disabled = false;
+          }
+        });
+
+        const lightClear = document.createElement('button');
+        lightClear.className = 'flat';
+        lightClear.textContent = 'Default';
+        lightClear.addEventListener('click', async () => {
+          try {
+            lightClear.disabled = true;
+            await this.deleteEffectLight(effectId);
+            this.setPanelStatus(`Using default LED colors for ${effectId}`, 'ok');
+          } catch (err) {
+            this.setPanelStatus(String(err), 'warn');
+          } finally {
+            lightClear.disabled = false;
+          }
+        });
+
+        lightRow.appendChild(lightMeta);
+        lightRow.appendChild(enabledInput);
+        lightRow.appendChild(bypassedInput);
+        lightRow.appendChild(lightSave);
+        lightRow.appendChild(lightClear);
+        card.appendChild(lightRow);
 
         const deleteRow = document.createElement('div');
         deleteRow.className = 'fx-map-row';
@@ -456,6 +517,7 @@
         const paramList = dynamicParamList(fx);
         const midi = fx?.midi || {};
         const cc = midi?.cc || {};
+        const light = midi?.light || {};
         const paramSig = paramList.map((p) => `${p.name}:${toNumber(params[p.name], p.value).toFixed(4)}`).join(';');
         const ccSig = paramList.map((p) => `${p.name}:${toNumber(cc[p.name], -1)}`).join(';');
         rows.push([
@@ -464,6 +526,7 @@
           enabled,
           paramSig,
           toNumber(midi.toggle_note, -1),
+          `l:${toNumber(light.enabled_vel, -1)}:${toNumber(light.bypassed_vel, -1)}`,
           ccSig,
         ].join('|'));
       }
@@ -543,6 +606,34 @@
       }
       await this.loadEffects();
       this.setStatus(`Removed note ${note} bypass mapping`, 'ok');
+    }
+
+    async setEffectLight(effectId, enabledVel, bypassedVel) {
+      const res = await fetch('/api/effect/midi_light/set', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+        body: formBody({ id: effectId, enabled_vel: enabledVel, bypassed_vel: bypassedVel }),
+      });
+      const txt = await res.text();
+      if (!res.ok) {
+        throw new Error(`effect light mapping failed: ${res.status} ${txt.trim()}`);
+      }
+      await this.loadEffects();
+      this.setStatus(`Updated LED colors for ${effectId}`, 'ok');
+    }
+
+    async deleteEffectLight(effectId) {
+      const res = await fetch('/api/effect/midi_light/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+        body: formBody({ id: effectId }),
+      });
+      const txt = await res.text();
+      if (!res.ok) {
+        throw new Error(`effect light mapping delete failed: ${res.status} ${txt.trim()}`);
+      }
+      await this.loadEffects();
+      this.setStatus(`Reset LED colors for ${effectId}`, 'ok');
     }
 
     async deleteEffect(effectId) {

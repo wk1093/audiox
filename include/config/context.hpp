@@ -22,6 +22,7 @@
 #define MIDI_EFFECT_PARAMS_MAX 192
 #define MIDI_EFFECT_CC_MAPPINGS_MAX 64
 #define MIDI_EFFECT_TOGGLE_MAPPINGS_MAX 32
+#define MIDI_EFFECT_LIGHT_MAPPINGS_MAX 32
 #define VOLUME_ENTRIES_MAX 64
 
 struct VolumeEntry {
@@ -59,6 +60,12 @@ struct MidiEffectCcMapping {
 struct MidiEffectToggleMapping {
     uint8_t note;
     char effectId[64];
+};
+
+struct MidiEffectLightMapping {
+    char effectId[64];
+    uint8_t enabledVel;
+    uint8_t bypassedVel;
 };
 
 struct RouterConfig {
@@ -153,6 +160,8 @@ struct MidiMapData {
     MidiEffectCcMapping effectCcMappings[MIDI_EFFECT_CC_MAPPINGS_MAX];
     uint32_t effectToggleMappingCount;
     MidiEffectToggleMapping effectToggleMappings[MIDI_EFFECT_TOGGLE_MAPPINGS_MAX];
+    uint32_t effectLightMappingCount;
+    MidiEffectLightMapping effectLightMappings[MIDI_EFFECT_LIGHT_MAPPINGS_MAX];
 };
 
 struct ConfigStore {

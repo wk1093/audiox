@@ -288,22 +288,16 @@ static bool parsePlaybackThing(const char *id, uint32_t *card, uint32_t *device)
 }
 
 static bool parseStableThing(const char *id,
-                             const char *suffix,
                              char *stableCardId,
                              size_t stableCardIdSize,
                              uint32_t *device) {
-    if (!id || !suffix || !stableCardId || stableCardIdSize == 0 || !device) {
+    if (!id || !stableCardId || stableCardIdSize == 0 || !device) {
         return false;
     }
 
     const char *prefix = "alsa_";
     const char *devTag = strstr(id, "_dev");
     if (!devTag || strncmp(id, prefix, strlen(prefix)) != 0) {
-        return false;
-    }
-
-    const char *tail = strstr(devTag, suffix);
-    if (!tail || tail != id + strlen(id) - strlen(suffix)) {
         return false;
     }
 
@@ -343,8 +337,7 @@ static bool resolveThingCardDevice(AudioContext *ctx,
     }
 
     char stableCardId[64] = {};
-    const char *suffix = isCapture ? "_in" : "_out";
-    if (!parseStableThing(thingId, suffix, stableCardId, sizeof(stableCardId), device)) {
+    if (!parseStableThing(thingId, stableCardId, sizeof(stableCardId), device)) {
         return false;
     }
 
@@ -1499,7 +1492,9 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
         return;
     }
 
-    bool topologyChanged = !sameThingLayout(graph, rt->snapshot);
+    bool topologyChanged =
+        (graph.topologyGeneration != rt->snapshot.topologyGeneration) ||
+        !sameThingLayout(graph, rt->snapshot);
 
     rt->snapshot = graph;
     rt->sourceNodeCount = 0;

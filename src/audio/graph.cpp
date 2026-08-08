@@ -121,6 +121,35 @@ static bool normalizeRouteThingId(AudioContext *ctx,
         return true;
     }
 
+    char stableCardId[64] = {};
+    unsigned stableDevice = 0;
+    char stableDir[8] = {};
+    if (sscanf(id, "alsa_%63[^_]_dev%u_%7s", stableCardId, &stableDevice, stableDir) == 3) {
+        AudioDeviceInfo infos[32];
+        size_t deviceCount = ctx->copyDeviceInfos(infos, sizeof(infos) / sizeof(infos[0]));
+        const bool wantCapture = strcmp(stableDir, "in") == 0;
+        const bool wantPlayback = strcmp(stableDir, "out") == 0;
+        for (size_t i = 0; i < deviceCount; ++i) {
+            const AudioDeviceInfo &info = infos[i];
+            if (strcmp(info.stableCardId, stableCardId) != 0 || info.deviceIndex != stableDevice) {
+                continue;
+            }
+            if (wantCapture && !info.hasCapture) {
+                continue;
+            }
+            if (wantPlayback && !info.hasPlayback) {
+                continue;
+            }
+            snprintf(out,
+                     outSize,
+                     "alsa_card%u_dev%u_%s",
+                     (unsigned)info.cardIndex,
+                     (unsigned)info.deviceIndex,
+                     stableDir);
+            return true;
+        }
+    }
+
     unsigned card = 0;
     unsigned device = 0;
     char dir[8] = {};
@@ -333,17 +362,12 @@ size_t AudioContext::copyRoutingThings(AudioGraphThingInfo *out, size_t cap) con
     for (size_t i = 0; i < deviceCount; ++i) {
         char id[64];
         char label[160];
-        const char *slug = infos[i].stableCardId[0] ? infos[i].stableCardId : nullptr;
         if (infos[i].hasCapture) {
-            if (slug) {
-                snprintf(id, sizeof(id), "alsa_%s_dev%u_in", slug, (unsigned)infos[i].deviceIndex);
-            } else {
-                snprintf(id,
-                         sizeof(id),
-                         "alsa_card%u_dev%u_in",
-                         (unsigned)infos[i].cardIndex,
-                         (unsigned)infos[i].deviceIndex);
-            }
+            snprintf(id,
+                     sizeof(id),
+                     "alsa_card%u_dev%u_in",
+                     (unsigned)infos[i].cardIndex,
+                     (unsigned)infos[i].deviceIndex);
             snprintf(label, sizeof(label), "%s In", infos[i].displayName);
             appendThing(out,
                         cap,
@@ -354,15 +378,11 @@ size_t AudioContext::copyRoutingThings(AudioGraphThingInfo *out, size_t cap) con
                         infos[i].captureChannels ? infos[i].captureChannels : 2);
         }
         if (infos[i].hasPlayback) {
-            if (slug) {
-                snprintf(id, sizeof(id), "alsa_%s_dev%u_out", slug, (unsigned)infos[i].deviceIndex);
-            } else {
-                snprintf(id,
-                         sizeof(id),
-                         "alsa_card%u_dev%u_out",
-                         (unsigned)infos[i].cardIndex,
-                         (unsigned)infos[i].deviceIndex);
-            }
+            snprintf(id,
+                     sizeof(id),
+                     "alsa_card%u_dev%u_out",
+                     (unsigned)infos[i].cardIndex,
+                     (unsigned)infos[i].deviceIndex);
             snprintf(label, sizeof(label), "%s Out", infos[i].displayName);
             appendThing(out,
                         cap,

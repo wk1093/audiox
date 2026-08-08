@@ -513,21 +513,11 @@ float AudioContext::getChannelLevel(AudioHandle handle, int channelIndex, bool i
     
     char thingId[64];
     if (isCapture) {
-        if (info.stableCardId[0]) {
-            snprintf(thingId, sizeof(thingId), "alsa_%s_dev%u_in",
-                     info.stableCardId, (unsigned)info.deviceIndex);
-        } else {
-            snprintf(thingId, sizeof(thingId), "alsa_card%u_dev%u_in",
-                     (unsigned)info.cardIndex, (unsigned)info.deviceIndex);
-        }
+        snprintf(thingId, sizeof(thingId), "alsa_card%u_dev%u_in",
+                 (unsigned)info.cardIndex, (unsigned)info.deviceIndex);
     } else {
-        if (info.stableCardId[0]) {
-            snprintf(thingId, sizeof(thingId), "alsa_%s_dev%u_out",
-                     info.stableCardId, (unsigned)info.deviceIndex);
-        } else {
-            snprintf(thingId, sizeof(thingId), "alsa_card%u_dev%u_out",
-                     (unsigned)info.cardIndex, (unsigned)info.deviceIndex);
-        }
+        snprintf(thingId, sizeof(thingId), "alsa_card%u_dev%u_out",
+                 (unsigned)info.cardIndex, (unsigned)info.deviceIndex);
     }
     
     std::lock_guard<std::mutex> graphLock(routingGraphMutex);

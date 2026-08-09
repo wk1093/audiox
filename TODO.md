@@ -55,7 +55,8 @@ The above last two features are mainly to improve my setup, but could probably b
 - [-] Effect midi integration
   - [x] Allow controlling effects with MIDI CCs and buttons
   - [x] Midi lights for the effect enable/disable buttons
-- [ ] change routing config to identify devices differently, since alsa device numbers can change on reboot, which messes up the persistent routing config. Maybe use device name, or USB serial (for usb devices).
+- [x] change routing config to identify devices differently — now uses the ALSA card ID string (e.g. `t6`, `uac2gadget`) instead of card numbers. Card IDs are stable across reboots for a given device model.
+- [ ] Improve stable device identifiers to use USB vendor:product IDs (e.g. `0582_0160`) from sysfs, so that generic card IDs like `device` don't silently match the wrong device. Useful when multiple USB audio devices with non-descriptive product names are connected.
 
 ## Very Very Later - v1.6+
 

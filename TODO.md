@@ -46,15 +46,15 @@ The above last two features are mainly to improve my setup, but could probably b
 ## Very Later - v1.5+
 
 - [-] Add audio effects (reverb, delay, etc) to the audio engine, and make it so they can be routed to any output, and have their parameters controlled via the HTTP API as well as bindable MIDI CCs and buttons (for toggling effects on/off)
-  - [-] Phase Vocoder based pitch shifting
-  - [-] Reverb
+  - [x] Phase Vocoder based pitch shifting
+  - [x] Reverb
   - [ ] Delay
-  - [ ] Basic Noise cancellation (probably just a gate for now, more advanced later)
+  - [-] Basic Noise cancellation (probably just a gate for now, more advanced later)
   - [x] Gain
   - [x] Distortion
 - [-] Effect midi integration
   - [x] Allow controlling effects with MIDI CCs and buttons
-  - [ ] Midi lights for the effect enable/disable buttons
+  - [x] Midi lights for the effect enable/disable buttons
 - [ ] change routing config to identify devices differently, since alsa device numbers can change on reboot, which messes up the persistent routing config. Maybe use device name, or USB serial (for usb devices).
 
 ## Very Very Later - v1.6+

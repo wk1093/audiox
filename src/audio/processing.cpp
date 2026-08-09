@@ -296,8 +296,28 @@ static bool parseStableThing(const char *id,
     }
 
     const char *prefix = "alsa_";
-    const char *devTag = strstr(id, "_dev");
-    if (!devTag || strncmp(id, prefix, strlen(prefix)) != 0) {
+    if (strncmp(id, prefix, strlen(prefix)) != 0) {
+        return false;
+    }
+
+    // Find _dev{digit} — the device-index separator.
+    // Must check for a trailing digit to avoid matching _dev inside a stableCardId
+    // that starts with "dev" (e.g. "device").
+    const char *devTag = nullptr;
+    const char *p = id;
+    while (*p) {
+        const char *found = strstr(p, "_dev");
+        if (!found) {
+            break;
+        }
+        if (isdigit((unsigned char)found[4])) {
+            devTag = found;
+            break;
+        }
+        p = found + 1;
+    }
+
+    if (!devTag) {
         return false;
     }
 

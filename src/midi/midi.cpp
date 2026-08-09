@@ -777,6 +777,7 @@ void MidiContext::poll() {
                 if (effectToggleId && app->audio) {
                     int toggleRc = app->audio->toggleEffectEnabled(effectToggleId);
                     if (toggleRc == RET_OK) {
+                        app->audio->persistEffectBypass(effectToggleId);
                         refreshLightingFromState();
                         printf("[MIDI] NOTE ON n=%u v=%u -> toggled bypass %s\n",
                                (unsigned)d0,

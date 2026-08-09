@@ -781,6 +781,56 @@ int AudioContext::toggleEffectEnabled(const char *thingId) {
     return RET_OK;
 }
 
+int AudioContext::persistEffectBypass(const char *effectId) {
+    if (!effectId || !effectId[0] || !app || !app->config) {
+        return RET_ERR;
+    }
+
+    audiox::effects::SlotParams params = {};
+    if (getEffectParams(effectId, &params) != RET_OK) {
+        return RET_ERR;
+    }
+
+    MidiMapData map = app->config->readMidiMapFile();
+    uint32_t count = map.effectStateCount;
+    if (count > MIDI_EFFECT_STATES_MAX) {
+        count = MIDI_EFFECT_STATES_MAX;
+    }
+
+    int idx = -1;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (strcmp(map.effectStates[i].effectId, effectId) == 0) {
+            idx = (int)i;
+            break;
+        }
+    }
+
+    if (idx < 0) {
+        if (count >= MIDI_EFFECT_STATES_MAX) {
+            return RET_WARN;
+        }
+        idx = (int)count;
+        MidiEffectState &s = map.effectStates[idx];
+        memset(&s, 0, sizeof(s));
+        size_t n = strnlen(effectId, sizeof(s.effectId) - 1);
+        memcpy(s.effectId, effectId, n);
+        s.effectId[n] = '\0';
+        const char *typeStr = audiox::effects::effectTypeToString(params.type);
+        n = strnlen(typeStr, sizeof(s.type) - 1);
+        memcpy(s.type, typeStr, n);
+        s.type[n] = '\0';
+        float v = 0.0f;
+        s.gain   = (audiox::effects::getSlotParamValue(params, "gain",   &v) == RET_OK) ? v : 1.0f;
+        s.drive  = (audiox::effects::getSlotParamValue(params, "drive",  &v) == RET_OK) ? v : 1.0f;
+        s.clip   = (audiox::effects::getSlotParamValue(params, "clip",   &v) == RET_OK) ? v : 1.0f;
+        s.output = (audiox::effects::getSlotParamValue(params, "output", &v) == RET_OK) ? v : 1.0f;
+        map.effectStateCount = count + 1U;
+    }
+
+    map.effectStates[(uint32_t)idx].enabled = params.enabled ? 1U : 0U;
+    return app->config->writeMidiMapFile(&map);
+}
+
 int AudioContext::setEffectParam(const char *thingId, const char *paramName, float value) {
     if (!thingId || !thingId[0] || !paramName || !paramName[0]) {
         return RET_ERR;

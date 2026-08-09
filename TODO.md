@@ -68,6 +68,8 @@ The above last two features are mainly to improve my setup, but could probably b
   - [ ] Multi-band compressor
 - [ ] Investigate using LV2 plugins for effects, and if possible, make it so that the user can upload their own LV2 plugins to the device and use them in the audio engine. This would allow for a lot more flexibility and customization for users who want to use their own effects.
 - [ ] Investigate lower latency (smaller buffer sizes like 64 or 32 samples instead of 128) to see if we can go below 5ms latency.
+
+## Pre-release - v1.7+
 - [ ] Smarter bootloader that can detect bad initramfs and boot into a backup one:
   - [ ] File for storing the number of bad boots, and a feature in the main initramfs that will reset that counter once everything has booted properly. If the bootloader sees that this counter is above 2 or 3, it will boot into a backup initramfs instead of the main one.
   - [ ] Make it so that the bootloader can update the kernel as well.
@@ -76,6 +78,7 @@ The above last two features are mainly to improve my setup, but could probably b
 
 ## Release - v2.0+
 
+- [ ] IMPORTANT: Create a config versioning system, so that older configs can be upgraded if format is changed. This is important for 2.0+ because it is meant to be a more stable release, and we don't want to break people's configs when they update. This will also allow for more advanced features in the future, like being able to export and import configs between devices.
 - [ ] IMPORTANT: Verify windows functionality.
   - [ ] Right now the network gadget is only tested on Linux, and it is possible that it won't work on windows.
   - [ ] Verify that the Audio gadget works on Windows, I checked once, and it didn't show up with the right name ("Showed Sink/Source" instead of "AudioX").

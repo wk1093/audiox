@@ -9,6 +9,7 @@
 #define CONFIG_STAGING_FILE_PATH ROOT_MOUNT_POINT "/config.staging.txt"
 #define ROUTING_REAL_FILE_PATH ROOT_MOUNT_POINT "/routing.txt"
 #define MIDI_MAP_REAL_FILE_PATH ROOT_MOUNT_POINT "/midi_map.txt"
+#define FX_PARAMS_FILE_PATH ROOT_MOUNT_POINT "/fx_params.txt"
 #define VOLUMES_FILE_PATH ROOT_MOUNT_POINT "/volumes.txt"
 #define SFX_ROOT_DIR ROOT_MOUNT_POINT "/sfx"
 
@@ -76,6 +77,7 @@ struct RouterConfig {
     void setRoute(int index, const char *route);
     void addRoute(const char *route);
     void removeRoute(int index);
+    void replaceAllRoutes(const char *const *routes, size_t count);
 };
 
 

@@ -164,3 +164,17 @@ void RouterConfig::removeRoute(int index) {
     routes.erase(routes.begin() + index);
     (void)saveRoutes(routes);
 }
+
+void RouterConfig::replaceAllRoutes(const char *const *routes, size_t count) {
+    if (!routes) {
+        return;
+    }
+    std::vector<std::string> rv;
+    rv.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        if (routes[i] && routes[i][0]) {
+            rv.emplace_back(routes[i]);
+        }
+    }
+    (void)saveRoutes(rv);
+}

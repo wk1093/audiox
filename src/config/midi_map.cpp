@@ -845,23 +845,7 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         }
     }
 
-    uint32_t fxParamCount = data->effectParamCount;
-    if (fxParamCount > MIDI_EFFECT_PARAMS_MAX) {
-        fxParamCount = MIDI_EFFECT_PARAMS_MAX;
-    }
-    if (fxParamCount > 0) {
-        dprintf(fd, "# effect parameters: effect_id,param,value\n");
-        for (uint32_t i = 0; i < fxParamCount; ++i) {
-            if (!data->effectParams[i].effectId[0] || !data->effectParams[i].param[0]) {
-                continue;
-            }
-            dprintf(fd,
-                    "fx_param=%s,%s,%.6f\n",
-                    data->effectParams[i].effectId,
-                    data->effectParams[i].param,
-                    (double)data->effectParams[i].value);
-        }
-    }
+    // fx_param lines are no longer written here; they go to fx_params.txt instead.
 
     uint32_t fxCcCount = data->effectCcMappingCount;
     if (fxCcCount > MIDI_EFFECT_CC_MAPPINGS_MAX) {
@@ -920,6 +904,65 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
     return RET_OK;
 }
 
+static int writeFxParamsPath(const char *path, const MidiEffectParam *params, uint32_t count) {
+    if (!path) {
+        return RET_ERR;
+    }
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        printf("[CONFIG] [WARN] failed to open %s for writing: %s\n", path, strerror(errno));
+        return RET_ERR;
+    }
+    dprintf(fd, "# audiox fx params v1\n");
+    if (params) {
+        uint32_t cap = count > MIDI_EFFECT_PARAMS_MAX ? MIDI_EFFECT_PARAMS_MAX : count;
+        for (uint32_t i = 0; i < cap; ++i) {
+            if (!params[i].effectId[0] || !params[i].param[0]) {
+                continue;
+            }
+            dprintf(fd, "fx_param=%s,%s,%.6f\n",
+                    params[i].effectId,
+                    params[i].param,
+                    (double)params[i].value);
+        }
+    }
+    if (close(fd) != 0) {
+        printf("[CONFIG] [WARN] failed to finalize %s: %s\n", path, strerror(errno));
+        return RET_ERR;
+    }
+    return RET_OK;
+}
+
+static int readFxParamsPath(const char *path, MidiEffectParam *out, uint32_t *count_out, uint32_t cap) {
+    if (!path || !out || !count_out || cap == 0) {
+        return RET_ERR;
+    }
+    *count_out = 0;
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        return (errno == ENOENT) ? RET_WARN : RET_ERR;
+    }
+    char line[320];
+    while (fgets(line, sizeof(line), fp) && *count_out < cap) {
+        char *eq = strchr(line, '=');
+        if (!eq) {
+            continue;
+        }
+        *eq = '\0';
+        char *key = trimLeft(line);
+        char *value = eq + 1;
+        trimRight(key);
+        trimRight(value);
+        value = trimLeft(value);
+        if (strcmp(key, "fx_param") == 0) {
+            (void)parseEffectParamLine(value, out, count_out);
+        }
+    }
+    int err = ferror(fp);
+    fclose(fp);
+    return err ? RET_ERR : RET_OK;
+}
+
 } // namespace
 
 MidiMapData ConfigStore::readMidiMapFile() const {
@@ -931,6 +974,18 @@ MidiMapData ConfigStore::readMidiMapFile() const {
         migrateMidiMapFromConfig(CONFIG_REAL_FILE_PATH, &data);
         (void)writeMidiMapPath(MIDI_MAP_REAL_FILE_PATH, &data);
     }
+
+    // fx_params.txt is the authoritative source for fx_param entries.
+    // If it exists, it replaces any fx_param lines read from midi_map.txt.
+    MidiEffectParam fxParams[MIDI_EFFECT_PARAMS_MAX] = {};
+    uint32_t fxParamCount = 0;
+    int fxRc = readFxParamsPath(FX_PARAMS_FILE_PATH, fxParams, &fxParamCount, MIDI_EFFECT_PARAMS_MAX);
+    if (fxRc == RET_OK) {
+        data.effectParamCount = fxParamCount;
+        memcpy(data.effectParams, fxParams, fxParamCount * sizeof(MidiEffectParam));
+    }
+    // If fx_params.txt doesn't exist (RET_WARN), keep whatever was in midi_map.txt.
+
     return data;
 }
 
@@ -974,5 +1029,14 @@ int ConfigStore::writeMidiMapFile(MidiMapData *data) {
     if (fxLightCount > MIDI_EFFECT_LIGHT_MAPPINGS_MAX) {
         data->effectLightMappingCount = MIDI_EFFECT_LIGHT_MAPPINGS_MAX;
     }
-    return writeMidiMapPath(MIDI_MAP_REAL_FILE_PATH, data);
+    int rc = writeMidiMapPath(MIDI_MAP_REAL_FILE_PATH, data);
+    uint32_t paramCount = data->effectParamCount;
+    if (paramCount > MIDI_EFFECT_PARAMS_MAX) {
+        paramCount = MIDI_EFFECT_PARAMS_MAX;
+    }
+    int fxRc = writeFxParamsPath(FX_PARAMS_FILE_PATH, data->effectParams, paramCount);
+    if (rc != RET_OK || fxRc != RET_OK) {
+        return RET_ERR;
+    }
+    return RET_OK;
 }

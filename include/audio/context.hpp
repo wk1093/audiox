@@ -237,6 +237,7 @@ struct AudioContext {
     int setEffectType(const char *thingId, uint8_t type);
     int setEffectEnabled(const char *thingId, uint8_t enabled);
     int toggleEffectEnabled(const char *thingId);
+    int persistEffectBypass(const char *effectId);
     int setEffectParam(const char *thingId, const char *paramName, float value);
     int setEffectParamNormalized(const char *thingId, const char *paramName, float normalized);
     int createEffect(const char *type, char *outId, size_t outIdSize);

@@ -106,6 +106,36 @@ static const AudioGraphThingInfo *findThing(const AudioGraphThingInfo *things,
     return nullptr;
 }
 
+// Converts an ALSA card-based ID (alsa_card{N}_dev{M}_{dir}) to its stable form
+// (alsa_{stableCardId}_dev{M}_{dir}) using the currently enumerated device list.
+// Returns true if the ID was converted, false if already stable, not ALSA, or device not found.
+static bool toStableRouteId(AudioContext *ctx, const char *id, char *out, size_t outSize) {
+    if (!ctx || !id || !out || outSize == 0) {
+        return false;
+    }
+    unsigned card = 0;
+    unsigned device = 0;
+    char dir[8] = {};
+    if (sscanf(id, "alsa_card%u_dev%u_%7s", &card, &device, dir) != 3) {
+        copyBounded(out, outSize, id);
+        return false;
+    }
+    AudioDeviceInfo infos[32];
+    size_t deviceCount = ctx->copyDeviceInfos(infos, sizeof(infos) / sizeof(infos[0]));
+    for (size_t i = 0; i < deviceCount; ++i) {
+        if (infos[i].cardIndex != card || infos[i].deviceIndex != device) {
+            continue;
+        }
+        if (infos[i].stableCardId[0]) {
+            snprintf(out, outSize, "alsa_%s_dev%u_%s", infos[i].stableCardId, device, dir);
+            return true;
+        }
+        break;
+    }
+    copyBounded(out, outSize, id);
+    return false;
+}
+
 static bool normalizeRouteThingId(AudioContext *ctx,
                                  const AudioGraphThingInfo *things,
                                  size_t thingCount,
@@ -469,6 +499,52 @@ int AudioContext::reloadRoutingGraph() {
                  skipped);
         printf("[AUDIO] [WARN] %s\n", next.status);
         return RET_WARN;
+    }
+
+    // Normalize any card-based device IDs in the stored routes to stable IDs.
+    // This makes routing survive card re-enumeration on reboot or replug.
+    if (routeCount > 0 && app && app->config) {
+        static constexpr size_t kMaxRoutes = AUDIO_GRAPH_MAX_EDGES;
+        static constexpr size_t kRouteLen = 256;
+        char routeBufs[kMaxRoutes][kRouteLen];
+        const char *routePtrs[kMaxRoutes];
+        size_t normalizedCount = 0;
+        bool dirty = false;
+
+        for (int i = 0; i < routeCount && normalizedCount < kMaxRoutes; ++i) {
+            char stored[kRouteLen] = {};
+            router.getRoute(i, stored, sizeof(stored));
+            if (!stored[0]) {
+                continue;
+            }
+
+            AudioGraphEdgeInfo storedEdge = {};
+            if (parseRouteString(stored, &storedEdge, nullptr, 0) != RET_OK) {
+                snprintf(routeBufs[normalizedCount], kRouteLen, "%s", stored);
+            } else {
+                char stableSrc[64] = {};
+                char stableDst[64] = {};
+                bool srcChanged = toStableRouteId(this, storedEdge.src, stableSrc, sizeof(stableSrc));
+                bool dstChanged = toStableRouteId(this, storedEdge.dst, stableDst, sizeof(stableDst));
+                if (srcChanged || dstChanged) {
+                    dirty = true;
+                    snprintf(routeBufs[normalizedCount], kRouteLen, "%s,%s,%u,%u",
+                             stableSrc, stableDst,
+                             (unsigned)storedEdge.srcChannel,
+                             (unsigned)storedEdge.dstChannel);
+                } else {
+                    snprintf(routeBufs[normalizedCount], kRouteLen, "%s", stored);
+                }
+            }
+            routePtrs[normalizedCount] = routeBufs[normalizedCount];
+            ++normalizedCount;
+        }
+
+        if (dirty) {
+            RouterConfig mutableRouter = app->config->router();
+            mutableRouter.replaceAllRoutes(routePtrs, normalizedCount);
+            printf("[AUDIO] [INFO] saved %zu route(s) with stable device identifiers\n", normalizedCount);
+        }
     }
 
     {

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-FIRMWARE_GIT_URL="${1:?usage: sync_firmware.sh <firmware_git_url> <out_dir> <vc4_overlay> [dsi_overlay]>}"
-OUT_DIR="${2:?usage: sync_firmware.sh <firmware_git_url> <out_dir> <vc4_overlay> [dsi_overlay]>}"
-VC4_OVERLAY="${3:?usage: sync_firmware.sh <firmware_git_url> <out_dir> <vc4_overlay> [dsi_overlay]>}"
-DSI_TOUCH_OVERLAY="${4:-}"
+FIRMWARE_GIT_URL="${1:?usage: sync_firmware.sh <firmware_git_url> <firmware_ref> <out_dir> <vc4_overlay> [dsi_overlay]>}"
+FIRMWARE_GIT_REF="${2:?usage: sync_firmware.sh <firmware_git_url> <firmware_ref> <out_dir> <vc4_overlay> [dsi_overlay]>}"
+OUT_DIR="${3:?usage: sync_firmware.sh <firmware_git_url> <firmware_ref> <out_dir> <vc4_overlay> [dsi_overlay]>}"
+VC4_OVERLAY="${4:?usage: sync_firmware.sh <firmware_git_url> <firmware_ref> <out_dir> <vc4_overlay> [dsi_overlay]>}"
+DSI_TOUCH_OVERLAY="${5:-}"
 
 FIRMWARE_DIR="${OUT_DIR}/firmware"
 BOOT_SRC_DIR="${FIRMWARE_DIR}/boot"
@@ -14,12 +15,13 @@ mkdir -p "${OUT_DIR}"
 
 if [[ ! -d "${FIRMWARE_DIR}/.git" ]]; then
     echo "[sync_firmware] Cloning firmware repository..."
-    git clone --depth 1 "${FIRMWARE_GIT_URL}" "${FIRMWARE_DIR}"
+    git clone --depth 1 --branch master "${FIRMWARE_GIT_URL}" "${FIRMWARE_DIR}"
 else
     echo "[sync_firmware] Updating firmware repository..."
-    git -C "${FIRMWARE_DIR}" fetch --depth 1 origin
-    git -C "${FIRMWARE_DIR}" reset --hard origin/master
 fi
+
+git -C "${FIRMWARE_DIR}" fetch --depth 1 origin "${FIRMWARE_GIT_REF}"
+git -C "${FIRMWARE_DIR}" checkout --detach FETCH_HEAD
 
 mkdir -p "${BOOT_DST_DIR}/overlays"
 

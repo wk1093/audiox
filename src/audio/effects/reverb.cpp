@@ -7,8 +7,15 @@ namespace audiox::effects {
 
 namespace {
 
-constexpr uint32_t kCombCount = 4;
-constexpr uint32_t kCombLengths[kCombCount] = {521, 733, 941, 1153};
+constexpr uint32_t kCombCount = ReverbState::kCombCount;
+constexpr uint32_t kCombLengths[kCombCount] = {
+    1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617,
+};
+constexpr float kCombNorm = 1.0f / 8.0f;
+
+constexpr uint32_t kAllpassCount = ReverbState::kAllpassCount;
+constexpr uint32_t kAllpassLengths[kAllpassCount] = {556, 441, 341, 225};
+constexpr float kAllpassFeedback = 0.5f;
 
 } // namespace
 
@@ -59,7 +66,9 @@ void processReverb(const float *in,
         for (uint32_t c = 0; c < kCombCount; ++c) {
             uint32_t idx = state->combIndex[c];
             float y = state->comb[c][idx];
-            state->comb[c][idx] = x + (y * feedback);
+            float filtered = (state->combFilter[c] * damping) + (y * (1.0f - damping));
+            state->combFilter[c] = filtered;
+            state->comb[c][idx] = x + (filtered * feedback);
 
             ++idx;
             if (idx >= kCombLengths[c]) {
@@ -69,28 +78,23 @@ void processReverb(const float *in,
             sum += y;
         }
 
-        sum *= 0.25f;
-        state->lowpass = (state->lowpass * damping) + (sum * (1.0f - damping));
+        float wet = sum * kCombNorm;
+        for (uint32_t a = 0; a < kAllpassCount; ++a) {
+            uint32_t apIdx = state->allpassIndex[a];
+            float apBuf = state->allpass[a][apIdx];
+            float apIn = wet;
+            float apOut = apBuf - apIn;
+            state->allpass[a][apIdx] = apIn + (apBuf * kAllpassFeedback);
 
-        uint32_t apIdx = state->allpassIndex;
-        float apBuf = state->allpass[apIdx];
-        float apIn = state->lowpass;
-        float apOut = -apIn + apBuf;
-        state->allpass[apIdx] = apIn + (apBuf * 0.5f);
+            ++apIdx;
+            if (apIdx >= kAllpassLengths[a]) {
+                apIdx = 0;
+            }
+            state->allpassIndex[a] = apIdx;
+            wet = apOut;
+        }
 
-        ++apIdx;
-        if (apIdx >= ReverbState::kAllpassLength) {
-            apIdx = 0;
-        }
-        state->allpassIndex = apIdx;
-
-        float s = (x * (1.0f - wetMix)) + (apOut * wetMix);
-        if (s > 1.0f) {
-            s = 1.0f;
-        }
-        if (s < -1.0f) {
-            s = -1.0f;
-        }
+        float s = (x * (1.0f - wetMix)) + (wet * wetMix);
         out[frame] = s;
     }
 }

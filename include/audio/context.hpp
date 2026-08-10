@@ -87,6 +87,9 @@ struct AudioDeviceInfo {
     char nodeName[64];
     char devPath[128];
     char displayName[128];
+    // Stable identifier derived from the ALSA card ID string (e.g. "ua2", "umc202hd").
+    // Used as the basis for routing graph node IDs so routes survive reboot.
+    char stableCardId[64];
 };
 
 struct AudioRegistry {
@@ -133,10 +136,9 @@ struct AudioEffectSlotState {
     char thingId[64];
     uint8_t enabled;
     uint8_t type;
-    float gain;
-    float drive;
-    float clip;
-    float output;
+    uint8_t paramCount;
+    char paramNames[audiox::effects::EFFECT_PARAM_MAX][24];
+    float paramValues[audiox::effects::EFFECT_PARAM_MAX];
 };
 
 struct AudioContext {
@@ -235,6 +237,7 @@ struct AudioContext {
     int setEffectType(const char *thingId, uint8_t type);
     int setEffectEnabled(const char *thingId, uint8_t enabled);
     int toggleEffectEnabled(const char *thingId);
+    int persistEffectBypass(const char *effectId);
     int setEffectParam(const char *thingId, const char *paramName, float value);
     int setEffectParamNormalized(const char *thingId, const char *paramName, float normalized);
     int createEffect(const char *type, char *outId, size_t outIdSize);

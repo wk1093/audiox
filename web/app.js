@@ -318,7 +318,7 @@ function isEffectThingId(thingId) {
 }
 
 async function createEffectFromTemplate(type) {
-  const allowed = new Set(['gain', 'distortion', 'pitch', 'reverb']);
+  const allowed = new Set(['gain', 'distortion', 'pitch', 'reverb', 'gate']);
   const safeType = allowed.has(String(type || '').trim()) ? String(type).trim() : 'gain';
   const res = await fetch('/api/effect/create', {
     method: 'POST',
@@ -340,6 +340,15 @@ async function deleteEffectThing(thingId) {
 
   try {
     await effectsManager.deleteEffect(id);
+    const node = state.nodeByThingId.get(id);
+    if (node && state.graph && state.graphCanvas) {
+      state.internalGraphMutation = true;
+      state.graph.remove(node);
+      state.internalGraphMutation = false;
+      state.nodeByThingId.delete(id);
+      syncEdgesFromGraph();
+      state.graphCanvas.setDirty(true, true);
+    }
     await loadRoutingThingsWithOptions({ silent: true, force: true });
     await loadRoutingFile();
     await effectsManager.loadEffects();
@@ -662,10 +671,7 @@ function ensureRoutingGraph() {
     }
 
     if (!state.internalGraphMutation && isEffectNode(node)) {
-      const thingId = normalizeThingId(node?.properties?.thingId);
-      if (thingId) {
-        deleteEffectThing(thingId);
-      }
+      setStatus('delete effects from the Effects page panel', 'warn');
       return;
     }
 
@@ -747,6 +753,21 @@ function ensureRoutingGraph() {
     AudioxEffectReverbNode.filter = 'audiox';
     window.LiteGraph.registerNodeType('audiox/effect_reverb', AudioxEffectReverbNode);
   }
+
+  if (!window.LiteGraph.registered_node_types['audiox/effect_gate']) {
+    function AudioxEffectGateNode() {
+      this.size = [220, 80];
+      this.properties = { effectTypeTemplate: 'gate', nodeKind: 'template' };
+      this.title = 'Add Noise Gate Effect';
+      this.addInput('in 1', 'audio');
+      this.addInput('in 2', 'audio');
+      this.addOutput('out 1', 'audio');
+      this.addOutput('out 2', 'audio');
+    }
+    AudioxEffectGateNode.title = 'Noise Gate Effect';
+    AudioxEffectGateNode.filter = 'audiox';
+    window.LiteGraph.registerNodeType('audiox/effect_gate', AudioxEffectGateNode);
+  }
   state.graphCanvas.background_image = null;
   window.LiteGraph.NODE_DEFAULT_COLOR = '#1f4a62';
   window.LiteGraph.NODE_DEFAULT_BGCOLOR = '#102635';
@@ -778,17 +799,7 @@ function ensureRoutingGraph() {
       return [];
     }
     if (isEffectNode(node)) {
-      return [
-        {
-          content: 'Delete Effect',
-          callback: () => {
-            const thingId = normalizeThingId(node?.properties?.thingId);
-            if (thingId) {
-              deleteEffectThing(thingId);
-            }
-          },
-        },
-      ];
+      return [];
     }
     return [
       {
@@ -836,7 +847,8 @@ function ensureRoutingGraph() {
     if (templateType === 'gain' ||
       templateType === 'distortion' ||
       templateType === 'pitch' ||
-      templateType === 'reverb') {
+      templateType === 'reverb' ||
+      templateType === 'gate') {
       const pos = Array.isArray(node.pos) ? { x: node.pos[0], y: node.pos[1] } : null;
       state.internalGraphMutation = true;
       state.graph.remove(node);
@@ -1148,6 +1160,7 @@ async function loadRoutingFile() {
   }
 }
 
+window.deleteEffectThing = deleteEffectThing;
 window.loadRoutingFile = loadRoutingFile;
 window.loadRoutingThingsWithOptions = loadRoutingThingsWithOptions;
 

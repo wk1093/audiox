@@ -315,6 +315,29 @@ static uint8_t resolveLightVelocity(const MidiMapData &data,
     return fallback;
 }
 
+static uint8_t resolveEffectLightVelocity(const MidiMapData &data,
+                                          const char *effectId,
+                                          uint8_t enabled) {
+    uint8_t fallback = enabled ? data.globalLight.playingVel : data.globalLight.mappedVel;
+    if (!effectId || !effectId[0]) {
+        return fallback;
+    }
+
+    uint32_t count = data.effectLightMappingCount;
+    if (count > MIDI_EFFECT_LIGHT_MAPPINGS_MAX) {
+        count = MIDI_EFFECT_LIGHT_MAPPINGS_MAX;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        if (strcmp(data.effectLightMappings[i].effectId, effectId) != 0) {
+            continue;
+        }
+        return enabled ? data.effectLightMappings[i].enabledVel
+                       : data.effectLightMappings[i].bypassedVel;
+    }
+
+    return fallback;
+}
+
 static int sfxInPlayingList(const MidiContext *midi, const char *sfxPath) {
     if (!midi || !sfxPath || !sfxPath[0]) {
         return 0;
@@ -472,6 +495,26 @@ void MidiContext::refreshLightingFromState() {
         } else {
             desired[note] = resolveLightVelocity(cachedMidiMap, NULL, LIGHT_STATE_ACTION);
         }
+    }
+
+    uint32_t fxToggleCount = cachedMidiMap.effectToggleMappingCount;
+    if (fxToggleCount > MIDI_EFFECT_TOGGLE_MAPPINGS_MAX) {
+        fxToggleCount = MIDI_EFFECT_TOGGLE_MAPPINGS_MAX;
+    }
+    for (uint32_t i = 0; i < fxToggleCount; ++i) {
+        const MidiEffectToggleMapping &m = cachedMidiMap.effectToggleMappings[i];
+        if (!m.effectId[0]) {
+            continue;
+        }
+
+        uint8_t enabled = 1U;
+        if (app && app->audio) {
+            audiox::effects::SlotParams params = {};
+            if (app->audio->getEffectParams(m.effectId, &params) == RET_OK) {
+                enabled = params.enabled ? 1U : 0U;
+            }
+        }
+        desired[m.note & 0x7Fu] = resolveEffectLightVelocity(cachedMidiMap, m.effectId, enabled);
     }
 
     for (int note = 0; note < 128; ++note) {
@@ -734,6 +777,8 @@ void MidiContext::poll() {
                 if (effectToggleId && app->audio) {
                     int toggleRc = app->audio->toggleEffectEnabled(effectToggleId);
                     if (toggleRc == RET_OK) {
+                        app->audio->persistEffectBypass(effectToggleId);
+                        refreshLightingFromState();
                         printf("[MIDI] NOTE ON n=%u v=%u -> toggled bypass %s\n",
                                (unsigned)d0,
                                (unsigned)d1,

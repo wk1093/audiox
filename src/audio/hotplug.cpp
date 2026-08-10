@@ -111,6 +111,37 @@ static int loadCardId(uint32_t card, char *out, size_t outSize) {
     return readProcTextFile(path, out, outSize);
 }
 
+// Sanitize an ALSA card ID into a stable lowercase slug for routing node IDs.
+// Result contains only [a-z0-9_]; adjacent/leading/trailing underscores are collapsed.
+static void sanitizeCardIdSlug(const char *cardId, char *out, size_t outSize) {
+    if (!out || outSize == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (!cardId || !cardId[0]) {
+        return;
+    }
+
+    size_t wi = 0;
+    bool lastWasUnderscore = true; // suppress leading underscore
+    for (size_t ri = 0; cardId[ri] && wi < outSize - 1; ++ri) {
+        unsigned char c = (unsigned char)cardId[ri];
+        if (isalnum(c)) {
+            out[wi++] = (char)tolower(c);
+            lastWasUnderscore = false;
+        } else if (!lastWasUnderscore) {
+            out[wi++] = '_';
+            lastWasUnderscore = true;
+        }
+    }
+    out[wi] = '\0';
+
+    // Strip trailing underscore
+    while (wi > 0 && out[wi - 1] == '_') {
+        out[--wi] = '\0';
+    }
+}
+
 static int loadPcmLabel(uint32_t card, uint32_t device, char *out, size_t outSize) {
     if (!out || outSize == 0) {
         return RET_ERR;
@@ -473,7 +504,7 @@ int AudioContext::buildDevicesJson(char *out, size_t out_sz) const {
         n = snprintf(
             out + used,
             out_sz - used,
-            "%s{\"handle\":%u,\"generation\":%u,\"card\":%u,\"device\":%u,\"playback\":%u,\"capture\":%u,\"playbackChannels\":%u,\"captureChannels\":%u,\"usb\":%u,\"node\":\"%s\",\"path\":\"%s\",\"name\":\"%s\"}",
+            "%s{\"handle\":%u,\"generation\":%u,\"card\":%u,\"device\":%u,\"playback\":%u,\"capture\":%u,\"playbackChannels\":%u,\"captureChannels\":%u,\"usb\":%u,\"node\":\"%s\",\"path\":\"%s\",\"name\":\"%s\",\"stableCardId\":\"%s\"}",
             (idx == 0) ? "" : ",",
             (unsigned)d.handle,
             (unsigned)d.generation,
@@ -486,7 +517,8 @@ int AudioContext::buildDevicesJson(char *out, size_t out_sz) const {
             (unsigned)d.isUsb,
             d.nodeName,
             d.devPath,
-            d.displayName);
+            d.displayName,
+            d.stableCardId);
         if (n < 0 || (size_t)n >= out_sz - used) {
             return RET_ERR;
         }
@@ -628,6 +660,18 @@ int AudioContext::rescanDevices() {
                          sizeof(info.displayName),
                          &info.isGadget,
                          &info.isUsb);
+
+        // Build stable card ID slug for persistent routing node names.
+        {
+            char rawCardId[64] = {};
+            if (loadCardId(p.card, rawCardId, sizeof(rawCardId)) == RET_OK && rawCardId[0]) {
+                sanitizeCardIdSlug(rawCardId, info.stableCardId, sizeof(info.stableCardId));
+            }
+            if (!info.stableCardId[0]) {
+                // Fallback: use card index so the field is never empty.
+                snprintf(info.stableCardId, sizeof(info.stableCardId), "card%u", (unsigned)p.card);
+            }
+        }
         if (info.isGadget && haveGadgetConfig) {
             if (info.hasPlayback) {
                 info.playbackChannels = (uint8_t)gadgetConfig.playbackChannels;

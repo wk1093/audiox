@@ -9,6 +9,7 @@
 #define CONFIG_STAGING_FILE_PATH ROOT_MOUNT_POINT "/config.staging.txt"
 #define ROUTING_REAL_FILE_PATH ROOT_MOUNT_POINT "/routing.txt"
 #define MIDI_MAP_REAL_FILE_PATH ROOT_MOUNT_POINT "/midi_map.txt"
+#define FX_PARAMS_FILE_PATH ROOT_MOUNT_POINT "/fx_params.txt"
 #define VOLUMES_FILE_PATH ROOT_MOUNT_POINT "/volumes.txt"
 #define SFX_ROOT_DIR ROOT_MOUNT_POINT "/sfx"
 
@@ -19,8 +20,10 @@
 #define MIDI_ACTION_MAPPINGS_MAX MIDI_MAPPINGS_MAX
 #define MIDI_CC_VOLUME_MAPPINGS_MAX 16
 #define MIDI_EFFECT_STATES_MAX 16
+#define MIDI_EFFECT_PARAMS_MAX 192
 #define MIDI_EFFECT_CC_MAPPINGS_MAX 64
 #define MIDI_EFFECT_TOGGLE_MAPPINGS_MAX 32
+#define MIDI_EFFECT_LIGHT_MAPPINGS_MAX 32
 #define VOLUME_ENTRIES_MAX 64
 
 struct VolumeEntry {
@@ -43,6 +46,12 @@ struct MidiEffectState {
     float output;
 };
 
+struct MidiEffectParam {
+    char effectId[64];
+    char param[24];
+    float value;
+};
+
 struct MidiEffectCcMapping {
     uint8_t cc;
     char effectId[64];
@@ -54,6 +63,12 @@ struct MidiEffectToggleMapping {
     char effectId[64];
 };
 
+struct MidiEffectLightMapping {
+    char effectId[64];
+    uint8_t enabledVel;
+    uint8_t bypassedVel;
+};
+
 struct RouterConfig {
     RouterConfig();
 
@@ -62,6 +77,7 @@ struct RouterConfig {
     void setRoute(int index, const char *route);
     void addRoute(const char *route);
     void removeRoute(int index);
+    void replaceAllRoutes(const char *const *routes, size_t count);
 };
 
 
@@ -140,10 +156,14 @@ struct MidiMapData {
     MidiCcVolumeMapping ccVolumeMappings[MIDI_CC_VOLUME_MAPPINGS_MAX];
     uint32_t effectStateCount;
     MidiEffectState effectStates[MIDI_EFFECT_STATES_MAX];
+    uint32_t effectParamCount;
+    MidiEffectParam effectParams[MIDI_EFFECT_PARAMS_MAX];
     uint32_t effectCcMappingCount;
     MidiEffectCcMapping effectCcMappings[MIDI_EFFECT_CC_MAPPINGS_MAX];
     uint32_t effectToggleMappingCount;
     MidiEffectToggleMapping effectToggleMappings[MIDI_EFFECT_TOGGLE_MAPPINGS_MAX];
+    uint32_t effectLightMappingCount;
+    MidiEffectLightMapping effectLightMappings[MIDI_EFFECT_LIGHT_MAPPINGS_MAX];
 };
 
 struct ConfigStore {

@@ -65,6 +65,8 @@
 #define HTTP_EFFECT_MIDI_CC_DELETE_PATH HTTP_API_PREFIX "effect/midi_cc/delete"
 #define HTTP_EFFECT_MIDI_TOGGLE_SET_PATH HTTP_API_PREFIX "effect/midi_toggle/set"
 #define HTTP_EFFECT_MIDI_TOGGLE_DELETE_PATH HTTP_API_PREFIX "effect/midi_toggle/delete"
+#define HTTP_EFFECT_MIDI_LIGHT_SET_PATH HTTP_API_PREFIX "effect/midi_light/set"
+#define HTTP_EFFECT_MIDI_LIGHT_DELETE_PATH HTTP_API_PREFIX "effect/midi_light/delete"
 #define HTTP_AUDIO_VOLUMES_PATH HTTP_API_PREFIX "audio/volumes"
 #define HTTP_AUDIO_VOLUME_SET_PATH HTTP_API_PREFIX "audio/volume/set"
 #define HTTP_AUDIO_DEVICES_PATH HTTP_API_PREFIX "audio/devices"
@@ -932,13 +934,18 @@ static int effect_id_valid(const char *effectId) {
 }
 
 static int effect_param_valid(const char *param) {
-	if (!param) {
+	if (!param || !param[0]) {
 		return 0;
 	}
-	return (strcmp(param, "gain") == 0 ||
-			strcmp(param, "drive") == 0 ||
-			strcmp(param, "clip") == 0 ||
-			strcmp(param, "output") == 0) ? 1 : 0;
+	for (const char *p = param; *p; ++p) {
+		if (((*p >= 'a' && *p <= 'z') ||
+			 (*p >= 'A' && *p <= 'Z') ||
+			 (*p >= '0' && *p <= '9') ||
+			 *p == '_') == 0) {
+			return 0;
+		}
+	}
+	return 1;
 }
 
 static void upsertEffectStateFromRuntime(MidiMapData *map,
@@ -973,10 +980,47 @@ static void upsertEffectStateFromRuntime(MidiMapData *map,
 	MidiEffectState &state = map->effectStates[(uint32_t)idx];
 	copy_bound(state.type, sizeof(state.type), audiox::effects::effectTypeToString(params.type));
 	state.enabled = params.enabled ? 1U : 0U;
-	state.gain = params.gain;
-	state.drive = params.drive;
-	state.clip = params.clip;
-	state.output = params.output;
+
+	float value = 0.0f;
+	state.gain = (audiox::effects::getSlotParamValue(params, "gain", &value) == RET_OK) ? value : 1.0f;
+	state.drive = (audiox::effects::getSlotParamValue(params, "drive", &value) == RET_OK) ? value : 1.0f;
+	state.clip = (audiox::effects::getSlotParamValue(params, "clip", &value) == RET_OK) ? value : 1.0f;
+	state.output = (audiox::effects::getSlotParamValue(params, "output", &value) == RET_OK) ? value : 1.0f;
+
+	uint32_t writeCount = 0;
+	uint32_t oldCount = map->effectParamCount;
+	if (oldCount > MIDI_EFFECT_PARAMS_MAX) {
+		oldCount = MIDI_EFFECT_PARAMS_MAX;
+	}
+	for (uint32_t i = 0; i < oldCount; ++i) {
+		const MidiEffectParam &p = map->effectParams[i];
+		if (strcmp(p.effectId, effectId) == 0) {
+			continue;
+		}
+		if (writeCount >= MIDI_EFFECT_PARAMS_MAX) {
+			break;
+		}
+		map->effectParams[writeCount++] = p;
+	}
+
+	const audiox::effects::EffectTypeSpec *spec = audiox::effects::effectTypeSpecFor(params.type);
+	if (spec) {
+		uint8_t paramCount = spec->paramCount;
+		if (paramCount > audiox::effects::EFFECT_PARAM_MAX) {
+			paramCount = audiox::effects::EFFECT_PARAM_MAX;
+		}
+		for (uint8_t i = 0; i < paramCount; ++i) {
+			if (writeCount >= MIDI_EFFECT_PARAMS_MAX) {
+				break;
+			}
+			MidiEffectParam &dst = map->effectParams[writeCount++];
+			memset(&dst, 0, sizeof(dst));
+			copy_bound(dst.effectId, sizeof(dst.effectId), effectId);
+			copy_bound(dst.param, sizeof(dst.param), spec->params[i].name);
+			dst.value = params.values[i];
+		}
+	}
+	map->effectParamCount = writeCount;
 }
 
 static int handleMidiSamplerConfig(HttpServer *server,
@@ -1460,46 +1504,132 @@ static int handleEffects(HttpServer *server,
 			}
 		}
 
-		int ccGain = -1;
-		int ccDrive = -1;
-		int ccClip = -1;
-		int ccOutput = -1;
+		uint8_t lightEnabledVel = map.globalLight.playingVel;
+		uint8_t lightBypassedVel = map.globalLight.mappedVel;
+		uint32_t lightCount = map.effectLightMappingCount;
+		if (lightCount > MIDI_EFFECT_LIGHT_MAPPINGS_MAX) {
+			lightCount = MIDI_EFFECT_LIGHT_MAPPINGS_MAX;
+		}
+		for (uint32_t l = 0; l < lightCount; ++l) {
+			if (strcmp(map.effectLightMappings[l].effectId, slots[i].thingId) == 0) {
+				lightEnabledVel = map.effectLightMappings[l].enabledVel;
+				lightBypassedVel = map.effectLightMappings[l].bypassedVel;
+				break;
+			}
+		}
+
+		int ccByParam[audiox::effects::EFFECT_PARAM_MAX];
+		for (uint8_t p = 0; p < audiox::effects::EFFECT_PARAM_MAX; ++p) {
+			ccByParam[p] = -1;
+		}
 		uint32_t ccCount = map.effectCcMappingCount;
 		if (ccCount > MIDI_EFFECT_CC_MAPPINGS_MAX) {
 			ccCount = MIDI_EFFECT_CC_MAPPINGS_MAX;
+		}
+		const audiox::effects::EffectTypeSpec *typeSpec = audiox::effects::effectTypeSpecFor(params.type);
+		uint8_t paramCount = typeSpec ? typeSpec->paramCount : 0;
+		if (paramCount > audiox::effects::EFFECT_PARAM_MAX) {
+			paramCount = audiox::effects::EFFECT_PARAM_MAX;
 		}
 		for (uint32_t c = 0; c < ccCount; ++c) {
 			const MidiEffectCcMapping &m = map.effectCcMappings[c];
 			if (strcmp(m.effectId, slots[i].thingId) != 0) {
 				continue;
 			}
-			if (strcmp(m.param, "gain") == 0) {
-				ccGain = (int)m.cc;
-			} else if (strcmp(m.param, "drive") == 0) {
-				ccDrive = (int)m.cc;
-			} else if (strcmp(m.param, "clip") == 0) {
-				ccClip = (int)m.cc;
-			} else if (strcmp(m.param, "output") == 0) {
-				ccOutput = (int)m.cc;
+			uint8_t resolvedIdx = 0;
+			if (audiox::effects::effectParamSpecFor(params.type, m.param, &resolvedIdx) != nullptr &&
+				resolvedIdx < paramCount) {
+				ccByParam[resolvedIdx] = (int)m.cc;
 			}
 		}
 
 		n = snprintf(out + off,
 					 sizeof(out) - off,
-					 "%s{\"id\":\"%s\",\"type\":\"%s\",\"enabled\":%s,\"params\":{\"gain\":%.4f,\"drive\":%.4f,\"clip\":%.4f,\"output\":%.4f},\"midi\":{\"toggle_note\":%d,\"cc\":{\"gain\":%d,\"drive\":%d,\"clip\":%d,\"output\":%d}}}",
+					 "%s{\"id\":\"%s\",\"type\":\"%s\",\"enabled\":%s,\"params\":{",
 					 first ? "" : ",",
 					 slots[i].thingId,
 					 audiox::effects::effectTypeToString(params.type),
-					 params.enabled ? "true" : "false",
-					 (double)params.gain,
-					 (double)params.drive,
-					 (double)params.clip,
-					 (double)params.output,
-					 toggleNote,
-					 ccGain,
-					 ccDrive,
-					 ccClip,
-					 ccOutput);
+					 params.enabled ? "true" : "false");
+		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+			break;
+		}
+		off += (size_t)n;
+
+		for (uint8_t p = 0; p < paramCount; ++p) {
+			float value = 0.0f;
+			if (audiox::effects::getSlotParamValue(params, typeSpec->params[p].name, &value) != RET_OK) {
+				value = typeSpec->params[p].defaultValue;
+			}
+			n = snprintf(out + off,
+						 sizeof(out) - off,
+						 "%s\"%s\":%.4f",
+						 (p == 0U) ? "" : ",",
+						 typeSpec->params[p].name,
+						 (double)value);
+			if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+				off = sizeof(out);
+				break;
+			}
+			off += (size_t)n;
+		}
+		if (off >= sizeof(out)) {
+			break;
+		}
+
+		n = snprintf(out + off, sizeof(out) - off, "},\"param_meta\":[");
+		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+			break;
+		}
+		off += (size_t)n;
+
+		for (uint8_t p = 0; p < paramCount; ++p) {
+			n = snprintf(out + off,
+						 sizeof(out) - off,
+						 "%s{\"name\":\"%s\",\"label\":\"%s\",\"min\":%.4f,\"max\":%.4f,\"default\":%.4f}",
+						 (p == 0U) ? "" : ",",
+						 typeSpec->params[p].name,
+						 typeSpec->params[p].label,
+						 (double)typeSpec->params[p].minValue,
+						 (double)typeSpec->params[p].maxValue,
+						 (double)typeSpec->params[p].defaultValue);
+			if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+				off = sizeof(out);
+				break;
+			}
+			off += (size_t)n;
+		}
+		if (off >= sizeof(out)) {
+			break;
+		}
+
+		n = snprintf(out + off, sizeof(out) - off, "],\"midi\":{\"toggle_note\":%d,\"cc\":{", toggleNote);
+		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+			break;
+		}
+		off += (size_t)n;
+
+		for (uint8_t p = 0; p < paramCount; ++p) {
+			n = snprintf(out + off,
+						 sizeof(out) - off,
+						 "%s\"%s\":%d",
+						 (p == 0U) ? "" : ",",
+						 typeSpec->params[p].name,
+						 ccByParam[p]);
+			if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+				off = sizeof(out);
+				break;
+			}
+			off += (size_t)n;
+		}
+		if (off >= sizeof(out)) {
+			break;
+		}
+
+		n = snprintf(out + off,
+					 sizeof(out) - off,
+					 "},\"light\":{\"enabled_vel\":%u,\"bypassed_vel\":%u}}}",
+					 (unsigned)lightEnabledVel,
+					 (unsigned)lightBypassedVel);
 		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
 			break;
 		}
@@ -1599,21 +1729,47 @@ static int handleEffectSet(HttpServer *server,
 		server->app->midi->cachedMidiMap = map;
 	}
 
-	char out[256];
+	char out[1024];
+	size_t off = 0;
 	int n = snprintf(out,
 					 sizeof(out),
-					 "{\"ok\":true,\"id\":\"%s\",\"type\":\"%s\",\"enabled\":%s,\"gain\":%.4f,\"drive\":%.4f,\"clip\":%.4f,\"output\":%.4f}\n",
+					 "{\"ok\":true,\"id\":\"%s\",\"type\":\"%s\",\"enabled\":%s,\"params\":{",
 					 idBuf,
 					 audiox::effects::effectTypeToString(params.type),
-					 params.enabled ? "true" : "false",
-					 (double)params.gain,
-					 (double)params.drive,
-					 (double)params.clip,
-					 (double)params.output);
-	if (n < 0 || (size_t)n >= sizeof(out)) {
+					 params.enabled ? "true" : "false");
+	if (n <= 0 || (size_t)n >= sizeof(out)) {
 		n = 0;
+		return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
 	}
-	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+	off += (size_t)n;
+
+	const audiox::effects::EffectTypeSpec *spec = audiox::effects::effectTypeSpecFor(params.type);
+	uint8_t paramCount = spec ? spec->paramCount : 0;
+	if (paramCount > audiox::effects::EFFECT_PARAM_MAX) {
+		paramCount = audiox::effects::EFFECT_PARAM_MAX;
+	}
+	for (uint8_t p = 0; p < paramCount; ++p) {
+		float v = 0.0f;
+		if (audiox::effects::getSlotParamValue(params, spec->params[p].name, &v) != RET_OK) {
+			v = spec->params[p].defaultValue;
+		}
+		n = snprintf(out + off,
+					 sizeof(out) - off,
+					 "%s\"%s\":%.4f",
+					 (p == 0U) ? "" : ",",
+					 spec->params[p].name,
+					 (double)v);
+		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+			break;
+		}
+		off += (size_t)n;
+	}
+
+	n = snprintf(out + off, sizeof(out) - off, "}}\n");
+	if (n > 0 && (size_t)n < sizeof(out) - off) {
+		off += (size_t)n;
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, off);
 }
 
 static int handleEffectCreate(HttpServer *server,
@@ -1721,6 +1877,15 @@ static int handleEffectDelete(HttpServer *server,
 	}
 	map.effectCcMappingCount = outCcCount;
 
+	uint32_t outParamCount = 0;
+	for (uint32_t i = 0; i < map.effectParamCount && i < MIDI_EFFECT_PARAMS_MAX; ++i) {
+		if (strcmp(map.effectParams[i].effectId, idBuf) == 0) {
+			continue;
+		}
+		map.effectParams[outParamCount++] = map.effectParams[i];
+	}
+	map.effectParamCount = outParamCount;
+
 	uint32_t outToggleCount = 0;
 	for (uint32_t i = 0; i < map.effectToggleMappingCount && i < MIDI_EFFECT_TOGGLE_MAPPINGS_MAX; ++i) {
 		if (strcmp(map.effectToggleMappings[i].effectId, idBuf) == 0) {
@@ -1729,6 +1894,15 @@ static int handleEffectDelete(HttpServer *server,
 		map.effectToggleMappings[outToggleCount++] = map.effectToggleMappings[i];
 	}
 	map.effectToggleMappingCount = outToggleCount;
+
+	uint32_t outLightCount = 0;
+	for (uint32_t i = 0; i < map.effectLightMappingCount && i < MIDI_EFFECT_LIGHT_MAPPINGS_MAX; ++i) {
+		if (strcmp(map.effectLightMappings[i].effectId, idBuf) == 0) {
+			continue;
+		}
+		map.effectLightMappings[outLightCount++] = map.effectLightMappings[i];
+	}
+	map.effectLightMappingCount = outLightCount;
 
 	if (server->app->config->writeMidiMapFile(&map) != RET_OK) {
 		static const char err[] = "failed to write midi_map\n";
@@ -1782,6 +1956,13 @@ static int handleEffectMidiCcSet(HttpServer *server,
 	long cc = strtol(ccBuf, &ep, 10);
 	if (!ep || *ep != '\0' || cc < 0 || cc > 127 || !effect_id_valid(idBuf) || !effect_param_valid(paramBuf)) {
 		static const char bad[] = "invalid cc/id/param\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	audiox::effects::SlotParams effectParams = {};
+	if (!server->app->audio || server->app->audio->getEffectParams(idBuf, &effectParams) != RET_OK ||
+		audiox::effects::effectParamSpecFor(effectParams.type, paramBuf, nullptr) == nullptr) {
+		static const char bad[] = "unknown effect param for this effect type\n";
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
 	}
 
@@ -1995,6 +2176,131 @@ static int handleEffectMidiToggleDelete(HttpServer *server,
 
 	char out[80];
 	int n = snprintf(out, sizeof(out), "{\"ok\":true,\"note\":%u}\n", (unsigned)note);
+	if (n < 0 || (size_t)n >= sizeof(out)) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
+static int handleEffectMidiLightSet(HttpServer *server,
+									int cfd,
+									const char *method,
+									const char *path,
+									const char *body,
+									size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method) {
+		return -1;
+	}
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char idBuf[64] = {};
+	char enabledBuf[16] = {};
+	char bypassedBuf[16] = {};
+	if (!body ||
+		!body_get_value(body, body_len, "id", idBuf, sizeof(idBuf)) ||
+		!body_get_value(body, body_len, "enabled_vel", enabledBuf, sizeof(enabledBuf)) ||
+		!body_get_value(body, body_len, "bypassed_vel", bypassedBuf, sizeof(bypassedBuf))) {
+		static const char bad[] = "expected id,enabled_vel,bypassed_vel\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	char *ep = NULL;
+	long enabledVel = strtol(enabledBuf, &ep, 10);
+	if (!ep || *ep != '\0' || enabledVel < 0 || enabledVel > 127 || !effect_id_valid(idBuf)) {
+		static const char bad[] = "invalid id/enabled_vel\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+	ep = NULL;
+	long bypassedVel = strtol(bypassedBuf, &ep, 10);
+	if (!ep || *ep != '\0' || bypassedVel < 0 || bypassedVel > 127) {
+		static const char bad[] = "invalid bypassed_vel\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	MidiMapData map = server->app->config->readMidiMapFile();
+	uint32_t outCount = 0;
+	for (uint32_t i = 0; i < map.effectLightMappingCount && i < MIDI_EFFECT_LIGHT_MAPPINGS_MAX; ++i) {
+		if (strcmp(map.effectLightMappings[i].effectId, idBuf) == 0) {
+			continue;
+		}
+		map.effectLightMappings[outCount++] = map.effectLightMappings[i];
+	}
+	if (outCount < MIDI_EFFECT_LIGHT_MAPPINGS_MAX) {
+		copy_bound(map.effectLightMappings[outCount].effectId,
+				   sizeof(map.effectLightMappings[outCount].effectId),
+				   idBuf);
+		map.effectLightMappings[outCount].enabledVel = (uint8_t)enabledVel;
+		map.effectLightMappings[outCount].bypassedVel = (uint8_t)bypassedVel;
+		++outCount;
+	}
+	map.effectLightMappingCount = outCount;
+
+	if (server->app->config->writeMidiMapFile(&map) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = map;
+		server->app->midi->refreshLightingFromState();
+	}
+
+	char out[128];
+	int n = snprintf(out,
+				 sizeof(out),
+				 "{\"ok\":true,\"id\":\"%s\",\"enabled_vel\":%u,\"bypassed_vel\":%u}\n",
+				 idBuf,
+				 (unsigned)enabledVel,
+				 (unsigned)bypassedVel);
+	if (n < 0 || (size_t)n >= sizeof(out)) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
+static int handleEffectMidiLightDelete(HttpServer *server,
+								   int cfd,
+								   const char *method,
+								   const char *path,
+								   const char *body,
+								   size_t body_len) {
+	(void)path;
+	if (!server || !server->app || !server->app->config || !method) {
+		return -1;
+	}
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+
+	char idBuf[64] = {};
+	if (!body || !body_get_value(body, body_len, "id", idBuf, sizeof(idBuf)) || !effect_id_valid(idBuf)) {
+		static const char bad[] = "expected valid id\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+
+	MidiMapData map = server->app->config->readMidiMapFile();
+	uint32_t outCount = 0;
+	for (uint32_t i = 0; i < map.effectLightMappingCount && i < MIDI_EFFECT_LIGHT_MAPPINGS_MAX; ++i) {
+		if (strcmp(map.effectLightMappings[i].effectId, idBuf) == 0) {
+			continue;
+		}
+		map.effectLightMappings[outCount++] = map.effectLightMappings[i];
+	}
+	map.effectLightMappingCount = outCount;
+
+	if (server->app->config->writeMidiMapFile(&map) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = map;
+		server->app->midi->refreshLightingFromState();
+	}
+
+	char out[96];
+	int n = snprintf(out, sizeof(out), "{\"ok\":true,\"id\":\"%s\"}\n", idBuf);
 	if (n < 0 || (size_t)n >= sizeof(out)) {
 		n = 0;
 	}
@@ -3393,6 +3699,14 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_EFFECT_MIDI_TOGGLE_DELETE_PATH) == 0) {
 		return handleEffectMidiToggleDelete(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_EFFECT_MIDI_LIGHT_SET_PATH) == 0) {
+		return handleEffectMidiLightSet(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_EFFECT_MIDI_LIGHT_DELETE_PATH) == 0) {
+		return handleEffectMidiLightDelete(server, cfd, method, path, body, body_len);
 	}
 
 	if (strcmp(path, HTTP_AUDIO_VOLUMES_PATH) == 0) {

@@ -12,6 +12,8 @@ void processPitch(const char *effectId,
                   float inputGain,
                   float semitoneShift,
                   float mix,
-                  float outputGain);
+                  float outputGain,
+                  float noiseFloorRatio,
+                  float wetLpfHz);
 
 } // namespace audiox::effects

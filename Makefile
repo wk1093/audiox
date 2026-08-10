@@ -42,7 +42,7 @@ endif
 # Version information
 AUDIOX_VERSION_MAJOR = 1
 AUDIOX_VERSION_MINOR = 4
-AUDIOX_VERSION_PATCH = 10
+AUDIOX_VERSION_PATCH = 12
 
 # Auto-detected from firmware after fetch_deps runs.
 KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")
@@ -81,7 +81,9 @@ FFMPEG_ARCHIVE ?= $(OUT_DIR)/downloads/ffmpeg.pkg
 FFMPEG_CROSS_LIB_DIR ?= /usr/aarch64-linux-gnu/lib
 FFMPEG_RUNTIME_LIBS ?= ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 librt.so.1 libpthread.so.0 libgcc_s.so.1
 FFMPEG_STAGE_DIR ?= $(OUT_DIR)/ffmpeg_stage
+# Pin firmware updates to a known-good commit on master to avoid surprise kernel bumps.
 FIRMWARE_GIT_URL ?= https://github.com/raspberrypi/firmware.git
+FIRMWARE_GIT_REF ?= 2cfe163628eb33eed11c97bfe3fb8169755d7e7a
 PI_HOST ?= 169.254.1.2
 PI_PORT ?= 80
 
@@ -112,7 +114,7 @@ all: initramfs
 
 fetch_deps:
 	@mkdir -p $(OUT_DIR)
-	@$(SCRIPTS_DIR)/sync_firmware.sh "$(FIRMWARE_GIT_URL)" "$(OUT_DIR)" "$(VC4_OVERLAY)" "$(DSI_TOUCH_OVERLAY)"
+	@$(SCRIPTS_DIR)/sync_firmware.sh "$(FIRMWARE_GIT_URL)" "$(FIRMWARE_GIT_REF)" "$(OUT_DIR)" "$(VC4_OVERLAY)" "$(DSI_TOUCH_OVERLAY)"
 
 fetch_modules: fetch_deps
 	@$(SCRIPTS_DIR)/resolve_modules.sh "$(KV)" "$(OUT_DIR)" "$(DEP_FILE)"

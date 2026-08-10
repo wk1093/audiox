@@ -309,7 +309,8 @@ static int parseEffectStateLine(const char *value,
     if (strcmp(parts[1], "gain") != 0 &&
         strcmp(parts[1], "distortion") != 0 &&
         strcmp(parts[1], "pitch") != 0 &&
-        strcmp(parts[1], "reverb") != 0) {
+        strcmp(parts[1], "reverb") != 0 &&
+        strcmp(parts[1], "gate") != 0) {
         return RET_ERR;
     }
 
@@ -366,11 +367,13 @@ static int parseEffectCcLine(const char *value,
     if (!parts[1][0] || strncmp(parts[1], "fx_", 3) != 0) {
         return RET_ERR;
     }
-    if (strcmp(parts[2], "gain") != 0 &&
-        strcmp(parts[2], "drive") != 0 &&
-        strcmp(parts[2], "clip") != 0 &&
-        strcmp(parts[2], "output") != 0) {
-        return RET_ERR;
+    for (char *p = parts[2]; *p; ++p) {
+        if (((*p >= 'a' && *p <= 'z') ||
+             (*p >= 'A' && *p <= 'Z') ||
+             (*p >= '0' && *p <= '9') ||
+             *p == '_') == 0) {
+            return RET_ERR;
+        }
     }
 
     MidiEffectCcMapping *map = &out[*count_in_out];
@@ -378,6 +381,65 @@ static int parseEffectCcLine(const char *value,
     map->cc = (uint8_t)cc;
     copyBounded(map->effectId, sizeof(map->effectId), parts[1]);
     copyBounded(map->param, sizeof(map->param), parts[2]);
+    ++(*count_in_out);
+    return RET_OK;
+}
+
+static int parseEffectParamLine(const char *value,
+                                MidiEffectParam *out,
+                                uint32_t *count_in_out) {
+    if (!value || !out || !count_in_out || *count_in_out >= MIDI_EFFECT_PARAMS_MAX) {
+        return RET_ERR;
+    }
+
+    char buf[256];
+    copyBounded(buf, sizeof(buf), value);
+
+    // format: effect_id,param,value
+    char *parts[3] = {};
+    size_t partCount = 0;
+    char *cursor = buf;
+    while (partCount < 3) {
+        parts[partCount++] = cursor;
+        char *comma = strchr(cursor, ',');
+        if (!comma) {
+            break;
+        }
+        *comma = '\0';
+        cursor = comma + 1;
+    }
+    if (partCount != 3 || strchr(parts[2], ',') != NULL) {
+        return RET_ERR;
+    }
+
+    for (size_t i = 0; i < 3; ++i) {
+        parts[i] = trimLeft(parts[i]);
+        trimRight(parts[i]);
+    }
+
+    if (!parts[0][0] || strncmp(parts[0], "fx_", 3) != 0 || !parts[1][0]) {
+        return RET_ERR;
+    }
+    for (char *p = parts[1]; *p; ++p) {
+        if (((*p >= 'a' && *p <= 'z') ||
+             (*p >= 'A' && *p <= 'Z') ||
+             (*p >= '0' && *p <= '9') ||
+             *p == '_') == 0) {
+            return RET_ERR;
+        }
+    }
+
+    char *ep = NULL;
+    float parsed = strtof(parts[2], &ep);
+    if (!ep || *ep != '\0') {
+        return RET_ERR;
+    }
+
+    MidiEffectParam *entry = &out[*count_in_out];
+    memset(entry, 0, sizeof(*entry));
+    copyBounded(entry->effectId, sizeof(entry->effectId), parts[0]);
+    copyBounded(entry->param, sizeof(entry->param), parts[1]);
+    entry->value = parsed;
     ++(*count_in_out);
     return RET_OK;
 }
@@ -415,6 +477,62 @@ static int parseEffectToggleLine(const char *value,
     memset(map, 0, sizeof(*map));
     map->note = (uint8_t)note;
     copyBounded(map->effectId, sizeof(map->effectId), effectId);
+    ++(*count_in_out);
+    return RET_OK;
+}
+
+static int parseEffectLightLine(const char *value,
+                                MidiEffectLightMapping *out,
+                                uint32_t *count_in_out) {
+    if (!value || !out || !count_in_out || *count_in_out >= MIDI_EFFECT_LIGHT_MAPPINGS_MAX) {
+        return RET_ERR;
+    }
+
+    char buf[320];
+    copyBounded(buf, sizeof(buf), value);
+
+    // format: effect_id,enabled_vel,bypassed_vel
+    char *parts[3] = {};
+    size_t partCount = 0;
+    char *cursor = buf;
+    while (partCount < 3) {
+        parts[partCount++] = cursor;
+        char *comma = strchr(cursor, ',');
+        if (!comma) {
+            break;
+        }
+        *comma = '\0';
+        cursor = comma + 1;
+    }
+    if (partCount != 3 || strchr(parts[2], ',') != NULL) {
+        return RET_ERR;
+    }
+
+    for (size_t i = 0; i < 3; ++i) {
+        parts[i] = trimLeft(parts[i]);
+        trimRight(parts[i]);
+    }
+
+    if (!parts[0][0] || strncmp(parts[0], "fx_", 3) != 0) {
+        return RET_ERR;
+    }
+
+    char *ep = NULL;
+    long enabledVel = strtol(parts[1], &ep, 10);
+    if (!ep || *ep != '\0' || enabledVel < 0 || enabledVel > 127) {
+        return RET_ERR;
+    }
+    ep = NULL;
+    long bypassedVel = strtol(parts[2], &ep, 10);
+    if (!ep || *ep != '\0' || bypassedVel < 0 || bypassedVel > 127) {
+        return RET_ERR;
+    }
+
+    MidiEffectLightMapping *map = &out[*count_in_out];
+    memset(map, 0, sizeof(*map));
+    copyBounded(map->effectId, sizeof(map->effectId), parts[0]);
+    map->enabledVel = (uint8_t)enabledVel;
+    map->bypassedVel = (uint8_t)bypassedVel;
     ++(*count_in_out);
     return RET_OK;
 }
@@ -539,10 +657,14 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             (void)parseCcVolumeLine(value, data.ccVolumeMappings, &data.ccVolumeMappingCount);
         } else if (strcmp(key, "fx_state") == 0) {
             (void)parseEffectStateLine(value, data.effectStates, &data.effectStateCount);
+        } else if (strcmp(key, "fx_param") == 0) {
+            (void)parseEffectParamLine(value, data.effectParams, &data.effectParamCount);
         } else if (strcmp(key, "fx_cc") == 0) {
             (void)parseEffectCcLine(value, data.effectCcMappings, &data.effectCcMappingCount);
         } else if (strcmp(key, "fx_toggle") == 0) {
             (void)parseEffectToggleLine(value, data.effectToggleMappings, &data.effectToggleMappingCount);
+        } else if (strcmp(key, "fx_light") == 0) {
+            (void)parseEffectLightLine(value, data.effectLightMappings, &data.effectLightMappingCount);
         }
     }
 
@@ -723,6 +845,8 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         }
     }
 
+    // fx_param lines are no longer written here; they go to fx_params.txt instead.
+
     uint32_t fxCcCount = data->effectCcMappingCount;
     if (fxCcCount > MIDI_EFFECT_CC_MAPPINGS_MAX) {
         fxCcCount = MIDI_EFFECT_CC_MAPPINGS_MAX;
@@ -758,8 +882,85 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         }
     }
 
+    uint32_t fxLightCount = data->effectLightMappingCount;
+    if (fxLightCount > MIDI_EFFECT_LIGHT_MAPPINGS_MAX) {
+        fxLightCount = MIDI_EFFECT_LIGHT_MAPPINGS_MAX;
+    }
+    if (fxLightCount > 0) {
+        dprintf(fd, "# effect light mappings: effect_id,enabled_vel,bypassed_vel\n");
+        for (uint32_t i = 0; i < fxLightCount; ++i) {
+            if (!data->effectLightMappings[i].effectId[0]) {
+                continue;
+            }
+            dprintf(fd,
+                    "fx_light=%s,%u,%u\n",
+                    data->effectLightMappings[i].effectId,
+                    (unsigned)data->effectLightMappings[i].enabledVel,
+                    (unsigned)data->effectLightMappings[i].bypassedVel);
+        }
+    }
+
     close(fd);
     return RET_OK;
+}
+
+static int writeFxParamsPath(const char *path, const MidiEffectParam *params, uint32_t count) {
+    if (!path) {
+        return RET_ERR;
+    }
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        printf("[CONFIG] [WARN] failed to open %s for writing: %s\n", path, strerror(errno));
+        return RET_ERR;
+    }
+    dprintf(fd, "# audiox fx params v1\n");
+    if (params) {
+        uint32_t cap = count > MIDI_EFFECT_PARAMS_MAX ? MIDI_EFFECT_PARAMS_MAX : count;
+        for (uint32_t i = 0; i < cap; ++i) {
+            if (!params[i].effectId[0] || !params[i].param[0]) {
+                continue;
+            }
+            dprintf(fd, "fx_param=%s,%s,%.6f\n",
+                    params[i].effectId,
+                    params[i].param,
+                    (double)params[i].value);
+        }
+    }
+    if (close(fd) != 0) {
+        printf("[CONFIG] [WARN] failed to finalize %s: %s\n", path, strerror(errno));
+        return RET_ERR;
+    }
+    return RET_OK;
+}
+
+static int readFxParamsPath(const char *path, MidiEffectParam *out, uint32_t *count_out, uint32_t cap) {
+    if (!path || !out || !count_out || cap == 0) {
+        return RET_ERR;
+    }
+    *count_out = 0;
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        return (errno == ENOENT) ? RET_WARN : RET_ERR;
+    }
+    char line[320];
+    while (fgets(line, sizeof(line), fp) && *count_out < cap) {
+        char *eq = strchr(line, '=');
+        if (!eq) {
+            continue;
+        }
+        *eq = '\0';
+        char *key = trimLeft(line);
+        char *value = eq + 1;
+        trimRight(key);
+        trimRight(value);
+        value = trimLeft(value);
+        if (strcmp(key, "fx_param") == 0) {
+            (void)parseEffectParamLine(value, out, count_out);
+        }
+    }
+    int err = ferror(fp);
+    fclose(fp);
+    return err ? RET_ERR : RET_OK;
 }
 
 } // namespace
@@ -773,6 +974,18 @@ MidiMapData ConfigStore::readMidiMapFile() const {
         migrateMidiMapFromConfig(CONFIG_REAL_FILE_PATH, &data);
         (void)writeMidiMapPath(MIDI_MAP_REAL_FILE_PATH, &data);
     }
+
+    // fx_params.txt is the authoritative source for fx_param entries.
+    // If it exists, it replaces any fx_param lines read from midi_map.txt.
+    MidiEffectParam fxParams[MIDI_EFFECT_PARAMS_MAX] = {};
+    uint32_t fxParamCount = 0;
+    int fxRc = readFxParamsPath(FX_PARAMS_FILE_PATH, fxParams, &fxParamCount, MIDI_EFFECT_PARAMS_MAX);
+    if (fxRc == RET_OK) {
+        data.effectParamCount = fxParamCount;
+        memcpy(data.effectParams, fxParams, fxParamCount * sizeof(MidiEffectParam));
+    }
+    // If fx_params.txt doesn't exist (RET_WARN), keep whatever was in midi_map.txt.
+
     return data;
 }
 
@@ -812,5 +1025,18 @@ int ConfigStore::writeMidiMapFile(MidiMapData *data) {
     if (fxToggleCount > MIDI_EFFECT_TOGGLE_MAPPINGS_MAX) {
         data->effectToggleMappingCount = MIDI_EFFECT_TOGGLE_MAPPINGS_MAX;
     }
-    return writeMidiMapPath(MIDI_MAP_REAL_FILE_PATH, data);
+    uint32_t fxLightCount = data->effectLightMappingCount;
+    if (fxLightCount > MIDI_EFFECT_LIGHT_MAPPINGS_MAX) {
+        data->effectLightMappingCount = MIDI_EFFECT_LIGHT_MAPPINGS_MAX;
+    }
+    int rc = writeMidiMapPath(MIDI_MAP_REAL_FILE_PATH, data);
+    uint32_t paramCount = data->effectParamCount;
+    if (paramCount > MIDI_EFFECT_PARAMS_MAX) {
+        paramCount = MIDI_EFFECT_PARAMS_MAX;
+    }
+    int fxRc = writeFxParamsPath(FX_PARAMS_FILE_PATH, data->effectParams, paramCount);
+    if (rc != RET_OK || fxRc != RET_OK) {
+        return RET_ERR;
+    }
+    return RET_OK;
 }

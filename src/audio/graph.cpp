@@ -106,6 +106,122 @@ static const AudioGraphThingInfo *findThing(const AudioGraphThingInfo *things,
     return nullptr;
 }
 
+// Converts an ALSA card-based ID (alsa_card{N}_dev{M}_{dir}) to its stable form
+// (alsa_{stableCardId}_dev{M}_{dir}) using the currently enumerated device list.
+// Returns true if the ID was converted, false if already stable, not ALSA, or device not found.
+static bool toStableRouteId(AudioContext *ctx, const char *id, char *out, size_t outSize) {
+    if (!ctx || !id || !out || outSize == 0) {
+        return false;
+    }
+    unsigned card = 0;
+    unsigned device = 0;
+    char dir[8] = {};
+    if (sscanf(id, "alsa_card%u_dev%u_%7s", &card, &device, dir) != 3) {
+        copyBounded(out, outSize, id);
+        return false;
+    }
+    AudioDeviceInfo infos[32];
+    size_t deviceCount = ctx->copyDeviceInfos(infos, sizeof(infos) / sizeof(infos[0]));
+    for (size_t i = 0; i < deviceCount; ++i) {
+        if (infos[i].cardIndex != card || infos[i].deviceIndex != device) {
+            continue;
+        }
+        if (infos[i].stableCardId[0]) {
+            snprintf(out, outSize, "alsa_%s_dev%u_%s", infos[i].stableCardId, device, dir);
+            return true;
+        }
+        break;
+    }
+    copyBounded(out, outSize, id);
+    return false;
+}
+
+static bool normalizeRouteThingId(AudioContext *ctx,
+                                 const AudioGraphThingInfo *things,
+                                 size_t thingCount,
+                                 const char *id,
+                                 char *out,
+                                 size_t outSize) {
+    if (!ctx || !things || !id || !out || outSize == 0) {
+        return false;
+    }
+
+    if (findThing(things, thingCount, id)) {
+        copyBounded(out, outSize, id);
+        return true;
+    }
+
+    char stableCardId[64] = {};
+    unsigned stableDevice = 0;
+    char stableDir[8] = {};
+    if (sscanf(id, "alsa_%63[^_]_dev%u_%7s", stableCardId, &stableDevice, stableDir) == 3) {
+        AudioDeviceInfo infos[32];
+        size_t deviceCount = ctx->copyDeviceInfos(infos, sizeof(infos) / sizeof(infos[0]));
+        const bool wantCapture = strcmp(stableDir, "in") == 0;
+        const bool wantPlayback = strcmp(stableDir, "out") == 0;
+        for (size_t i = 0; i < deviceCount; ++i) {
+            const AudioDeviceInfo &info = infos[i];
+            if (strcmp(info.stableCardId, stableCardId) != 0 || info.deviceIndex != stableDevice) {
+                continue;
+            }
+            if (wantCapture && !info.hasCapture) {
+                continue;
+            }
+            if (wantPlayback && !info.hasPlayback) {
+                continue;
+            }
+            snprintf(out,
+                     outSize,
+                     "alsa_card%u_dev%u_%s",
+                     (unsigned)info.cardIndex,
+                     (unsigned)info.deviceIndex,
+                     stableDir);
+            return true;
+        }
+    }
+
+    unsigned card = 0;
+    unsigned device = 0;
+    char dir[8] = {};
+    if (sscanf(id, "alsa_card%u_dev%u_%7s", &card, &device, dir) != 3) {
+        copyBounded(out, outSize, id);
+        return false;
+    }
+
+    const bool wantCapture = strcmp(dir, "in") == 0;
+    const bool wantPlayback = strcmp(dir, "out") == 0;
+    if (!wantCapture && !wantPlayback) {
+        copyBounded(out, outSize, id);
+        return false;
+    }
+
+    AudioDeviceInfo infos[32];
+    size_t deviceCount = ctx->copyDeviceInfos(infos, sizeof(infos) / sizeof(infos[0]));
+    for (size_t i = 0; i < deviceCount; ++i) {
+        const AudioDeviceInfo &info = infos[i];
+        if (info.cardIndex != card || info.deviceIndex != device) {
+            continue;
+        }
+        if (wantCapture && !info.hasCapture) {
+            continue;
+        }
+        if (wantPlayback && !info.hasPlayback) {
+            continue;
+        }
+
+        const char *slug = info.stableCardId[0] ? info.stableCardId : nullptr;
+        if (slug) {
+            snprintf(out, outSize, "alsa_%s_dev%u_%s", slug, device, dir);
+        } else {
+            copyBounded(out, outSize, id);
+        }
+        return true;
+    }
+
+    copyBounded(out, outSize, id);
+    return false;
+}
+
 static int parseRouteString(const char *route,
                             AudioGraphEdgeInfo *edgeOut,
                             char *errorOut,
@@ -277,11 +393,13 @@ size_t AudioContext::copyRoutingThings(AudioGraphThingInfo *out, size_t cap) con
         char id[64];
         char label[160];
         if (infos[i].hasCapture) {
-            snprintf(id,
-                     sizeof(id),
-                     "alsa_card%u_dev%u_in",
-                     (unsigned)infos[i].cardIndex,
-                     (unsigned)infos[i].deviceIndex);
+            if (infos[i].stableCardId[0]) {
+                snprintf(id, sizeof(id), "alsa_%s_dev%u_in",
+                         infos[i].stableCardId, (unsigned)infos[i].deviceIndex);
+            } else {
+                snprintf(id, sizeof(id), "alsa_card%u_dev%u_in",
+                         (unsigned)infos[i].cardIndex, (unsigned)infos[i].deviceIndex);
+            }
             snprintf(label, sizeof(label), "%s In", infos[i].displayName);
             appendThing(out,
                         cap,
@@ -292,11 +410,13 @@ size_t AudioContext::copyRoutingThings(AudioGraphThingInfo *out, size_t cap) con
                         infos[i].captureChannels ? infos[i].captureChannels : 2);
         }
         if (infos[i].hasPlayback) {
-            snprintf(id,
-                     sizeof(id),
-                     "alsa_card%u_dev%u_out",
-                     (unsigned)infos[i].cardIndex,
-                     (unsigned)infos[i].deviceIndex);
+            if (infos[i].stableCardId[0]) {
+                snprintf(id, sizeof(id), "alsa_%s_dev%u_out",
+                         infos[i].stableCardId, (unsigned)infos[i].deviceIndex);
+            } else {
+                snprintf(id, sizeof(id), "alsa_card%u_dev%u_out",
+                         (unsigned)infos[i].cardIndex, (unsigned)infos[i].deviceIndex);
+            }
             snprintf(label, sizeof(label), "%s Out", infos[i].displayName);
             appendThing(out,
                         cap,
@@ -340,6 +460,13 @@ int AudioContext::reloadRoutingGraph() {
             continue;
         }
 
+        char normalizedSrc[64];
+        char normalizedDst[64];
+        normalizeRouteThingId(this, next.things, next.thingCount, edge.src, normalizedSrc, sizeof(normalizedSrc));
+        normalizeRouteThingId(this, next.things, next.thingCount, edge.dst, normalizedDst, sizeof(normalizedDst));
+        copyBounded(edge.src, sizeof(edge.src), normalizedSrc);
+        copyBounded(edge.dst, sizeof(edge.dst), normalizedDst);
+
         const AudioGraphThingInfo *src = findThing(next.things, next.thingCount, edge.src);
         const AudioGraphThingInfo *dst = findThing(next.things, next.thingCount, edge.dst);
         if (!src || !dst) {
@@ -376,6 +503,52 @@ int AudioContext::reloadRoutingGraph() {
                  skipped);
         printf("[AUDIO] [WARN] %s\n", next.status);
         return RET_WARN;
+    }
+
+    // Normalize any card-based device IDs in the stored routes to stable IDs.
+    // This makes routing survive card re-enumeration on reboot or replug.
+    if (routeCount > 0 && app && app->config) {
+        static constexpr size_t kMaxRoutes = AUDIO_GRAPH_MAX_EDGES;
+        static constexpr size_t kRouteLen = 256;
+        char routeBufs[kMaxRoutes][kRouteLen];
+        const char *routePtrs[kMaxRoutes];
+        size_t normalizedCount = 0;
+        bool dirty = false;
+
+        for (int i = 0; i < routeCount && normalizedCount < kMaxRoutes; ++i) {
+            char stored[kRouteLen] = {};
+            router.getRoute(i, stored, sizeof(stored));
+            if (!stored[0]) {
+                continue;
+            }
+
+            AudioGraphEdgeInfo storedEdge = {};
+            if (parseRouteString(stored, &storedEdge, nullptr, 0) != RET_OK) {
+                snprintf(routeBufs[normalizedCount], kRouteLen, "%s", stored);
+            } else {
+                char stableSrc[64] = {};
+                char stableDst[64] = {};
+                bool srcChanged = toStableRouteId(this, storedEdge.src, stableSrc, sizeof(stableSrc));
+                bool dstChanged = toStableRouteId(this, storedEdge.dst, stableDst, sizeof(stableDst));
+                if (srcChanged || dstChanged) {
+                    dirty = true;
+                    snprintf(routeBufs[normalizedCount], kRouteLen, "%s,%s,%u,%u",
+                             stableSrc, stableDst,
+                             (unsigned)storedEdge.srcChannel,
+                             (unsigned)storedEdge.dstChannel);
+                } else {
+                    snprintf(routeBufs[normalizedCount], kRouteLen, "%s", stored);
+                }
+            }
+            routePtrs[normalizedCount] = routeBufs[normalizedCount];
+            ++normalizedCount;
+        }
+
+        if (dirty) {
+            RouterConfig mutableRouter = app->config->router();
+            mutableRouter.replaceAllRoutes(routePtrs, normalizedCount);
+            printf("[AUDIO] [INFO] saved %zu route(s) with stable device identifiers\n", normalizedCount);
+        }
     }
 
     {

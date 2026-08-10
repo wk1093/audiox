@@ -8,49 +8,12 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <stdint.h>
+#include <algorithm>
+#include <vector>
 
 #include "config/context.hpp"
 
 namespace {
-
-static float mapNormalizedToEffectParam(uint8_t effectType, const char *paramName, float normalized) {
-    if (!paramName) {
-        return normalized;
-    }
-    if (normalized < 0.0f) {
-        normalized = 0.0f;
-    }
-    if (normalized > 1.0f) {
-        normalized = 1.0f;
-    }
-
-    if (strcmp(paramName, "gain") == 0) {
-        return normalized * 4.0f;
-    }
-    if (strcmp(paramName, "drive") == 0) {
-        if (effectType == audiox::effects::EFFECT_PITCH) {
-            return -12.0f + (normalized * 24.0f);
-        }
-        if (effectType == audiox::effects::EFFECT_REVERB) {
-            return 0.05f + (normalized * 0.90f);
-        }
-        return normalized * 8.0f;
-    }
-    if (strcmp(paramName, "clip") == 0) {
-        if (effectType == audiox::effects::EFFECT_DISTORTION) {
-            return 0.05f + (normalized * 0.95f);
-        }
-        return normalized;
-    }
-    if (strcmp(paramName, "output") == 0) {
-        if (effectType == audiox::effects::EFFECT_REVERB) {
-            return normalized;
-        }
-        return normalized * 4.0f;
-    }
-
-    return normalized;
-}
 
 static uint64_t audioMonotonicMs() {
     struct timespec ts;
@@ -552,11 +515,21 @@ float AudioContext::getChannelLevel(AudioHandle handle, int channelIndex, bool i
     
     char thingId[64];
     if (isCapture) {
-        snprintf(thingId, sizeof(thingId), "alsa_card%u_dev%u_in",
-                 (unsigned)info.cardIndex, (unsigned)info.deviceIndex);
+        if (info.stableCardId[0]) {
+            snprintf(thingId, sizeof(thingId), "alsa_%s_dev%u_in",
+                     info.stableCardId, (unsigned)info.deviceIndex);
+        } else {
+            snprintf(thingId, sizeof(thingId), "alsa_card%u_dev%u_in",
+                     (unsigned)info.cardIndex, (unsigned)info.deviceIndex);
+        }
     } else {
-        snprintf(thingId, sizeof(thingId), "alsa_card%u_dev%u_out",
-                 (unsigned)info.cardIndex, (unsigned)info.deviceIndex);
+        if (info.stableCardId[0]) {
+            snprintf(thingId, sizeof(thingId), "alsa_%s_dev%u_out",
+                     info.stableCardId, (unsigned)info.deviceIndex);
+        } else {
+            snprintf(thingId, sizeof(thingId), "alsa_card%u_dev%u_out",
+                     (unsigned)info.cardIndex, (unsigned)info.deviceIndex);
+        }
     }
     
     std::lock_guard<std::mutex> graphLock(routingGraphMutex);
@@ -667,10 +640,11 @@ void AudioContext::loadEffectsFromConfig() {
         audiox::effects::SlotParams params = {};
         params.enabled = cfg.enabled ? 1U : 0U;
         params.type = audiox::effects::effectTypeFromString(cfg.type);
-        params.gain = cfg.gain;
-        params.drive = cfg.drive;
-        params.clip = cfg.clip;
-        params.output = cfg.output;
+        audiox::effects::setSlotDefaultsForType(&params, params.type);
+        (void)audiox::effects::setSlotParamValue(&params, "gain", cfg.gain);
+        (void)audiox::effects::setSlotParamValue(&params, "drive", cfg.drive);
+        (void)audiox::effects::setSlotParamValue(&params, "clip", cfg.clip);
+        (void)audiox::effects::setSlotParamValue(&params, "output", cfg.output);
         audiox::effects::clampSlotParams(&params);
 
         effectStates[cfg.effectId] = params;
@@ -679,6 +653,22 @@ void AudioContext::loadEffectsFromConfig() {
         if (sscanf(cfg.effectId, "fx_%u", &parsedId) == 1 && parsedId > maxId) {
             maxId = parsedId;
         }
+    }
+
+    uint32_t paramCount = data.effectParamCount;
+    if (paramCount > MIDI_EFFECT_PARAMS_MAX) {
+        paramCount = MIDI_EFFECT_PARAMS_MAX;
+    }
+    for (uint32_t i = 0; i < paramCount; ++i) {
+        const MidiEffectParam &cfg = data.effectParams[i];
+        if (!cfg.effectId[0] || !cfg.param[0]) {
+            continue;
+        }
+        auto it = effectStates.find(cfg.effectId);
+        if (it == effectStates.end()) {
+            continue;
+        }
+        (void)audiox::effects::setSlotParamValue(&it->second, cfg.param, cfg.value);
     }
 
     nextEffectId = maxId + 1U;
@@ -693,18 +683,41 @@ int AudioContext::listEffects(AudioEffectSlotState *out, size_t cap) const {
     }
 
     std::lock_guard<std::mutex> lock(effectsMutex);
-    size_t i = 0;
+    std::vector<std::string> ids;
+    ids.reserve(effectStates.size());
     for (const auto &it : effectStates) {
+        ids.push_back(it.first);
+    }
+    std::sort(ids.begin(), ids.end());
+
+    size_t i = 0;
+    for (const std::string &id : ids) {
         if (i >= cap) {
             break;
         }
-        snprintf(out[i].thingId, sizeof(out[i].thingId), "%s", it.first.c_str());
-        out[i].enabled = it.second.enabled;
-        out[i].type = it.second.type;
-        out[i].gain = it.second.gain;
-        out[i].drive = it.second.drive;
-        out[i].clip = it.second.clip;
-        out[i].output = it.second.output;
+        auto it = effectStates.find(id);
+        if (it == effectStates.end()) {
+            continue;
+        }
+        snprintf(out[i].thingId, sizeof(out[i].thingId), "%s", it->first.c_str());
+        out[i].enabled = it->second.enabled;
+        out[i].type = it->second.type;
+
+        const audiox::effects::EffectTypeSpec *spec = audiox::effects::effectTypeSpecFor(it->second.type);
+        uint8_t paramCount = spec ? spec->paramCount : 0;
+        if (paramCount > audiox::effects::EFFECT_PARAM_MAX) {
+            paramCount = audiox::effects::EFFECT_PARAM_MAX;
+        }
+        out[i].paramCount = paramCount;
+
+        for (uint8_t p = 0; p < audiox::effects::EFFECT_PARAM_MAX; ++p) {
+            out[i].paramNames[p][0] = '\0';
+            out[i].paramValues[p] = 0.0f;
+        }
+        for (uint8_t p = 0; p < paramCount; ++p) {
+            snprintf(out[i].paramNames[p], sizeof(out[i].paramNames[p]), "%s", spec->params[p].name);
+            out[i].paramValues[p] = it->second.values[p];
+        }
         ++i;
     }
     return (int)i;
@@ -738,10 +751,14 @@ int AudioContext::setEffectType(const char *thingId, uint8_t type) {
     if (type != audiox::effects::EFFECT_GAIN &&
         type != audiox::effects::EFFECT_DISTORTION &&
         type != audiox::effects::EFFECT_PITCH &&
-        type != audiox::effects::EFFECT_REVERB) {
+        type != audiox::effects::EFFECT_REVERB &&
+        type != audiox::effects::EFFECT_GATE) {
         return RET_ERR;
     }
+    const uint8_t enabled = it->second.enabled;
     it->second.type = type;
+    audiox::effects::setSlotDefaultsForType(&it->second, type);
+    it->second.enabled = enabled;
     audiox::effects::clampSlotParams(&it->second);
     return RET_OK;
 }
@@ -774,6 +791,56 @@ int AudioContext::toggleEffectEnabled(const char *thingId) {
     return RET_OK;
 }
 
+int AudioContext::persistEffectBypass(const char *effectId) {
+    if (!effectId || !effectId[0] || !app || !app->config) {
+        return RET_ERR;
+    }
+
+    audiox::effects::SlotParams params = {};
+    if (getEffectParams(effectId, &params) != RET_OK) {
+        return RET_ERR;
+    }
+
+    MidiMapData map = app->config->readMidiMapFile();
+    uint32_t count = map.effectStateCount;
+    if (count > MIDI_EFFECT_STATES_MAX) {
+        count = MIDI_EFFECT_STATES_MAX;
+    }
+
+    int idx = -1;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (strcmp(map.effectStates[i].effectId, effectId) == 0) {
+            idx = (int)i;
+            break;
+        }
+    }
+
+    if (idx < 0) {
+        if (count >= MIDI_EFFECT_STATES_MAX) {
+            return RET_WARN;
+        }
+        idx = (int)count;
+        MidiEffectState &s = map.effectStates[idx];
+        memset(&s, 0, sizeof(s));
+        size_t n = strnlen(effectId, sizeof(s.effectId) - 1);
+        memcpy(s.effectId, effectId, n);
+        s.effectId[n] = '\0';
+        const char *typeStr = audiox::effects::effectTypeToString(params.type);
+        n = strnlen(typeStr, sizeof(s.type) - 1);
+        memcpy(s.type, typeStr, n);
+        s.type[n] = '\0';
+        float v = 0.0f;
+        s.gain   = (audiox::effects::getSlotParamValue(params, "gain",   &v) == RET_OK) ? v : 1.0f;
+        s.drive  = (audiox::effects::getSlotParamValue(params, "drive",  &v) == RET_OK) ? v : 1.0f;
+        s.clip   = (audiox::effects::getSlotParamValue(params, "clip",   &v) == RET_OK) ? v : 1.0f;
+        s.output = (audiox::effects::getSlotParamValue(params, "output", &v) == RET_OK) ? v : 1.0f;
+        map.effectStateCount = count + 1U;
+    }
+
+    map.effectStates[(uint32_t)idx].enabled = params.enabled ? 1U : 0U;
+    return app->config->writeMidiMapFile(&map);
+}
+
 int AudioContext::setEffectParam(const char *thingId, const char *paramName, float value) {
     if (!thingId || !thingId[0] || !paramName || !paramName[0]) {
         return RET_ERR;
@@ -785,49 +852,7 @@ int AudioContext::setEffectParam(const char *thingId, const char *paramName, flo
         return RET_ERR;
     }
 
-    if (strcmp(paramName, "gain") == 0) {
-        if (value < 0.0f) value = 0.0f;
-        if (value > 4.0f) value = 4.0f;
-        it->second.gain = value;
-        return RET_OK;
-    }
-    if (strcmp(paramName, "drive") == 0) {
-        if (it->second.type == audiox::effects::EFFECT_PITCH) {
-            if (value < -12.0f) value = -12.0f;
-            if (value > 12.0f) value = 12.0f;
-        } else if (it->second.type == audiox::effects::EFFECT_REVERB) {
-            if (value < 0.05f) value = 0.05f;
-            if (value > 0.95f) value = 0.95f;
-        } else {
-            if (value < 0.0f) value = 0.0f;
-            if (value > 8.0f) value = 8.0f;
-        }
-        it->second.drive = value;
-        return RET_OK;
-    }
-    if (strcmp(paramName, "clip") == 0) {
-        if (it->second.type == audiox::effects::EFFECT_DISTORTION && value < 0.05f) {
-            value = 0.05f;
-        }
-        if (value < 0.0f) value = 0.0f;
-        if (value > 1.0f) value = 1.0f;
-        it->second.clip = value;
-        return RET_OK;
-    }
-    if (strcmp(paramName, "output") == 0) {
-        if (it->second.type == audiox::effects::EFFECT_REVERB) {
-            if (value < 0.0f) value = 0.0f;
-            if (value > 1.0f) value = 1.0f;
-            it->second.output = value;
-            return RET_OK;
-        }
-        if (value < 0.0f) value = 0.0f;
-        if (value > 4.0f) value = 4.0f;
-        it->second.output = value;
-        return RET_OK;
-    }
-
-    return RET_ERR;
+    return audiox::effects::setSlotParamValue(&it->second, paramName, value);
 }
 
 int AudioContext::setEffectParamNormalized(const char *thingId, const char *paramName, float normalized) {
@@ -835,18 +860,12 @@ int AudioContext::setEffectParamNormalized(const char *thingId, const char *para
         return RET_ERR;
     }
 
-    uint8_t effectType = audiox::effects::EFFECT_GAIN;
-    {
-        std::lock_guard<std::mutex> lock(effectsMutex);
-        auto it = effectStates.find(thingId);
-        if (it == effectStates.end()) {
-            return RET_ERR;
-        }
-        effectType = it->second.type;
+    std::lock_guard<std::mutex> lock(effectsMutex);
+    auto it = effectStates.find(thingId);
+    if (it == effectStates.end()) {
+        return RET_ERR;
     }
-
-    float mapped = mapNormalizedToEffectParam(effectType, paramName, normalized);
-    return setEffectParam(thingId, paramName, mapped);
+    return audiox::effects::setSlotParamNormalized(&it->second, paramName, normalized);
 }
 
 int AudioContext::createEffect(const char *type, char *outId, size_t outIdSize) {
@@ -858,24 +877,7 @@ int AudioContext::createEffect(const char *type, char *outId, size_t outIdSize) 
     audiox::effects::SlotParams params = {};
     params.enabled = 1U;
     params.type = effectType;
-    params.gain = 1.0f;
-    params.drive = 1.0f;
-    params.clip = 1.0f;
-    params.output = 1.0f;
-
-    if (effectType == audiox::effects::EFFECT_DISTORTION) {
-        params.drive = 4.0f;
-        params.clip = 0.35f;
-        params.output = 1.0f;
-    } else if (effectType == audiox::effects::EFFECT_PITCH) {
-        params.drive = 0.0f;
-        params.clip = 1.0f;
-        params.output = 1.0f;
-    } else if (effectType == audiox::effects::EFFECT_REVERB) {
-        params.drive = 0.55f;
-        params.clip = 0.35f;
-        params.output = 0.35f;
-    }
+    audiox::effects::setSlotDefaultsForType(&params, effectType);
     audiox::effects::clampSlotParams(&params);
 
     std::lock_guard<std::mutex> lock(effectsMutex);

@@ -287,6 +287,103 @@ static bool parsePlaybackThing(const char *id, uint32_t *card, uint32_t *device)
                                 device);
 }
 
+static bool parseStableThing(const char *id,
+                             char *stableCardId,
+                             size_t stableCardIdSize,
+                             uint32_t *device) {
+    if (!id || !stableCardId || stableCardIdSize == 0 || !device) {
+        return false;
+    }
+
+    const char *prefix = "alsa_";
+    if (strncmp(id, prefix, strlen(prefix)) != 0) {
+        return false;
+    }
+
+    // Find _dev{digit} — the device-index separator.
+    // Must check for a trailing digit to avoid matching _dev inside a stableCardId
+    // that starts with "dev" (e.g. "device").
+    const char *devTag = nullptr;
+    const char *p = id;
+    while (*p) {
+        const char *found = strstr(p, "_dev");
+        if (!found) {
+            break;
+        }
+        if (isdigit((unsigned char)found[4])) {
+            devTag = found;
+            break;
+        }
+        p = found + 1;
+    }
+
+    if (!devTag) {
+        return false;
+    }
+
+    size_t slugLen = (size_t)(devTag - (id + strlen(prefix)));
+    if (slugLen == 0 || slugLen >= stableCardIdSize) {
+        return false;
+    }
+
+    memcpy(stableCardId, id + strlen(prefix), slugLen);
+    stableCardId[slugLen] = '\0';
+
+    unsigned parsedDevice = 0;
+    if (sscanf(devTag, "_dev%u", &parsedDevice) != 1) {
+        return false;
+    }
+    *device = (uint32_t)parsedDevice;
+    return true;
+}
+
+static bool resolveThingCardDevice(AudioContext *ctx,
+                                   const char *thingId,
+                                   bool isCapture,
+                                   uint32_t *card,
+                                   uint32_t *device) {
+    if (!ctx || !thingId || !card || !device) {
+        return false;
+    }
+
+    if (isCapture) {
+        if (parseCaptureThing(thingId, card, device)) {
+            return true;
+        }
+    } else {
+        if (parsePlaybackThing(thingId, card, device)) {
+            return true;
+        }
+    }
+
+    char stableCardId[64] = {};
+    if (!parseStableThing(thingId, stableCardId, sizeof(stableCardId), device)) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(ctx->devicesMutex);
+    for (const auto &entry : ctx->devices) {
+        const AudioDeviceInfo &info = entry.second;
+        if (strcmp(info.stableCardId, stableCardId) != 0) {
+            continue;
+        }
+        if (info.deviceIndex != *device) {
+            continue;
+        }
+        if (isCapture && !info.hasCapture) {
+            continue;
+        }
+        if (!isCapture && !info.hasPlayback) {
+            continue;
+        }
+        *card = info.cardIndex;
+        *device = info.deviceIndex;
+        return true;
+    }
+
+    return false;
+}
+
 static void captureRingReset(RuntimeGraph::AlsaCaptureStream *s) {
     if (!s) {
         return;
@@ -1306,10 +1403,7 @@ static void processNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex)
         if (ctx->getEffectParams(thing.id, &params) != RET_OK) {
             params.enabled = 1U;
             params.type = audiox::effects::EFFECT_GAIN;
-            params.gain = 1.0f;
-            params.drive = 1.5f;
-            params.clip = 0.6f;
-            params.output = 1.0f;
+            audiox::effects::setSlotDefaultsForType(&params, params.type);
         }
 
         for (uint8_t ch = 0; ch < copyChannels; ++ch) {
@@ -1418,7 +1512,9 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
         return;
     }
 
-    bool topologyChanged = !sameThingLayout(graph, rt->snapshot);
+    bool topologyChanged =
+        (graph.topologyGeneration != rt->snapshot.topologyGeneration) ||
+        !sameThingLayout(graph, rt->snapshot);
 
     rt->snapshot = graph;
     rt->sourceNodeCount = 0;
@@ -1463,7 +1559,7 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
             if (rt->nodeKind[i] == NODE_SOURCE && rt->captureCount < kMaxCaptureStreams) {
                 uint32_t card = 0;
                 uint32_t device = 0;
-                if (parseCaptureThing(thing.id, &card, &device)) {
+                if (resolveThingCardDevice(ctx, thing.id, true, &card, &device)) {
                     RuntimeGraph::AlsaCaptureStream &s = rt->capture[rt->captureCount];
                     memset(&s, 0, sizeof(s));
                     s.active = 1;
@@ -1487,7 +1583,7 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
             if (rt->nodeKind[i] == NODE_SINK && rt->playbackCount < kMaxPlaybackStreams) {
                 uint32_t card = 0;
                 uint32_t device = 0;
-                if (parsePlaybackThing(thing.id, &card, &device)) {
+                if (resolveThingCardDevice(ctx, thing.id, false, &card, &device)) {
                     RuntimeGraph::AlsaPlaybackStream &s = rt->playback[rt->playbackCount];
                     memset(&s, 0, sizeof(s));
                     s.active = 1;
@@ -1516,7 +1612,7 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
             if (rt->nodeKind[node] == NODE_SOURCE) {
                 uint32_t card = 0;
                 uint32_t device = 0;
-                if (parseCaptureThing(thing.id, &card, &device)) {
+                if (resolveThingCardDevice(ctx, thing.id, true, &card, &device)) {
                     for (uint16_t i = 0; i < rt->captureCount; ++i) {
                         RuntimeGraph::AlsaCaptureStream &s = rt->capture[i];
                         if (s.active && s.card == card && s.device == device) {
@@ -1530,7 +1626,7 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
             if (rt->nodeKind[node] == NODE_SINK) {
                 uint32_t card = 0;
                 uint32_t device = 0;
-                if (parsePlaybackThing(thing.id, &card, &device)) {
+                if (resolveThingCardDevice(ctx, thing.id, false, &card, &device)) {
                     for (uint16_t i = 0; i < rt->playbackCount; ++i) {
                         RuntimeGraph::AlsaPlaybackStream &s = rt->playback[i];
                         if (s.active && s.card == card && s.device == device) {
@@ -1560,6 +1656,57 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
         }
     }
 
+    // Topologically sort processNodes so chained effects are always processed
+    // in data-flow order regardless of effect ID / thing-list order.
+    {
+        const uint16_t n = rt->processNodeCount;
+        if (n > 1) {
+            uint16_t inDegree[AUDIO_GRAPH_MAX_THINGS] = {};
+            for (uint16_t r = 0; r < rt->processRouteCount; ++r) {
+                const RuntimeGraph::CompiledRoute &route = rt->processRoutes[r];
+                bool srcIsProcess = false;
+                bool dstIsProcess = false;
+                for (uint16_t i = 0; i < n; ++i) {
+                    if (rt->processNodes[i] == route.srcNode) srcIsProcess = true;
+                    if (rt->processNodes[i] == route.dstNode) dstIsProcess = true;
+                }
+                if (srcIsProcess && dstIsProcess) {
+                    inDegree[route.dstNode]++;
+                }
+            }
+
+            uint16_t sorted[AUDIO_GRAPH_MAX_THINGS];
+            uint16_t sortedCount = 0;
+            bool visited[AUDIO_GRAPH_MAX_THINGS] = {};
+
+            for (uint16_t pass = 0; pass < n; ++pass) {
+                int picked = -1;
+                for (uint16_t i = 0; i < n; ++i) {
+                    uint16_t node = rt->processNodes[i];
+                    if (!visited[node] && inDegree[node] == 0) {
+                        picked = (int)node;
+                        visited[node] = true;
+                        break;
+                    }
+                }
+                if (picked < 0) {
+                    break;
+                }
+                sorted[sortedCount++] = (uint16_t)picked;
+                for (uint16_t r = 0; r < rt->processRouteCount; ++r) {
+                    if (rt->processRoutes[r].srcNode == (uint16_t)picked &&
+                        inDegree[rt->processRoutes[r].dstNode] > 0) {
+                        --inDegree[rt->processRoutes[r].dstNode];
+                    }
+                }
+            }
+
+            if (sortedCount == n) {
+                memcpy(rt->processNodes, sorted, n * sizeof(uint16_t));
+            }
+        }
+    }
+
     clearRuntimeBuffers(rt);
 }
 
@@ -1583,14 +1730,19 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
         routeCompiledEdge(ctx, rt, rt->sourceRoutes[i]);
     }
 
-    // Process transform/effect nodes from their accumulated input.
+    // Process transform/effect nodes in deterministic order and route each
+    // node's output forward immediately so chained effects work in one block.
     for (uint16_t i = 0; i < rt->processNodeCount; ++i) {
-        processNode(ctx, rt, rt->processNodes[i]);
-    }
+        uint16_t nodeIndex = rt->processNodes[i];
+        processNode(ctx, rt, nodeIndex);
 
-    // Route transformed output onward (typically into sinks).
-    for (uint16_t i = 0; i < rt->processRouteCount; ++i) {
-        routeCompiledEdge(ctx, rt, rt->processRoutes[i]);
+        for (uint16_t routeIndex = 0; routeIndex < rt->processRouteCount; ++routeIndex) {
+            const RuntimeGraph::CompiledRoute &route = rt->processRoutes[routeIndex];
+            if (route.srcNode != nodeIndex) {
+                continue;
+            }
+            routeCompiledEdge(ctx, rt, route);
+        }
     }
 
     rt->blocksProcessed++;

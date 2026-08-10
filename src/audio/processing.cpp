@@ -1656,6 +1656,57 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
         }
     }
 
+    // Topologically sort processNodes so chained effects are always processed
+    // in data-flow order regardless of effect ID / thing-list order.
+    {
+        const uint16_t n = rt->processNodeCount;
+        if (n > 1) {
+            uint16_t inDegree[AUDIO_GRAPH_MAX_THINGS] = {};
+            for (uint16_t r = 0; r < rt->processRouteCount; ++r) {
+                const RuntimeGraph::CompiledRoute &route = rt->processRoutes[r];
+                bool srcIsProcess = false;
+                bool dstIsProcess = false;
+                for (uint16_t i = 0; i < n; ++i) {
+                    if (rt->processNodes[i] == route.srcNode) srcIsProcess = true;
+                    if (rt->processNodes[i] == route.dstNode) dstIsProcess = true;
+                }
+                if (srcIsProcess && dstIsProcess) {
+                    inDegree[route.dstNode]++;
+                }
+            }
+
+            uint16_t sorted[AUDIO_GRAPH_MAX_THINGS];
+            uint16_t sortedCount = 0;
+            bool visited[AUDIO_GRAPH_MAX_THINGS] = {};
+
+            for (uint16_t pass = 0; pass < n; ++pass) {
+                int picked = -1;
+                for (uint16_t i = 0; i < n; ++i) {
+                    uint16_t node = rt->processNodes[i];
+                    if (!visited[node] && inDegree[node] == 0) {
+                        picked = (int)node;
+                        visited[node] = true;
+                        break;
+                    }
+                }
+                if (picked < 0) {
+                    break;
+                }
+                sorted[sortedCount++] = (uint16_t)picked;
+                for (uint16_t r = 0; r < rt->processRouteCount; ++r) {
+                    if (rt->processRoutes[r].srcNode == (uint16_t)picked &&
+                        inDegree[rt->processRoutes[r].dstNode] > 0) {
+                        --inDegree[rt->processRoutes[r].dstNode];
+                    }
+                }
+            }
+
+            if (sortedCount == n) {
+                memcpy(rt->processNodes, sorted, n * sizeof(uint16_t));
+            }
+        }
+    }
+
     clearRuntimeBuffers(rt);
 }
 

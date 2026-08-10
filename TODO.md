@@ -56,7 +56,7 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Allow controlling effects with MIDI CCs and buttons
   - [x] Midi lights for the effect enable/disable buttons
 - [x] change routing config to identify devices differently — now uses the ALSA card ID string (e.g. `t6`, `uac2gadget`) instead of card numbers. Card IDs are stable across reboots for a given device model.
-- [ ] Improve stable device identifiers to use USB vendor:product IDs (e.g. `0582_0160`) from sysfs, so that generic card IDs like `device` don't silently match the wrong device. Useful when multiple USB audio devices with non-descriptive product names are connected.
+- [ ] MAYBE: Improve stable device identifiers to use USB vendor:product IDs (e.g. `0582_0160`) from sysfs, so that generic card IDs like `device` don't silently match the wrong device. Useful when multiple USB audio devices with non-descriptive product names are connected. This isn't super important, because this device is going to eventually have it's own custom hardware interface, so there won't be any USB (unless the user really wants to, maybe they have a USB microphone instead of analog). But I guess it would still be nice to have since this is meant to be a general purpose device, and usable for many different setups.
 
 ## Very Very Later - v1.6+
 
@@ -89,12 +89,15 @@ The above last two features are mainly to improve my setup, but could probably b
 
 ## Hardware stuff
 
-- Reverse-HAT style board that the Pi sits on top of
-- 4 in / 4 out minimum, probably more on the premium boards 8 in / 8 out
-- 48V mic input
-- A few instrument inputs with proper gain staging
-- Headphone and monitor outputs
-- Knobs, mixers, patching, the whole thing
+Design a spec for a modular synth type thing. It will be like a mini-eurorack, using 3.5mm jacks instead of 1/4 inch jacks, and it will be designed to be good, but budget friendly (single pcb for a module and some 3d printed parts). Basically everything will be CV, since you don't want to have to reach through cables to get to a knob. and there will be simple modules that is just an array of knobs and CV outputs. Eventually I might even make haptic software-controlled knobs, so that when a value is changed via software, the knob will move to that position. I could even use brushless and an absolute encoder so that the knob's boundaries and click positions are completely software controlled. This would allow for a lot of flexibility, and would be a really cool feature. But that is a long way off, and I will probably just make simple modules with knobs and CV outputs for now.
+
+Figure out a connector so that modules can click together and transmit power. This will NOT transmit data, because it is all patch cables.
+
+I don't think I could do a grid because that would create ground loops, so I will have to make rows, and then have a special power supply module and side connector module that goes in a column and spreads power to all modules.
+
+This is meant to be compatible with sitting on a desk (horizontal) OR vertical (like eurorack). Each module will have a 3D printed case. The modules click together with some type of power connector, and maybe even some mechanical connectors to increase stability. The spec for a single module is going to be tiny, but if more space is needed, it can just be a double module, or a triple module, etc.
+
+I will probably not start with the module containing the pi because it will be the most advanced one. Probably start with power supply and a basic mixer or something to test out the spec (will probably need revision).
 
 ## Notes to self
 

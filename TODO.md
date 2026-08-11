@@ -69,6 +69,7 @@ The above last two features are mainly to improve my setup, but could probably b
   - [ ] Multi-band compressor
 - [ ] Investigate using LV2 plugins for effects, and if possible, make it so that the user can upload their own LV2 plugins to the device and use them in the audio engine. This would allow for a lot more flexibility and customization for users who want to use their own effects.
 - [ ] Investigate lower latency (smaller buffer sizes like 64 or 32 samples instead of 128) to see if we can go below 5ms latency.
+- [ ] Windows volume changing doesn't work properly (volume seems to be locked at 100% even when windows volume is changed, and it is really boosted and distorted even if the volume on the device is reduced). Windows probably does something weird with the gadget that I didn't handle.
 
 ## Pre-release - v1.7+
 - [ ] Smarter bootloader that can detect bad initramfs and boot into a backup one:

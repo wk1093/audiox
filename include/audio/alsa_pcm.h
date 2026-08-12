@@ -3,14 +3,77 @@
 #include "defs.hpp"
 
 #include <alsa/asoundlib.h>
+#include <atomic>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 
 #define AUDIO_INPUT_FALLBACK_RATE 48000U
 #define AUDIO_CAPTURE_PERIOD_FRAMES 256U
 #define AUDIO_CAPTURE_PERIODS 4U
+
+static inline int audio_pcm_should_log_underrun_count(uint64_t count) {
+    if (count == 1U || count == 10U || count == 50U || count == 100U) {
+        return 1;
+    }
+    if (count > 100U && (count % 250U) == 0U) {
+        return 1;
+    }
+    return 0;
+}
+
+static inline void audiox_alsa_error_handler(const char *file,
+                                             int line,
+                                             const char *function,
+                                             int err,
+                                             const char *fmt,
+                                             ...) {
+    char msg[256];
+    msg[0] = '\0';
+
+    va_list ap;
+    va_start(ap, fmt);
+    (void)vsnprintf(msg, sizeof(msg), fmt ? fmt : "", ap);
+    va_end(ap);
+
+    // Suppress only the noisy recover-underrun spam line.
+    if (err == -EPIPE &&
+        function && strstr(function, "snd_pcm_recover") != nullptr &&
+        strstr(msg, "underrun occurred") != nullptr) {
+        return;
+    }
+
+    fprintf(stderr,
+            "ALSA lib %s:%d:(%s) %s\n",
+            file ? file : "(unknown)",
+            line,
+            function ? function : "(unknown)",
+            msg[0] ? msg : "(no message)");
+}
+
+static inline void audio_pcm_install_error_handler() {
+    static int installed = 0;
+    if (installed) {
+        return;
+    }
+    snd_lib_error_set_handler(audiox_alsa_error_handler);
+    installed = 1;
+}
+
+static inline void audio_pcm_track_underrun(const char *path, const char *op) {
+    static std::atomic<uint64_t> underrunCount{0};
+    uint64_t count = underrunCount.fetch_add(1U, std::memory_order_relaxed) + 1U;
+    if (!audio_pcm_should_log_underrun_count(count)) {
+        return;
+    }
+
+    printf("[AUDIO] [WARN] ALSA underrun count=%llu (%s on %s)\n",
+           (unsigned long long)count,
+           op ? op : "stream",
+           path ? path : "(unknown)");
+}
 
 static inline int audio_pcm_configure_hw_handle(snd_pcm_t *pcm,
                                                 const char *path,
@@ -182,6 +245,10 @@ static inline int audio_pcm_open_configured(snd_pcm_t **pcmOut,
 static inline int audio_pcm_recover(snd_pcm_t *pcm, int err, const char *path, const char *op) {
     if (!pcm) {
         return -EINVAL;
+    }
+
+    if (err == -EPIPE) {
+        audio_pcm_track_underrun(path, op);
     }
 
     int rc = snd_pcm_recover(pcm, err, 0);

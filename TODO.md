@@ -45,23 +45,23 @@ The above last two features are mainly to improve my setup, but could probably b
 
 ## Very Later - v1.5+
 
-- [-] Add audio effects (reverb, delay, etc) to the audio engine, and make it so they can be routed to any output, and have their parameters controlled via the HTTP API as well as bindable MIDI CCs and buttons (for toggling effects on/off)
+- [x] Add audio effects (reverb, delay, etc) to the audio engine, and make it so they can be routed to any output, and have their parameters controlled via the HTTP API as well as bindable MIDI CCs and buttons (for toggling effects on/off)
   - [x] Phase Vocoder based pitch shifting
   - [x] Reverb
-  - [ ] Delay
-  - [-] Basic Noise cancellation (probably just a gate for now, more advanced later)
+  - [x] Basic Noise cancellation (probably just a gate for now, more advanced later)
   - [x] Gain
   - [x] Distortion
-- [-] Effect midi integration
+- [x] Effect midi integration
   - [x] Allow controlling effects with MIDI CCs and buttons
   - [x] Midi lights for the effect enable/disable buttons
 - [x] change routing config to identify devices differently — now uses the ALSA card ID string (e.g. `t6`, `uac2gadget`) instead of card numbers. Card IDs are stable across reboots for a given device model.
-- [ ] MAYBE: Improve stable device identifiers to use USB vendor:product IDs (e.g. `0582_0160`) from sysfs, so that generic card IDs like `device` don't silently match the wrong device. Useful when multiple USB audio devices with non-descriptive product names are connected. This isn't super important, because this device is going to eventually have it's own custom hardware interface, so there won't be any USB (unless the user really wants to, maybe they have a USB microphone instead of analog). But I guess it would still be nice to have since this is meant to be a general purpose device, and usable for many different setups.
+- [ ] Investigate optimizations for the audio engine to improve speed (I had to increase buffer size from 128 to 256 frames to avoid underruns, which is not ideal)
 
 ## Bugfixes and stabilization v1.6+
 - [ ] Apply some bugfixes and suggestions from reddit
   - [ ]  Consider changing snd_pcm_hw_params_set_access from read/write access to memory mapped (SND_PCM_ACCESS_MMAP_* types). This eliminates a write between user space and kernel space. Thanks u/Brer1Rabbit
   - [ ] mlockall before starting the audio engine to prevent page faults from causing xruns. Thanks u/Kamran-nottakenone
+- [ ] MAYBE: Improve stable device identifiers to use USB vendor:product IDs (e.g. `0582_0160`) from sysfs, so that generic card IDs like `device` don't silently match the wrong device. Useful when multiple USB audio devices with non-descriptive product names are connected. This isn't super important, because this device is going to eventually have it's own custom hardware interface, so there won't be any USB (unless the user really wants to, maybe they have a USB microphone instead of analog). But I guess it would still be nice to have since this is meant to be a general purpose device, and usable for many different setups.
   
 
 ## Pre-Pre-Release - v1.7+
@@ -74,7 +74,6 @@ The above last two features are mainly to improve my setup, but could probably b
   - [ ] Parametric EQ
   - [ ] Multi-band compressor
 - [ ] Investigate using LV2 plugins for effects, and if possible, make it so that the user can upload their own LV2 plugins to the device and use them in the audio engine. This would allow for a lot more flexibility and customization for users who want to use their own effects.
-- [ ] Investigate lower latency (smaller buffer sizes like 64 or 32 samples instead of 128) to see if we can go below 5ms latency.
 - [ ] Windows volume changing doesn't work properly (volume seems to be locked at 100% even when windows volume is changed, and it is really boosted and distorted even if the volume on the device is reduced). Windows probably does something weird with the gadget that I didn't handle.
 
 ## Pre-release - v1.8+

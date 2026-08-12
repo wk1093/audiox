@@ -2989,7 +2989,6 @@ static void getFfmpegVersion(char *out, size_t out_sz) {
 		snprintf(out, out_sz, "Unavailable");
 		return;
 	}
-	printf("[API] getFfmpegVersion: using ffmpeg at %s\n", ffmpeg_path);
 
 	int pipefd[2];
 	if (pipe(pipefd) < 0) {
@@ -3034,10 +3033,8 @@ static void getFfmpegVersion(char *out, size_t out_sz) {
 
 	char line[256] = {0};
 	if (fgets(line, sizeof(line), fp)) {
-		printf("[API] getFfmpegVersion: got line: %s\n", line);
 		line[strcspn(line, "\r\n")] = '\0';
 		if (line[0]) {
-			printf("[API] getFfmpegVersion: returning version: %s\n", line);
 			snprintf(out, out_sz, "%s", line);
 			fclose(fp);
 			int status;

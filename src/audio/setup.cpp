@@ -1,4 +1,5 @@
 #include "audio/context.hpp"
+#include "audio/alsa_pcm.h"
 
 #include <time.h>
 #include <stdio.h>
@@ -289,6 +290,8 @@ static int queueSfxByPath(AudioContext *ctx, const char *sfxPath, int holdStart,
 }
 
 AudioContext::AudioContext(Audiox *context) : app(context) {
+    audio_pcm_install_error_handler();
+
     if (app) {
         app->audio = this;
     }

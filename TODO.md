@@ -55,7 +55,7 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Allow controlling effects with MIDI CCs and buttons
   - [x] Midi lights for the effect enable/disable buttons
 - [x] change routing config to identify devices differently — now uses the ALSA card ID string (e.g. `t6`, `uac2gadget`) instead of card numbers. Card IDs are stable across reboots for a given device model.
-- [ ] Investigate optimizations for the audio engine to improve speed (I had to increase buffer size from 128 to 256 frames to avoid underruns, which is not ideal)
+- [-] Investigate optimizations for the audio engine to improve speed (I had to increase buffer size from 128 to 256 frames to avoid underruns, which is not ideal. at 48kHz sample, that is 5.3ms instead of 2.7ms, which is a lot more, and gets into the range of noticable latency by the human ear)
 
 ## Bugfixes and stabilization v1.6+
 - [ ] Apply some bugfixes and suggestions from reddit

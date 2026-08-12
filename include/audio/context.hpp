@@ -194,6 +194,7 @@ struct AudioContext {
     std::unordered_map<std::string, float> thingGains;
 
     std::unordered_map<std::string, audiox::effects::SlotParams> effectStates;
+    std::atomic<uint32_t> effectStatesSeq;
     uint32_t nextEffectId;
     mutable std::mutex effectsMutex;
 

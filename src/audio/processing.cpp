@@ -116,6 +116,8 @@ struct RuntimeGraph {
     uint16_t processRouteCount;
     float inputs[AUDIO_GRAPH_MAX_THINGS][kMaxChannelsPerThing][BUFFER_FRAMES];
     float outputs[AUDIO_GRAPH_MAX_THINGS][kMaxChannelsPerThing][BUFFER_FRAMES];
+    audiox::effects::SlotParams effectParamsCache[AUDIO_GRAPH_MAX_THINGS];
+    uint32_t effectParamsSeq[AUDIO_GRAPH_MAX_THINGS];
     SoundboardVoice soundboardVoices[kMaxSoundboardVoices];
     int16_t holdVoiceIndex;
     int16_t nodeToCaptureStream[AUDIO_GRAPH_MAX_THINGS];
@@ -1386,7 +1388,20 @@ static void routeCompiledEdge(AudioContext *ctx, RuntimeGraph *rt, const Runtime
     }
 }
 
-static void processNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex) {
+static void copyWithClamp(const float *src, float *dst) {
+    for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+        float s = src[frame];
+        if (s > 1.0f) {
+            s = 1.0f;
+        }
+        if (s < -1.0f) {
+            s = -1.0f;
+        }
+        dst[frame] = s;
+    }
+}
+
+static void processNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex, uint32_t effectSeq) {
     if (!ctx || !rt || nodeIndex >= rt->snapshot.thingCount) {
         return;
     }
@@ -1401,11 +1416,27 @@ static void processNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex)
     }
 
     if (rt->nodeKind[nodeIndex] == NODE_EFFECT) {
-        audiox::effects::SlotParams params = {};
-        if (ctx->getEffectParams(thing.id, &params) != RET_OK) {
-            params.enabled = 1U;
-            params.type = audiox::effects::EFFECT_GAIN;
-            audiox::effects::setSlotDefaultsForType(&params, params.type);
+        if (rt->effectParamsSeq[nodeIndex] != effectSeq) {
+            audiox::effects::SlotParams params = {};
+            if (ctx->getEffectParams(thing.id, &params) != RET_OK) {
+                params.enabled = 1U;
+                params.type = audiox::effects::EFFECT_GAIN;
+                audiox::effects::setSlotDefaultsForType(&params, params.type);
+            }
+            rt->effectParamsCache[nodeIndex] = params;
+            rt->effectParamsSeq[nodeIndex] = effectSeq;
+        }
+
+        const audiox::effects::SlotParams &params = rt->effectParamsCache[nodeIndex];
+
+        if (!params.enabled) {
+            for (uint8_t ch = 0; ch < copyChannels; ++ch) {
+                copyWithClamp(rt->inputs[nodeIndex][ch], rt->outputs[nodeIndex][ch]);
+            }
+            for (uint8_t ch = copyChannels; ch < outChannels; ++ch) {
+                memset(rt->outputs[nodeIndex][ch], 0, sizeof(rt->outputs[nodeIndex][ch]));
+            }
+            return;
         }
 
         for (uint8_t ch = 0; ch < copyChannels; ++ch) {
@@ -1424,16 +1455,7 @@ static void processNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex)
     }
 
     for (uint8_t ch = 0; ch < copyChannels; ++ch) {
-        for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
-            float s = rt->inputs[nodeIndex][ch][frame];
-            if (s > 1.0f) {
-                s = 1.0f;
-            }
-            if (s < -1.0f) {
-                s = -1.0f;
-            }
-            rt->outputs[nodeIndex][ch][frame] = s;
-        }
+        copyWithClamp(rt->inputs[nodeIndex][ch], rt->outputs[nodeIndex][ch]);
     }
 }
 
@@ -1525,6 +1547,9 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
     rt->sourceRouteCount = 0;
     rt->processRouteCount = 0;
     rt->soundboardNodeIndex = -1;
+    for (uint16_t i = 0; i < AUDIO_GRAPH_MAX_THINGS; ++i) {
+        rt->effectParamsSeq[i] = 0;
+    }
 
     if (topologyChanged) {
         closeAllStreams(rt);
@@ -1734,9 +1759,10 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
 
     // Process transform/effect nodes in deterministic order and route each
     // node's output forward immediately so chained effects work in one block.
+    uint32_t effectSeq = ctx->effectStatesSeq.load(std::memory_order_acquire);
     for (uint16_t i = 0; i < rt->processNodeCount; ++i) {
         uint16_t nodeIndex = rt->processNodes[i];
-        processNode(ctx, rt, nodeIndex);
+        processNode(ctx, rt, nodeIndex, effectSeq);
 
         for (uint16_t routeIndex = 0; routeIndex < rt->processRouteCount; ++routeIndex) {
             const RuntimeGraph::CompiledRoute &route = rt->processRoutes[routeIndex];
@@ -1840,6 +1866,10 @@ static void *audioProcessingThreadMain(void *arg) {
 
     RuntimeGraph runtime = {};
     runtime.holdVoiceIndex = -1;
+    runtime.effectParamsSeq[0] = 0;
+    for (uint16_t i = 1; i < AUDIO_GRAPH_MAX_THINGS; ++i) {
+        runtime.effectParamsSeq[i] = 0;
+    }
     uint32_t lastGraphGeneration = 0;
     uint32_t lastGraphSeq = 0;
     timespec nextDeadline = monotonicNow();

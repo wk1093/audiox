@@ -323,6 +323,7 @@ AudioContext::AudioContext(Audiox *context) : app(context) {
     memset(&routingGraph, 0, sizeof(routingGraph));
     memset(&routingGraphPublished, 0, sizeof(routingGraphPublished));
     routingGraphSeq.store(0, std::memory_order_relaxed);
+    effectStatesSeq.store(1U, std::memory_order_relaxed);
     memset(&nodeChannelLevels, 0, sizeof(nodeChannelLevels));
 
     for (uint32_t i = 0; i < AUDIO_GRAPH_MAX_THINGS; ++i) {
@@ -678,6 +679,8 @@ void AudioContext::loadEffectsFromConfig() {
     if (nextEffectId == 0) {
         nextEffectId = 1;
     }
+
+    effectStatesSeq.fetch_add(1U, std::memory_order_release);
 }
 
 int AudioContext::listEffects(AudioEffectSlotState *out, size_t cap) const {
@@ -763,6 +766,7 @@ int AudioContext::setEffectType(const char *thingId, uint8_t type) {
     audiox::effects::setSlotDefaultsForType(&it->second, type);
     it->second.enabled = enabled;
     audiox::effects::clampSlotParams(&it->second);
+    effectStatesSeq.fetch_add(1U, std::memory_order_release);
     return RET_OK;
 }
 
@@ -777,6 +781,7 @@ int AudioContext::setEffectEnabled(const char *thingId, uint8_t enabled) {
         return RET_ERR;
     }
     it->second.enabled = enabled ? 1U : 0U;
+    effectStatesSeq.fetch_add(1U, std::memory_order_release);
     return RET_OK;
 }
 
@@ -791,6 +796,7 @@ int AudioContext::toggleEffectEnabled(const char *thingId) {
         return RET_ERR;
     }
     it->second.enabled = it->second.enabled ? 0U : 1U;
+    effectStatesSeq.fetch_add(1U, std::memory_order_release);
     return RET_OK;
 }
 
@@ -855,7 +861,11 @@ int AudioContext::setEffectParam(const char *thingId, const char *paramName, flo
         return RET_ERR;
     }
 
-    return audiox::effects::setSlotParamValue(&it->second, paramName, value);
+    int rc = audiox::effects::setSlotParamValue(&it->second, paramName, value);
+    if (rc == RET_OK) {
+        effectStatesSeq.fetch_add(1U, std::memory_order_release);
+    }
+    return rc;
 }
 
 int AudioContext::setEffectParamNormalized(const char *thingId, const char *paramName, float normalized) {
@@ -868,7 +878,11 @@ int AudioContext::setEffectParamNormalized(const char *thingId, const char *para
     if (it == effectStates.end()) {
         return RET_ERR;
     }
-    return audiox::effects::setSlotParamNormalized(&it->second, paramName, normalized);
+    int rc = audiox::effects::setSlotParamNormalized(&it->second, paramName, normalized);
+    if (rc == RET_OK) {
+        effectStatesSeq.fetch_add(1U, std::memory_order_release);
+    }
+    return rc;
 }
 
 int AudioContext::createEffect(const char *type, char *outId, size_t outIdSize) {
@@ -898,6 +912,7 @@ int AudioContext::createEffect(const char *type, char *outId, size_t outIdSize) 
     }
 
     effectStates[idBuf] = params;
+    effectStatesSeq.fetch_add(1U, std::memory_order_release);
     size_t n = strnlen(idBuf, outIdSize - 1);
     memcpy(outId, idBuf, n);
     outId[n] = '\0';
@@ -915,5 +930,6 @@ int AudioContext::deleteEffect(const char *thingId) {
         return RET_ERR;
     }
     effectStates.erase(it);
+    effectStatesSeq.fetch_add(1U, std::memory_order_release);
     return RET_OK;
 }

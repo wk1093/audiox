@@ -76,7 +76,8 @@ WEB_LOGO_SVG ?= $(CURDIR)/logo.svg
 WEB_LOGO_PNG ?= $(CURDIR)/logo.png
 WEB_INDEX_HTML ?= $(CURDIR)/web/index.html
 FFMPEG_BIN ?= $(CURDIR)/third_party/ffmpeg/ffmpeg
-FFMPEG_URL ?= https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-19-13-12/ffmpeg-n8.1.2-22-g94138f6973-linuxarm64-gpl-8.1.tar.xz
+FFMPEG_URL ?= https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-31-14-10/ffmpeg-n8.1.2-34-g9b6c8969e0-linuxarm64-gpl-8.1.tar.xz
+FFMPEG_ARCHIVE_SHA256 ?= 177e40c91564dec3840096f3bf1ffe696b94330585972462cfc739fa29fe0e1a
 FFMPEG_ARCHIVE ?= $(OUT_DIR)/downloads/ffmpeg.pkg
 FFMPEG_CROSS_LIB_DIR ?= /usr/aarch64-linux-gnu/lib
 FFMPEG_RUNTIME_LIBS ?= ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 librt.so.1 libpthread.so.0 libgcc_s.so.1
@@ -90,7 +91,7 @@ PI_PORT ?= 80
 SD_MOUNT_BOOT ?= /run/media/$(USER)/bootfs
 
 IMG_FILE = $(OUT_DIR)/audiox.img
-IMG_SIZE_MB = 128
+IMG_SIZE_MB = 256
 
 DEPFLAGS = -MMD -MP
 
@@ -192,6 +193,18 @@ ffmpeg:
 			rm -rf "$$tmpdir"; \
 			echo "Error: failed to download ffmpeg from $(FFMPEG_URL)"; \
 			exit 1; \
+		fi; \
+		if [ -n "$(FFMPEG_ARCHIVE_SHA256)" ]; then \
+			actual_sha256=$$(sha256sum "$(FFMPEG_ARCHIVE)" | awk '{print $$1}'); \
+			if [ "$$actual_sha256" != "$(FFMPEG_ARCHIVE_SHA256)" ]; then \
+				rm -rf "$$tmpdir"; \
+				rm -f "$(FFMPEG_ARCHIVE)"; \
+				echo "Error: ffmpeg archive checksum mismatch"; \
+				echo "Expected: $(FFMPEG_ARCHIVE_SHA256)"; \
+				echo "Actual:   $$actual_sha256"; \
+				exit 1; \
+			fi; \
+			echo "Verified ffmpeg archive checksum: $$actual_sha256"; \
 		fi; \
 		if tar -tf "$(FFMPEG_ARCHIVE)" >/dev/null 2>&1; then \
 			if ! tar -xf "$(FFMPEG_ARCHIVE)" -C "$$tmpdir"; then \
@@ -399,8 +412,8 @@ dev: program_initramfs
 	fi
 	@echo "Upload complete. Device will reboot once to install the staged runtime, then reboot into the new image."
 
-image: initramfs
-	@$(SCRIPTS_DIR)/build_image.sh "$(IMG_FILE)" "$(IMG_SIZE_MB)" "$(OUT_DIR)" "$(INITRAMFS)" "$(PROGRAM_INITRAMFS)" "$(VC4_OVERLAY)" "$(DSI_TOUCH_OVERLAY)"
+image: initramfs ffmpeg
+	@$(SCRIPTS_DIR)/build_image.sh "$(IMG_FILE)" "$(IMG_SIZE_MB)" "$(OUT_DIR)" "$(INITRAMFS)" "$(PROGRAM_INITRAMFS)" "$(VC4_OVERLAY)" "$(DSI_TOUCH_OVERLAY)" "$(FFMPEG_BIN)"
 
 clean:
 	rm -rf $(OUT_DIR)

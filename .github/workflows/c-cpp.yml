@@ -25,6 +25,7 @@ jobs:
             curl \
             wget \
             parted \
+            e2fsprogs \
             dosfstools \
             mtools \
             libarchive-tools \
@@ -33,6 +34,10 @@ jobs:
       - name: Build Initramfs targets
         run: |
           make initramfs
+      
+      - name: Get FFmpeg
+        run: |
+          make ffmpeg
 
       - name: Build SD Card Image (.img)
         run: |

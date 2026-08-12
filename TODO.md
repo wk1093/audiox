@@ -59,7 +59,7 @@ The above last two features are mainly to improve my setup, but could probably b
 - [ ] MAYBE: Improve stable device identifiers to use USB vendor:product IDs (e.g. `0582_0160`) from sysfs, so that generic card IDs like `device` don't silently match the wrong device. Useful when multiple USB audio devices with non-descriptive product names are connected. This isn't super important, because this device is going to eventually have it's own custom hardware interface, so there won't be any USB (unless the user really wants to, maybe they have a USB microphone instead of analog). But I guess it would still be nice to have since this is meant to be a general purpose device, and usable for many different setups.
 
 ## Bugfixes and stabilization v1.6+
-- [ ] Apply some bugfixes and suggestions from reddit posts.
+- [ ] Apply some bugfixes and suggestions from reddit
   - [ ]  Consider changing snd_pcm_hw_params_set_access from read/write access to memory mapped (SND_PCM_ACCESS_MMAP_* types). This eliminates a write between user space and kernel space. Thanks u/Brer1Rabbit
   - [ ] mlockall before starting the audio engine to prevent page faults from causing xruns. Thanks u/Kamran-nottakenone
   

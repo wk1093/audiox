@@ -1,0 +1,60 @@
+name: Build AudioX OS Image
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cross-compiler and build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            cpio \
+            curl \
+            wget \
+            parted \
+            dosfstools \
+            mtools \
+            libarchive-tools \
+            pkg-config
+
+      - name: Build Initramfs targets
+        run: |
+          make initramfs
+
+      - name: Build SD Card Image (.img)
+        run: |
+          make image
+
+      - name: Upload SD Card Image Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: audiox-img
+          path: out/audiox.img
+          retention-days: 7
+
+      - name: Upload Bootloader Initramfs Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootloader-initramfs
+          path: out/initramfs.cpio.gz
+          retention-days: 7
+
+      - name: Upload Runtime Initramfs Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: program-initramfs
+          path: out/program.cpio.gz
+          retention-days: 7

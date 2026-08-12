@@ -80,24 +80,33 @@ make ALSA_VERSION=1.2.14 alsa
 
 ### Optional ffmpeg binary for soundboard preprocessing
 
-If you want non-WAV soundboard uploads (mp3/ogg/flac/etc) to auto-convert on the device, place an aarch64 static ffmpeg binary at:
+If you want non-WAV soundboard uploads (mp3/ogg/flac/etc) to auto-convert on the device, provide an aarch64 ffmpeg binary.
+
+Place it at:
 
 ```bash
 third_party/ffmpeg/ffmpeg
 ```
 
-`make initramfs` will stage it as `/usr/bin/ffmpeg` in the runtime image.
+Runtime uses ffmpeg from `/audiox/ffmpeg` (storage partition), and `make image` stages it into partition 2 as `/ffmpeg`.
+
+When `third_party/ffmpeg/ffmpeg` is missing, the `ffmpeg` target will auto-download from `FFMPEG_URL` and verify the archive against `FFMPEG_ARCHIVE_SHA256` before extracting.
+
+WARNING: This auto-download is not guaranteed to be stable, and may break if the upstream changes. I also have not done enough legal research to know if I am allowed to keep the url and checksum in this repo, so it may be removed in the future. If you want to use this feature, please download the binary yourself and place it in `third_party/ffmpeg/ffmpeg` or provide your own URL and checksum.
 
 You can override the source path:
 
 ```bash
-make FFMPEG_BIN=/absolute/path/to/your/ffmpeg initramfs
+make FFMPEG_BIN=/absolute/path/to/your/ffmpeg image
 ```
 
-Or let Make fetch it automatically when missing:
+You can also override the download URL and checksum:
 
 ```bash
-make FFMPEG_URL='https://your-source.example/ffmpeg-aarch64-static.tar.xz' initramfs
+make \
+	FFMPEG_URL='https://your-source.example/ffmpeg-aarch64-static.tar.xz' \
+	FFMPEG_ARCHIVE_SHA256='<sha256>' \
+	ffmpeg
 ```
 
 Notes:

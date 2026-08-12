@@ -527,13 +527,14 @@ static bool openCaptureStream(RuntimeGraph::AlsaCaptureStream *s) {
                     if (snd_pcm_start(s->pcm) < 0) {
                         // Capture may auto-start on first read depending on driver.
                     }
-                    printf("[AUDIO] [INFO] capture stream opened %s (%uch, %u Hz, fmt=%s period=%u periods=%u)\n",
-                           s->path,
-                           (unsigned)s->channels,
-                           (unsigned)s->sampleRate,
-                           snd_pcm_format_name(s->format),
-                           profiles[p].periodFrames,
-                           profiles[p].periods);
+                    // VERBOSE: Uncomment this for debugging capture stream open issues.
+                    // printf("[AUDIO] [INFO] capture stream opened %s (%uch, %u Hz, fmt=%s period=%u periods=%u)\n",
+                    //        s->path,
+                    //        (unsigned)s->channels,
+                    //        (unsigned)s->sampleRate,
+                    //        snd_pcm_format_name(s->format),
+                    //        profiles[p].periodFrames,
+                    //        profiles[p].periods);
                     return true;
                 }
             }
@@ -623,14 +624,15 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
                     s->reopenRetryBlocks = 0;
                     s->pendingFrames = 0;
                     s->pendingOffsetFrames = 0;
-                    printf("[AUDIO] [INFO] playback stream opened %s (%uch, %u Hz, fmt=%s period=%u periods=%u timing=%d)\n",
-                           s->path,
-                           (unsigned)s->channels,
-                           (unsigned)s->sampleRate,
-                           snd_pcm_format_name(s->format),
-                           profiles[p].periodFrames,
-                           profiles[p].periods,
-                           profiles[p].configureTiming);
+                    // VERBOSE: Uncomment this for debugging playback stream open issues.
+                    // printf("[AUDIO] [INFO] playback stream opened %s (%uch, %u Hz, fmt=%s period=%u periods=%u timing=%d)\n",
+                    //        s->path,
+                    //        (unsigned)s->channels,
+                    //        (unsigned)s->sampleRate,
+                    //        snd_pcm_format_name(s->format),
+                    //        profiles[p].periodFrames,
+                    //        profiles[p].periods,
+                    //        profiles[p].configureTiming);
                     return true;
                 }
             }
@@ -1795,19 +1797,21 @@ static void maybeLogStats(RuntimeGraph *rt) {
         }
     }
 
-    printf("[AUDIO] [INFO] graph block=%llu generation=%u sink_peak=%.3f\n",
-           (unsigned long long)rt->blocksProcessed,
-           (unsigned)rt->snapshot.generation,
-           peak);
+    // VERBOSE
+    // printf("[AUDIO] [INFO] graph block=%llu generation=%u sink_peak=%.3f\n",
+    //        (unsigned long long)rt->blocksProcessed,
+    //        (unsigned)rt->snapshot.generation,
+    //        peak);
 
     for (uint16_t i = 0; i < rt->captureCount; ++i) {
         const RuntimeGraph::AlsaCaptureStream &s = rt->capture[i];
-        printf("[AUDIO] [INFO] capture[%u] ratio=%.5f ring_fill=%u/%u path=%s\n",
-               (unsigned)i,
-               s.src.ratio,
-               (unsigned)s.ringCount,
-               (unsigned)kCaptureRingFrames,
-               s.path);
+        // VERBOSE
+        // printf("[AUDIO] [INFO] capture[%u] ratio=%.5f ring_fill=%u/%u path=%s\n",
+        //        (unsigned)i,
+        //        s.src.ratio,
+        //        (unsigned)s.ringCount,
+        //        (unsigned)kCaptureRingFrames,
+        //        s.path);
         if (!s.pcm) {
             printf("[AUDIO] [WARN] capture[%u] offline: %s\n", (unsigned)i, s.path);
         }
@@ -1818,11 +1822,12 @@ static void maybeLogStats(RuntimeGraph *rt) {
         if (!p.pcm) {
             printf("[AUDIO] [WARN] playback[%u] offline: %s\n", (unsigned)i, p.path);
         } else {
-            printf("[AUDIO] [INFO] playback[%u] active: %s (%uch @ %u)\n",
-                   (unsigned)i,
-                   p.path,
-                   (unsigned)p.channels,
-                   (unsigned)p.sampleRate);
+            // VERBOSE
+            // printf("[AUDIO] [INFO] playback[%u] active: %s (%uch @ %u)\n",
+            //        (unsigned)i,
+            //        p.path,
+            //        (unsigned)p.channels,
+            //        (unsigned)p.sampleRate);
         }
     }
 }

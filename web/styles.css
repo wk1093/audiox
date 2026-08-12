@@ -51,6 +51,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
   gap: 14px;
   padding: 14px 16px 12px;
   border-bottom: 1px solid var(--line);
@@ -92,6 +93,7 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  margin-left: auto;
 }
 
 .tab-btn {
@@ -507,11 +509,18 @@ select {
 }
 
 .status {
-  border-top: 1px solid var(--line);
-  padding: 10px 14px;
+  border: 1px solid #355b72;
+  border-radius: 10px;
+  background: #0d2230;
+  padding: 8px 10px;
   font-size: 13px;
   color: var(--muted);
   min-height: 1.2em;
+  min-width: 220px;
+  max-width: 520px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .status.ok {
@@ -681,9 +690,60 @@ select {
 
 .system-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
+  grid-template-columns: minmax(0, 1fr) 340px;
   gap: 12px;
   align-items: start;
+}
+
+.logs-toolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.logs-filter-row {
+  grid-template-columns: 96px minmax(0, 1fr);
+  margin-top: 4px;
+}
+
+.logs-view {
+  margin: 0;
+  min-height: 220px;
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid #355b72;
+  border-radius: 8px;
+  background: #0b1b26;
+  padding: 8px;
+  font-family: "IBM Plex Mono", "DejaVu Sans Mono", monospace;
+  font-size: 12px;
+  line-height: 1.38;
+  color: #d8e8f2;
+}
+
+.log-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-src {
+  color: #7fd1ff;
+}
+
+.log-level-error {
+  color: #ff8f7a;
+}
+
+.log-level-warn {
+  color: #ffcd83;
+}
+
+.log-level-info {
+  color: #8be3b7;
+}
+
+.log-level-debug {
+  color: #9bb7c8;
 }
 
 /* Volume page */
@@ -833,6 +893,17 @@ select {
 
   .app-header {
     padding: 12px;
+  }
+
+  .status {
+    order: 3;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .tabs {
+    width: 100%;
+    margin-left: 0;
   }
 
   .cfg-row {

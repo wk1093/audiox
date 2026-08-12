@@ -19,6 +19,12 @@ const nodeCountEl = document.getElementById('metric-node-count');
 const routeCountEl = document.getElementById('metric-route-count');
 const selectedNodeEl = document.getElementById('metric-selected-node');
 const selectedRouteEl = document.getElementById('metric-selected-route');
+const logsSourceEl = document.getElementById('logs-source');
+const logsLevelEl = document.getElementById('logs-level');
+const logsTextEl = document.getElementById('logs-text');
+const logsLimitEl = document.getElementById('logs-limit');
+const logsSummaryEl = document.getElementById('logs-summary');
+const logsViewEl = document.getElementById('logs-view');
 
 const configPath = '/api/rootfs/config.staging.txt';
 const realConfigPath = '/api/rootfs/config.txt';
@@ -59,7 +65,186 @@ const state = {
   volAssignTarget: null,
   volCcPollTimer: null,
   volCcLastSeq: 0,
+  systemPollTimer: null,
+  systemPollInFlight: false,
+  logsStdoutText: '',
+  logsStderrText: '',
+  logsLastRefreshMs: 0,
 };
+
+function escapeHtml(text) {
+  return String(text || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+}
+
+function detectLogLevel(line) {
+  const s = String(line || '').toLowerCase();
+  if (s.includes('error') || s.includes('[err]') || s.includes('fatal')) {
+    return 'error';
+  }
+  if (s.includes('warn') || s.includes('[wrn]')) {
+    return 'warn';
+  }
+  if (s.includes('debug') || s.includes('[dbg]')) {
+    return 'debug';
+  }
+  return 'info';
+}
+
+function levelAllowed(filter, level) {
+  const rank = { debug: 0, info: 1, warn: 2, error: 3 };
+  if (!filter || filter === 'all') {
+    return true;
+  }
+  if (!(level in rank)) {
+    return true;
+  }
+  if (!(filter in rank)) {
+    return true;
+  }
+  return rank[level] >= rank[filter];
+}
+
+function parseLogLines(text, source) {
+  if (!text) {
+    return [];
+  }
+  const lines = String(text).split(/\r?\n/);
+  const out = [];
+  for (const line of lines) {
+    if (!line) {
+      continue;
+    }
+    out.push({
+      source,
+      level: detectLogLevel(line),
+      line,
+    });
+  }
+  return out;
+}
+
+function currentLogLimit() {
+  const n = Number(logsLimitEl?.value || 600);
+  if (!Number.isFinite(n)) {
+    return 600;
+  }
+  return Math.max(50, Math.min(5000, Math.floor(n)));
+}
+
+function renderLogs() {
+  if (!logsViewEl || !logsSummaryEl) {
+    return;
+  }
+
+  const sourceFilter = logsSourceEl?.value || 'both';
+  const levelFilter = logsLevelEl?.value || 'all';
+  const textFilter = String(logsTextEl?.value || '').trim().toLowerCase();
+  const limit = currentLogLimit();
+
+  let rows = [];
+  if (sourceFilter === 'both' || sourceFilter === 'stdout') {
+    rows = rows.concat(parseLogLines(state.logsStdoutText, 'stdout'));
+  }
+  if (sourceFilter === 'both' || sourceFilter === 'stderr') {
+    rows = rows.concat(parseLogLines(state.logsStderrText, 'stderr'));
+  }
+
+  let filtered = rows.filter((r) => levelAllowed(levelFilter, r.level));
+  if (textFilter) {
+    filtered = filtered.filter((r) => r.line.toLowerCase().includes(textFilter));
+  }
+
+  const total = filtered.length;
+  if (filtered.length > limit) {
+    filtered = filtered.slice(filtered.length - limit);
+  }
+
+  const parts = [];
+  for (const row of filtered) {
+    const safeLine = escapeHtml(row.line);
+    const safeSource = escapeHtml(row.source);
+    parts.push(`<div class="log-line log-level-${row.level}"><span class="log-src">[${safeSource}]</span> ${safeLine}</div>`);
+  }
+  logsViewEl.innerHTML = parts.join('');
+
+  const shown = filtered.length;
+  const dt = state.logsLastRefreshMs ? new Date(state.logsLastRefreshMs).toLocaleTimeString() : 'never';
+  logsSummaryEl.textContent = `showing ${shown}/${total} lines, refreshed ${dt}`;
+
+  logsViewEl.scrollTop = logsViewEl.scrollHeight;
+}
+
+async function fetchRootfsLog(path) {
+  const res = await fetch(path, { method: 'GET' });
+  const text = await res.text();
+  if (!res.ok) {
+    if (res.status === 404) {
+      return '';
+    }
+    throw new Error(`${path} ${res.status}: ${text.trim()}`);
+  }
+  return text;
+}
+
+async function loadLogs() {
+  if (!logsViewEl || !logsSummaryEl) {
+    return;
+  }
+  try {
+    const [stdoutText, stderrText] = await Promise.all([
+      fetchRootfsLog('/api/rootfs/stdout.log'),
+      fetchRootfsLog('/api/rootfs/stderr.log'),
+    ]);
+    state.logsStdoutText = stdoutText;
+    state.logsStderrText = stderrText;
+    state.logsLastRefreshMs = Date.now();
+    renderLogs();
+  } catch (err) {
+    setStatus(`log load error: ${err}`, 'warn');
+  }
+}
+
+async function pollSystemIfNeeded() {
+  if (state.activeTab !== 'system') {
+    return;
+  }
+  if (document.visibilityState && document.visibilityState !== 'visible') {
+    return;
+  }
+  if (state.systemPollInFlight) {
+    return;
+  }
+
+  state.systemPollInFlight = true;
+  try {
+    await Promise.all([
+      loadSystemInfo(),
+      loadLogs(),
+    ]);
+  } finally {
+    state.systemPollInFlight = false;
+  }
+}
+
+function startSystemPolling() {
+  if (state.systemPollTimer) {
+    clearInterval(state.systemPollTimer);
+  }
+  state.systemPollTimer = setInterval(() => {
+    pollSystemIfNeeded();
+  }, 1000);
+}
+
+function stopSystemPolling() {
+  if (!state.systemPollTimer) {
+    return;
+  }
+  clearInterval(state.systemPollTimer);
+  state.systemPollTimer = null;
+}
 
 function setStatus(text, kind = '') {
   statusEl.textContent = text;
@@ -90,6 +275,10 @@ function setActiveTab(tab) {
   }
   if (tab === 'system') {
     loadSystemInfo();
+    loadLogs();
+    startSystemPolling();
+  } else {
+    stopSystemPolling();
   }
   if (tab === 'volume') {
     loadVolumes();
@@ -1243,8 +1432,10 @@ async function loadSystemInfo() {
     uEl.textContent = d > 0 ? `${d}d ${h}h ${m}m` : `${h}h ${m}m`;
 
     const totalMb = Number(data.mem_total_mb || 0);
-    const availMb = Number(data.mem_avail_mb || 0);
-    mEl.textContent = `${availMb} / ${totalMb} MB`;
+    const availMbRaw = Number(data.mem_avail_mb || 0);
+    const availMb = Math.max(0, Math.min(totalMb, availMbRaw));
+    const usedMb = Math.max(0, totalMb - availMb);
+    mEl.textContent = `${usedMb} / ${totalMb} MB`;
 
     lEl.textContent = Number(data.load1 || 0).toFixed(2);
 
@@ -2509,6 +2700,22 @@ document.getElementById('btn-system-restart').addEventListener('click', async ()
 document.getElementById('btn-system-shutdown').addEventListener('click', async () => {
   await runSystemAction('/api/system/shutdown', 'shutdown');
 });
+
+if (logsSourceEl && logsLevelEl && logsTextEl && logsLimitEl && logsViewEl && logsSummaryEl) {
+  document.getElementById('btn-logs-refresh').addEventListener('click', loadLogs);
+  document.getElementById('btn-logs-clear-filter').addEventListener('click', () => {
+    logsSourceEl.value = 'both';
+    logsLevelEl.value = 'all';
+    logsTextEl.value = '';
+    logsLimitEl.value = '600';
+    renderLogs();
+  });
+
+  logsSourceEl.addEventListener('change', renderLogs);
+  logsLevelEl.addEventListener('change', renderLogs);
+  logsLimitEl.addEventListener('change', renderLogs);
+  logsTextEl.addEventListener('input', renderLogs);
+}
 
 async function loadLightConfig() {
   try {

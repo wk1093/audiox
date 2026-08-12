@@ -21,6 +21,8 @@
         </div>
       </div>
 
+      <div id="status" class="status">idle</div>
+
       <nav class="tabs" id="tabs">
         <button class="tab-btn active" data-tab="routing">Routing</button>
         <button class="tab-btn" data-tab="effects">Effects</button>
@@ -288,10 +290,44 @@
           <button id="btn-system-restart" class="warn">Restart Device</button>
           <button id="btn-system-shutdown" class="warn">Shutdown Device</button>
         </section>
+
+        <section class="card stack">
+          <h2>Logs</h2>
+          <div class="logs-toolbar">
+            <button id="btn-logs-refresh" class="flat">Refresh Logs</button>
+            <button id="btn-logs-clear-filter" class="flat">Clear Filter</button>
+          </div>
+          <div class="cfg-row logs-filter-row">
+            <label for="logs-source">Source</label>
+            <select id="logs-source">
+              <option value="both">stdout + stderr</option>
+              <option value="stdout">stdout only</option>
+              <option value="stderr">stderr only</option>
+            </select>
+          </div>
+          <div class="cfg-row logs-filter-row">
+            <label for="logs-level">Level</label>
+            <select id="logs-level">
+              <option value="all">all</option>
+              <option value="error">error only</option>
+              <option value="warn">warn + error</option>
+              <option value="info">info + warn + error</option>
+              <option value="debug">debug + info + warn + error</option>
+            </select>
+          </div>
+          <div class="cfg-row logs-filter-row">
+            <label for="logs-text">Text Filter</label>
+            <input id="logs-text" type="text" placeholder="contains text...">
+          </div>
+          <div class="cfg-row logs-filter-row">
+            <label for="logs-limit">Max Lines</label>
+            <input id="logs-limit" type="number" min="50" max="5000" step="50" value="600">
+          </div>
+          <div class="small" id="logs-summary">No logs loaded yet.</div>
+          <pre id="logs-view" class="logs-view" aria-live="polite"></pre>
+        </section>
       </div>
     </section>
-
-    <div id="status" class="status">idle</div>
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/build/litegraph.js"></script>

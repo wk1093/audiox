@@ -58,7 +58,13 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] change routing config to identify devices differently — now uses the ALSA card ID string (e.g. `t6`, `uac2gadget`) instead of card numbers. Card IDs are stable across reboots for a given device model.
 - [ ] MAYBE: Improve stable device identifiers to use USB vendor:product IDs (e.g. `0582_0160`) from sysfs, so that generic card IDs like `device` don't silently match the wrong device. Useful when multiple USB audio devices with non-descriptive product names are connected. This isn't super important, because this device is going to eventually have it's own custom hardware interface, so there won't be any USB (unless the user really wants to, maybe they have a USB microphone instead of analog). But I guess it would still be nice to have since this is meant to be a general purpose device, and usable for many different setups.
 
-## Very Very Later - v1.6+
+## Bugfixes and stabilization v1.6+
+- [ ] Apply some bugfixes and suggestions from reddit
+  - [ ]  Consider changing snd_pcm_hw_params_set_access from read/write access to memory mapped (SND_PCM_ACCESS_MMAP_* types). This eliminates a write between user space and kernel space. Thanks u/Brer1Rabbit
+  - [ ] mlockall before starting the audio engine to prevent page faults from causing xruns. Thanks u/Kamran-nottakenone
+  
+
+## Pre-Pre-Release - v1.7+
 
 - [ ] More advanced effects
   - [ ] Noice gate
@@ -69,8 +75,9 @@ The above last two features are mainly to improve my setup, but could probably b
   - [ ] Multi-band compressor
 - [ ] Investigate using LV2 plugins for effects, and if possible, make it so that the user can upload their own LV2 plugins to the device and use them in the audio engine. This would allow for a lot more flexibility and customization for users who want to use their own effects.
 - [ ] Investigate lower latency (smaller buffer sizes like 64 or 32 samples instead of 128) to see if we can go below 5ms latency.
+- [ ] Windows volume changing doesn't work properly (volume seems to be locked at 100% even when windows volume is changed, and it is really boosted and distorted even if the volume on the device is reduced). Windows probably does something weird with the gadget that I didn't handle.
 
-## Pre-release - v1.7+
+## Pre-release - v1.8+
 - [ ] Smarter bootloader that can detect bad initramfs and boot into a backup one:
   - [ ] File for storing the number of bad boots, and a feature in the main initramfs that will reset that counter once everything has booted properly. If the bootloader sees that this counter is above 2 or 3, it will boot into a backup initramfs instead of the main one.
   - [ ] Make it so that the bootloader can update the kernel as well.
@@ -86,6 +93,7 @@ The above last two features are mainly to improve my setup, but could probably b
 - [ ] Revisit temporary DHCP for better host plug-and-play on Linux
 - [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)
 - [ ] Add a "midi passthrough" feature that allows non-mapped midi messages to be passed through via a USB gadget to a connected host. This should be configurable via the WebUI, to also allow passing through messages that are mapped to soundboard clips, but the default is to only pass through non-mapped messages. This feature should also be able to be disabled entirely, which would fully remove the gadget entirely to save USB bandwidth (this is for people using like 6+ in/out audio channels to the gadget, where bandwidth could start to matter)
+- [ ] Look into dynamic sample size for the audio engine, so that if we notice Xruns or any other issues we can automatically increase the sample size when needed (or at least allow the user to change it via the WebUI). This is mainly for people with a lot of channels or effects that could cause issues.
 
 ## Hardware stuff
 

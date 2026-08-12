@@ -1,6 +1,8 @@
 #include <sys/stat.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <string.h>
+#include <errno.h>
 
 #include "defs.hpp"
 #include "context.hpp"
@@ -19,8 +21,12 @@
         if (ret == RET_ERR) { \
             printf("[INIT] [CRIT] %s failed with error code %d\n", #func, ret); \
             flushLogs(); \
-            freopen("/dev/tty1", "w", stdout); \
-            freopen("/dev/tty1", "w", stderr); \
+            if (!freopen("/dev/tty1", "w", stdout)) { \
+                printf("[INIT] [WARN] failed to redirect stdout to /dev/tty1: %s\n", strerror(errno)); \
+            } \
+            if (!freopen("/dev/tty1", "w", stderr)) { \
+                printf("[INIT] [WARN] failed to redirect stderr to /dev/tty1: %s\n", strerror(errno)); \
+            } \
             FILE *old = fopen("/audiox/stdout.log", "r"); \
             if (old) { \
                 char buf[256]; \

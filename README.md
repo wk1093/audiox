@@ -6,6 +6,12 @@ Right now it boots through a tiny custom bootloader initramfs into a separate ru
 
 Warning: This is very work-in-progress and not yet stable. The `make dev` target will build and upload a new runtime image, but be warned that certain updates require a full reflash (via `make fancyexport` or `make image`) to work properly. The bootloader is very simple and does not have a recovery mode, so if you break the runtime image you will need to reflash the SD card.
 
+## Contributing
+
+I would really appreciate help on this project. AudioX is currently maintained by one person and has grown to a pretty large codebase.
+
+If you want to help, please start here: [CONTRIBUTING.md](CONTRIBUTING.md)
+
 Once I believe this is stable enough for general use, I will release v2.0.0
 
 ## What it does

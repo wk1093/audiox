@@ -114,8 +114,11 @@ struct RuntimeGraph {
     uint16_t sourceRouteCount;
     CompiledRoute processRoutes[AUDIO_GRAPH_MAX_EDGES];
     uint16_t processRouteCount;
-    float inputs[AUDIO_GRAPH_MAX_THINGS][kMaxChannelsPerThing][BUFFER_FRAMES];
-    float outputs[AUDIO_GRAPH_MAX_THINGS][kMaxChannelsPerThing][BUFFER_FRAMES];
+    float inputStorage[AUDIO_GRAPH_MAX_THINGS][kMaxChannelsPerThing][BUFFER_FRAMES];
+    float outputStorage[AUDIO_GRAPH_MAX_THINGS][kMaxChannelsPerThing][BUFFER_FRAMES];
+    float *inputs[AUDIO_GRAPH_MAX_THINGS][kMaxChannelsPerThing];
+    float *outputs[AUDIO_GRAPH_MAX_THINGS][kMaxChannelsPerThing];
+    uint8_t inputContributionCount[AUDIO_GRAPH_MAX_THINGS][kMaxChannelsPerThing];
     audiox::effects::SlotParams effectParamsCache[AUDIO_GRAPH_MAX_THINGS];
     uint32_t effectParamsSeq[AUDIO_GRAPH_MAX_THINGS];
     SoundboardVoice soundboardVoices[kMaxSoundboardVoices];
@@ -1193,8 +1196,11 @@ static void clearRuntimeBuffers(RuntimeGraph *rt) {
 
     for (uint16_t node = 0; node < rt->snapshot.thingCount; ++node) {
         for (uint8_t ch = 0; ch < kMaxChannelsPerThing; ++ch) {
-            memset(rt->inputs[node][ch], 0, sizeof(rt->inputs[node][ch]));
-            memset(rt->outputs[node][ch], 0, sizeof(rt->outputs[node][ch]));
+            rt->inputs[node][ch] = rt->inputStorage[node][ch];
+            rt->outputs[node][ch] = rt->outputStorage[node][ch];
+            rt->inputContributionCount[node][ch] = 0;
+            memset(rt->inputStorage[node][ch], 0, sizeof(rt->inputStorage[node][ch]));
+            memset(rt->outputStorage[node][ch], 0, sizeof(rt->outputStorage[node][ch]));
         }
     }
 }
@@ -1382,9 +1388,43 @@ static void routeCompiledEdge(AudioContext *ctx, RuntimeGraph *rt, const Runtime
 
     float gain = ctx ? ctx->nodeGainAtomics[route.srcNode].load(std::memory_order_relaxed) : 1.0f;
     const float *src = rt->outputs[route.srcNode][route.srcChannel];
+    float *dstStorage = rt->inputStorage[route.dstNode][route.dstChannel];
     float *dst = rt->inputs[route.dstNode][route.dstChannel];
-    for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
-        dst[frame] += src[frame] * gain;
+    uint8_t &contribCount = rt->inputContributionCount[route.dstNode][route.dstChannel];
+
+    if (contribCount == 0U) {
+        if (gain == 1.0f) {
+            rt->inputs[route.dstNode][route.dstChannel] = const_cast<float *>(src);
+            rt->inputContributionCount[route.dstNode][route.dstChannel] = 1U;
+            return;
+        }
+
+        for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+            dstStorage[frame] = src[frame] * gain;
+        }
+        rt->inputs[route.dstNode][route.dstChannel] = dstStorage;
+        rt->inputContributionCount[route.dstNode][route.dstChannel] = 1U;
+        return;
+    }
+
+    if (dst != dstStorage) {
+        memcpy(dstStorage, dst, sizeof(float) * BUFFER_FRAMES);
+        dst = dstStorage;
+        rt->inputs[route.dstNode][route.dstChannel] = dstStorage;
+    }
+
+    if (gain == 1.0f) {
+        for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+            dst[frame] += src[frame];
+        }
+    } else {
+        for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+            dst[frame] += src[frame] * gain;
+        }
+    }
+
+    if (contribCount < 255U) {
+        ++contribCount;
     }
 }
 
@@ -1434,7 +1474,7 @@ static void processNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex,
                 copyWithClamp(rt->inputs[nodeIndex][ch], rt->outputs[nodeIndex][ch]);
             }
             for (uint8_t ch = copyChannels; ch < outChannels; ++ch) {
-                memset(rt->outputs[nodeIndex][ch], 0, sizeof(rt->outputs[nodeIndex][ch]));
+                memset(rt->outputs[nodeIndex][ch], 0, sizeof(float) * BUFFER_FRAMES);
             }
             return;
         }
@@ -1449,7 +1489,7 @@ static void processNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex,
         }
 
         for (uint8_t ch = copyChannels; ch < outChannels; ++ch) {
-            memset(rt->outputs[nodeIndex][ch], 0, sizeof(rt->outputs[nodeIndex][ch]));
+            memset(rt->outputs[nodeIndex][ch], 0, sizeof(float) * BUFFER_FRAMES);
         }
         return;
     }

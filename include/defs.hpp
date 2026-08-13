@@ -6,6 +6,10 @@
 #define KERNEL_VERSION "6.18.36-v8+"
 #endif
 
+#ifndef AUDIOX_ENABLE_ALSA_LOGS
+#define AUDIOX_ENABLE_ALSA_LOGS 1
+#endif
+
 #define SAMPLE_RATE 48000
 #define FREQUENCY 440.0
 #define AMPLITUDE 16000

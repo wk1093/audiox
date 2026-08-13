@@ -38,10 +38,20 @@ static inline void audiox_alsa_error_handler(const char *file,
     (void)vsnprintf(msg, sizeof(msg), fmt ? fmt : "", ap);
     va_end(ap);
 
+#if !AUDIOX_ENABLE_ALSA_LOGS
     // Suppress only the noisy recover-underrun spam line.
     if (err == -EPIPE &&
         function && strstr(function, "snd_pcm_recover") != nullptr &&
         strstr(msg, "underrun occurred") != nullptr) {
+        return;
+    }
+#endif
+
+    // The stream probe code intentionally tries many candidate formats/rates,
+    // so native hw_open failures become pure retry noise.
+    if (function && strstr(function, "snd_pcm_hw_open") != nullptr &&
+        msg[0] != '\0' && strstr(msg, "open '") != nullptr &&
+        strstr(msg, "failed (") != nullptr) {
         return;
     }
 

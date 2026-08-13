@@ -113,7 +113,10 @@ struct RuntimeGraph {
     CompiledRoute sourceRoutes[AUDIO_GRAPH_MAX_EDGES];
     uint16_t sourceRouteCount;
     CompiledRoute processRoutes[AUDIO_GRAPH_MAX_EDGES];
+    CompiledRoute processRoutesBySrc[AUDIO_GRAPH_MAX_EDGES];
     uint16_t processRouteCount;
+    uint16_t processRouteStart[AUDIO_GRAPH_MAX_THINGS];
+    uint16_t processRouteLen[AUDIO_GRAPH_MAX_THINGS];
     float inputStorage[AUDIO_GRAPH_MAX_THINGS][kMaxChannelsPerThing][BUFFER_FRAMES];
     float outputStorage[AUDIO_GRAPH_MAX_THINGS][kMaxChannelsPerThing][BUFFER_FRAMES];
     float *inputs[AUDIO_GRAPH_MAX_THINGS][kMaxChannelsPerThing];
@@ -1499,6 +1502,48 @@ static void processNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex,
     }
 }
 
+static void buildProcessRouteIndex(RuntimeGraph *rt) {
+    if (!rt) {
+        return;
+    }
+
+    uint16_t nodeCount = rt->snapshot.thingCount;
+    if (nodeCount > AUDIO_GRAPH_MAX_THINGS) {
+        nodeCount = AUDIO_GRAPH_MAX_THINGS;
+    }
+
+    for (uint16_t node = 0; node < nodeCount; ++node) {
+        rt->processRouteStart[node] = 0;
+        rt->processRouteLen[node] = 0;
+    }
+
+    for (uint16_t i = 0; i < rt->processRouteCount; ++i) {
+        const RuntimeGraph::CompiledRoute &route = rt->processRoutes[i];
+        if (route.srcNode < nodeCount && rt->processRouteLen[route.srcNode] < AUDIO_GRAPH_MAX_EDGES) {
+            ++rt->processRouteLen[route.srcNode];
+        }
+    }
+
+    uint16_t cursor[AUDIO_GRAPH_MAX_THINGS] = {};
+    uint16_t offset = 0;
+    for (uint16_t node = 0; node < nodeCount; ++node) {
+        rt->processRouteStart[node] = offset;
+        cursor[node] = offset;
+        offset += rt->processRouteLen[node];
+    }
+
+    for (uint16_t i = 0; i < rt->processRouteCount; ++i) {
+        const RuntimeGraph::CompiledRoute &route = rt->processRoutes[i];
+        if (route.srcNode >= nodeCount) {
+            continue;
+        }
+        uint16_t &write = cursor[route.srcNode];
+        if (write < AUDIO_GRAPH_MAX_EDGES) {
+            rt->processRoutesBySrc[write++] = route;
+        }
+    }
+}
+
 static void publishPlayingSfxSet(AudioContext *ctx, RuntimeGraph *rt) {
     if (!ctx || !rt) {
         return;
@@ -1589,6 +1634,8 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
     rt->soundboardNodeIndex = -1;
     for (uint16_t i = 0; i < AUDIO_GRAPH_MAX_THINGS; ++i) {
         rt->effectParamsSeq[i] = 0;
+        rt->processRouteStart[i] = 0;
+        rt->processRouteLen[i] = 0;
     }
 
     if (topologyChanged) {
@@ -1774,6 +1821,8 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
         }
     }
 
+    buildProcessRouteIndex(rt);
+
     clearRuntimeBuffers(rt);
 }
 
@@ -1804,11 +1853,10 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
         uint16_t nodeIndex = rt->processNodes[i];
         processNode(ctx, rt, nodeIndex, effectSeq);
 
-        for (uint16_t routeIndex = 0; routeIndex < rt->processRouteCount; ++routeIndex) {
-            const RuntimeGraph::CompiledRoute &route = rt->processRoutes[routeIndex];
-            if (route.srcNode != nodeIndex) {
-                continue;
-            }
+        uint16_t routeStart = rt->processRouteStart[nodeIndex];
+        uint16_t routeLen = rt->processRouteLen[nodeIndex];
+        for (uint16_t r = 0; r < routeLen; ++r) {
+            const RuntimeGraph::CompiledRoute &route = rt->processRoutesBySrc[routeStart + r];
             routeCompiledEdge(ctx, rt, route);
         }
     }

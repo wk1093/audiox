@@ -66,6 +66,8 @@ The above last two features are mainly to improve my setup, but could probably b
 
 ## Pre-Pre-Release - v1.7+
 
+- [ ] Bluetooth support: controlled by web ui
+- [ ] fbui soundboard, for people without a midi controller, set a config option in the webui, and the normal fbui will be replaced with a steamdeck-like soundboard interface (with optional multi-page via tabs and/or swipe)
 - [ ] More advanced effects
   - [ ] Noice gate
   - [ ] Voice noise cancellation/reduction

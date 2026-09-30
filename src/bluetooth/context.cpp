@@ -282,6 +282,12 @@ bool BluetoothContext::bringUpAdapter() {
         return false;
     }
 
+    if (bt::setLocalName(fd, "AudioX") == RET_OK) {
+        printf("[BT] [INFO] local Bluetooth name set to AudioX\n");
+    } else {
+        printf("[BT] [WARN] could not set local Bluetooth name to AudioX\n");
+    }
+
     const uint8_t sspEnable[] = {0x01};
     if (bt::writeCommand(fd, BT_CMD_WRITE_SSP_MODE, sspEnable, sizeof(sspEnable)) != RET_OK ||
         bt::waitForCommand(fd, BT_CMD_WRITE_SSP_MODE, 1000) != 0) {

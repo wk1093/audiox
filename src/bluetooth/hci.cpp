@@ -63,6 +63,7 @@ static_assert(offsetof(DeviceListRequest, devReq) == 4, "unexpected HCI device l
 #define AUDIOX_HCI_REMOTE_NAME_REQUEST 0x0419
 #define AUDIOX_HCI_REMOTE_NAME_CANCEL 0x041A
 #define AUDIOX_HCI_WRITE_INQUIRY_MODE 0x0C45
+#define AUDIOX_HCI_WRITE_LOCAL_NAME 0x0C13
 #define AUDIOX_EVT_LE_META_EVENT 0x3E
 #define AUDIOX_LE_ADVERTISING_REPORT 0x02
 #define AUDIOX_LE_EXTENDED_ADVERTISING_REPORT 0x0D
@@ -173,7 +174,7 @@ static void logBluetoothKernelMessages() {
 }
 
 int writeCommand(int fd, uint16_t opcode, const uint8_t *params, uint8_t paramLength) {
-    uint8_t packet[64] = {};
+    uint8_t packet[259] = {};
     if (paramLength > sizeof(packet) - 4) {
         return RET_ERR;
     }
@@ -191,6 +192,22 @@ int writeCommand(int fd, uint16_t opcode, const uint8_t *params, uint8_t paramLe
                strerror(errno));
     }
     return written == (ssize_t)paramLength + 4 ? RET_OK : RET_ERR;
+}
+
+int setLocalName(int fd, const char *name) {
+    if (!name || !name[0]) {
+        return RET_ERR;
+    }
+    uint8_t params[248] = {};
+    size_t length = strnlen(name, sizeof(params));
+    if (length == sizeof(params)) {
+        return RET_ERR;
+    }
+    memcpy(params, name, length);
+    if (writeCommand(fd, AUDIOX_HCI_WRITE_LOCAL_NAME, params, sizeof(params)) != RET_OK) {
+        return RET_ERR;
+    }
+    return waitForCommand(fd, AUDIOX_HCI_WRITE_LOCAL_NAME, 1000) == 0 ? RET_OK : RET_ERR;
 }
 
 static bool adapterIsUp(int fd, uint16_t deviceId) {

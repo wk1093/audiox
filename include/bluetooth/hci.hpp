@@ -45,6 +45,9 @@ int openRawSocket(int devId);
 
 int writeCommand(int fd, uint16_t opcode, const uint8_t *params, uint8_t paramLength);
 
+// Sets the classic Bluetooth local name (maximum 248 bytes).
+int setLocalName(int fd, const char *name);
+
 // Returns the command status, or -1 on timeout.
 int waitForCommand(int fd, uint16_t opcode, int timeoutMs);
 

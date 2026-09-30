@@ -386,7 +386,7 @@ function scanBluetoothDevices() {
 }
 
 function pairBluetoothDevice(address) {
-  return bluetoothRequest('/api/bluetooth/pair', new URLSearchParams({ address }));
+  return bluetoothRequest('/api/bluetooth/pair', `address=${address}`);
 }
 
 function setRoutingZoom(nextScale) {

@@ -8,7 +8,9 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <strings.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -109,6 +111,74 @@ static int loadCardId(uint32_t card, char *out, size_t outSize) {
     char path[64];
     snprintf(path, sizeof(path), "/proc/asound/card%u/id", (unsigned)card);
     return readProcTextFile(path, out, outSize);
+}
+
+static void sanitizeCardIdSlug(const char *cardId, char *out, size_t outSize);
+
+static int loadUsbStableCardId(uint32_t card, char *out, size_t outSize) {
+    if (!out || outSize == 0) {
+        return RET_ERR;
+    }
+
+    char linkPath[96];
+    char currentPath[PATH_MAX];
+    snprintf(linkPath, sizeof(linkPath), "/sys/class/sound/card%u/device", (unsigned)card);
+    if (!realpath(linkPath, currentPath)) {
+        return RET_ERR;
+    }
+
+    for (unsigned depth = 0; depth < 8; ++depth) {
+        char vendorPath[PATH_MAX + 16];
+        char productPath[PATH_MAX + 16];
+        char serialPath[PATH_MAX + 16];
+        char vendor[16] = {};
+        char product[16] = {};
+        char serial[128] = {};
+        snprintf(vendorPath, sizeof(vendorPath), "%s/idVendor", currentPath);
+        snprintf(productPath, sizeof(productPath), "%s/idProduct", currentPath);
+        if (readProcTextFile(vendorPath, vendor, sizeof(vendor)) == RET_OK &&
+            readProcTextFile(productPath, product, sizeof(product)) == RET_OK &&
+            strlen(vendor) == 4 && strlen(product) == 4) {
+            bool validIds = true;
+            for (size_t i = 0; i < 4; ++i) {
+                if (!isxdigit((unsigned char)vendor[i]) || !isxdigit((unsigned char)product[i])) {
+                    validIds = false;
+                    break;
+                }
+                vendor[i] = (char)tolower((unsigned char)vendor[i]);
+                product[i] = (char)tolower((unsigned char)product[i]);
+            }
+            if (!validIds) {
+                return RET_ERR;
+            }
+
+            snprintf(serialPath, sizeof(serialPath), "%s/serial", currentPath);
+            if (readProcTextFile(serialPath, serial, sizeof(serial)) == RET_OK && serial[0]) {
+                uint64_t serialHash = 14695981039346656037ULL;
+                for (const unsigned char *p = (const unsigned char *)serial; *p; ++p) {
+                    serialHash ^= *p;
+                    serialHash *= 1099511628211ULL;
+                }
+                snprintf(out, outSize, "usb-%s-%s-s%016llx", vendor, product,
+                         (unsigned long long)serialHash);
+            } else {
+                const char *port = strrchr(currentPath, '/');
+                port = port ? port + 1 : currentPath;
+                char portSlug[32] = {};
+                sanitizeCardIdSlug(port, portSlug, sizeof(portSlug));
+                snprintf(out, outSize, "usb-%s-%s-p%s", vendor, product, portSlug);
+            }
+            return out[0] ? RET_OK : RET_ERR;
+        }
+
+        char *slash = strrchr(currentPath, '/');
+        if (!slash || slash == currentPath) {
+            break;
+        }
+        *slash = '\0';
+    }
+
+    return RET_ERR;
 }
 
 // Sanitize an ALSA card ID into a stable lowercase slug for routing node IDs.
@@ -661,11 +731,15 @@ int AudioContext::rescanDevices() {
                          &info.isGadget,
                          &info.isUsb);
 
-        // Build stable card ID slug for persistent routing node names.
+        // Preserve the ALSA ID as an alias while preferring physical USB identity.
         {
             char rawCardId[64] = {};
             if (loadCardId(p.card, rawCardId, sizeof(rawCardId)) == RET_OK && rawCardId[0]) {
-                sanitizeCardIdSlug(rawCardId, info.stableCardId, sizeof(info.stableCardId));
+                sanitizeCardIdSlug(rawCardId, info.legacyCardId, sizeof(info.legacyCardId));
+            }
+            snprintf(info.stableCardId, sizeof(info.stableCardId), "%s", info.legacyCardId);
+            if (loadUsbStableCardId(p.card, info.stableCardId, sizeof(info.stableCardId)) == RET_OK) {
+                info.isUsb = 1;
             }
             if (!info.stableCardId[0]) {
                 // Fallback: use card index so the field is never empty.

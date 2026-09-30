@@ -87,9 +87,10 @@ struct AudioDeviceInfo {
     char nodeName[64];
     char devPath[128];
     char displayName[128];
-    // Stable identifier derived from the ALSA card ID string (e.g. "ua2", "umc202hd").
-    // Used as the basis for routing graph node IDs so routes survive reboot.
+    // Stable USB identity when available, otherwise the ALSA card ID slug.
     char stableCardId[64];
+    // Previous ALSA card ID slug, retained to migrate existing routes.
+    char legacyCardId[64];
 };
 
 struct AudioRegistry {
@@ -147,7 +148,7 @@ struct AudioContext {
 
     pthread_t processingThread;
     int processingThreadStarted;
-    int processingThreadRun;
+    std::atomic<int> processingThreadRun;
 
     uint64_t nextHotplugScanMs;
     AudioHandle nextHandle;

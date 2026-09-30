@@ -154,29 +154,48 @@ static bool normalizeRouteThingId(AudioContext *ctx,
     char stableCardId[64] = {};
     unsigned stableDevice = 0;
     char stableDir[8] = {};
-    if (sscanf(id, "alsa_%63[^_]_dev%u_%7s", stableCardId, &stableDevice, stableDir) == 3) {
-        AudioDeviceInfo infos[32];
-        size_t deviceCount = ctx->copyDeviceInfos(infos, sizeof(infos) / sizeof(infos[0]));
-        const bool wantCapture = strcmp(stableDir, "in") == 0;
-        const bool wantPlayback = strcmp(stableDir, "out") == 0;
-        for (size_t i = 0; i < deviceCount; ++i) {
-            const AudioDeviceInfo &info = infos[i];
-            if (strcmp(info.stableCardId, stableCardId) != 0 || info.deviceIndex != stableDevice) {
-                continue;
+    if (strncmp(id, "alsa_", 5) == 0) {
+        const char *devTag = nullptr;
+        const char *scan = id + 5;
+        while ((scan = strstr(scan, "_dev")) != nullptr) {
+            if (isdigit((unsigned char)scan[4])) {
+                devTag = scan;
+                break;
             }
-            if (wantCapture && !info.hasCapture) {
-                continue;
+            scan += 1;
+        }
+        size_t idLength = devTag ? (size_t)(devTag - (id + 5)) : 0;
+        if (devTag && idLength > 0 && idLength < sizeof(stableCardId) &&
+            sscanf(devTag, "_dev%u_%7s", &stableDevice, stableDir) == 2) {
+            memcpy(stableCardId, id + 5, idLength);
+            stableCardId[idLength] = '\0';
+        } else {
+            devTag = nullptr;
+        }
+        if (devTag) {
+            AudioDeviceInfo infos[32];
+            size_t deviceCount = ctx->copyDeviceInfos(infos, sizeof(infos) / sizeof(infos[0]));
+            const bool wantCapture = strcmp(stableDir, "in") == 0;
+            const bool wantPlayback = strcmp(stableDir, "out") == 0;
+            for (size_t i = 0; i < deviceCount; ++i) {
+                const AudioDeviceInfo &info = infos[i];
+                if ((strcmp(info.stableCardId, stableCardId) != 0 &&
+                     strcmp(info.legacyCardId, stableCardId) != 0) ||
+                    info.deviceIndex != stableDevice) {
+                    continue;
+                }
+                if (wantCapture && !info.hasCapture) {
+                    continue;
+                }
+                if (wantPlayback && !info.hasPlayback) {
+                    continue;
+                }
+                snprintf(out, outSize, "alsa_%s_dev%u_%s",
+                         info.stableCardId,
+                         (unsigned)info.deviceIndex,
+                         stableDir);
+                return true;
             }
-            if (wantPlayback && !info.hasPlayback) {
-                continue;
-            }
-            snprintf(out,
-                     outSize,
-                     "alsa_card%u_dev%u_%s",
-                     (unsigned)info.cardIndex,
-                     (unsigned)info.deviceIndex,
-                     stableDir);
-            return true;
         }
     }
 
@@ -530,6 +549,16 @@ int AudioContext::reloadRoutingGraph() {
                 char stableDst[64] = {};
                 bool srcChanged = toStableRouteId(this, storedEdge.src, stableSrc, sizeof(stableSrc));
                 bool dstChanged = toStableRouteId(this, storedEdge.dst, stableDst, sizeof(stableDst));
+                if (!srcChanged) {
+                    normalizeRouteThingId(this, next.things, next.thingCount,
+                                          storedEdge.src, stableSrc, sizeof(stableSrc));
+                    srcChanged = strcmp(stableSrc, storedEdge.src) != 0;
+                }
+                if (!dstChanged) {
+                    normalizeRouteThingId(this, next.things, next.thingCount,
+                                          storedEdge.dst, stableDst, sizeof(stableDst));
+                    dstChanged = strcmp(stableDst, storedEdge.dst) != 0;
+                }
                 if (srcChanged || dstChanged) {
                     dirty = true;
                     snprintf(routeBufs[normalizedCount], kRouteLen, "%s,%s,%u,%u",

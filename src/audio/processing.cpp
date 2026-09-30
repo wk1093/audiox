@@ -8,6 +8,7 @@
 #include <cstring>
 #include <stdint.h>
 #include <sched.h>
+#include <sys/mman.h>
 #include <time.h>
 
 namespace {
@@ -77,6 +78,7 @@ struct RuntimeGraph {
         uint32_t ringCount;
         float readFrac;
         snd_pcm_format_t format;
+        int mmapAccess;
         AdaptiveSrcController src;
         float lastSample[kMaxChannelsPerThing];
         char path[64];
@@ -97,6 +99,7 @@ struct RuntimeGraph {
         uint32_t pendingFrames;
         uint32_t pendingOffsetFrames;
         snd_pcm_format_t format;
+        int mmapAccess;
         char path[64];
         int16_t pendingBlock[BUFFER_FRAMES * kMaxChannelsPerThing];
         int32_t pendingBlock32[BUFFER_FRAMES * kMaxChannelsPerThing];
@@ -505,12 +508,14 @@ static bool openCaptureStream(RuntimeGraph::AlsaCaptureStream *s) {
                     snd_pcm_t *pcm = nullptr;
                     snd_pcm_uframes_t period = 0;
                     size_t frameBytes = 0;
+                    snd_pcm_access_t access = SND_PCM_ACCESS_MMAP_INTERLEAVED;
                     int openRc = audio_pcm_open_configured(&pcm,
                                                            s->path,
                                                            SND_PCM_STREAM_CAPTURE,
                                                            rates[r],
                                                            ch,
                                                            formats[f],
+                                                           &access,
                                                            profiles[p].periodFrames,
                                                            profiles[p].periods,
                                                            &period,
@@ -528,6 +533,7 @@ static bool openCaptureStream(RuntimeGraph::AlsaCaptureStream *s) {
                     s->format = formats[f];
                     s->channels = ch;
                     s->sampleRate = rates[r];
+                    s->mmapAccess = (access == SND_PCM_ACCESS_MMAP_INTERLEAVED);
                     s->reopenRetryBlocks = 0;
                     captureRingReset(s);
                     float baseRatio = (float)s->sampleRate / (float)SAMPLE_RATE;
@@ -606,12 +612,14 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
                     snd_pcm_t *pcm = nullptr;
                     snd_pcm_uframes_t period = 0;
                     size_t frameBytes = 0;
+                    snd_pcm_access_t access = SND_PCM_ACCESS_MMAP_INTERLEAVED;
                     int openRc = audio_pcm_open_configured(&pcm,
                                                            s->path,
                                                            SND_PCM_STREAM_PLAYBACK,
                                                            rates[r],
                                                            ch,
                                                            formats[f],
+                                                           &access,
                                                            profiles[p].periodFrames,
                                                            profiles[p].periods,
                                                            &period,
@@ -629,6 +637,7 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
                     s->format = formats[f];
                     s->channels = ch;
                     s->sampleRate = rates[r];
+                    s->mmapAccess = (access == SND_PCM_ACCESS_MMAP_INTERLEAVED);
                     s->reopenRetryBlocks = 0;
                     s->pendingFrames = 0;
                     s->pendingOffsetFrames = 0;
@@ -680,6 +689,123 @@ static void maybeReopenPlayback(RuntimeGraph::AlsaPlaybackStream *s) {
     }
 }
 
+static const char *mmapSampleAddress(const snd_pcm_channel_area_t *area,
+                                    snd_pcm_uframes_t offset,
+                                    snd_pcm_uframes_t frame) {
+    uint64_t bitOffset = (uint64_t)area->first +
+                         (uint64_t)area->step * ((uint64_t)offset + frame);
+    return static_cast<const char *>(area->addr) + (bitOffset / 8U);
+}
+
+static void captureRingAdvance(RuntimeGraph::AlsaCaptureStream *s, uint32_t frames) {
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        if (s->ringCount >= kCaptureRingFrames) {
+            s->ringTail = (s->ringTail + 1U) % kCaptureRingFrames;
+            s->ringCount = kCaptureRingFrames - 1U;
+        }
+        s->ringHead = (s->ringHead + 1U) % kCaptureRingFrames;
+        ++s->ringCount;
+    }
+}
+
+static snd_pcm_sframes_t captureMmapRead(RuntimeGraph::AlsaCaptureStream *s,
+                                         snd_pcm_uframes_t requestedFrames) {
+    snd_pcm_sframes_t available = snd_pcm_avail_update(s->pcm);
+    if (available <= 0) {
+        return available;
+    }
+
+    const snd_pcm_channel_area_t *areas = nullptr;
+    snd_pcm_uframes_t offset = 0;
+    snd_pcm_uframes_t frames = requestedFrames;
+    int rc = snd_pcm_mmap_begin(s->pcm, &areas, &offset, &frames);
+    if (rc < 0) {
+        return rc;
+    }
+    if (frames == 0) {
+        return snd_pcm_mmap_commit(s->pcm, offset, 0);
+    }
+    if (!areas) {
+        (void)snd_pcm_mmap_commit(s->pcm, offset, 0);
+        return -EIO;
+    }
+    for (uint8_t channel = 0; channel < s->channels; ++channel) {
+        if (!areas[channel].addr) {
+            (void)snd_pcm_mmap_commit(s->pcm, offset, 0);
+            return -EIO;
+        }
+    }
+
+    for (uint32_t frame = 0; frame < (uint32_t)frames; ++frame) {
+        uint32_t ringFrame = (s->ringHead + frame) % kCaptureRingFrames;
+        int16_t *dst = &s->ring[ringFrame * kMaxChannelsPerThing];
+        for (uint8_t channel = 0; channel < s->channels; ++channel) {
+            const char *src = mmapSampleAddress(&areas[channel], offset, frame);
+            if (s->format == SND_PCM_FORMAT_S32_LE) {
+                int32_t sample = 0;
+                memcpy(&sample, src, sizeof(sample));
+                dst[channel] = (int16_t)(sample >> 16);
+            } else {
+                memcpy(&dst[channel], src, sizeof(dst[channel]));
+            }
+        }
+        for (uint8_t channel = s->channels; channel < kMaxChannelsPerThing; ++channel) {
+            dst[channel] = 0;
+        }
+    }
+
+    snd_pcm_sframes_t committed = snd_pcm_mmap_commit(s->pcm, offset, frames);
+    if (committed > 0) {
+        captureRingAdvance(s, (uint32_t)committed);
+    }
+    return committed;
+}
+
+static snd_pcm_sframes_t playbackMmapWrite(RuntimeGraph::AlsaPlaybackStream *s,
+                                           snd_pcm_uframes_t requestedFrames) {
+    snd_pcm_sframes_t available = snd_pcm_avail_update(s->pcm);
+    if (available <= 0) {
+        return available;
+    }
+
+    const snd_pcm_channel_area_t *areas = nullptr;
+    snd_pcm_uframes_t offset = 0;
+    snd_pcm_uframes_t frames = requestedFrames;
+    int rc = snd_pcm_mmap_begin(s->pcm, &areas, &offset, &frames);
+    if (rc < 0) {
+        return rc;
+    }
+    if (frames == 0) {
+        return snd_pcm_mmap_commit(s->pcm, offset, 0);
+    }
+    if (!areas) {
+        (void)snd_pcm_mmap_commit(s->pcm, offset, 0);
+        return -EIO;
+    }
+    for (uint8_t channel = 0; channel < s->channels; ++channel) {
+        if (!areas[channel].addr) {
+            (void)snd_pcm_mmap_commit(s->pcm, offset, 0);
+            return -EIO;
+        }
+    }
+
+    for (uint32_t frame = 0; frame < (uint32_t)frames; ++frame) {
+        uint32_t srcFrame = s->pendingOffsetFrames + frame;
+        for (uint8_t channel = 0; channel < s->channels; ++channel) {
+            char *dst = const_cast<char *>(mmapSampleAddress(&areas[channel], offset, frame));
+            if (s->format == SND_PCM_FORMAT_S32_LE) {
+                const int32_t *src = &s->pendingBlock32[srcFrame * s->channels + channel];
+                memcpy(dst, src, sizeof(*src));
+            } else {
+                const int16_t *src = &s->pendingBlock[srcFrame * s->channels + channel];
+                memcpy(dst, src, sizeof(*src));
+            }
+        }
+    }
+
+    return snd_pcm_mmap_commit(s->pcm, offset, frames);
+}
+
 static void serviceCaptureIo(RuntimeGraph *rt) {
     if (!rt) {
         return;
@@ -699,28 +825,35 @@ static void serviceCaptureIo(RuntimeGraph *rt) {
                 break;
             }
 
-            void *readBuf = (s.format == SND_PCM_FORMAT_S32_LE)
-                                ? static_cast<void *>(s.ioBlock32)
-                                : static_cast<void *>(s.ioBlock);
-            snd_pcm_sframes_t framesRead = snd_pcm_readi(s.pcm, readBuf, reqFrames);
+            snd_pcm_sframes_t framesRead;
+            if (s.mmapAccess) {
+                framesRead = captureMmapRead(&s, reqFrames);
+            } else {
+                void *readBuf = (s.format == SND_PCM_FORMAT_S32_LE)
+                                    ? static_cast<void *>(s.ioBlock32)
+                                    : static_cast<void *>(s.ioBlock);
+                framesRead = snd_pcm_readi(s.pcm, readBuf, reqFrames);
+            }
 
             if (framesRead > 0) {
-                if (s.format == SND_PCM_FORMAT_S32_LE) {
-                    int16_t converted[BUFFER_FRAMES * kMaxChannelsPerThing];
-                    uint32_t sampleCount = (uint32_t)framesRead * s.channels;
-                    for (uint32_t j = 0; j < sampleCount; ++j) {
-                        int32_t v32 = s.ioBlock32[j] >> 16;
-                        if (v32 > 32767) {
-                            v32 = 32767;
+                if (!s.mmapAccess) {
+                    if (s.format == SND_PCM_FORMAT_S32_LE) {
+                        int16_t converted[BUFFER_FRAMES * kMaxChannelsPerThing];
+                        uint32_t sampleCount = (uint32_t)framesRead * s.channels;
+                        for (uint32_t j = 0; j < sampleCount; ++j) {
+                            int32_t v32 = s.ioBlock32[j] >> 16;
+                            if (v32 > 32767) {
+                                v32 = 32767;
+                            }
+                            if (v32 < -32768) {
+                                v32 = -32768;
+                            }
+                            converted[j] = (int16_t)v32;
                         }
-                        if (v32 < -32768) {
-                            v32 = -32768;
-                        }
-                        converted[j] = (int16_t)v32;
+                        captureRingPush(&s, converted, (uint32_t)framesRead);
+                    } else {
+                        captureRingPush(&s, s.ioBlock, (uint32_t)framesRead);
                     }
-                    captureRingPush(&s, converted, (uint32_t)framesRead);
-                } else {
-                    captureRingPush(&s, s.ioBlock, (uint32_t)framesRead);
                 }
                 if ((uint32_t)framesRead < reqFrames) {
                     break;
@@ -810,12 +943,17 @@ static void servicePlaybackIo(RuntimeGraph *rt) {
             continue;
         }
 
-        const void *writeBuf = (s.format == SND_PCM_FORMAT_S32_LE)
-                       ? static_cast<const void *>(&s.pendingBlock32[s.pendingOffsetFrames * s.channels])
-                       : static_cast<const void *>(&s.pendingBlock[s.pendingOffsetFrames * s.channels]);
-        snd_pcm_sframes_t framesWritten = snd_pcm_writei(s.pcm,
-                                 writeBuf,
-                                 s.pendingFrames - s.pendingOffsetFrames);
+        snd_pcm_sframes_t framesWritten;
+        if (s.mmapAccess) {
+            framesWritten = playbackMmapWrite(&s, s.pendingFrames - s.pendingOffsetFrames);
+        } else {
+            const void *writeBuf = (s.format == SND_PCM_FORMAT_S32_LE)
+                           ? static_cast<const void *>(&s.pendingBlock32[s.pendingOffsetFrames * s.channels])
+                           : static_cast<const void *>(&s.pendingBlock[s.pendingOffsetFrames * s.channels]);
+            framesWritten = snd_pcm_writei(s.pcm,
+                                     writeBuf,
+                                     s.pendingFrames - s.pendingOffsetFrames);
+        }
 
         if (framesWritten > 0) {
             if (snd_pcm_state(s.pcm) == SND_PCM_STATE_PREPARED) {
@@ -1965,7 +2103,7 @@ static void *audioProcessingThreadMain(void *arg) {
 
     configureRealtimeScheduling();
 
-    while (ctx->processingThreadRun) {
+    while (ctx->processingThreadRun.load(std::memory_order_acquire)) {
         AudioGraphState graphSnapshot = runtime.snapshot;
         uint32_t readSeq = 0;
         uint32_t seqNow = ctx->routingGraphSeq.load(std::memory_order_relaxed);
@@ -2012,9 +2150,13 @@ int AudioContext::setupThreads() {
         return RET_ERR;
     }
 
-    processingThreadRun = 1;
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
+        printf("[AUDIO] [WARN] failed to lock process memory: %s\n", strerror(errno));
+    }
+
+    processingThreadRun.store(1, std::memory_order_release);
     if (pthread_create(&processingThread, nullptr, audioProcessingThreadMain, this) != 0) {
-        processingThreadRun = 0;
+        processingThreadRun.store(0, std::memory_order_release);
         return RET_ERR;
     }
 

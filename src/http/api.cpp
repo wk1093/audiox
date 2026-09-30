@@ -1,8 +1,8 @@
 #include "http/context.hpp"
-#include "http/bluetooth.hpp"
 #include "http/ffmpeg.hpp"
 #include "audio/context.hpp"
 #include "audio/effects/slot.hpp"
+#include "bluetooth/context.hpp"
 #include "config/context.hpp"
 #include "init.hpp"
 #include "midi/context.hpp"
@@ -41,8 +41,8 @@
 #define HTTP_ROUTING_HELPER_CREATE_PATH HTTP_API_PREFIX "routing/helper/create"
 #define HTTP_ROUTING_HELPER_DELETE_PATH HTTP_API_PREFIX "routing/helper/delete"
 #define HTTP_BLUETOOTH_DEVICES_PATH HTTP_API_PREFIX "bluetooth/devices"
+#define HTTP_BLUETOOTH_SCAN_PATH HTTP_API_PREFIX "bluetooth/scan"
 #define HTTP_BLUETOOTH_PAIR_PATH HTTP_API_PREFIX "bluetooth/pair"
-#define HTTP_BLUETOOTH_CONNECT_PATH HTTP_API_PREFIX "bluetooth/connect"
 #define HTTP_SYSTEM_SYNC_PATH HTTP_API_PREFIX "system/sync"
 #define HTTP_SYSTEM_RESTART_PATH HTTP_API_PREFIX "system/restart"
 #define HTTP_SYSTEM_SHUTDOWN_PATH HTTP_API_PREFIX "system/shutdown"
@@ -3147,20 +3147,37 @@ static int handleBluetoothDevices(HttpServer *server,
 	if (strcmp(method, "GET") != 0) {
 		return sendMethodNotAllowed(server, cfd);
 	}
-
-	char out[HTTP_BODY_MAX];
-	if (bluetoothListDevices(out, sizeof(out), true) != RET_OK) {
-		char err[256];
-		int n = snprintf(err,
-						 sizeof(err),
-						 "{\"ok\":false,\"error\":\"Bluetooth HCI unavailable: %s\"}\n",
-						 strerror(errno));
-		if (n < 0 || (size_t)n >= sizeof(err)) {
-			n = (int)(sizeof(err) - 1);
-		}
-		return server->sendResponse(cfd, "503 Service Unavailable", "application/json; charset=utf-8", err, (size_t)n);
+	BluetoothContext *bluetooth = server->app ? server->app->bluetooth : nullptr;
+	static char out[HTTP_BODY_MAX];
+	if (!bluetooth || bluetooth->buildStatusJson(out, sizeof(out)) != RET_OK) {
+		static const char err[] = "{\"ok\":false,\"error\":\"bluetooth unavailable\"}\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "application/json; charset=utf-8", err, sizeof(err) - 1);
 	}
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
+}
+
+static int handleBluetoothScan(HttpServer *server,
+							   int cfd,
+							   const char *method,
+							   const char *path) {
+	(void)path;
+	if (!server || !method) {
+		return -1;
+	}
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+	BluetoothContext *bluetooth = server->app ? server->app->bluetooth : nullptr;
+	if (!bluetooth) {
+		static const char err[] = "{\"ok\":false,\"error\":\"bluetooth unavailable\"}\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "application/json; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (bluetooth->requestScan() != RET_OK) {
+		static const char busy[] = "{\"ok\":false,\"error\":\"bluetooth is busy\"}\n";
+		return server->sendResponse(cfd, "409 Conflict", "application/json; charset=utf-8", busy, sizeof(busy) - 1);
+	}
+	static const char ok[] = "{\"ok\":true}\n";
+	return server->sendResponse(cfd, "202 Accepted", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
 }
 
 static int handleRoutingHelper(HttpServer *server,
@@ -3187,13 +3204,12 @@ static int handleRoutingHelper(HttpServer *server,
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
 }
 
-static int handleBluetoothAction(HttpServer *server,
-								 int cfd,
-								 const char *method,
-								 const char *path,
-								 const char *body,
-								 size_t body_len,
-								 bool connect) {
+static int handleBluetoothPair(HttpServer *server,
+							   int cfd,
+							   const char *method,
+							   const char *path,
+							   const char *body,
+							   size_t body_len) {
 	(void)path;
 	if (!server || !method || !body) {
 		return -1;
@@ -3201,25 +3217,30 @@ static int handleBluetoothAction(HttpServer *server,
 	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
 		return sendMethodNotAllowed(server, cfd);
 	}
+	BluetoothContext *bluetooth = server->app ? server->app->bluetooth : nullptr;
+	if (!bluetooth) {
+		static const char err[] = "{\"ok\":false,\"error\":\"bluetooth unavailable\"}\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "application/json; charset=utf-8", err, sizeof(err) - 1);
+	}
 
 	char address[32] = {};
 	if (!body_get_value(body, body_len, "address", address, sizeof(address))) {
-		static const char bad[] = "missing bluetooth address\n";
-		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+		static const char bad[] = "{\"ok\":false,\"error\":\"missing bluetooth address\"}\n";
+		return server->sendResponse(cfd, "400 Bad Request", "application/json; charset=utf-8", bad, sizeof(bad) - 1);
 	}
 
-	int rc = connect ? bluetoothConnectDevice(address) : bluetoothPairDevice(address);
+	int rc = bluetooth->requestPair(address);
 	if (rc == RET_ERR) {
-		static const char bad[] = "invalid bluetooth address\n";
-		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+		static const char bad[] = "{\"ok\":false,\"error\":\"invalid bluetooth address\"}\n";
+		return server->sendResponse(cfd, "400 Bad Request", "application/json; charset=utf-8", bad, sizeof(bad) - 1);
 	}
 	if (rc != RET_OK) {
-		static const char err[] = "bluetooth pairing/connect requires a userspace management service\n";
-		return server->sendResponse(cfd, "501 Not Implemented", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+		static const char busy[] = "{\"ok\":false,\"error\":\"bluetooth is busy\"}\n";
+		return server->sendResponse(cfd, "409 Conflict", "application/json; charset=utf-8", busy, sizeof(busy) - 1);
 	}
 
 	static const char ok[] = "{\"ok\":true}\n";
-	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
+	return server->sendResponse(cfd, "202 Accepted", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
 }
 
 static int handleSystemInfo(HttpServer *server,
@@ -3725,12 +3746,12 @@ int handleApiRequest(HttpServer *server,
 		return handleBluetoothDevices(server, cfd, method, path);
 	}
 
-	if (strcmp(path, HTTP_BLUETOOTH_PAIR_PATH) == 0) {
-		return handleBluetoothAction(server, cfd, method, path, body, body_len, false);
+	if (strcmp(path, HTTP_BLUETOOTH_SCAN_PATH) == 0) {
+		return handleBluetoothScan(server, cfd, method, path);
 	}
 
-	if (strcmp(path, HTTP_BLUETOOTH_CONNECT_PATH) == 0) {
-		return handleBluetoothAction(server, cfd, method, path, body, body_len, true);
+	if (strcmp(path, HTTP_BLUETOOTH_PAIR_PATH) == 0) {
+		return handleBluetoothPair(server, cfd, method, path, body, body_len);
 	}
 
 	if (strcmp(path, HTTP_SYSTEM_SYNC_PATH) == 0) {

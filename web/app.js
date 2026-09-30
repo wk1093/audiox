@@ -286,7 +286,7 @@ function setActiveTab(tab) {
     loadVolumes();
   }
   if (tab === 'bluetooth') {
-    loadBluetoothDevices(false);
+    loadBluetoothDevices();
   }
   if (tab === 'midi') {
     renderStopAllMidiStatus();
@@ -322,56 +322,71 @@ function renderBluetoothDevices(devices) {
     name.textContent = device.name || device.address;
     const address = document.createElement('div');
     address.className = 'small';
-    address.textContent = device.address;
-    const actions = document.createElement('div');
-    actions.className = 'grid-2';
-    const pair = document.createElement('button');
-    pair.textContent = 'Pair';
-    pair.addEventListener('click', () => bluetoothAction('/api/bluetooth/pair', device.address));
-    const connect = document.createElement('button');
-    connect.textContent = 'Connect';
-    connect.addEventListener('click', () => bluetoothAction('/api/bluetooth/connect', device.address));
-    actions.append(pair, connect);
-    card.append(name, address, actions);
+    address.textContent = `${device.address}${device.classic ? '' : ' (LE)'}${device.paired ? ' - paired' : ''}`;
+    card.append(name, address);
+    if (!device.paired) {
+      const pair = document.createElement('button');
+      pair.textContent = 'Pair';
+      pair.disabled = bluetoothBusy;
+      pair.addEventListener('click', () => pairBluetoothDevice(device.address));
+      card.append(pair);
+    }
     bluetoothDevicesEl.append(card);
   }
 }
 
-async function loadBluetoothDevices(scan) {
+let bluetoothBusy = false;
+let bluetoothPollTimer = null;
+
+async function loadBluetoothDevices() {
   if (!bluetoothStatusEl) {
     return;
   }
-  bluetoothStatusEl.textContent = scan ? 'Scanning...' : 'Loading devices...';
+  if (bluetoothPollTimer) {
+    clearTimeout(bluetoothPollTimer);
+    bluetoothPollTimer = null;
+  }
   try {
     const res = await fetch('/api/bluetooth/devices', { method: 'GET' });
     const data = await res.json();
     if (!res.ok || !data.ok) {
-      throw new Error(data.error || `scan failed: ${res.status}`);
+      throw new Error(data.error || `request failed: ${res.status}`);
     }
+    bluetoothBusy = Boolean(data.scanning || data.pairing);
     renderBluetoothDevices(Array.isArray(data.devices) ? data.devices : []);
-    bluetoothStatusEl.textContent = 'Devices updated.';
+    bluetoothStatusEl.textContent = data.message || (data.ready ? 'Ready' : 'Adapter not ready');
+    const scanButton = document.getElementById('btn-bluetooth-scan');
+    if (scanButton) {
+      scanButton.disabled = bluetoothBusy;
+    }
+    if (bluetoothBusy && state.activeTab === 'bluetooth') {
+      bluetoothPollTimer = setTimeout(loadBluetoothDevices, 1000);
+    }
   } catch (err) {
     bluetoothStatusEl.textContent = String(err);
-    renderBluetoothDevices([]);
   }
 }
 
-async function bluetoothAction(path, address) {
-  if (bluetoothStatusEl) {
-    bluetoothStatusEl.textContent = `${path.includes('pair') ? 'Pairing' : 'Connecting'} ${address}...`;
-  }
+async function bluetoothRequest(path, body) {
   try {
-    const body = new URLSearchParams({ address });
     const res = await fetch(path, { method: 'POST', body });
-    const text = await res.text();
-    if (!res.ok) {
-      throw new Error(text.trim() || `Bluetooth action failed: ${res.status}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || `request failed: ${res.status}`);
     }
-    bluetoothStatusEl.textContent = 'Bluetooth action completed.';
-    await loadBluetoothDevices(false);
   } catch (err) {
     bluetoothStatusEl.textContent = String(err);
+    return;
   }
+  await loadBluetoothDevices();
+}
+
+function scanBluetoothDevices() {
+  return bluetoothRequest('/api/bluetooth/scan', '');
+}
+
+function pairBluetoothDevice(address) {
+  return bluetoothRequest('/api/bluetooth/pair', new URLSearchParams({ address }));
 }
 
 function setRoutingZoom(nextScale) {
@@ -2692,7 +2707,7 @@ document.getElementById('btn-reload').addEventListener('click', async () => {
 
 document.getElementById('btn-route-save').addEventListener('click', saveRouting);
 document.getElementById('btn-route-remove-selected').addEventListener('click', deleteSelectedEdge);
-document.getElementById('btn-bluetooth-scan').addEventListener('click', () => loadBluetoothDevices(true));
+document.getElementById('btn-bluetooth-scan').addEventListener('click', scanBluetoothDevices);
 
 document.getElementById('btn-zoom-in').addEventListener('click', () => {
   const scale = state.graphCanvas ? state.graphCanvas.ds.scale : 1;

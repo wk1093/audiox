@@ -8,6 +8,7 @@ struct TouchContext;
 struct FramebufferContext;
 struct ConfigStore;
 struct HttpServer;
+struct BluetoothContext;
 
 struct Audiox {
     AudioContext *audio;
@@ -16,6 +17,7 @@ struct Audiox {
     FramebufferContext *fb;
     ConfigStore *config;
     HttpServer *http;
+    BluetoothContext *bluetooth;
     bool ready;
 
     Audiox();

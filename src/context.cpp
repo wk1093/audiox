@@ -2,7 +2,7 @@
 
 #include <stdio.h>
 
-Audiox::Audiox() : audio(nullptr), midi(nullptr), touch(nullptr), fb(nullptr), config(nullptr), http(nullptr), ready(false) {
+Audiox::Audiox() : audio(nullptr), midi(nullptr), touch(nullptr), fb(nullptr), config(nullptr), http(nullptr), bluetooth(nullptr), ready(false) {
 }
 
 void Audiox::setReady() {

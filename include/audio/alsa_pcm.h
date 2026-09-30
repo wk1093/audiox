@@ -90,6 +90,7 @@ static inline int audio_pcm_configure_hw_handle(snd_pcm_t *pcm,
                                                 unsigned int rate,
                                                 unsigned int channels,
                                                 snd_pcm_format_t format,
+                                                snd_pcm_access_t access,
                                                 unsigned int periodFrames,
                                                 unsigned int periods,
                                                 snd_pcm_uframes_t *periodFramesOut,
@@ -117,7 +118,7 @@ static inline int audio_pcm_configure_hw_handle(snd_pcm_t *pcm,
 
     rc = snd_pcm_hw_params_any(pcm, hw);
     if (rc >= 0) {
-        rc = snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED);
+        rc = snd_pcm_hw_params_set_access(pcm, hw, access);
     }
     if (rc >= 0) {
         rc = snd_pcm_hw_params_set_format(pcm, hw, format);
@@ -212,44 +213,58 @@ static inline int audio_pcm_open_configured(snd_pcm_t **pcmOut,
                                             unsigned int rate,
                                             unsigned int channels,
                                             snd_pcm_format_t format,
+                                            snd_pcm_access_t *access,
                                             unsigned int periodFrames,
                                             unsigned int periods,
                                             snd_pcm_uframes_t *periodFramesOut,
                                             size_t *frameBytesOut,
                                             int configureTiming,
                                             int logFail) {
-    if (!pcmOut || !name) {
+    if (!pcmOut || !name || !access) {
         return -EINVAL;
     }
 
     *pcmOut = nullptr;
-    snd_pcm_t *pcm = nullptr;
-    int rc = snd_pcm_open(&pcm, name, stream, SND_PCM_NONBLOCK);
-    if (rc < 0) {
-        if (logFail) {
-            printf("[INIT] [ERR] ALSA open failed on %s: %s\n", name, snd_strerror(rc));
+    const snd_pcm_access_t requestedAccess = *access;
+    const snd_pcm_access_t alternatives[] = {
+        requestedAccess,
+        (requestedAccess == SND_PCM_ACCESS_MMAP_INTERLEAVED)
+            ? SND_PCM_ACCESS_RW_INTERLEAVED
+            : SND_PCM_ACCESS_MMAP_INTERLEAVED,
+    };
+
+    int rc = -EINVAL;
+    for (size_t i = 0; i < (sizeof(alternatives) / sizeof(alternatives[0])); ++i) {
+        snd_pcm_t *pcm = nullptr;
+        rc = snd_pcm_open(&pcm, name, stream, SND_PCM_NONBLOCK);
+        if (rc < 0) {
+            continue;
         }
-        return rc;
-    }
 
-    rc = audio_pcm_configure_hw_handle(pcm,
-                                       name,
-                                       rate,
-                                       channels,
-                                       format,
-                                       periodFrames,
-                                       periods,
-                                       periodFramesOut,
-                                       frameBytesOut,
-                                       configureTiming,
-                                       logFail);
-    if (rc < 0) {
+        rc = audio_pcm_configure_hw_handle(pcm,
+                                           name,
+                                           rate,
+                                           channels,
+                                           format,
+                                           alternatives[i],
+                                           periodFrames,
+                                           periods,
+                                           periodFramesOut,
+                                           frameBytesOut,
+                                           configureTiming,
+                                           logFail);
+        if (rc >= 0) {
+            *pcmOut = pcm;
+            *access = alternatives[i];
+            return 0;
+        }
         snd_pcm_close(pcm);
-        return rc;
     }
 
-    *pcmOut = pcm;
-    return 0;
+    if (logFail) {
+        printf("[INIT] [ERR] ALSA open/configure failed on %s: %s\n", name, snd_strerror(rc));
+    }
+    return rc;
 }
 
 static inline int audio_pcm_recover(snd_pcm_t *pcm, int err, const char *path, const char *op) {

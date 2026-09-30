@@ -298,7 +298,7 @@ AudioContext::AudioContext(Audiox *context) : app(context) {
 
     processingThread = (pthread_t)0;
     processingThreadStarted = 0;
-    processingThreadRun = 0;
+    processingThreadRun.store(0, std::memory_order_relaxed);
 
     nextHotplugScanMs = 0;
     nextHandle = 1;
@@ -345,7 +345,12 @@ AudioContext::AudioContext(Audiox *context) : app(context) {
 }
 
 AudioContext::~AudioContext() {
-    processingThreadRun = 0;
+    processingThreadRun.store(0, std::memory_order_release);
+    if (processingThreadStarted) {
+        pthread_join(processingThread, nullptr);
+        processingThreadStarted = 0;
+    }
+
     std::lock_guard<std::mutex> lock(sfxBankMutex);
     for (uint32_t i = 0; i < AUDIO_SFX_SLOT_COUNT; ++i) {
         clearSfxSlot(&sfxSlots[i]);

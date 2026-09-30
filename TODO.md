@@ -57,11 +57,11 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] change routing config to identify devices differently — now uses the ALSA card ID string (e.g. `t6`, `uac2gadget`) instead of card numbers. Card IDs are stable across reboots for a given device model.
 
 ## Bugfixes and stabilization v1.6+
-- [ ] Apply some bugfixes and suggestions from reddit
-  - [ ]  Consider changing snd_pcm_hw_params_set_access from read/write access to memory mapped (SND_PCM_ACCESS_MMAP_* types). This eliminates a write between user space and kernel space. Thanks u/Brer1Rabbit
-  - [ ] mlockall before starting the audio engine to prevent page faults from causing xruns. Thanks u/Kamran-nottakenone
-- [ ] MAYBE: Improve stable device identifiers to use USB vendor:product IDs (e.g. `0582_0160`) from sysfs, so that generic card IDs like `device` don't silently match the wrong device. Useful when multiple USB audio devices with non-descriptive product names are connected. This isn't super important, because this device is going to eventually have it's own custom hardware interface, so there won't be any USB (unless the user really wants to, maybe they have a USB microphone instead of analog). But I guess it would still be nice to have since this is meant to be a general purpose device, and usable for many different setups.
-- [-] Investigate optimizations for the audio engine to improve speed (I had to increase buffer size from 128 to 256 frames to avoid underruns, which is not ideal. at 48kHz sample, that is 5.3ms instead of 2.7ms, which is a lot more, and gets into the range of noticable latency by the human ear)
+- [x] Apply the audio stability fixes and suggestions
+  - [x] Use direct ALSA MMAP transfers where supported, with RW-interleaved fallback. Thanks u/Brer1Rabbit
+  - [x] mlockall before starting the audio engine to prevent page faults from causing xruns. Thanks u/Kamran-nottakenone
+- [x] Prefer USB vendor/product identity plus a serial hash for stable audio device IDs; use the USB port path when no serial is exposed, and preserve the ALSA ID for existing-route migration.
+- [x] Investigate audio-engine latency changes. The processing block is 128 frames, but PCM setup tries 512- and 256-frame periods before 128; defer tuning until Pi-side latency/xrun measurements are available.
   
 
 ## Pre-Pre-Release - v1.7+

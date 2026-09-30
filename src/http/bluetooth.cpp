@@ -70,6 +70,15 @@ static_assert(offsetof(DeviceListRequest, devReq) == 4, "unexpected HCI device l
 #define AUDIOX_HCI_INQUIRY 0x0401
 #define AUDIOX_EVT_INQUIRY_COMPLETE 0x01
 #define AUDIOX_EVT_INQUIRY_RESULT 0x02
+#define AUDIOX_EVT_REMOTE_NAME_COMPLETE 0x07
+#define AUDIOX_EVT_CMD_COMPLETE 0x0E
+#define AUDIOX_EVT_CMD_STATUS 0x0F
+#define AUDIOX_EVT_INQUIRY_RESULT_RSSI 0x22
+#define AUDIOX_EVT_EXTENDED_INQUIRY_RESULT 0x2F
+#define AUDIOX_HCI_REMOTE_NAME_REQUEST 0x0419
+#define AUDIOX_HCI_REMOTE_NAME_CANCEL 0x041A
+#define AUDIOX_HCI_WRITE_INQUIRY_MODE 0x0C45
+#define AUDIOX_BT_NAME_MAX 249
 #define AUDIOX_EVT_LE_META_EVENT 0x3E
 #define AUDIOX_LE_ADVERTISING_REPORT 0x02
 #define AUDIOX_LE_EXTENDED_ADVERTISING_REPORT 0x0D
@@ -240,10 +249,35 @@ static bool waitForAdapterUp(int fd, uint16_t deviceId) {
     return false;
 }
 
+enum NameQuality : uint8_t {
+    NAME_NONE = 0,
+    NAME_SHORT = 1,
+    NAME_COMPLETE = 2,
+};
+
 struct DiscoveredDevice {
     hci::Address address;
-    char name[128];
+    char name[AUDIOX_BT_NAME_MAX];
+    uint8_t nameQuality;
+    bool classic;
+    uint8_t pageScanRepMode;
+    uint16_t clockOffset;
 };
+
+static void sanitizeName(const uint8_t *text, size_t length, char *out, size_t outSize) {
+    size_t written = 0;
+    for (size_t i = 0; i < length && written + 1 < outSize; ++i) {
+        unsigned char value = text[i];
+        if (value == 0) {
+            break;
+        }
+        out[written++] = (value >= 0x20 && value != '"' && value != '\\') ? (char)value : ' ';
+    }
+    while (written > 0 && out[written - 1] == ' ') {
+        --written;
+    }
+    out[written] = '\0';
+}
 
 static bool isZeroAddress(const hci::Address &address) {
     for (uint8_t byte : address.b) {
@@ -254,14 +288,16 @@ static bool isZeroAddress(const hci::Address &address) {
     return true;
 }
 
-static void parseAdvertisingName(const uint8_t *data,
-                                 size_t dataLength,
-                                 char *name,
-                                 size_t nameSize) {
+// Parses AD/EIR structures (shared by LE advertising and classic extended inquiry).
+static uint8_t parseAdvertisingName(const uint8_t *data,
+                                    size_t dataLength,
+                                    char *name,
+                                    size_t nameSize) {
     if (!data || !name || nameSize == 0) {
-        return;
+        return NAME_NONE;
     }
     name[0] = '\0';
+    uint8_t quality = NAME_NONE;
     size_t offset = 0;
     while (offset < dataLength) {
         uint8_t fieldLength = data[offset++];
@@ -269,50 +305,91 @@ static void parseAdvertisingName(const uint8_t *data,
             break;
         }
         uint8_t fieldType = data[offset];
-        if (fieldType == 0x08 || fieldType == 0x09) {
-            size_t textLength = fieldLength - 1U;
-            if (textLength >= nameSize) {
-                textLength = nameSize - 1U;
+        uint8_t fieldQuality = fieldType == 0x09 ? NAME_COMPLETE
+                             : fieldType == 0x08 ? NAME_SHORT
+                             : NAME_NONE;
+        if (fieldQuality > quality) {
+            sanitizeName(data + offset + 1, fieldLength - 1U, name, nameSize);
+            if (name[0]) {
+                quality = fieldQuality;
             }
-            size_t written = 0;
-            for (size_t i = 0; i < textLength && written + 1 < nameSize; ++i) {
-                unsigned char value = data[offset + 1 + i];
-                name[written++] = (value >= 0x20 && value != '"' && value != '\\')
-                    ? (char)value
-                    : ' ';
-            }
-            name[written] = '\0';
-            return;
         }
         offset += fieldLength;
     }
+    return quality;
 }
 
-static void addDiscoveredDevice(DiscoveredDevice *devices,
-                                size_t capacity,
-                                size_t *count,
-                                const hci::Address &address,
-                                const char *name) {
+static DiscoveredDevice *addDiscoveredDevice(DiscoveredDevice *devices,
+                                             size_t capacity,
+                                             size_t *count,
+                                             const hci::Address &address,
+                                             const char *name,
+                                             uint8_t quality) {
     if (!devices || !count || isZeroAddress(address)) {
-        return;
+        return nullptr;
     }
+    DiscoveredDevice *device = nullptr;
     for (size_t i = 0; i < *count; ++i) {
         if (memcmp(devices[i].address.b, address.b, sizeof(address.b)) == 0) {
-            if (name && name[0] && !devices[i].name[0]) {
-                snprintf(devices[i].name, sizeof(devices[i].name), "%s", name);
-            }
-            return;
+            device = &devices[i];
+            break;
         }
     }
-    if (*count >= capacity) {
-        return;
+    if (!device) {
+        if (*count >= capacity) {
+            return nullptr;
+        }
+        device = &devices[(*count)++];
+        memset(device, 0, sizeof(*device));
+        device->address = address;
     }
-    devices[*count].address = address;
-    devices[*count].name[0] = '\0';
-    if (name && name[0]) {
-        snprintf(devices[*count].name, sizeof(devices[*count].name), "%s", name);
+    if (name && name[0] && quality > device->nameQuality) {
+        snprintf(device->name, sizeof(device->name), "%s", name);
+        device->nameQuality = quality;
     }
-    ++(*count);
+    return device;
+}
+
+static void addClassicDevice(DiscoveredDevice *devices,
+                             size_t capacity,
+                             size_t *count,
+                             const uint8_t *addressBytes,
+                             uint8_t pageScanRepMode,
+                             uint16_t clockOffset,
+                             const char *name,
+                             uint8_t quality) {
+    hci::Address address = {};
+    memcpy(address.b, addressBytes, sizeof(address.b));
+    DiscoveredDevice *device = addDiscoveredDevice(devices, capacity, count, address, name, quality);
+    if (device) {
+        device->classic = true;
+        device->pageScanRepMode = pageScanRepMode;
+        device->clockOffset = clockOffset;
+    }
+}
+
+static int waitForCommand(int fd, uint16_t opcode, int timeoutMs) {
+    struct pollfd pollFd = {fd, POLLIN, 0};
+    uint8_t packet[64];
+    const uint64_t deadline = monotonicMilliseconds() + (uint64_t)timeoutMs;
+    while (monotonicMilliseconds() < deadline) {
+        if (poll(&pollFd, 1, (int)(deadline - monotonicMilliseconds())) <= 0) {
+            break;
+        }
+        ssize_t length = read(fd, packet, sizeof(packet));
+        if (length < 7 || packet[0] != AUDIOX_HCI_EVENT_PKT) {
+            continue;
+        }
+        if (packet[1] == AUDIOX_EVT_CMD_COMPLETE &&
+            (uint16_t)(packet[4] | (packet[5] << 8)) == opcode) {
+            return packet[6];
+        }
+        if (packet[1] == AUDIOX_EVT_CMD_STATUS &&
+            (uint16_t)(packet[5] | (packet[6] << 8)) == opcode) {
+            return packet[3];
+        }
+    }
+    return -1;
 }
 
 static int scanLowEnergy(int adapterId,
@@ -358,7 +435,7 @@ static int scanLowEnergy(int adapterId,
     uint8_t packet[512];
     int reportCount = 0;
     int pollResult = 0;
-    const uint64_t deadline = monotonicMilliseconds() + 8000ULL;
+    const uint64_t deadline = monotonicMilliseconds() + 6000ULL;
     while (monotonicMilliseconds() < deadline) {
         uint64_t remaining = deadline - monotonicMilliseconds();
         int timeout = (remaining > 1000ULL) ? 1000 : (int)remaining;
@@ -394,10 +471,11 @@ static int scanLowEnergy(int adapterId,
             if (offset + dataLength > (size_t)length) {
                 break;
             }
-            char name[128] = {};
-            parseAdvertisingName(packet + offset, dataLength, name, sizeof(name));
-            offset += dataLength;
-            addDiscoveredDevice(devices, capacity, count, remote, name);
+            char name[AUDIOX_BT_NAME_MAX] = {};
+            uint8_t quality = parseAdvertisingName(packet + offset, dataLength, name, sizeof(name));
+            // Legacy reports carry a trailing RSSI byte after the data.
+            offset += dataLength + (extended ? 0U : 1U);
+            addDiscoveredDevice(devices, capacity, count, remote, name, quality);
             ++reportCount;
         }
     }
@@ -422,10 +500,17 @@ static int scanClassic(int fd,
         printf("[BT] [WARN] classic scan event filter failed: %s\n", strerror(errno));
         return RET_ERR;
     }
+    // Mode 2 enables Extended Inquiry Results, which carry the device name.
+    const uint8_t inquiryMode[] = {0x02};
+    if (writeHciCommand(fd, AUDIOX_HCI_WRITE_INQUIRY_MODE, inquiryMode, sizeof(inquiryMode)) != RET_OK ||
+        waitForCommand(fd, AUDIOX_HCI_WRITE_INQUIRY_MODE, 500) != 0) {
+        printf("[BT] [WARN] extended inquiry mode unavailable; names need remote lookup\n");
+    }
+
     const uint8_t inquiryParams[] = {
         0x33, 0x8B, 0x9E,
-        (uint8_t)(scan ? 8 : 1),
-        0x20,
+        (uint8_t)(scan ? 6 : 1),
+        0x00,
     };
     if (writeHciCommand(fd, AUDIOX_HCI_INQUIRY, inquiryParams, sizeof(inquiryParams)) != RET_OK) {
         return RET_ERR;
@@ -433,36 +518,110 @@ static int scanClassic(int fd,
 
     struct pollfd pollFd = {fd, POLLIN, 0};
     uint8_t packet[512];
-    int pollResult = 0;
-    const uint64_t deadline = monotonicMilliseconds() + (scan ? 12000ULL : 3000ULL);
+    const uint64_t deadline = monotonicMilliseconds() + (scan ? 9000ULL : 3000ULL);
     while (monotonicMilliseconds() < deadline) {
         uint64_t remaining = deadline - monotonicMilliseconds();
         int timeout = (remaining > 1000ULL) ? 1000 : (int)remaining;
-        pollResult = poll(&pollFd, 1, timeout);
-        if (pollResult <= 0) {
-            break;
+        if (poll(&pollFd, 1, timeout) <= 0) {
+            continue;
         }
         ssize_t length = read(fd, packet, sizeof(packet));
         if (length < 4 || packet[0] != AUDIOX_HCI_EVENT_PKT) {
             continue;
         }
-        if (packet[1] == AUDIOX_EVT_INQUIRY_COMPLETE) {
+        uint8_t event = packet[1];
+        if (event == AUDIOX_EVT_INQUIRY_COMPLETE) {
             break;
         }
-        if (packet[1] != AUDIOX_EVT_INQUIRY_RESULT || length < 4) {
+
+        if (event == AUDIOX_EVT_EXTENDED_INQUIRY_RESULT && length >= 18) {
+            char name[AUDIOX_BT_NAME_MAX] = {};
+            uint8_t quality = parseAdvertisingName(packet + 18, (size_t)length - 18, name, sizeof(name));
+            addClassicDevice(devices, capacity, count, packet + 4, packet[10],
+                             (uint16_t)(packet[15] | (packet[16] << 8)), name, quality);
             continue;
         }
 
+        if (event != AUDIOX_EVT_INQUIRY_RESULT && event != AUDIOX_EVT_INQUIRY_RESULT_RSSI) {
+            continue;
+        }
         uint8_t resultCount = packet[3];
-        size_t offset = 4;
-        for (uint8_t i = 0; i < resultCount && offset + 14 <= (size_t)length; ++i) {
-            hci::Address address = {};
-            memcpy(address.b, packet + offset, sizeof(address.b));
-            addDiscoveredDevice(devices, capacity, count, address, nullptr);
-            offset += 14;
+        if (resultCount == 0) {
+            continue;
+        }
+        size_t stride = ((size_t)length - 4) / resultCount;
+        // Standard results and the pscan_mode RSSI variant put the clock offset at 12.
+        size_t clockOffsetAt = (event == AUDIOX_EVT_INQUIRY_RESULT_RSSI && stride == 14) ? 11 : 12;
+        if (stride < 14) {
+            continue;
+        }
+        for (uint8_t i = 0; i < resultCount; ++i) {
+            const uint8_t *entry = packet + 4 + (size_t)i * stride;
+            addClassicDevice(devices, capacity, count, entry, entry[6],
+                             (uint16_t)(entry[clockOffsetAt] | (entry[clockOffsetAt + 1] << 8)),
+                             nullptr, NAME_NONE);
         }
     }
     return RET_OK;
+}
+
+// Classic devices that did not include a name in their inquiry response.
+static void requestRemoteNames(int fd, DiscoveredDevice *devices, size_t count, int budgetMs) {
+    struct pollfd pollFd = {fd, POLLIN, 0};
+    uint8_t packet[300];
+    const uint64_t deadline = monotonicMilliseconds() + (uint64_t)budgetMs;
+    for (size_t i = 0; i < count && monotonicMilliseconds() < deadline; ++i) {
+        DiscoveredDevice &device = devices[i];
+        if (!device.classic || device.nameQuality == NAME_COMPLETE) {
+            continue;
+        }
+        uint16_t clock = device.clockOffset | 0x8000;
+        const uint8_t params[] = {
+            device.address.b[0], device.address.b[1], device.address.b[2],
+            device.address.b[3], device.address.b[4], device.address.b[5],
+            device.pageScanRepMode, 0x00,
+            (uint8_t)(clock & 0xFF), (uint8_t)(clock >> 8),
+        };
+        if (writeHciCommand(fd, AUDIOX_HCI_REMOTE_NAME_REQUEST, params, sizeof(params)) != RET_OK) {
+            break;
+        }
+
+        bool done = false;
+        while (!done && monotonicMilliseconds() < deadline) {
+            uint64_t remaining = deadline - monotonicMilliseconds();
+            int timeout = (remaining > 1000ULL) ? 1000 : (int)remaining;
+            if (poll(&pollFd, 1, timeout) <= 0) {
+                continue;
+            }
+            ssize_t length = read(fd, packet, sizeof(packet));
+            if (length < 7 || packet[0] != AUDIOX_HCI_EVENT_PKT) {
+                continue;
+            }
+            if (packet[1] == AUDIOX_EVT_CMD_STATUS &&
+                (uint16_t)(packet[5] | (packet[6] << 8)) == AUDIOX_HCI_REMOTE_NAME_REQUEST &&
+                packet[3] != 0) {
+                done = true;
+            } else if (packet[1] == AUDIOX_EVT_REMOTE_NAME_COMPLETE && length >= 10 &&
+                       memcmp(packet + 4, device.address.b, sizeof(device.address.b)) == 0) {
+                if (packet[3] == 0) {
+                    char name[AUDIOX_BT_NAME_MAX] = {};
+                    sanitizeName(packet + 10, (size_t)length - 10, name, sizeof(name));
+                    if (name[0]) {
+                        snprintf(device.name, sizeof(device.name), "%s", name);
+                        device.nameQuality = NAME_COMPLETE;
+                    }
+                }
+                done = true;
+            }
+        }
+
+        if (!done) {
+            // Free the controller before the LE scan starts.
+            (void)writeHciCommand(fd, AUDIOX_HCI_REMOTE_NAME_CANCEL, params, 6);
+            (void)waitForCommand(fd, AUDIOX_HCI_REMOTE_NAME_CANCEL, 500);
+            break;
+        }
+    }
 }
 
 } // namespace
@@ -550,6 +709,9 @@ int bluetoothListDevices(char *out, size_t outSize, bool scan) {
             printf("[BT] [INFO] classic inquiry completed on hci%u (rc=%d)\n",
                    (unsigned)device.devId,
                    classicRc);
+            if (classicRc == RET_OK && scan) {
+                requestRemoteNames(inquiryFd, discovered, discoveredCount, 4000);
+            }
             close(inquiryFd);
         }
 

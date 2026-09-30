@@ -411,6 +411,8 @@ export: initramfs
 	@echo "dtoverlay=$(VC4_OVERLAY)" >> $(SD_MOUNT_BOOT)/config.txt
 	@echo "dtoverlay=miniuart-bt" >> $(SD_MOUNT_BOOT)/config.txt
 	@echo "enable_uart=1" >> $(SD_MOUNT_BOOT)/config.txt
+	@echo "core_freq=250" >> $(SD_MOUNT_BOOT)/config.txt
+	@echo "core_freq_min=250" >> $(SD_MOUNT_BOOT)/config.txt
 	@echo "krnbt=on" >> $(SD_MOUNT_BOOT)/config.txt
 	@if [ -n "$(DSI_TOUCH_OVERLAY)" ]; then \
 		echo "dtoverlay=$(DSI_TOUCH_OVERLAY)" >> $(SD_MOUNT_BOOT)/config.txt; \
@@ -430,6 +432,8 @@ $(BOOT_CONFIG_FILE):
 		'dtoverlay=$(VC4_OVERLAY)' \
 		'dtoverlay=miniuart-bt' \
 		'enable_uart=1' \
+		'core_freq=250' \
+		'core_freq_min=250' \
 		'krnbt=on' \
 		'dtoverlay=dwc2,dr_mode=peripheral' \
 		> "$@"
@@ -437,6 +441,8 @@ $(BOOT_CONFIG_FILE):
 
 dev: program_initramfs $(BOOT_CONFIG_FILE)
 	@grep -q '^dtoverlay=miniuart-bt$$' "$(BOOT_CONFIG_FILE)" || echo 'dtoverlay=miniuart-bt' >> "$(BOOT_CONFIG_FILE)"
+	@grep -q '^core_freq=250$$' "$(BOOT_CONFIG_FILE)" || echo 'core_freq=250' >> "$(BOOT_CONFIG_FILE)"
+	@grep -q '^core_freq_min=250$$' "$(BOOT_CONFIG_FILE)" || echo 'core_freq_min=250' >> "$(BOOT_CONFIG_FILE)"
 	@echo "Uploading boot config to http://$(PI_HOST):$(PI_PORT)/api/boot/config.txt ..."
 	@status=$$(curl --silent --show-error --output $(OUT_DIR)/dev-boot-config.response --write-out "%{http_code}" -X PUT --data-binary @$(BOOT_CONFIG_FILE) http://$(PI_HOST):$(PI_PORT)/api/boot/config.txt); \
 	cat $(OUT_DIR)/dev-boot-config.response; \

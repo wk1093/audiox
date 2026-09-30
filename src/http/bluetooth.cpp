@@ -13,6 +13,7 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 namespace hci {
@@ -51,9 +52,14 @@ struct SocketAddress {
     uint16_t channel;
 };
 
+static_assert(sizeof(DeviceRequest) == 8, "unexpected HCI device request layout");
+static_assert(offsetof(DeviceListRequest, devReq) == 4, "unexpected HCI device list layout");
+
 } // namespace hci
 
 #define AUDIOX_HCI_DEV_UP 1U
+#define AUDIOX_HCI_INIT (1U << 16)
+#define AUDIOX_HCI_SETUP (1U << 18)
 #define AUDIOX_HCIDEVUP _IOW('H', 201, int)
 #define AUDIOX_HCIGETDEVLIST _IOR('H', 210, int)
 #define AUDIOX_HCIINQUIRY _IOR('H', 211, int)
@@ -61,13 +67,32 @@ struct SocketAddress {
 #define AUDIOX_BTPROTO_HCI 1
 #define AUDIOX_HCI_COMMAND_PKT 0x01
 #define AUDIOX_HCI_EVENT_PKT 0x04
+#define AUDIOX_HCI_INQUIRY 0x0401
+#define AUDIOX_EVT_INQUIRY_COMPLETE 0x01
+#define AUDIOX_EVT_INQUIRY_RESULT 0x02
 #define AUDIOX_EVT_LE_META_EVENT 0x3E
 #define AUDIOX_LE_ADVERTISING_REPORT 0x02
+#define AUDIOX_LE_EXTENDED_ADVERTISING_REPORT 0x0D
 #define AUDIOX_HCI_CHANNEL_RAW 0
+#define AUDIOX_SOL_HCI 0
+#define AUDIOX_HCI_FILTER 2
 #define AUDIOX_LE_SET_SCAN_PARAMS 0x200B
 #define AUDIOX_LE_SET_SCAN_ENABLE 0x200C
+#define AUDIOX_BT_MAX_DEVICES 64
 
 namespace {
+
+static uint64_t monotonicMilliseconds() {
+    struct timespec ts = {};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
+}
+struct HciFilter {
+    uint32_t typeMask;
+    uint32_t eventMask[2];
+    uint16_t opcode;
+};
+
 
 // static size_t appendJsonString(char *out, size_t outSize, size_t used, const char *text) {
 //     if (!out || used >= outSize) {
@@ -105,35 +130,47 @@ static void formatAddress(const hci::Address &address, char *out, size_t outSize
              address.b[2], address.b[1], address.b[0]);
 }
 
-static void logDirectoryEntries(const char *path) {
-    DIR *dir = opendir(path);
-    if (!dir) {
-        printf("[BT] [INFO] %s: unavailable: %s\n", path, strerror(errno));
-        return;
-    }
-
-    printf("[BT] [INFO] %s:", path);
-    struct dirent *entry = nullptr;
-    int count = 0;
-    while ((entry = readdir(dir)) != nullptr) {
-        if (entry->d_name[0] == '.') {
-            continue;
-        }
-        printf(" %s", entry->d_name);
-        ++count;
-    }
-    closedir(dir);
-    printf(" (%d entr%s)\n", count, count == 1 ? "y" : "ies");
+static int configureEventFilter(int fd) {
+    HciFilter filter = {};
+    filter.typeMask = 1U << AUDIOX_HCI_EVENT_PKT;
+    filter.eventMask[0] = 0xFFFFFFFFU;
+    filter.eventMask[1] = 0xFFFFFFFFU;
+    return setsockopt(fd,
+                      AUDIOX_SOL_HCI,
+                      AUDIOX_HCI_FILTER,
+                      &filter,
+                      sizeof(filter)) == 0 ? RET_OK : RET_ERR;
 }
 
-static void logPathState(const char *path) {
-    struct stat info = {};
-    if (stat(path, &info) == 0) {
-        printf("[BT] [INFO] %s: present\n", path);
-    } else {
-        printf("[BT] [INFO] %s: absent: %s\n", path, strerror(errno));
-    }
-}
+// static void logDirectoryEntries(const char *path) {
+//     DIR *dir = opendir(path);
+//     if (!dir) {
+//         printf("[BT] [INFO] %s: unavailable: %s\n", path, strerror(errno));
+//         return;
+//     }
+
+//     printf("[BT] [INFO] %s:", path);
+//     struct dirent *entry = nullptr;
+//     int count = 0;
+//     while ((entry = readdir(dir)) != nullptr) {
+//         if (entry->d_name[0] == '.') {
+//             continue;
+//         }
+//         printf(" %s", entry->d_name);
+//         ++count;
+//     }
+//     closedir(dir);
+//     printf(" (%d entr%s)\n", count, count == 1 ? "y" : "ies");
+// }
+
+// static void logPathState(const char *path) {
+//     struct stat info = {};
+//     if (stat(path, &info) == 0) {
+//         printf("[BT] [INFO] %s: present\n", path);
+//     } else {
+//         printf("[BT] [INFO] %s: absent: %s\n", path, strerror(errno));
+//     }
+// }
 
 static void logBluetoothKernelMessages() {
     int fd = open("/dev/kmsg", O_RDONLY | O_NONBLOCK | O_CLOEXEC);
@@ -179,35 +216,110 @@ static int writeHciCommand(int fd, uint16_t opcode, const uint8_t *params, uint8
     return written == (ssize_t)paramLength + 4 ? RET_OK : RET_ERR;
 }
 
-static bool appendDiscoveredDevice(char *out,
-                                   size_t outSize,
-                                   size_t *used,
-                                   int *count,
-                                   const hci::Address &address) {
-    if (!out || !used || !count) {
+static bool adapterIsUp(int fd, uint16_t deviceId) {
+    hci::DeviceListRequest devices = {};
+    devices.devNum = 16;
+    if (ioctl(fd, AUDIOX_HCIGETDEVLIST, &devices) < 0) {
         return false;
     }
-    char addressText[18] = {};
-    formatAddress(address, addressText, sizeof(addressText));
-    int n = snprintf(out + *used,
-                     outSize - *used,
-                     "%s{\"address\":\"%s\",\"name\":\"\"}",
-                     *count > 0 ? "," : "",
-                     addressText);
-    if (n < 0 || (size_t)n >= outSize - *used) {
-        return false;
+    for (uint16_t i = 0; i < devices.devNum && i < 16; ++i) {
+        if (devices.devReq[i].devId == deviceId) {
+            return (devices.devReq[i].devOpt & AUDIOX_HCI_DEV_UP) != 0;
+        }
     }
-    *used += (size_t)n;
-    ++(*count);
+    return false;
+}
+
+static bool waitForAdapterUp(int fd, uint16_t deviceId) {
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        if (adapterIsUp(fd, deviceId)) {
+            return true;
+        }
+        usleep(100000);
+    }
+    return false;
+}
+
+struct DiscoveredDevice {
+    hci::Address address;
+    char name[128];
+};
+
+static bool isZeroAddress(const hci::Address &address) {
+    for (uint8_t byte : address.b) {
+        if (byte != 0) {
+            return false;
+        }
+    }
     return true;
 }
 
+static void parseAdvertisingName(const uint8_t *data,
+                                 size_t dataLength,
+                                 char *name,
+                                 size_t nameSize) {
+    if (!data || !name || nameSize == 0) {
+        return;
+    }
+    name[0] = '\0';
+    size_t offset = 0;
+    while (offset < dataLength) {
+        uint8_t fieldLength = data[offset++];
+        if (fieldLength == 0 || offset + fieldLength > dataLength) {
+            break;
+        }
+        uint8_t fieldType = data[offset];
+        if (fieldType == 0x08 || fieldType == 0x09) {
+            size_t textLength = fieldLength - 1U;
+            if (textLength >= nameSize) {
+                textLength = nameSize - 1U;
+            }
+            size_t written = 0;
+            for (size_t i = 0; i < textLength && written + 1 < nameSize; ++i) {
+                unsigned char value = data[offset + 1 + i];
+                name[written++] = (value >= 0x20 && value != '"' && value != '\\')
+                    ? (char)value
+                    : ' ';
+            }
+            name[written] = '\0';
+            return;
+        }
+        offset += fieldLength;
+    }
+}
+
+static void addDiscoveredDevice(DiscoveredDevice *devices,
+                                size_t capacity,
+                                size_t *count,
+                                const hci::Address &address,
+                                const char *name) {
+    if (!devices || !count || isZeroAddress(address)) {
+        return;
+    }
+    for (size_t i = 0; i < *count; ++i) {
+        if (memcmp(devices[i].address.b, address.b, sizeof(address.b)) == 0) {
+            if (name && name[0] && !devices[i].name[0]) {
+                snprintf(devices[i].name, sizeof(devices[i].name), "%s", name);
+            }
+            return;
+        }
+    }
+    if (*count >= capacity) {
+        return;
+    }
+    devices[*count].address = address;
+    devices[*count].name[0] = '\0';
+    if (name && name[0]) {
+        snprintf(devices[*count].name, sizeof(devices[*count].name), "%s", name);
+    }
+    ++(*count);
+}
+
 static int scanLowEnergy(int adapterId,
-                         char *out,
-                         size_t outSize,
-                         size_t *used,
-                         int *count) {
-    if (!out || !used || !count) {
+                         DiscoveredDevice *devices,
+                         size_t capacity,
+                         size_t *count) {
+    if (!devices || !count) {
         return RET_ERR;
     }
 
@@ -226,6 +338,11 @@ static int scanLowEnergy(int adapterId,
         close(fd);
         return RET_ERR;
     }
+    if (configureEventFilter(fd) != RET_OK) {
+        printf("[BT] [WARN] LE scan event filter failed: %s\n", strerror(errno));
+        close(fd);
+        return RET_ERR;
+    }
 
     const uint8_t scanParams[] = {0x01, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00};
     const uint8_t scanEnable[] = {0x01, 0x00};
@@ -241,29 +358,46 @@ static int scanLowEnergy(int adapterId,
     uint8_t packet[512];
     int reportCount = 0;
     int pollResult = 0;
-    while ((pollResult = poll(&pollFd, 1, 8000)) > 0) {
+    const uint64_t deadline = monotonicMilliseconds() + 8000ULL;
+    while (monotonicMilliseconds() < deadline) {
+        uint64_t remaining = deadline - monotonicMilliseconds();
+        int timeout = (remaining > 1000ULL) ? 1000 : (int)remaining;
+        pollResult = poll(&pollFd, 1, timeout);
+        if (pollResult <= 0) {
+            break;
+        }
         ssize_t length = read(fd, packet, sizeof(packet));
-        if (length < 7 || packet[0] != AUDIOX_HCI_EVENT_PKT || packet[1] != AUDIOX_EVT_LE_META_EVENT ||
-            packet[3] != AUDIOX_LE_ADVERTISING_REPORT) {
+        if (length < 5 || packet[0] != AUDIOX_HCI_EVENT_PKT || packet[1] != AUDIOX_EVT_LE_META_EVENT) {
             continue;
         }
 
         size_t offset = 4;
         uint8_t reportCount = packet[offset++];
-        for (uint8_t report = 0; report < reportCount && offset + 10 <= (size_t)length; ++report) {
-            offset += 2;
-            hci::Address remote = {};
-            memcpy(remote.b, packet + offset, sizeof(remote.b));
-            offset += sizeof(remote.b);
-            uint8_t dataLength = packet[offset++];
-            if (offset + dataLength + 1 > (size_t)length) {
+        bool extended = packet[3] == AUDIOX_LE_EXTENDED_ADVERTISING_REPORT;
+        if (!extended && packet[3] != AUDIOX_LE_ADVERTISING_REPORT) {
+            continue;
+        }
+        for (uint8_t report = 0; report < reportCount; ++report) {
+            size_t addressOffset = extended ? offset + 3 : offset + 2;
+            size_t dataLengthOffset = extended ? offset + 23 : offset + 8;
+            if (dataLengthOffset >= (size_t)length || addressOffset + 6 > (size_t)length) {
                 break;
             }
-            offset += dataLength + 1;
-            if (!appendDiscoveredDevice(out, outSize, used, count, remote)) {
-                close(fd);
-                return RET_WARN;
+            hci::Address remote = {};
+            memcpy(remote.b, packet + addressOffset, sizeof(remote.b));
+            uint8_t dataLength = packet[dataLengthOffset];
+            size_t dataOffset = dataLengthOffset + 1;
+            if (dataOffset + dataLength > (size_t)length) {
+                break;
             }
+            offset = dataOffset;
+            if (offset + dataLength > (size_t)length) {
+                break;
+            }
+            char name[128] = {};
+            parseAdvertisingName(packet + offset, dataLength, name, sizeof(name));
+            offset += dataLength;
+            addDiscoveredDevice(devices, capacity, count, remote, name);
             ++reportCount;
         }
     }
@@ -276,6 +410,58 @@ static int scanLowEnergy(int adapterId,
             pollResult,
             pollResult < 0 ? strerror(errno) : "");
     close(fd);
+    return RET_OK;
+}
+
+static int scanClassic(int fd,
+                       DiscoveredDevice *devices,
+                       size_t capacity,
+                       size_t *count,
+                       bool scan) {
+    if (configureEventFilter(fd) != RET_OK) {
+        printf("[BT] [WARN] classic scan event filter failed: %s\n", strerror(errno));
+        return RET_ERR;
+    }
+    const uint8_t inquiryParams[] = {
+        0x33, 0x8B, 0x9E,
+        (uint8_t)(scan ? 8 : 1),
+        0x20,
+    };
+    if (writeHciCommand(fd, AUDIOX_HCI_INQUIRY, inquiryParams, sizeof(inquiryParams)) != RET_OK) {
+        return RET_ERR;
+    }
+
+    struct pollfd pollFd = {fd, POLLIN, 0};
+    uint8_t packet[512];
+    int pollResult = 0;
+    const uint64_t deadline = monotonicMilliseconds() + (scan ? 12000ULL : 3000ULL);
+    while (monotonicMilliseconds() < deadline) {
+        uint64_t remaining = deadline - monotonicMilliseconds();
+        int timeout = (remaining > 1000ULL) ? 1000 : (int)remaining;
+        pollResult = poll(&pollFd, 1, timeout);
+        if (pollResult <= 0) {
+            break;
+        }
+        ssize_t length = read(fd, packet, sizeof(packet));
+        if (length < 4 || packet[0] != AUDIOX_HCI_EVENT_PKT) {
+            continue;
+        }
+        if (packet[1] == AUDIOX_EVT_INQUIRY_COMPLETE) {
+            break;
+        }
+        if (packet[1] != AUDIOX_EVT_INQUIRY_RESULT || length < 4) {
+            continue;
+        }
+
+        uint8_t resultCount = packet[3];
+        size_t offset = 4;
+        for (uint8_t i = 0; i < resultCount && offset + 14 <= (size_t)length; ++i) {
+            hci::Address address = {};
+            memcpy(address.b, packet + offset, sizeof(address.b));
+            addDiscoveredDevice(devices, capacity, count, address, nullptr);
+            offset += 14;
+        }
+    }
     return RET_OK;
 }
 
@@ -292,14 +478,8 @@ int bluetoothListDevices(char *out, size_t outSize, bool scan) {
         return RET_ERR;
     }
 
-    size_t used = 0;
-    int count = 0;
-    int n = snprintf(out, outSize, "{\"ok\":true,\"devices\":[");
-    if (n < 0 || (size_t)n >= outSize) {
-        close(socketFd);
-        return RET_ERR;
-    }
-    used = (size_t)n;
+    DiscoveredDevice discovered[AUDIOX_BT_MAX_DEVICES] = {};
+    size_t discoveredCount = 0;
 
     hci::DeviceListRequest devices = {};
     devices.devNum = 16;
@@ -310,30 +490,44 @@ int bluetoothListDevices(char *out, size_t outSize, bool scan) {
     }
 
     printf("[BT] [INFO] HCI reports %u adapter(s)\n", (unsigned)devices.devNum);
-    logDirectoryEntries("/sys/class/bluetooth");
-    logDirectoryEntries("/sys/bus/serial/devices");
-    logDirectoryEntries("/sys/class/tty");
-    logPathState("/proc/device-tree/soc/serial@7e201000/bluetooth/status");
-    logPathState("/dev/ttyAMA0");
-    logPathState("/dev/ttyS0");
-    logPathState("/sys/class/tty/ttyS0/device/of_node/compatible");
-    logBluetoothKernelMessages();
-
     for (uint16_t deviceIndex = 0; deviceIndex < devices.devNum && deviceIndex < 16; ++deviceIndex) {
         const hci::DeviceRequest &device = devices.devReq[deviceIndex];
         printf("[BT] [INFO] hci%u flags=0x%08x\n",
                (unsigned)device.devId,
                (unsigned)device.devOpt);
         if ((device.devOpt & AUDIOX_HCI_DEV_UP) == 0) {
-            int deviceId = (int)device.devId;
-            if (ioctl(socketFd, AUDIOX_HCIDEVUP, deviceId) < 0) {
-                printf("[BT] [WARN] failed to bring hci%u up: %s\n",
-                       (unsigned)device.devId,
-                       strerror(errno));
-                logBluetoothKernelMessages();
-                continue;
+            if ((device.devOpt & (AUDIOX_HCI_INIT | AUDIOX_HCI_SETUP)) != 0) {
+                printf("[BT] [INFO] hci%u setup is already in progress; waiting\n",
+                       (unsigned)device.devId);
+                if (!waitForAdapterUp(socketFd, device.devId)) {
+                    printf("[BT] [WARN] hci%u setup did not finish before scan timeout\n",
+                           (unsigned)device.devId);
+                    continue;
+                }
+            } else {
+                int deviceId = (int)device.devId;
+                if (ioctl(socketFd, AUDIOX_HCIDEVUP, deviceId) < 0) {
+                    int savedErrno = errno;
+                    if ((savedErrno == EINPROGRESS || savedErrno == EALREADY) &&
+                        waitForAdapterUp(socketFd, device.devId)) {
+                        printf("[BT] [INFO] hci%u finished asynchronous bring-up\n",
+                               (unsigned)device.devId);
+                    } else {
+                        printf("[BT] [WARN] failed to bring hci%u up: %s\n",
+                               (unsigned)device.devId,
+                               strerror(savedErrno));
+                        logBluetoothKernelMessages();
+                        continue;
+                    }
+                } else {
+                    printf("[BT] [INFO] brought hci%u up\n", (unsigned)device.devId);
+                    if (!waitForAdapterUp(socketFd, device.devId)) {
+                        printf("[BT] [WARN] hci%u did not finish setup before scanning\n",
+                               (unsigned)device.devId);
+                        continue;
+                    }
+                }
             }
-            printf("[BT] [INFO] brought hci%u up\n", (unsigned)device.devId);
         }
 
         hci::SocketAddress address = {};
@@ -348,34 +542,46 @@ int bluetoothListDevices(char *out, size_t outSize, bool scan) {
                 close(inquiryFd);
             }
         } else {
-            hci::InquiryInfo responses[32] = {};
-            hci::InquiryRequest inquiry = {};
-            inquiry.devId = device.devId;
-            inquiry.length = scan ? 8 : 1;
-            inquiry.numResponses = 32;
-            inquiry.responses = (uint8_t *)responses;
-            if (ioctl(inquiryFd, AUDIOX_HCIINQUIRY, &inquiry) < 0) {
-                printf("[BT] [WARN] classic inquiry failed on hci%u: %s\n",
-                       (unsigned)device.devId,
-                       strerror(errno));
-            } else {
-                printf("[BT] [INFO] classic inquiry found %u device(s) on hci%u\n",
-                       (unsigned)inquiry.numResponses,
-                       (unsigned)device.devId);
-                for (uint8_t responseIndex = 0; responseIndex < inquiry.numResponses; ++responseIndex) {
-                    if (!appendDiscoveredDevice(out, outSize, &used, &count, responses[responseIndex].address)) {
-                        break;
-                    }
-                }
-            }
+            int classicRc = scanClassic(inquiryFd,
+                                        discovered,
+                                        AUDIOX_BT_MAX_DEVICES,
+                                        &discoveredCount,
+                                        scan);
+            printf("[BT] [INFO] classic inquiry completed on hci%u (rc=%d)\n",
+                   (unsigned)device.devId,
+                   classicRc);
             close(inquiryFd);
         }
 
-        if (scanLowEnergy((int)device.devId, out, outSize, &used, &count) == RET_WARN) {
+        if (scanLowEnergy((int)device.devId,
+                          discovered,
+                          AUDIOX_BT_MAX_DEVICES,
+                          &discoveredCount) == RET_WARN) {
             break;
         }
     }
     close(socketFd);
+
+    size_t used = 0;
+    int n = snprintf(out, outSize, "{\"ok\":true,\"devices\":[");
+    if (n < 0 || (size_t)n >= outSize) {
+        return RET_ERR;
+    }
+    used = (size_t)n;
+    for (size_t i = 0; i < discoveredCount; ++i) {
+        char addressText[18] = {};
+        formatAddress(discovered[i].address, addressText, sizeof(addressText));
+        n = snprintf(out + used,
+                     outSize - used,
+                     "%s{\"address\":\"%s\",\"name\":\"%s\"}",
+                     i > 0 ? "," : "",
+                     addressText,
+                     discovered[i].name);
+        if (n < 0 || (size_t)n >= outSize - used) {
+            return RET_ERR;
+        }
+        used += (size_t)n;
+    }
     n = snprintf(out + used, outSize - used, "]}\n");
     if (n < 0 || (size_t)n >= outSize - used) {
         return RET_ERR;

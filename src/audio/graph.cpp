@@ -388,6 +388,10 @@ size_t AudioContext::copyRoutingThings(AudioGraphThingInfo *out, size_t cap) con
 
     size_t count = 0;
     appendThing(out, cap, &count, "soundboard_out", "Soundboard Out", 0, 2);
+    RouterConfig router = app && app->config ? app->config->router() : RouterConfig();
+    if (router.hasRoutingHelper()) {
+        appendThing(out, cap, &count, "routing_helper", "Routing Helper", 2, 2);
+    }
     AudioEffectSlotState fxStates[32] = {};
     int fxCount = listEffects(fxStates, sizeof(fxStates) / sizeof(fxStates[0]));
     if (fxCount < 0) {

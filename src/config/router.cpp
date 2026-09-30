@@ -12,6 +12,27 @@ namespace {
 static constexpr size_t ROUTE_TEXT_MAX = 256;
 static constexpr size_t ROUTE_COUNT_MAX = AUDIO_GRAPH_MAX_EDGES;
 
+static void trimRouteText(char *text);
+
+static bool loadRoutingHelper() {
+    FILE *fp = fopen(ROUTING_REAL_FILE_PATH, "r");
+    if (!fp) {
+        return false;
+    }
+
+    char line[ROUTE_TEXT_MAX];
+    bool enabled = false;
+    while (fgets(line, sizeof(line), fp)) {
+        trimRouteText(line);
+        if (strcmp(line, "helper=routing_helper") == 0) {
+            enabled = true;
+            break;
+        }
+    }
+    fclose(fp);
+    return enabled;
+}
+
 static void trimRouteText(char *text) {
     if (!text) {
         return;
@@ -74,6 +95,9 @@ static int saveRoutes(const std::vector<std::string> &routes) {
     }
 
     fprintf(fp, "# audiox routing v1\n");
+    if (loadRoutingHelper()) {
+        fprintf(fp, "helper=routing_helper\n");
+    }
     for (size_t i = 0; i < routes.size() && i < ROUTE_COUNT_MAX; ++i) {
         fprintf(fp, "edge=%s\n", routes[i].c_str());
     }
@@ -84,6 +108,27 @@ static int saveRoutes(const std::vector<std::string> &routes) {
         return RET_ERR;
     }
     return RET_OK;
+}
+
+static int saveRoutingHelper(bool enabled) {
+    std::vector<std::string> routes;
+    if (loadRoutes(&routes) != RET_OK) {
+        return RET_ERR;
+    }
+
+    FILE *fp = fopen(ROUTING_REAL_FILE_PATH, "w");
+    if (!fp) {
+        return RET_ERR;
+    }
+    fprintf(fp, "# audiox routing v1\n");
+    if (enabled) {
+        fprintf(fp, "helper=routing_helper\n");
+    }
+    for (size_t i = 0; i < routes.size() && i < ROUTE_COUNT_MAX; ++i) {
+        fprintf(fp, "edge=%s\n", routes[i].c_str());
+    }
+    fprintf(fp, "\n");
+    return fclose(fp) == 0 ? RET_OK : RET_ERR;
 }
 
 } // namespace
@@ -177,4 +222,12 @@ void RouterConfig::replaceAllRoutes(const char *const *routes, size_t count) {
         }
     }
     (void)saveRoutes(rv);
+}
+
+bool RouterConfig::hasRoutingHelper() const {
+    return loadRoutingHelper();
+}
+
+void RouterConfig::setRoutingHelper(bool enabled) {
+    (void)saveRoutingHelper(enabled);
 }

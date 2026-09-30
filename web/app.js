@@ -25,6 +25,8 @@ const logsTextEl = document.getElementById('logs-text');
 const logsLimitEl = document.getElementById('logs-limit');
 const logsSummaryEl = document.getElementById('logs-summary');
 const logsViewEl = document.getElementById('logs-view');
+const bluetoothStatusEl = document.getElementById('bluetooth-status');
+const bluetoothDevicesEl = document.getElementById('bluetooth-devices');
 
 const configPath = '/api/rootfs/config.staging.txt';
 const realConfigPath = '/api/rootfs/config.txt';
@@ -283,6 +285,9 @@ function setActiveTab(tab) {
   if (tab === 'volume') {
     loadVolumes();
   }
+  if (tab === 'bluetooth') {
+    loadBluetoothDevices(false);
+  }
   if (tab === 'midi') {
     renderStopAllMidiStatus();
     renderSamplerToggleMidiStatus();
@@ -299,6 +304,74 @@ function updateZoomLabel() {
   const txt = `${Math.round(scale * 100)}%`;
   zoomLabelEl.textContent = `zoom ${txt}`;
   document.getElementById('btn-zoom-reset').textContent = txt;
+}
+
+function renderBluetoothDevices(devices) {
+  if (!bluetoothDevicesEl) {
+    return;
+  }
+  bluetoothDevicesEl.innerHTML = '';
+  if (!devices.length) {
+    bluetoothDevicesEl.textContent = 'No devices found.';
+    return;
+  }
+  for (const device of devices) {
+    const card = document.createElement('section');
+    card.className = 'card stack';
+    const name = document.createElement('strong');
+    name.textContent = device.name || device.address;
+    const address = document.createElement('div');
+    address.className = 'small';
+    address.textContent = device.address;
+    const actions = document.createElement('div');
+    actions.className = 'grid-2';
+    const pair = document.createElement('button');
+    pair.textContent = 'Pair';
+    pair.addEventListener('click', () => bluetoothAction('/api/bluetooth/pair', device.address));
+    const connect = document.createElement('button');
+    connect.textContent = 'Connect';
+    connect.addEventListener('click', () => bluetoothAction('/api/bluetooth/connect', device.address));
+    actions.append(pair, connect);
+    card.append(name, address, actions);
+    bluetoothDevicesEl.append(card);
+  }
+}
+
+async function loadBluetoothDevices(scan) {
+  if (!bluetoothStatusEl) {
+    return;
+  }
+  bluetoothStatusEl.textContent = scan ? 'Scanning...' : 'Loading devices...';
+  try {
+    const res = await fetch('/api/bluetooth/devices', { method: 'GET' });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || `scan failed: ${res.status}`);
+    }
+    renderBluetoothDevices(Array.isArray(data.devices) ? data.devices : []);
+    bluetoothStatusEl.textContent = 'Devices updated.';
+  } catch (err) {
+    bluetoothStatusEl.textContent = String(err);
+    renderBluetoothDevices([]);
+  }
+}
+
+async function bluetoothAction(path, address) {
+  if (bluetoothStatusEl) {
+    bluetoothStatusEl.textContent = `${path.includes('pair') ? 'Pairing' : 'Connecting'} ${address}...`;
+  }
+  try {
+    const body = new URLSearchParams({ address });
+    const res = await fetch(path, { method: 'POST', body });
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(text.trim() || `Bluetooth action failed: ${res.status}`);
+    }
+    bluetoothStatusEl.textContent = 'Bluetooth action completed.';
+    await loadBluetoothDevices(false);
+  } catch (err) {
+    bluetoothStatusEl.textContent = String(err);
+  }
 }
 
 function setRoutingZoom(nextScale) {
@@ -504,6 +577,26 @@ function isEffectNode(node) {
 
 function isEffectThingId(thingId) {
   return /^fx_[a-zA-Z0-9_]+$/.test(String(thingId || '').trim());
+}
+
+function isRoutingHelperNode(node) {
+  return String(node?.properties?.nodeKind || '') === 'routing_helper';
+}
+
+async function createRoutingHelper() {
+  const res = await fetch('/api/routing/helper/create', { method: 'POST' });
+  const txt = await res.text();
+  if (!res.ok) {
+    throw new Error(`routing helper create failed: ${res.status} ${txt.trim()}`);
+  }
+}
+
+async function deleteRoutingHelper() {
+  const res = await fetch('/api/routing/helper/delete', { method: 'POST' });
+  const txt = await res.text();
+  if (!res.ok) {
+    throw new Error(`routing helper delete failed: ${res.status} ${txt.trim()}`);
+  }
 }
 
 async function createEffectFromTemplate(type) {
@@ -898,6 +991,21 @@ function ensureRoutingGraph() {
     window.LiteGraph.registerNodeType('audiox/effect_gain', AudioxEffectGainNode);
   }
 
+  if (!window.LiteGraph.registered_node_types['audiox/routing_helper']) {
+    function AudioxRoutingHelperNode() {
+      this.size = [220, 80];
+      this.properties = { routingHelperTemplate: true, nodeKind: 'template' };
+      this.title = 'Add Routing Helper';
+      this.addInput('in 1', 'audio');
+      this.addInput('in 2', 'audio');
+      this.addOutput('out 1', 'audio');
+      this.addOutput('out 2', 'audio');
+    }
+    AudioxRoutingHelperNode.title = 'Routing Helper';
+    AudioxRoutingHelperNode.filter = 'audiox';
+    window.LiteGraph.registerNodeType('audiox/routing_helper', AudioxRoutingHelperNode);
+  }
+
   if (!window.LiteGraph.registered_node_types['audiox/effect_distortion']) {
     function AudioxEffectDistortionNode() {
       this.size = [220, 80];
@@ -994,6 +1102,16 @@ function ensureRoutingGraph() {
       {
         content: 'Remove Node',
         callback: () => {
+          if (isRoutingHelperNode(node)) {
+            deleteRoutingHelper()
+              .then(async () => {
+                await loadRoutingThingsWithOptions({ silent: true, force: true });
+                await loadRoutingFile();
+                setStatus('routing helper deleted', 'ok');
+              })
+              .catch((err) => setStatus(String(err), 'warn'));
+            return;
+          }
           if (isProtectedNode(node)) {
             return;
           }
@@ -1033,6 +1151,24 @@ function ensureRoutingGraph() {
     }
 
     const templateType = String(node.properties?.effectTypeTemplate || '').trim();
+    if (node.properties?.routingHelperTemplate) {
+      const pos = Array.isArray(node.pos) ? { x: node.pos[0], y: node.pos[1] } : null;
+      state.internalGraphMutation = true;
+      state.graph.remove(node);
+      state.internalGraphMutation = false;
+      createRoutingHelper()
+        .then(async () => {
+          await loadRoutingThingsWithOptions({ silent: true, force: true });
+          await loadRoutingFile();
+          if (pos) {
+            state.positions.routing_helper = pos;
+          }
+          rebuildRoutingGraph();
+          setStatus('routing helper created', 'ok');
+        })
+        .catch((err) => setStatus(String(err), 'warn'));
+      return;
+    }
     if (templateType === 'gain' ||
       templateType === 'distortion' ||
       templateType === 'pitch' ||
@@ -1161,8 +1297,12 @@ function rebuildRoutingGraph() {
     node.title = shortNodeTitle(thing.label);
     node.size = [260, 60];
     const isEffect = isEffectThingId(thing.id);
-    node.properties = { thingId: thing.id, nodeKind: isEffect ? 'effect' : 'device' };
-    node.removable = isEffect;
+    const isHelper = thing.id === 'routing_helper';
+    node.properties = {
+      thingId: thing.id,
+      nodeKind: isEffect ? 'effect' : (isHelper ? 'routing_helper' : 'device'),
+    };
+    node.removable = isEffect || isHelper;
     node._baseInputCount = thing.inputs;
     node._inputChannelBySlot = [];
 
@@ -2552,6 +2692,7 @@ document.getElementById('btn-reload').addEventListener('click', async () => {
 
 document.getElementById('btn-route-save').addEventListener('click', saveRouting);
 document.getElementById('btn-route-remove-selected').addEventListener('click', deleteSelectedEdge);
+document.getElementById('btn-bluetooth-scan').addEventListener('click', () => loadBluetoothDevices(true));
 
 document.getElementById('btn-zoom-in').addEventListener('click', () => {
   const scale = state.graphCanvas ? state.graphCanvas.ds.scale : 1;

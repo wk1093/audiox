@@ -82,6 +82,10 @@ FFMPEG_ARCHIVE ?= $(OUT_DIR)/downloads/ffmpeg.pkg
 FFMPEG_CROSS_LIB_DIR ?= /usr/aarch64-linux-gnu/lib
 FFMPEG_RUNTIME_LIBS ?= ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 librt.so.1 libpthread.so.0 libgcc_s.so.1
 FFMPEG_STAGE_DIR ?= $(OUT_DIR)/ffmpeg_stage
+BOOT_CONFIG_FILE ?= $(OUT_DIR)/dev-config.txt
+BT_FIRMWARE_URL ?= https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/pios/trixie/debian/firmware/broadcom/BCM4345C0.hcd
+BT_FIRMWARE_SHA256 ?= 51c45e77ddad91a19e96dc8fb75295b2087c279940df2634b23baf71b6dea42c
+BT_FIRMWARE_FILE ?= $(OUT_DIR)/downloads/BCM4345C0.hcd
 # Pin firmware updates to a known-good commit on master to avoid surprise kernel bumps.
 FIRMWARE_GIT_URL ?= https://github.com/raspberrypi/firmware.git
 FIRMWARE_GIT_REF ?= 2cfe163628eb33eed11c97bfe3fb8169755d7e7a
@@ -109,7 +113,7 @@ BOOTLOADER_OBJS := $(patsubst src/%.cpp,$(BOOTLOADER_OBJ_DIR)/%.o,$(BOOTLOADER_S
 RUNTIME_DEPS_FILES := $(RUNTIME_OBJS:.o=.d)
 BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
-.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa ffmpeg upload_ffmpeg stage_ffmpeg
+.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa ffmpeg upload_ffmpeg stage_ffmpeg bluetooth_firmware
 
 all: initramfs
 
@@ -229,6 +233,15 @@ ffmpeg:
 		echo "Warning: ffmpeg missing at $(FFMPEG_BIN). Set FFMPEG_URL to auto-fetch or place binary manually."; \
 	fi
 
+bluetooth_firmware: $(BT_FIRMWARE_FILE)
+
+$(BT_FIRMWARE_FILE):
+	@mkdir -p "$(dir $@)"
+	@echo "Fetching Raspberry Pi Bluetooth firmware..."
+	@$(PKG_FETCH) "$(BT_FIRMWARE_URL)" -o "$@.tmp"
+	@test "$$(sha256sum "$@.tmp" | awk '{print $$1}')" = "$(BT_FIRMWARE_SHA256)" || { echo "Bluetooth firmware checksum mismatch"; rm -f "$@.tmp"; exit 1; }
+	@mv "$@.tmp" "$@"
+
 
 $(BOOTLOADER_OBJ_DIR)/%.o: src/%.cpp
 	@mkdir -p $(dir $@)
@@ -258,12 +271,14 @@ bootloader_rootfs: $(BOOTLOADER_ROOTFS_DIR)/init $(BOOT_MODULE_LOAD_LIST) $(BOOT
 	cp -r $(OUT_DIR)/bootmodules_staging/* $(BOOTLOADER_ROOTFS_DIR)/lib/modules/
 	cp $(BOOT_MODULE_LOAD_BASE_LIST) $(BOOTLOADER_ROOTFS_DIR)/etc/bootmodule-load.list
 
-rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST)
+rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware
 	@echo "Creating runtime rootfs structure..."
 	mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/sbin $(ROOTFS_DIR)/etc
 	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev
 	mkdir -p $(ROOTFS_DIR)/etc/www
 	mkdir -p $(ROOTFS_DIR)/lib/modules
+	mkdir -p $(ROOTFS_DIR)/lib/firmware/brcm
+	cp "$(BT_FIRMWARE_FILE)" "$(ROOTFS_DIR)/lib/firmware/brcm/BCM4345C0.hcd"
 	
 	@echo "Staging root folder contents..."
 	@if [ -d "$(CURDIR)/root" ]; then \
@@ -394,6 +409,9 @@ export: initramfs
 	@echo "boot_delay=0" >> $(SD_MOUNT_BOOT)/config.txt
 	@echo "disable_splash=1" >> $(SD_MOUNT_BOOT)/config.txt
 	@echo "dtoverlay=$(VC4_OVERLAY)" >> $(SD_MOUNT_BOOT)/config.txt
+	@echo "dtoverlay=miniuart-bt" >> $(SD_MOUNT_BOOT)/config.txt
+	@echo "enable_uart=1" >> $(SD_MOUNT_BOOT)/config.txt
+	@echo "krnbt=on" >> $(SD_MOUNT_BOOT)/config.txt
 	@if [ -n "$(DSI_TOUCH_OVERLAY)" ]; then \
 		echo "dtoverlay=$(DSI_TOUCH_OVERLAY)" >> $(SD_MOUNT_BOOT)/config.txt; \
 	fi
@@ -402,7 +420,31 @@ export: initramfs
 	sync
 	@echo "SD Card Flashed and ready for hardware execution!"
 
-dev: program_initramfs
+$(BOOT_CONFIG_FILE):
+	@mkdir -p "$(dir $@)"
+	@printf '%s\n' \
+		'initramfs initramfs.cpio.gz,program.cpio.gz followkernel' \
+		'start_cd=1' \
+		'boot_delay=0' \
+		'disable_splash=1' \
+		'dtoverlay=$(VC4_OVERLAY)' \
+		'dtoverlay=miniuart-bt' \
+		'enable_uart=1' \
+		'krnbt=on' \
+		'dtoverlay=dwc2,dr_mode=peripheral' \
+		> "$@"
+	@if [ -n "$(DSI_TOUCH_OVERLAY)" ]; then echo "dtoverlay=$(DSI_TOUCH_OVERLAY)" >> "$@"; fi
+
+dev: program_initramfs $(BOOT_CONFIG_FILE)
+	@grep -q '^dtoverlay=miniuart-bt$$' "$(BOOT_CONFIG_FILE)" || echo 'dtoverlay=miniuart-bt' >> "$(BOOT_CONFIG_FILE)"
+	@echo "Uploading boot config to http://$(PI_HOST):$(PI_PORT)/api/boot/config.txt ..."
+	@status=$$(curl --silent --show-error --output $(OUT_DIR)/dev-boot-config.response --write-out "%{http_code}" -X PUT --data-binary @$(BOOT_CONFIG_FILE) http://$(PI_HOST):$(PI_PORT)/api/boot/config.txt); \
+	cat $(OUT_DIR)/dev-boot-config.response; \
+	if [ "$$status" -lt 200 ] || [ "$$status" -ge 300 ]; then \
+		echo "Warning: boot config upload failed with HTTP $$status; continuing with runtime upload."; \
+	else \
+		echo "Boot config upload complete."; \
+	fi
 	@echo "Uploading initramfs to http://$(PI_HOST):$(PI_PORT)/api/initram ..."
 	@status=$$(curl --silent --show-error --output $(OUT_DIR)/dev-upload.response --write-out "%{http_code}" -X PUT --data-binary @$(PROGRAM_INITRAMFS) http://$(PI_HOST):$(PI_PORT)/api/initram); \
 	cat $(OUT_DIR)/dev-upload.response; \

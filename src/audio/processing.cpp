@@ -23,7 +23,7 @@ constexpr uint32_t kMaxPlaybackStreams = 4;
 constexpr uint32_t kCaptureRingFrames = BUFFER_FRAMES * 16U;
 constexpr uint32_t kReopenRetryBlocks = 200;
 constexpr float kSoundboardClipGain = 0.35f;
-constexpr float kBluetoothOutputPeakLimit = 0.0316228f;
+constexpr float kBluetoothOutputPeakLimit = 0.2511886f;
 constexpr uint32_t kMaxSoundboardVoices = 64;
 
 struct AdaptiveSrcController {

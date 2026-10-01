@@ -577,6 +577,11 @@ uint32_t BluetoothContext::decodeSbcPayload(const uint8_t *payload, size_t lengt
 
 void BluetoothContext::threadMain() {
     printf("[BT] [INFO] bluetooth thread started\n");
+    printf("[BT] [INFO] A2DP tuning: bitpool_cap=%u requested_media_mtu=%u media_mtu_cap=%u max_frames_per_packet=%u\n",
+           BT_A2DP_TARGET_BITPOOL,
+           BT_A2DP_REQUESTED_MEDIA_MTU,
+           BT_A2DP_MAX_MEDIA_MTU,
+           BT_MAX_SBC_FRAMES_PER_PACKET);
     bool firstAttempt = true;
     while (run.load(std::memory_order_acquire)) {
         const bool wantOutputRealtime = outputConnected.load(std::memory_order_acquire) != 0;

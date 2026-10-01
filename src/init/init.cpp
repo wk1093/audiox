@@ -14,6 +14,7 @@
 #include "midi/context.hpp"
 #include "http/context.hpp"
 #include "http/network.hpp"
+#include "bluetooth/context.hpp"
 
 #define HANDLE_ERROR(func) \
     do { \
@@ -108,11 +109,15 @@ int main() {
     MidiContext midi(&mainContext);
     fb.bootStatus("Starting HTTP server...");
     HttpServer http(&mainContext);
+    BluetoothContext bluetooth(&mainContext);
 
     // starts the initial worker threads
     // these might get removed or new threads added based on config, and auto device discovery
     fb.bootStatus("Starting audio manager thread...");
     HANDLE_ERROR(audio.setupThreads());
+
+    fb.bootStatus("Starting bluetooth thread...");
+    HANDLE_ERROR(bluetooth.start());
 
     HANDLE_ERROR(http.startSocket());
 

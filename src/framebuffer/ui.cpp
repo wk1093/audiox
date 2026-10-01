@@ -1,6 +1,7 @@
 #include "framebuffer/context.hpp"
 
 #include "audio/context.hpp"
+#include "bluetooth/context.hpp"
 #include "config/context.hpp"
 #include "touch/context.hpp"
 
@@ -306,7 +307,9 @@ static inline float getAudioChannelLevel(FramebufferContext *fb,
     if (!fb || !fb->app || !fb->app->audio) {
         return 0.0f;
     }
-    
+    if (handle == 0) {
+        return fb->app->audio->getGraphThingChannelLevel("bluetooth_out", channelIndex);
+    }
     return fb->app->audio->getChannelLevel(handle, channelIndex, isCapture);
 }
 
@@ -730,10 +733,29 @@ void FramebufferContext::drawMain(TouchState *touchState) {
 
     AudioDeviceInfo deviceInfos[kMaxUiDevices];
     size_t deviceCount = 0;
+    bool haveBluetoothOutput = false;
+    bool bluetoothOutputConnected = false;
+    char bluetoothOutputName[64] = {};
+    if (app && app->bluetooth) {
+        haveBluetoothOutput = app->bluetooth->getOutputDeviceName(bluetoothOutputName,
+                                                                  sizeof(bluetoothOutputName));
+        bluetoothOutputConnected = app->bluetooth->outputConnected.load(std::memory_order_acquire) != 0;
+    }
     ConfigData liveCfg = {};
     if (app && app->audio) {
-        deviceCount = app->audio->copyDeviceInfos(deviceInfos, kMaxUiDevices);
+        size_t capacity = haveBluetoothOutput ? (kMaxUiDevices - 1U) : kMaxUiDevices;
+        deviceCount = app->audio->copyDeviceInfos(deviceInfos, capacity);
         sortDeviceInfos(deviceInfos, deviceCount);
+    }
+    if (haveBluetoothOutput && deviceCount < kMaxUiDevices) {
+        AudioDeviceInfo &bluetoothInfo = deviceInfos[deviceCount++];
+        memset(&bluetoothInfo, 0, sizeof(bluetoothInfo));
+        bluetoothInfo.handle = 0;
+        bluetoothInfo.cardIndex = UINT32_MAX;
+        bluetoothInfo.hasPlayback = 1;
+        bluetoothInfo.playbackChannels = 2;
+        snprintf(bluetoothInfo.displayName, sizeof(bluetoothInfo.displayName),
+                 "Bluetooth: %.48s", bluetoothOutputName);
     }
     if (app && app->config) {
         liveCfg = app->config->readConfigFile();
@@ -840,14 +862,19 @@ void FramebufferContext::drawMain(TouchState *touchState) {
         char nameLabel[64];
         char detailLabel[64];
         trimLabelToWidth(deviceInfos[i].displayName, nameLabel, sizeof(nameLabel), maxNameChars);
-        snprintf(detailLabel,
-                 sizeof(detailLabel),
-                 "c%u d%u %s p%u c%u",
-                 (unsigned)deviceInfos[i].cardIndex,
-                 (unsigned)deviceInfos[i].deviceIndex,
-                 deviceInfos[i].isUsb ? "usb" : "local",
-                 (unsigned)channelCountForUi(deviceInfos[i].playbackChannels, deviceInfos[i].hasPlayback),
-                 (unsigned)channelCountForUi(deviceInfos[i].captureChannels, deviceInfos[i].hasCapture));
+        if (deviceInfos[i].handle == 0) {
+            snprintf(detailLabel, sizeof(detailLabel), "A2DP %s 2ch",
+                     bluetoothOutputConnected ? "connected" : "paired");
+        } else {
+            snprintf(detailLabel,
+                     sizeof(detailLabel),
+                     "c%u d%u %s p%u c%u",
+                     (unsigned)deviceInfos[i].cardIndex,
+                     (unsigned)deviceInfos[i].deviceIndex,
+                     deviceInfos[i].isUsb ? "usb" : "local",
+                     (unsigned)channelCountForUi(deviceInfos[i].playbackChannels, deviceInfos[i].hasPlayback),
+                     (unsigned)channelCountForUi(deviceInfos[i].captureChannels, deviceInfos[i].hasCapture));
+        }
 
         drawText(listInnerX + 6, rowY + 4, nameLabel, 220, 232, 240, 1);
         drawText(listInnerX + 6, rowY + 16, detailLabel, 150, 170, 190, 1);

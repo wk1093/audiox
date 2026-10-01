@@ -23,6 +23,7 @@ constexpr uint32_t kMaxPlaybackStreams = 4;
 constexpr uint32_t kCaptureRingFrames = BUFFER_FRAMES * 16U;
 constexpr uint32_t kReopenRetryBlocks = 200;
 constexpr float kSoundboardClipGain = 0.35f;
+constexpr float kBluetoothOutputPeakLimit = 0.2511886f;
 constexpr uint32_t kMaxSoundboardVoices = 64;
 
 struct AdaptiveSrcController {
@@ -885,9 +886,34 @@ static void serviceCaptureIo(RuntimeGraph *rt) {
     }
 }
 
-static void servicePlaybackIo(RuntimeGraph *rt) {
-    if (!rt) {
+static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
+    if (!ctx || !rt) {
         return;
+    }
+
+    for (uint16_t i = 0; i < rt->sinkNodeCount; ++i) {
+        const uint16_t node = rt->sinkNodes[i];
+        if (strcmp(rt->snapshot.things[node].id, "bluetooth_out") != 0 ||
+            !ctx->bluetoothOutputActive.load(std::memory_order_acquire)) {
+            continue;
+        }
+        int16_t block[BUFFER_FRAMES * 2U];
+        for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+            for (uint32_t channel = 0; channel < 2; ++channel) {
+                float sample = rt->inputs[node][channel][frame];
+                if (!std::isfinite(sample)) {
+                    sample = 0.0f;
+                }
+                sample *= kBluetoothOutputPeakLimit;
+                if (sample > 1.0f) sample = 1.0f;
+                if (sample < -1.0f) sample = -1.0f;
+                int32_t value = (int32_t)lrintf(sample * 32767.0f);
+                if (value > 32767) value = 32767;
+                if (value < -32768) value = -32768;
+                block[frame * 2U + channel] = (int16_t)value;
+            }
+        }
+        (void)ctx->pushBluetoothOutputPcm(block, BUFFER_FRAMES);
     }
 
     for (uint16_t i = 0; i < rt->playbackCount; ++i) {
@@ -1397,6 +1423,48 @@ static void renderSourceNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeI
     const AudioGraphThingInfo &thing = rt->snapshot.things[nodeIndex];
     uint8_t outChannels = (thing.outputs > kMaxChannelsPerThing) ? kMaxChannelsPerThing : thing.outputs;
     if (outChannels == 0) {
+        return;
+    }
+
+    if (thingIdEquals(thing, "bluetooth_in")) {
+        uint32_t readIndex = ctx->bluetoothPcmRead.load(std::memory_order_relaxed);
+        const uint32_t writeIndex = ctx->bluetoothPcmWrite.load(std::memory_order_acquire);
+        const uint32_t available = writeIndex - readIndex;
+        const float fillRatio = (float)available / (float)AUDIO_BT_PCM_RING_FRAMES;
+        const float error = fillRatio - 0.5f;
+        ctx->bluetoothPcmRateIntegral += error * 0.00002f;
+        if (ctx->bluetoothPcmRateIntegral > 0.0005f) ctx->bluetoothPcmRateIntegral = 0.0005f;
+        if (ctx->bluetoothPcmRateIntegral < -0.0005f) ctx->bluetoothPcmRateIntegral = -0.0005f;
+        ctx->bluetoothPcmReadRatio = 1.0f + error * 0.001f + ctx->bluetoothPcmRateIntegral;
+
+        for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+            const uint32_t consumed = (uint32_t)ctx->bluetoothPcmReadFrac;
+            const uint32_t indexA = readIndex + consumed;
+            const uint32_t indexB = indexA + 1U;
+            const bool haveA = (uint32_t)(writeIndex - indexA) > 0;
+            const bool haveB = (uint32_t)(writeIndex - indexB) > 0;
+            for (uint8_t channel = 0; channel < outChannels; ++channel) {
+                float sample = 0.0f;
+                if (haveA) {
+                    const uint8_t inputChannel = channel < 2 ? channel : 1;
+                    const int16_t a = ctx->bluetoothPcmRing[indexA % AUDIO_BT_PCM_RING_FRAMES][inputChannel];
+                    const int16_t b = haveB
+                        ? ctx->bluetoothPcmRing[indexB % AUDIO_BT_PCM_RING_FRAMES][inputChannel]
+                        : a;
+                    sample = ((float)a + ((float)b - (float)a) * ctx->bluetoothPcmReadFrac) / 32768.0f;
+                }
+                rt->outputs[nodeIndex][channel][frame] = sample;
+            }
+            if (haveA) {
+                ctx->bluetoothPcmReadFrac += ctx->bluetoothPcmReadRatio;
+                const uint32_t advance = (uint32_t)ctx->bluetoothPcmReadFrac;
+                readIndex += advance;
+                ctx->bluetoothPcmReadFrac -= (float)advance;
+            } else {
+                ctx->bluetoothPcmReadFrac = 0.0f;
+            }
+        }
+        ctx->bluetoothPcmRead.store(readIndex, std::memory_order_release);
         return;
     }
 
@@ -2002,7 +2070,7 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
     rt->blocksProcessed++;
     updateChannelLevels(ctx, rt);
 
-    servicePlaybackIo(rt);
+    servicePlaybackIo(ctx, rt);
 
     publishPlayingSfxSet(ctx, rt);
 
@@ -2139,6 +2207,108 @@ static void *audioProcessingThreadMain(void *arg) {
 }
 
 } // namespace
+
+uint32_t AudioContext::pushBluetoothPcm(const int16_t *stereoFrames, uint32_t frames) {
+    if (!stereoFrames || frames == 0) {
+        return 0;
+    }
+    uint32_t writeIndex = bluetoothPcmWrite.load(std::memory_order_relaxed);
+    const uint32_t readIndex = bluetoothPcmRead.load(std::memory_order_acquire);
+    uint32_t freeFrames = AUDIO_BT_PCM_RING_FRAMES - (writeIndex - readIndex);
+    uint32_t accepted = frames < freeFrames ? frames : freeFrames;
+    for (uint32_t frame = 0; frame < accepted; ++frame) {
+        uint32_t slot = (writeIndex + frame) % AUDIO_BT_PCM_RING_FRAMES;
+        bluetoothPcmRing[slot][0] = stereoFrames[frame * 2U];
+        bluetoothPcmRing[slot][1] = stereoFrames[frame * 2U + 1U];
+    }
+    bluetoothPcmWrite.store(writeIndex + accepted, std::memory_order_release);
+    if (accepted < frames) {
+        bluetoothPcmDropped.fetch_add(frames - accepted, std::memory_order_relaxed);
+    }
+    return accepted;
+}
+
+uint32_t AudioContext::pushBluetoothOutputPcm(const int16_t *stereoFrames, uint32_t frames) {
+    if (!stereoFrames || frames == 0 || !bluetoothOutputActive.load(std::memory_order_acquire)) {
+        return 0;
+    }
+    uint32_t writeIndex = bluetoothOutputWrite.load(std::memory_order_relaxed);
+    const uint32_t readIndex = bluetoothOutputRead.load(std::memory_order_acquire);
+    uint32_t freeFrames = AUDIO_BT_PCM_RING_FRAMES - (writeIndex - readIndex);
+    uint32_t accepted = frames < freeFrames ? frames : freeFrames;
+    for (uint32_t frame = 0; frame < accepted; ++frame) {
+        uint32_t slot = (writeIndex + frame) % AUDIO_BT_PCM_RING_FRAMES;
+        bluetoothOutputRing[slot][0] = stereoFrames[frame * 2U];
+        bluetoothOutputRing[slot][1] = stereoFrames[frame * 2U + 1U];
+    }
+    bluetoothOutputWrite.store(writeIndex + accepted, std::memory_order_release);
+    if (accepted < frames) {
+        bluetoothOutputDropped.fetch_add(frames - accepted, std::memory_order_relaxed);
+    }
+    return accepted;
+}
+
+uint32_t AudioContext::resampleBluetoothOutputPcm(int16_t *stereoFrames, uint32_t outputFrames) {
+    if (!stereoFrames || outputFrames == 0) {
+        return 0;
+    }
+    uint32_t readIndex = bluetoothOutputRead.load(std::memory_order_relaxed);
+    const uint32_t writeIndex = bluetoothOutputWrite.load(std::memory_order_acquire);
+    const uint32_t available = writeIndex - readIndex;
+    const float targetFill = (float)outputFrames * 1.5f;
+    const float fillError = ((float)available - targetFill) / targetFill;
+    bluetoothOutputRateIntegral += fillError * 0.0000025f;
+    if (bluetoothOutputRateIntegral > 0.003f) bluetoothOutputRateIntegral = 0.003f;
+    if (bluetoothOutputRateIntegral < -0.003f) bluetoothOutputRateIntegral = -0.003f;
+    float ratio = 1.0f + fillError * 0.0015f + bluetoothOutputRateIntegral;
+    if (ratio > 1.005f) ratio = 1.005f;
+    if (ratio < 0.995f) ratio = 0.995f;
+    bluetoothOutputRateRatio = ratio;
+
+    const uint32_t neededFrames = (uint32_t)(bluetoothOutputReadFraction +
+                                             (float)outputFrames * ratio) + 2U;
+    if (available < neededFrames) {
+        return 0;
+    }
+
+    float fraction = bluetoothOutputReadFraction;
+    for (uint32_t frame = 0; frame < outputFrames; ++frame) {
+        uint32_t advance = (uint32_t)fraction;
+        uint32_t slotA = (readIndex + advance) % AUDIO_BT_PCM_RING_FRAMES;
+        uint32_t slotB = (slotA + 1U) % AUDIO_BT_PCM_RING_FRAMES;
+        for (uint32_t channel = 0; channel < 2; ++channel) {
+            float a = bluetoothOutputRing[slotA][channel];
+            float b = bluetoothOutputRing[slotB][channel];
+            float value = a + (b - a) * (fraction - (float)advance);
+            if (value > 32767.0f) value = 32767.0f;
+            if (value < -32768.0f) value = -32768.0f;
+            stereoFrames[frame * 2U + channel] = (int16_t)value;
+        }
+        fraction += ratio;
+    }
+    const uint32_t consumed = (uint32_t)fraction;
+    bluetoothOutputReadFraction = fraction - (float)consumed;
+    bluetoothOutputRead.store(readIndex + consumed, std::memory_order_release);
+    return outputFrames;
+}
+
+uint32_t AudioContext::getBluetoothOutputAvailable() const {
+    const uint32_t writeIndex = bluetoothOutputWrite.load(std::memory_order_acquire);
+    const uint32_t readIndex = bluetoothOutputRead.load(std::memory_order_acquire);
+    return writeIndex - readIndex;
+}
+
+void AudioContext::setBluetoothOutputActive(bool active) {
+    bluetoothOutputActive.store(0, std::memory_order_release);
+    const uint32_t writeIndex = bluetoothOutputWrite.load(std::memory_order_acquire);
+    bluetoothOutputRead.store(writeIndex, std::memory_order_release);
+    bluetoothOutputReadFraction = 0.0f;
+    bluetoothOutputRateIntegral = 0.0f;
+    bluetoothOutputRateRatio = 1.0f;
+    if (active) {
+        bluetoothOutputActive.store(1, std::memory_order_release);
+    }
+}
 
 int AudioContext::setupThreads() {
     if (processingThreadStarted) {

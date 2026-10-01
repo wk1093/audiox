@@ -1,5 +1,6 @@
 #include "audio/context.hpp"
 
+#include "bluetooth/context.hpp"
 #include "config/context.hpp"
 
 #include <ctype.h>
@@ -388,6 +389,18 @@ size_t AudioContext::copyRoutingThings(AudioGraphThingInfo *out, size_t cap) con
 
     size_t count = 0;
     appendThing(out, cap, &count, "soundboard_out", "Soundboard Out", 0, 2);
+    appendThing(out, cap, &count, "bluetooth_in", "Bluetooth In", 0, 2);
+    char bluetoothName[64] = {};
+    char bluetoothLabel[96] = "Bluetooth Out";
+    if (app && app->bluetooth &&
+        app->bluetooth->getOutputDeviceName(bluetoothName, sizeof(bluetoothName))) {
+        snprintf(bluetoothLabel, sizeof(bluetoothLabel), "Bluetooth: %.70s", bluetoothName);
+    }
+    appendThing(out, cap, &count, "bluetooth_out", bluetoothLabel, 2, 0);
+    RouterConfig router = app && app->config ? app->config->router() : RouterConfig();
+    if (router.hasRoutingHelper()) {
+        appendThing(out, cap, &count, "routing_helper", "Routing Helper", 2, 2);
+    }
     AudioEffectSlotState fxStates[32] = {};
     int fxCount = listEffects(fxStates, sizeof(fxStates) / sizeof(fxStates[0]));
     if (fxCount < 0) {

@@ -78,6 +78,8 @@ struct RouterConfig {
     void addRoute(const char *route);
     void removeRoute(int index);
     void replaceAllRoutes(const char *const *routes, size_t count);
+    bool hasRoutingHelper() const;
+    void setRoutingHelper(bool enabled);
 };
 
 

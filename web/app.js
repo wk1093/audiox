@@ -25,6 +25,8 @@ const logsTextEl = document.getElementById('logs-text');
 const logsLimitEl = document.getElementById('logs-limit');
 const logsSummaryEl = document.getElementById('logs-summary');
 const logsViewEl = document.getElementById('logs-view');
+const bluetoothStatusEl = document.getElementById('bluetooth-status');
+const bluetoothDevicesEl = document.getElementById('bluetooth-devices');
 
 const configPath = '/api/rootfs/config.staging.txt';
 const realConfigPath = '/api/rootfs/config.txt';
@@ -283,6 +285,9 @@ function setActiveTab(tab) {
   if (tab === 'volume') {
     loadVolumes();
   }
+  if (tab === 'bluetooth') {
+    loadBluetoothDevices();
+  }
   if (tab === 'midi') {
     renderStopAllMidiStatus();
     renderSamplerToggleMidiStatus();
@@ -299,6 +304,120 @@ function updateZoomLabel() {
   const txt = `${Math.round(scale * 100)}%`;
   zoomLabelEl.textContent = `zoom ${txt}`;
   document.getElementById('btn-zoom-reset').textContent = txt;
+}
+
+function renderBluetoothDevices(devices) {
+  if (!bluetoothDevicesEl) {
+    return;
+  }
+  bluetoothDevicesEl.innerHTML = '';
+  if (!devices.length) {
+    bluetoothDevicesEl.textContent = 'No devices found.';
+    return;
+  }
+  for (const device of devices) {
+    const card = document.createElement('section');
+    card.className = 'card stack';
+    const name = document.createElement('strong');
+    name.textContent = device.name || device.address;
+    const address = document.createElement('div');
+    address.className = 'small';
+    address.textContent = `${device.address}${device.classic ? '' : ' (LE)'}${device.connected ? ' - connected' : device.paired ? ' - paired' : ''}`;
+    card.append(name, address);
+    if (!device.paired) {
+      const pair = document.createElement('button');
+      pair.textContent = 'Pair';
+      pair.disabled = bluetoothBusy;
+      pair.addEventListener('click', () => pairBluetoothDevice(device.address));
+      card.append(pair);
+    } else {
+      if (device.connected) {
+        const disconnect = document.createElement('button');
+        disconnect.textContent = 'Disconnect';
+        disconnect.disabled = bluetoothBusy;
+        disconnect.addEventListener('click', disconnectBluetoothDevice);
+        card.append(disconnect);
+      } else if (device.classic) {
+        const connect = document.createElement('button');
+        connect.textContent = 'Connect';
+        connect.disabled = bluetoothBusy;
+        connect.addEventListener('click', () => connectBluetoothDevice(device.address));
+        card.append(connect);
+      }
+      const forget = document.createElement('button');
+      forget.textContent = 'Forget';
+      forget.disabled = bluetoothBusy;
+      forget.addEventListener('click', () => unpairBluetoothDevice(device.address));
+      card.append(forget);
+    }
+    bluetoothDevicesEl.append(card);
+  }
+}
+
+let bluetoothBusy = false;
+let bluetoothPollTimer = null;
+
+async function loadBluetoothDevices() {
+  if (!bluetoothStatusEl) {
+    return;
+  }
+  if (bluetoothPollTimer) {
+    clearTimeout(bluetoothPollTimer);
+    bluetoothPollTimer = null;
+  }
+  try {
+    const res = await fetch('/api/bluetooth/devices', { method: 'GET' });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || `request failed: ${res.status}`);
+    }
+    bluetoothBusy = Boolean(data.scanning || data.pairing || data.connecting);
+    renderBluetoothDevices(Array.isArray(data.devices) ? data.devices : []);
+    bluetoothStatusEl.textContent = data.message || (data.ready ? 'Ready' : 'Adapter not ready');
+    const scanButton = document.getElementById('btn-bluetooth-scan');
+    if (scanButton) {
+      scanButton.disabled = bluetoothBusy || Boolean(data.connected);
+    }
+    if (bluetoothBusy && state.activeTab === 'bluetooth') {
+      bluetoothPollTimer = setTimeout(loadBluetoothDevices, 1000);
+    }
+  } catch (err) {
+    bluetoothStatusEl.textContent = String(err);
+  }
+}
+
+async function bluetoothRequest(path, body) {
+  try {
+    const res = await fetch(path, { method: 'POST', body });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || `request failed: ${res.status}`);
+    }
+  } catch (err) {
+    bluetoothStatusEl.textContent = String(err);
+    return;
+  }
+  await loadBluetoothDevices();
+}
+
+function scanBluetoothDevices() {
+  return bluetoothRequest('/api/bluetooth/scan', '');
+}
+
+function pairBluetoothDevice(address) {
+  return bluetoothRequest('/api/bluetooth/pair', `address=${address}`);
+}
+
+function connectBluetoothDevice(address) {
+  return bluetoothRequest('/api/bluetooth/connect', `address=${address}`);
+}
+
+function disconnectBluetoothDevice() {
+  return bluetoothRequest('/api/bluetooth/disconnect', '');
+}
+
+function unpairBluetoothDevice(address) {
+  return bluetoothRequest('/api/bluetooth/unpair', `address=${address}`);
 }
 
 function setRoutingZoom(nextScale) {
@@ -504,6 +623,26 @@ function isEffectNode(node) {
 
 function isEffectThingId(thingId) {
   return /^fx_[a-zA-Z0-9_]+$/.test(String(thingId || '').trim());
+}
+
+function isRoutingHelperNode(node) {
+  return String(node?.properties?.nodeKind || '') === 'routing_helper';
+}
+
+async function createRoutingHelper() {
+  const res = await fetch('/api/routing/helper/create', { method: 'POST' });
+  const txt = await res.text();
+  if (!res.ok) {
+    throw new Error(`routing helper create failed: ${res.status} ${txt.trim()}`);
+  }
+}
+
+async function deleteRoutingHelper() {
+  const res = await fetch('/api/routing/helper/delete', { method: 'POST' });
+  const txt = await res.text();
+  if (!res.ok) {
+    throw new Error(`routing helper delete failed: ${res.status} ${txt.trim()}`);
+  }
 }
 
 async function createEffectFromTemplate(type) {
@@ -898,6 +1037,21 @@ function ensureRoutingGraph() {
     window.LiteGraph.registerNodeType('audiox/effect_gain', AudioxEffectGainNode);
   }
 
+  if (!window.LiteGraph.registered_node_types['audiox/routing_helper']) {
+    function AudioxRoutingHelperNode() {
+      this.size = [220, 80];
+      this.properties = { routingHelperTemplate: true, nodeKind: 'template' };
+      this.title = 'Add Routing Helper';
+      this.addInput('in 1', 'audio');
+      this.addInput('in 2', 'audio');
+      this.addOutput('out 1', 'audio');
+      this.addOutput('out 2', 'audio');
+    }
+    AudioxRoutingHelperNode.title = 'Routing Helper';
+    AudioxRoutingHelperNode.filter = 'audiox';
+    window.LiteGraph.registerNodeType('audiox/routing_helper', AudioxRoutingHelperNode);
+  }
+
   if (!window.LiteGraph.registered_node_types['audiox/effect_distortion']) {
     function AudioxEffectDistortionNode() {
       this.size = [220, 80];
@@ -994,6 +1148,16 @@ function ensureRoutingGraph() {
       {
         content: 'Remove Node',
         callback: () => {
+          if (isRoutingHelperNode(node)) {
+            deleteRoutingHelper()
+              .then(async () => {
+                await loadRoutingThingsWithOptions({ silent: true, force: true });
+                await loadRoutingFile();
+                setStatus('routing helper deleted', 'ok');
+              })
+              .catch((err) => setStatus(String(err), 'warn'));
+            return;
+          }
           if (isProtectedNode(node)) {
             return;
           }
@@ -1033,6 +1197,24 @@ function ensureRoutingGraph() {
     }
 
     const templateType = String(node.properties?.effectTypeTemplate || '').trim();
+    if (node.properties?.routingHelperTemplate) {
+      const pos = Array.isArray(node.pos) ? { x: node.pos[0], y: node.pos[1] } : null;
+      state.internalGraphMutation = true;
+      state.graph.remove(node);
+      state.internalGraphMutation = false;
+      createRoutingHelper()
+        .then(async () => {
+          await loadRoutingThingsWithOptions({ silent: true, force: true });
+          await loadRoutingFile();
+          if (pos) {
+            state.positions.routing_helper = pos;
+          }
+          rebuildRoutingGraph();
+          setStatus('routing helper created', 'ok');
+        })
+        .catch((err) => setStatus(String(err), 'warn'));
+      return;
+    }
     if (templateType === 'gain' ||
       templateType === 'distortion' ||
       templateType === 'pitch' ||
@@ -1161,8 +1343,12 @@ function rebuildRoutingGraph() {
     node.title = shortNodeTitle(thing.label);
     node.size = [260, 60];
     const isEffect = isEffectThingId(thing.id);
-    node.properties = { thingId: thing.id, nodeKind: isEffect ? 'effect' : 'device' };
-    node.removable = isEffect;
+    const isHelper = thing.id === 'routing_helper';
+    node.properties = {
+      thingId: thing.id,
+      nodeKind: isEffect ? 'effect' : (isHelper ? 'routing_helper' : 'device'),
+    };
+    node.removable = isEffect || isHelper;
     node._baseInputCount = thing.inputs;
     node._inputChannelBySlot = [];
 
@@ -1416,6 +1602,8 @@ async function loadSystemInfo() {
 
     const vEl = document.getElementById('sysinfo-version');
     const kEl = document.getElementById('sysinfo-kernel');
+    const modelEl = document.getElementById('sysinfo-model');
+    const cpuClockEl = document.getElementById('sysinfo-cpu-clock');
     const uEl = document.getElementById('sysinfo-uptime');
     const mEl = document.getElementById('sysinfo-memory');
     const lEl = document.getElementById('sysinfo-load');
@@ -1424,6 +1612,13 @@ async function loadSystemInfo() {
 
     vEl.textContent = data.version ? `v${data.version}` : '\u2014';
     kEl.textContent = data.kernel || '\u2014';
+    if (modelEl) {
+      modelEl.textContent = data.model || '\u2014';
+    }
+    if (cpuClockEl) {
+      const cpuFreq = Number(data.cpu_freq_mhz || 0);
+      cpuClockEl.textContent = cpuFreq > 0 ? `${cpuFreq} MHz` : '\u2014';
+    }
 
     const secs = Number(data.uptime_secs || 0);
     const d = Math.floor(secs / 86400);
@@ -2552,6 +2747,7 @@ document.getElementById('btn-reload').addEventListener('click', async () => {
 
 document.getElementById('btn-route-save').addEventListener('click', saveRouting);
 document.getElementById('btn-route-remove-selected').addEventListener('click', deleteSelectedEdge);
+document.getElementById('btn-bluetooth-scan').addEventListener('click', scanBluetoothDevices);
 
 document.getElementById('btn-zoom-in').addEventListener('click', () => {
   const scale = state.graphCanvas ? state.graphCanvas.ds.scale : 1;

@@ -34,15 +34,26 @@ ALSA_SRC_TARBALL ?= $(OUT_DIR)/downloads/alsa-lib-$(ALSA_VERSION).tar.bz2
 ALSA_SRC_DIR ?= $(OUT_DIR)/build/alsa-lib-$(ALSA_VERSION)
 ALSA_BUILD_DIR ?= $(OUT_DIR)/build/alsa-lib-$(ALSA_VERSION)-build
 
+SBC_VERSION ?= 2.2
+SBC_COMMIT ?= b3deb8a5dcfb42d8c10ba1f2f1ac9bd7bf7271cc
+SBC_SOURCE_URL ?= https://git.kernel.org/pub/scm/bluetooth/sbc.git
+SBC_SRC_DIR ?= $(OUT_DIR)/build/sbc-$(SBC_VERSION)-src
+SBC_BUILD_DIR ?= $(OUT_DIR)/build/sbc-$(SBC_VERSION)-build
+SBC_SYSROOT ?= $(OUT_DIR)/sbc-sysroot
+SBC_STATIC_LIB ?= $(SBC_SYSROOT)/usr/lib/libsbc.a
+SBC_INCLUDE_DIR ?= $(SBC_SYSROOT)/usr/include
+
 ifeq ($(ENABLE_ALSA),1)
 RUNTIME_FLAGS += -I$(ALSA_INCLUDE_DIR)
 RUNTIME_LIBS += -L$(ALSA_LIB_DIR) -lasound -ldl
 endif
+RUNTIME_FLAGS += -I$(SBC_INCLUDE_DIR)
+RUNTIME_LIBS += $(SBC_STATIC_LIB)
 
 # Version information
 AUDIOX_VERSION_MAJOR = 1
 AUDIOX_VERSION_MINOR = 6
-AUDIOX_VERSION_PATCH = 0
+AUDIOX_VERSION_PATCH = 9
 
 # Auto-detected from firmware after fetch_deps runs.
 KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")
@@ -82,6 +93,10 @@ FFMPEG_ARCHIVE ?= $(OUT_DIR)/downloads/ffmpeg.pkg
 FFMPEG_CROSS_LIB_DIR ?= /usr/aarch64-linux-gnu/lib
 FFMPEG_RUNTIME_LIBS ?= ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 librt.so.1 libpthread.so.0 libgcc_s.so.1
 FFMPEG_STAGE_DIR ?= $(OUT_DIR)/ffmpeg_stage
+BOOT_CONFIG_FILE ?= $(OUT_DIR)/dev-config.txt
+BT_FIRMWARE_URL ?= https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/pios/trixie/debian/firmware/broadcom/BCM4345C0.hcd
+BT_FIRMWARE_SHA256 ?= 51c45e77ddad91a19e96dc8fb75295b2087c279940df2634b23baf71b6dea42c
+BT_FIRMWARE_FILE ?= $(OUT_DIR)/downloads/BCM4345C0.hcd
 # Pin firmware updates to a known-good commit on master to avoid surprise kernel bumps.
 FIRMWARE_GIT_URL ?= https://github.com/raspberrypi/firmware.git
 FIRMWARE_GIT_REF ?= 2cfe163628eb33eed11c97bfe3fb8169755d7e7a
@@ -109,7 +124,7 @@ BOOTLOADER_OBJS := $(patsubst src/%.cpp,$(BOOTLOADER_OBJ_DIR)/%.o,$(BOOTLOADER_S
 RUNTIME_DEPS_FILES := $(RUNTIME_OBJS:.o=.d)
 BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
-.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa ffmpeg upload_ffmpeg stage_ffmpeg
+.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg stage_ffmpeg bluetooth_firmware
 
 all: initramfs
 
@@ -182,6 +197,30 @@ alsa_source:
 	$(MAKE) -C "$(ALSA_BUILD_DIR)" DESTDIR="$(ALSA_SYSROOT)" install
 	@echo "ALSA static lib ready: $(ALSA_STATIC_LIB)"
 
+sbc: $(SBC_STATIC_LIB)
+
+$(SBC_STATIC_LIB):
+	@mkdir -p "$(OUT_DIR)/build" "$(SBC_SYSROOT)"
+	@if [ ! -d "$(SBC_SRC_DIR)/.git" ]; then \
+		git clone --no-checkout "$(SBC_SOURCE_URL)" "$(SBC_SRC_DIR)"; \
+	fi
+	@git -C "$(SBC_SRC_DIR)" fetch --depth 1 origin "$(SBC_COMMIT)"
+	@git -C "$(SBC_SRC_DIR)" checkout --detach "$(SBC_COMMIT)"
+	@if [ ! -x "$(SBC_SRC_DIR)/configure" ]; then cd "$(SBC_SRC_DIR)" && ./bootstrap; fi
+	@mkdir -p "$(SBC_BUILD_DIR)"
+	cd "$(SBC_BUILD_DIR)" && "$(SBC_SRC_DIR)/configure" \
+		--host=aarch64-linux-gnu \
+		--prefix=/usr \
+		--libdir=/usr/lib \
+		--disable-shared \
+		--enable-static \
+		--disable-tools \
+		--disable-tester \
+		CC="$(CC)"
+	$(MAKE) -C "$(SBC_BUILD_DIR)" -j$$(nproc)
+	$(MAKE) -C "$(SBC_BUILD_DIR)" DESTDIR="$(SBC_SYSROOT)" install
+	@echo "Static SBC decoder ready: $(SBC_STATIC_LIB)"
+
 ffmpeg:
 	@if [ -x "$(FFMPEG_BIN)" ]; then \
 		echo "Using existing ffmpeg at $(FFMPEG_BIN)"; \
@@ -229,6 +268,15 @@ ffmpeg:
 		echo "Warning: ffmpeg missing at $(FFMPEG_BIN). Set FFMPEG_URL to auto-fetch or place binary manually."; \
 	fi
 
+bluetooth_firmware: $(BT_FIRMWARE_FILE)
+
+$(BT_FIRMWARE_FILE):
+	@mkdir -p "$(dir $@)"
+	@echo "Fetching Raspberry Pi Bluetooth firmware..."
+	@$(PKG_FETCH) "$(BT_FIRMWARE_URL)" -o "$@.tmp"
+	@test "$$(sha256sum "$@.tmp" | awk '{print $$1}')" = "$(BT_FIRMWARE_SHA256)" || { echo "Bluetooth firmware checksum mismatch"; rm -f "$@.tmp"; exit 1; }
+	@mv "$@.tmp" "$@"
+
 
 $(BOOTLOADER_OBJ_DIR)/%.o: src/%.cpp
 	@mkdir -p $(dir $@)
@@ -238,13 +286,15 @@ $(RUNTIME_OBJ_DIR)/%.o: src/%.cpp
 	@mkdir -p $(dir $@)
 	$(RUNTIME_COMPILER) $(RUNTIME_FLAGS) $(RUNTIME_DEFINES) $(DEPFLAGS) -c -o $@ $<
 
+$(RUNTIME_OBJ_DIR)/bluetooth/context.o: $(SBC_STATIC_LIB)
+
 $(BOOTLOADER_ROOTFS_DIR)/init: $(BOOTLOADER_OBJS)
 	@echo "Compiling bootloader init..."
 	mkdir -p $(BOOTLOADER_ROOTFS_DIR)
 	$(BOOTLOADER_COMPILER) $(BOOTLOADER_FLAGS) \
 		-o $(BOOTLOADER_ROOTFS_DIR)/init $(BOOTLOADER_OBJS) $(LIBS)
 
-$(ROOTFS_DIR)/init: $(RUNTIME_DEPS) $(RUNTIME_OBJS)
+$(ROOTFS_DIR)/init: $(RUNTIME_DEPS) $(RUNTIME_OBJS) $(SBC_STATIC_LIB)
 	@echo "Compiling runtime init..."
 	mkdir -p $(ROOTFS_DIR)
 	$(RUNTIME_COMPILER) $(RUNTIME_FLAGS) \
@@ -258,12 +308,14 @@ bootloader_rootfs: $(BOOTLOADER_ROOTFS_DIR)/init $(BOOT_MODULE_LOAD_LIST) $(BOOT
 	cp -r $(OUT_DIR)/bootmodules_staging/* $(BOOTLOADER_ROOTFS_DIR)/lib/modules/
 	cp $(BOOT_MODULE_LOAD_BASE_LIST) $(BOOTLOADER_ROOTFS_DIR)/etc/bootmodule-load.list
 
-rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST)
+rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB)
 	@echo "Creating runtime rootfs structure..."
 	mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/sbin $(ROOTFS_DIR)/etc
 	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev
 	mkdir -p $(ROOTFS_DIR)/etc/www
 	mkdir -p $(ROOTFS_DIR)/lib/modules
+	mkdir -p $(ROOTFS_DIR)/lib/firmware/brcm
+	cp "$(BT_FIRMWARE_FILE)" "$(ROOTFS_DIR)/lib/firmware/brcm/BCM4345C0.hcd"
 	
 	@echo "Staging root folder contents..."
 	@if [ -d "$(CURDIR)/root" ]; then \
@@ -271,6 +323,8 @@ rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE
 	fi
 	
 	@echo "Staging kernel objects into target lib tree..."
+	@mkdir -p "$(ROOTFS_DIR)/usr/share/licenses/audiox/libsbc"
+	cp "$(SBC_SRC_DIR)/COPYING.LIB" "$(ROOTFS_DIR)/usr/share/licenses/audiox/libsbc/COPYING.LIB"
 	cp -r $(OUT_DIR)/modules_staging/* $(ROOTFS_DIR)/lib/modules/
 	cp $(MODULE_LOAD_LIST) $(ROOTFS_DIR)/etc/module-load.list
 	cp $(MODULE_LOAD_BASE_LIST) $(ROOTFS_DIR)/etc/module-load.base.list
@@ -394,6 +448,12 @@ export: initramfs
 	@echo "boot_delay=0" >> $(SD_MOUNT_BOOT)/config.txt
 	@echo "disable_splash=1" >> $(SD_MOUNT_BOOT)/config.txt
 	@echo "dtoverlay=$(VC4_OVERLAY)" >> $(SD_MOUNT_BOOT)/config.txt
+	@echo "dtoverlay=miniuart-bt" >> $(SD_MOUNT_BOOT)/config.txt
+	@echo "enable_uart=1" >> $(SD_MOUNT_BOOT)/config.txt
+	@echo "core_freq=250" >> $(SD_MOUNT_BOOT)/config.txt
+	@echo "core_freq_min=250" >> $(SD_MOUNT_BOOT)/config.txt
+	@echo "arm_boost=1" >> $(SD_MOUNT_BOOT)/config.txt
+	@echo "krnbt=on" >> $(SD_MOUNT_BOOT)/config.txt
 	@if [ -n "$(DSI_TOUCH_OVERLAY)" ]; then \
 		echo "dtoverlay=$(DSI_TOUCH_OVERLAY)" >> $(SD_MOUNT_BOOT)/config.txt; \
 	fi
@@ -402,7 +462,37 @@ export: initramfs
 	sync
 	@echo "SD Card Flashed and ready for hardware execution!"
 
-dev: program_initramfs
+$(BOOT_CONFIG_FILE):
+	@mkdir -p "$(dir $@)"
+	@printf '%s\n' \
+		'initramfs initramfs.cpio.gz,program.cpio.gz followkernel' \
+		'start_cd=1' \
+		'boot_delay=0' \
+		'disable_splash=1' \
+		'dtoverlay=$(VC4_OVERLAY)' \
+		'dtoverlay=miniuart-bt' \
+		'enable_uart=1' \
+		'core_freq=250' \
+		'core_freq_min=250' \
+		'arm_boost=1' \
+		'krnbt=on' \
+		'dtoverlay=dwc2,dr_mode=peripheral' \
+		> "$@"
+	@if [ -n "$(DSI_TOUCH_OVERLAY)" ]; then echo "dtoverlay=$(DSI_TOUCH_OVERLAY)" >> "$@"; fi
+
+dev: program_initramfs $(BOOT_CONFIG_FILE)
+	@grep -q '^dtoverlay=miniuart-bt$$' "$(BOOT_CONFIG_FILE)" || echo 'dtoverlay=miniuart-bt' >> "$(BOOT_CONFIG_FILE)"
+	@grep -q '^core_freq=250$$' "$(BOOT_CONFIG_FILE)" || echo 'core_freq=250' >> "$(BOOT_CONFIG_FILE)"
+	@grep -q '^core_freq_min=250$$' "$(BOOT_CONFIG_FILE)" || echo 'core_freq_min=250' >> "$(BOOT_CONFIG_FILE)"
+	@grep -q '^arm_boost=1$$' "$(BOOT_CONFIG_FILE)" || echo 'arm_boost=1' >> "$(BOOT_CONFIG_FILE)"
+	@echo "Uploading boot config to http://$(PI_HOST):$(PI_PORT)/api/boot/config.txt ..."
+	@status=$$(curl --silent --show-error --output $(OUT_DIR)/dev-boot-config.response --write-out "%{http_code}" -X PUT --data-binary @$(BOOT_CONFIG_FILE) http://$(PI_HOST):$(PI_PORT)/api/boot/config.txt); \
+	cat $(OUT_DIR)/dev-boot-config.response; \
+	if [ "$$status" -lt 200 ] || [ "$$status" -ge 300 ]; then \
+		echo "Warning: boot config upload failed with HTTP $$status; continuing with runtime upload."; \
+	else \
+		echo "Boot config upload complete."; \
+	fi
 	@echo "Uploading initramfs to http://$(PI_HOST):$(PI_PORT)/api/initram ..."
 	@status=$$(curl --silent --show-error --output $(OUT_DIR)/dev-upload.response --write-out "%{http_code}" -X PUT --data-binary @$(PROGRAM_INITRAMFS) http://$(PI_HOST):$(PI_PORT)/api/initram); \
 	cat $(OUT_DIR)/dev-upload.response; \

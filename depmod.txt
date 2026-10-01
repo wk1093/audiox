@@ -14,6 +14,14 @@ normal: drivers/usb/gadget/libcomposite
 normal: drivers/usb/gadget/function/u_audio
 normal: drivers/usb/gadget/function/usb_f_uac2
 
+# Bluetooth controller support. The dependency resolver includes the core
+# Bluetooth stack and transport dependencies automatically.
+normal: drivers/tty/serdev/serdev
+normal: drivers/tty/serial/amba-pl011
+normal: net/bluetooth/bluetooth
+normal: drivers/bluetooth/btusb
+normal: drivers/bluetooth/hci_uart
+
 # Display stack (vc4/v3d + official DSI panel)
 base: drivers/gpu/drm/vc4/vc4
 base: drivers/gpu/drm/v3d/v3d

@@ -25,6 +25,7 @@
 
       <nav class="tabs" id="tabs">
         <button class="tab-btn active" data-tab="routing">Routing</button>
+        <button class="tab-btn" data-tab="bluetooth">Bluetooth</button>
         <button class="tab-btn" data-tab="effects">Effects</button>
         <button class="tab-btn" data-tab="volume">Volume</button>
         <button class="tab-btn" data-tab="soundboard">Soundboard</button>
@@ -83,6 +84,17 @@
             <div id="edge-list" class="edge-list" style="margin-top: 8px;"></div>
           </section>
         </aside>
+      </div>
+    </section>
+
+    <section class="page" data-page="bluetooth">
+      <div class="effects-layout">
+        <section class="card stack">
+          <h2>Bluetooth Devices</h2>
+          <div id="bluetooth-status" class="small">Scan for nearby devices, then pair and connect.</div>
+          <button id="btn-bluetooth-scan" class="primary">Scan</button>
+        </section>
+        <div id="bluetooth-devices" class="effects-map-grid"></div>
       </div>
     </section>
 
@@ -264,6 +276,14 @@
             <div class="metric">
               <div class="label">Kernel</div>
               <div class="value" id="sysinfo-kernel">—</div>
+            </div>
+            <div class="metric">
+              <div class="label">Raspberry Pi</div>
+              <div class="value" id="sysinfo-model">—</div>
+            </div>
+            <div class="metric">
+              <div class="label">CPU Clock</div>
+              <div class="value" id="sysinfo-cpu-clock">—</div>
             </div>
             <div class="metric">
               <div class="label">Uptime</div>

@@ -24,7 +24,8 @@ static bool loadRoutingHelper() {
     bool enabled = false;
     while (fgets(line, sizeof(line), fp)) {
         trimRouteText(line);
-        if (strcmp(line, "helper=routing_helper") == 0) {
+        if (strcmp(line, "node=routing_helper") == 0 ||
+            strcmp(line, "helper=routing_helper") == 0) {
             enabled = true;
             break;
         }
@@ -88,6 +89,7 @@ static int loadRoutes(std::vector<std::string> *routes) {
 }
 
 static int saveRoutes(const std::vector<std::string> &routes) {
+    bool helperEnabled = loadRoutingHelper();
     FILE *fp = fopen(ROUTING_REAL_FILE_PATH, "w");
     if (!fp) {
         printf("[CONFIG] [WARN] failed to open %s for writing: %s\n", ROUTING_REAL_FILE_PATH, strerror(errno));
@@ -95,8 +97,8 @@ static int saveRoutes(const std::vector<std::string> &routes) {
     }
 
     fprintf(fp, "# audiox routing v1\n");
-    if (loadRoutingHelper()) {
-        fprintf(fp, "helper=routing_helper\n");
+    if (helperEnabled) {
+        fprintf(fp, "node=routing_helper\n");
     }
     for (size_t i = 0; i < routes.size() && i < ROUTE_COUNT_MAX; ++i) {
         fprintf(fp, "edge=%s\n", routes[i].c_str());
@@ -122,7 +124,7 @@ static int saveRoutingHelper(bool enabled) {
     }
     fprintf(fp, "# audiox routing v1\n");
     if (enabled) {
-        fprintf(fp, "helper=routing_helper\n");
+        fprintf(fp, "node=routing_helper\n");
     }
     for (size_t i = 0; i < routes.size() && i < ROUTE_COUNT_MAX; ++i) {
         fprintf(fp, "edge=%s\n", routes[i].c_str());

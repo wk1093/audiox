@@ -73,6 +73,7 @@ sudo sh -c "echo 'dtoverlay=miniuart-bt' >> '${MNT_BOOT}/config.txt'"
 sudo sh -c "echo 'enable_uart=1' >> '${MNT_BOOT}/config.txt'"
 sudo sh -c "echo 'core_freq=250' >> '${MNT_BOOT}/config.txt'"
 sudo sh -c "echo 'core_freq_min=250' >> '${MNT_BOOT}/config.txt'"
+sudo sh -c "echo 'arm_boost=1' >> '${MNT_BOOT}/config.txt'"
 sudo sh -c "echo 'krnbt=on' >> '${MNT_BOOT}/config.txt'"
 if [[ -n "${DSI_TOUCH_OVERLAY}" ]]; then
     sudo sh -c "echo 'dtoverlay=${DSI_TOUCH_OVERLAY}' >> '${MNT_BOOT}/config.txt'"

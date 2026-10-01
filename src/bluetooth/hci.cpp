@@ -267,7 +267,7 @@ static uint8_t parseAdvertisingName(const uint8_t *data,
         }
         uint8_t fieldType = data[offset];
         uint8_t fieldQuality = fieldType == 0x09 ? NAME_COMPLETE
-                             : fieldType == 0x08 ? NAME_SHORT
+                     : (fieldType == 0x08 || fieldType == 0x30) ? NAME_SHORT
                              : NAME_NONE;
         if (fieldQuality > quality) {
             sanitizeName(data + offset + 1, fieldLength - 1U, name, nameSize);
@@ -360,7 +360,9 @@ static void scanLowEnergy(int fd,
     const uint8_t scanParams[] = {0x01, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00};
     const uint8_t scanEnable[] = {0x01, 0x00};
     if (writeCommand(fd, AUDIOX_LE_SET_SCAN_PARAMS, scanParams, sizeof(scanParams)) != RET_OK ||
-        writeCommand(fd, AUDIOX_LE_SET_SCAN_ENABLE, scanEnable, sizeof(scanEnable)) != RET_OK) {
+        waitForCommand(fd, AUDIOX_LE_SET_SCAN_PARAMS, 1000) != 0 ||
+        writeCommand(fd, AUDIOX_LE_SET_SCAN_ENABLE, scanEnable, sizeof(scanEnable)) != RET_OK ||
+        waitForCommand(fd, AUDIOX_LE_SET_SCAN_ENABLE, 1000) != 0) {
         printf("[BT] [WARN] LE scan setup failed\n");
         return;
     }
@@ -368,6 +370,9 @@ static void scanLowEnergy(int fd,
     struct pollfd pollFd = {fd, POLLIN, 0};
     uint8_t packet[512];
     int reportCount = 0;
+    int scanResponseCount = 0;
+    int namedReportCount = 0;
+    int malformedReportCount = 0;
     const uint64_t deadline = monotonicMs() + 6000ULL;
     while (monotonicMs() < deadline) {
         uint64_t remaining = deadline - monotonicMs();
@@ -390,17 +395,29 @@ static void scanLowEnergy(int fd,
             size_t addressOffset = extended ? offset + 3 : offset + 2;
             size_t dataLengthOffset = extended ? offset + 23 : offset + 8;
             if (dataLengthOffset >= (size_t)length || addressOffset + 6 > (size_t)length) {
+                ++malformedReportCount;
                 break;
+            }
+            uint16_t eventType = extended
+                ? (uint16_t)(packet[offset] | ((uint16_t)packet[offset + 1] << 8))
+                : packet[offset];
+            if ((!extended && eventType == 0x04) ||
+                (extended && (eventType & 0x0008U) != 0)) {
+                ++scanResponseCount;
             }
             Address remote = {};
             memcpy(remote.b, packet + addressOffset, sizeof(remote.b));
             uint8_t dataLength = packet[dataLengthOffset];
             offset = dataLengthOffset + 1;
             if (offset + dataLength > (size_t)length) {
+                ++malformedReportCount;
                 break;
             }
             char name[BT_NAME_MAX] = {};
             uint8_t quality = parseAdvertisingName(packet + offset, dataLength, name, sizeof(name));
+            if (quality != NAME_NONE) {
+                ++namedReportCount;
+            }
             // Legacy reports carry a trailing RSSI byte after the data.
             offset += dataLength + (extended ? 0U : 1U);
             addDiscoveredDevice(devices, capacity, count, remote, name, quality);
@@ -410,7 +427,11 @@ static void scanLowEnergy(int fd,
 
     const uint8_t disable[] = {0x00, 0x00};
     (void)writeCommand(fd, AUDIOX_LE_SET_SCAN_ENABLE, disable, sizeof(disable));
-    printf("[BT] [INFO] LE scan finished: %d report(s)\n", reportCount);
+    printf("[BT] [INFO] LE scan finished: reports=%d scan_responses=%d named_reports=%d malformed=%d\n",
+           reportCount,
+           scanResponseCount,
+           namedReportCount,
+           malformedReportCount);
 }
 
 static int scanClassic(int fd,

@@ -20,6 +20,7 @@
 #define AUDIO_SFX_MAX_FRAMES (SAMPLE_RATE * 8)
 #define AUDIO_SFX_SLOT_COUNT 64
 #define AUDIO_SFX_QUEUE_CAP 128
+#define AUDIO_BT_PCM_RING_FRAMES 8192
 
 struct AudioGraphThingInfo {
     char id[64];
@@ -187,6 +188,23 @@ struct AudioContext {
     mutable std::mutex routingGraphMutex;
     std::atomic<float> nodeChannelLevels[AUDIO_GRAPH_MAX_THINGS][16];
 
+    std::atomic<uint32_t> bluetoothPcmWrite{0};
+    std::atomic<uint32_t> bluetoothPcmRead{0};
+    std::atomic<uint32_t> bluetoothPcmDropped{0};
+    int16_t bluetoothPcmRing[AUDIO_BT_PCM_RING_FRAMES][2] = {};
+    float bluetoothPcmReadFrac = 0.0f;
+    float bluetoothPcmReadRatio = 1.0f;
+    float bluetoothPcmRateIntegral = 0.0f;
+
+    std::atomic<uint32_t> bluetoothOutputWrite{0};
+    std::atomic<uint32_t> bluetoothOutputRead{0};
+    std::atomic<uint32_t> bluetoothOutputDropped{0};
+    std::atomic<int> bluetoothOutputActive{0};
+    int16_t bluetoothOutputRing[AUDIO_BT_PCM_RING_FRAMES][2] = {};
+    float bluetoothOutputReadFraction = 0.0f;
+    float bluetoothOutputRateIntegral = 0.0f;
+    float bluetoothOutputRateRatio = 1.0f;
+
     // Per-thing output gain (0.0-1.0). Indexed by current routing snapshot node index.
     // Updated atomically so the audio thread reads without locking.
     std::atomic<float> nodeGainAtomics[AUDIO_GRAPH_MAX_THINGS];
@@ -238,6 +256,15 @@ struct AudioContext {
     int getEffectParams(const char *thingId, audiox::effects::SlotParams *out) const;
     int setEffectType(const char *thingId, uint8_t type);
     int setEffectEnabled(const char *thingId, uint8_t enabled);
+
+    // Stereo signed PCM at SAMPLE_RATE. Called by the Bluetooth worker; does
+    // not block and drops newest frames if the realtime consumer falls behind.
+    uint32_t pushBluetoothPcm(const int16_t *stereoFrames, uint32_t frames);
+    uint32_t pushBluetoothOutputPcm(const int16_t *stereoFrames, uint32_t frames);
+    uint32_t resampleBluetoothOutputPcm(int16_t *stereoFrames, uint32_t outputFrames);
+    uint32_t getBluetoothOutputAvailable() const;
+    float getGraphThingChannelLevel(const char *thingId, int channelIndex) const;
+    void setBluetoothOutputActive(bool active);
     int toggleEffectEnabled(const char *thingId);
     int persistEffectBypass(const char *effectId);
     int setEffectParam(const char *thingId, const char *paramName, float value);

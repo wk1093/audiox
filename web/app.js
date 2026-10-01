@@ -322,7 +322,7 @@ function renderBluetoothDevices(devices) {
     name.textContent = device.name || device.address;
     const address = document.createElement('div');
     address.className = 'small';
-    address.textContent = `${device.address}${device.classic ? '' : ' (LE)'}${device.paired ? ' - paired' : ''}`;
+    address.textContent = `${device.address}${device.classic ? '' : ' (LE)'}${device.connected ? ' - connected' : device.paired ? ' - paired' : ''}`;
     card.append(name, address);
     if (!device.paired) {
       const pair = document.createElement('button');
@@ -330,6 +330,25 @@ function renderBluetoothDevices(devices) {
       pair.disabled = bluetoothBusy;
       pair.addEventListener('click', () => pairBluetoothDevice(device.address));
       card.append(pair);
+    } else {
+      if (device.connected) {
+        const disconnect = document.createElement('button');
+        disconnect.textContent = 'Disconnect';
+        disconnect.disabled = bluetoothBusy;
+        disconnect.addEventListener('click', disconnectBluetoothDevice);
+        card.append(disconnect);
+      } else if (device.classic) {
+        const connect = document.createElement('button');
+        connect.textContent = 'Connect';
+        connect.disabled = bluetoothBusy;
+        connect.addEventListener('click', () => connectBluetoothDevice(device.address));
+        card.append(connect);
+      }
+      const forget = document.createElement('button');
+      forget.textContent = 'Forget';
+      forget.disabled = bluetoothBusy;
+      forget.addEventListener('click', () => unpairBluetoothDevice(device.address));
+      card.append(forget);
     }
     bluetoothDevicesEl.append(card);
   }
@@ -352,12 +371,12 @@ async function loadBluetoothDevices() {
     if (!res.ok || !data.ok) {
       throw new Error(data.error || `request failed: ${res.status}`);
     }
-    bluetoothBusy = Boolean(data.scanning || data.pairing);
+    bluetoothBusy = Boolean(data.scanning || data.pairing || data.connecting);
     renderBluetoothDevices(Array.isArray(data.devices) ? data.devices : []);
     bluetoothStatusEl.textContent = data.message || (data.ready ? 'Ready' : 'Adapter not ready');
     const scanButton = document.getElementById('btn-bluetooth-scan');
     if (scanButton) {
-      scanButton.disabled = bluetoothBusy;
+      scanButton.disabled = bluetoothBusy || Boolean(data.connected);
     }
     if (bluetoothBusy && state.activeTab === 'bluetooth') {
       bluetoothPollTimer = setTimeout(loadBluetoothDevices, 1000);
@@ -387,6 +406,18 @@ function scanBluetoothDevices() {
 
 function pairBluetoothDevice(address) {
   return bluetoothRequest('/api/bluetooth/pair', `address=${address}`);
+}
+
+function connectBluetoothDevice(address) {
+  return bluetoothRequest('/api/bluetooth/connect', `address=${address}`);
+}
+
+function disconnectBluetoothDevice() {
+  return bluetoothRequest('/api/bluetooth/disconnect', '');
+}
+
+function unpairBluetoothDevice(address) {
+  return bluetoothRequest('/api/bluetooth/unpair', `address=${address}`);
 }
 
 function setRoutingZoom(nextScale) {
@@ -1571,6 +1602,8 @@ async function loadSystemInfo() {
 
     const vEl = document.getElementById('sysinfo-version');
     const kEl = document.getElementById('sysinfo-kernel');
+    const modelEl = document.getElementById('sysinfo-model');
+    const cpuClockEl = document.getElementById('sysinfo-cpu-clock');
     const uEl = document.getElementById('sysinfo-uptime');
     const mEl = document.getElementById('sysinfo-memory');
     const lEl = document.getElementById('sysinfo-load');
@@ -1579,6 +1612,13 @@ async function loadSystemInfo() {
 
     vEl.textContent = data.version ? `v${data.version}` : '\u2014';
     kEl.textContent = data.kernel || '\u2014';
+    if (modelEl) {
+      modelEl.textContent = data.model || '\u2014';
+    }
+    if (cpuClockEl) {
+      const cpuFreq = Number(data.cpu_freq_mhz || 0);
+      cpuClockEl.textContent = cpuFreq > 0 ? `${cpuFreq} MHz` : '\u2014';
+    }
 
     const secs = Number(data.uptime_secs || 0);
     const d = Math.floor(secs / 86400);

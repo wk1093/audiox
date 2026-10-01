@@ -555,6 +555,19 @@ float AudioContext::getChannelLevel(AudioHandle handle, int channelIndex, bool i
     return 0.0f;
 }
 
+float AudioContext::getGraphThingChannelLevel(const char *thingId, int channelIndex) const {
+    if (!thingId || channelIndex < 0 || channelIndex >= 16) {
+        return 0.0f;
+    }
+    std::lock_guard<std::mutex> graphLock(routingGraphMutex);
+    for (uint16_t i = 0; i < routingGraphPublished.thingCount; ++i) {
+        if (strcmp(routingGraphPublished.things[i].id, thingId) == 0) {
+            return nodeChannelLevels[i][channelIndex].load(std::memory_order_relaxed);
+        }
+    }
+    return 0.0f;
+}
+
 void AudioContext::loadVolumesFromConfig() {
     if (!app || !app->config) {
         return;

@@ -507,6 +507,9 @@ function parseRoutingText(text) {
 
 function formatRoutingText() {
   const out = ['# audiox routing v1'];
+  if (state.nodes.some((node) => node.id === 'routing_helper')) {
+    out.push('node=routing_helper');
+  }
   for (const edge of state.edges) {
     out.push(`edge=${edge.src},${edge.dst},${edge.srcChannel},${edge.dstChannel}`);
   }

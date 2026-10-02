@@ -192,15 +192,31 @@ static void waitUntilBlockDeadline(timespec *deadline) {
         return;
     }
 
-    (void)clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, deadline, nullptr);
-    addNs(deadline, blockPeriodNs());
+    // (void)clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, deadline, nullptr);
+    // addNs(deadline, blockPeriodNs());
 
+    // timespec now = monotonicNow();
+    // if (cmpTimespec(now, *deadline) > 0) {
+    //     // If we overran, re-anchor to avoid accumulating wakeup drift.
+    //     *deadline = now;
+    //     addNs(deadline, blockPeriodNs());
+    // }
+
+    // Old timing above, newer improved timing mechanism
+
+    (void)clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, deadline, nullptr);
     timespec now = monotonicNow();
-    if (cmpTimespec(now, *deadline) > 0) {
-        // If we overran, re-anchor to avoid accumulating wakeup drift.
+
+    long halfBlockNs = (long)(blockPeriodNs() / 2ULL);
+    timespec thresh = *deadline;
+    addNs(&thresh, halfBlockNs);
+    if (cmpTimespec(now, thresh) > 0) {
         *deadline = now;
         addNs(deadline, blockPeriodNs());
+    } else {
+        addNs(deadline, blockPeriodNs());
     }
+
 }
 
 static void initAdaptiveSrc(AdaptiveSrcController *src, float initialFill, float baseRatio) {
@@ -898,13 +914,14 @@ static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
             continue;
         }
         int16_t block[BUFFER_FRAMES * 2U];
+        float gain = ctx->nodeGainAtomics[node].load(std::memory_order_relaxed);
         for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
             for (uint32_t channel = 0; channel < 2; ++channel) {
                 float sample = rt->inputs[node][channel][frame];
                 if (!std::isfinite(sample)) {
                     sample = 0.0f;
                 }
-                sample *= kBluetoothOutputPeakLimit;
+                sample *= gain * kBluetoothOutputPeakLimit;
                 if (sample > 1.0f) sample = 1.0f;
                 if (sample < -1.0f) sample = -1.0f;
                 int32_t value = (int32_t)lrintf(sample * 32767.0f);
@@ -1831,7 +1848,50 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
         (graph.topologyGeneration != rt->snapshot.topologyGeneration) ||
         !sameThingLayout(graph, rt->snapshot);
 
-    rt->snapshot = graph;
+    AudioGraphState compiledGraph = graph;
+    int helperIndex = -1;
+    for (uint16_t i = 0; i < compiledGraph.thingCount; ++i) {
+        if (strcmp(compiledGraph.things[i].id, "routing_helper") == 0) {
+            helperIndex = (int)i;
+            break;
+        }
+    }
+    if (helperIndex >= 0) {
+        AudioGraphEdgeInfo compiledEdges[AUDIO_GRAPH_MAX_EDGES] = {};
+        uint16_t compiledEdgeCount = 0;
+        for (uint16_t i = 0; i < compiledGraph.edgeCount; ++i) {
+            const AudioGraphEdgeInfo &edge = compiledGraph.edges[i];
+            if (strcmp(edge.src, "routing_helper") != 0 &&
+                strcmp(edge.dst, "routing_helper") != 0 &&
+                compiledEdgeCount < AUDIO_GRAPH_MAX_EDGES) {
+                compiledEdges[compiledEdgeCount++] = edge;
+            }
+        }
+        for (uint16_t inIndex = 0; inIndex < graph.edgeCount; ++inIndex) {
+            const AudioGraphEdgeInfo &incoming = graph.edges[inIndex];
+            if (strcmp(incoming.dst, "routing_helper") != 0) {
+                continue;
+            }
+            for (uint16_t outIndex = 0; outIndex < graph.edgeCount; ++outIndex) {
+                const AudioGraphEdgeInfo &outgoing = graph.edges[outIndex];
+                if (strcmp(outgoing.src, "routing_helper") != 0 ||
+                    incoming.dstChannel != outgoing.srcChannel ||
+                    compiledEdgeCount >= AUDIO_GRAPH_MAX_EDGES) {
+                    continue;
+                }
+                AudioGraphEdgeInfo direct = {};
+                memcpy(direct.src, incoming.src, sizeof(direct.src));
+                memcpy(direct.dst, outgoing.dst, sizeof(direct.dst));
+                direct.srcChannel = incoming.srcChannel;
+                direct.dstChannel = outgoing.dstChannel;
+                compiledEdges[compiledEdgeCount++] = direct;
+            }
+        }
+        memcpy(compiledGraph.edges, compiledEdges, sizeof(compiledEdges));
+        compiledGraph.edgeCount = compiledEdgeCount;
+    }
+
+    rt->snapshot = compiledGraph;
     rt->sourceNodeCount = 0;
     rt->processNodeCount = 0;
     rt->sinkNodeCount = 0;
@@ -1864,6 +1924,7 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
             rt->sourceNodes[rt->sourceNodeCount++] = i;
         }
         if ((rt->nodeKind[i] == NODE_EFFECT || rt->nodeKind[i] == NODE_PASS) &&
+            strcmp(rt->snapshot.things[i].id, "routing_helper") != 0 &&
             rt->processNodeCount < AUDIO_GRAPH_MAX_THINGS) {
             rt->processNodes[rt->processNodeCount++] = i;
         }
@@ -2248,6 +2309,44 @@ uint32_t AudioContext::pushBluetoothOutputPcm(const int16_t *stereoFrames, uint3
     return accepted;
 }
 
+void AudioContext::updateBluetoothOutputRate(uint32_t packetFrames, uint64_t nowMs) {
+    if (packetFrames == 0 || !bluetoothOutputActive.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (bluetoothOutputRateLastUpdateMs != 0 &&
+        nowMs - bluetoothOutputRateLastUpdateMs < 10U) {
+        return;
+    }
+
+    const uint32_t available = getBluetoothOutputAvailable();
+    uint64_t elapsedMs = bluetoothOutputRateLastUpdateMs == 0
+                             ? 10U
+                             : nowMs - bluetoothOutputRateLastUpdateMs;
+    if (elapsedMs > 100U) {
+        elapsedMs = 100U;
+    }
+    bluetoothOutputRateLastUpdateMs = nowMs;
+
+    if (!bluetoothOutputRateInitialized) {
+        bluetoothOutputFilteredFill = (float)available;
+        bluetoothOutputRateInitialized = 1U;
+    } else {
+        float alpha = 1.0f - expf(-(float)elapsedMs / 80.0f);
+        bluetoothOutputFilteredFill +=
+            ((float)available - bluetoothOutputFilteredFill) * alpha;
+    }
+
+    const float targetFill = (float)packetFrames * 0.5f + (float)BUFFER_FRAMES * 0.5f;
+    const float fillError = (bluetoothOutputFilteredFill - targetFill) / targetFill;
+    bluetoothOutputRateIntegral += fillError * (float)elapsedMs * 0.0000001175f;
+    if (bluetoothOutputRateIntegral > 0.003f) bluetoothOutputRateIntegral = 0.003f;
+    if (bluetoothOutputRateIntegral < -0.003f) bluetoothOutputRateIntegral = -0.003f;
+    float ratio = 1.0f + fillError * 0.0015f + bluetoothOutputRateIntegral;
+    if (ratio > 1.005f) ratio = 1.005f;
+    if (ratio < 0.995f) ratio = 0.995f;
+    bluetoothOutputRateRatio = ratio;
+}
+
 uint32_t AudioContext::resampleBluetoothOutputPcm(int16_t *stereoFrames, uint32_t outputFrames) {
     if (!stereoFrames || outputFrames == 0) {
         return 0;
@@ -2255,15 +2354,7 @@ uint32_t AudioContext::resampleBluetoothOutputPcm(int16_t *stereoFrames, uint32_
     uint32_t readIndex = bluetoothOutputRead.load(std::memory_order_relaxed);
     const uint32_t writeIndex = bluetoothOutputWrite.load(std::memory_order_acquire);
     const uint32_t available = writeIndex - readIndex;
-    const float targetFill = (float)outputFrames * 1.5f;
-    const float fillError = ((float)available - targetFill) / targetFill;
-    bluetoothOutputRateIntegral += fillError * 0.0000025f;
-    if (bluetoothOutputRateIntegral > 0.003f) bluetoothOutputRateIntegral = 0.003f;
-    if (bluetoothOutputRateIntegral < -0.003f) bluetoothOutputRateIntegral = -0.003f;
-    float ratio = 1.0f + fillError * 0.0015f + bluetoothOutputRateIntegral;
-    if (ratio > 1.005f) ratio = 1.005f;
-    if (ratio < 0.995f) ratio = 0.995f;
-    bluetoothOutputRateRatio = ratio;
+    const float ratio = bluetoothOutputRateRatio;
 
     const uint32_t neededFrames = (uint32_t)(bluetoothOutputReadFraction +
                                              (float)outputFrames * ratio) + 2U;
@@ -2305,6 +2396,9 @@ void AudioContext::setBluetoothOutputActive(bool active) {
     bluetoothOutputReadFraction = 0.0f;
     bluetoothOutputRateIntegral = 0.0f;
     bluetoothOutputRateRatio = 1.0f;
+    bluetoothOutputFilteredFill = 0.0f;
+    bluetoothOutputRateLastUpdateMs = 0;
+    bluetoothOutputRateInitialized = 0;
     if (active) {
         bluetoothOutputActive.store(1, std::memory_order_release);
     }

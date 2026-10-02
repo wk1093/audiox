@@ -53,7 +53,7 @@ RUNTIME_LIBS += $(SBC_STATIC_LIB)
 # Version information
 AUDIOX_VERSION_MAJOR = 1
 AUDIOX_VERSION_MINOR = 6
-AUDIOX_VERSION_PATCH = 9
+AUDIOX_VERSION_PATCH = 12
 
 # Auto-detected from firmware after fetch_deps runs.
 KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")

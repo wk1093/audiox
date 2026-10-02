@@ -89,6 +89,7 @@ struct ConfigData {
     uint32_t captureChannels;
     uint32_t sampleSize;
     uint8_t soundboardMode;
+    uint8_t framebufferSoundboard;
 };
 
 enum SoundboardMode : uint8_t {

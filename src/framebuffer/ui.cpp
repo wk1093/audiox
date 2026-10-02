@@ -12,6 +12,7 @@
 #include <time.h>
 #include <cmath>
 #include <errno.h>
+#include <dirent.h>
 #include <unistd.h>
 #include <sys/syscall.h>
 #include <linux/reboot.h>
@@ -70,6 +71,23 @@ static int _calculatedLogoHeight = 0;
 static bool uiSleepEnabled = false;
 static bool uiSleepFrameDrawn = false;
 static bool uiSleepLastTouchDown = false;
+
+struct SoundboardUiState {
+    char files[AUDIO_SFX_SLOT_COUNT][MIDI_SFX_PATH_MAX]{};
+    uint8_t modes[AUDIO_SFX_SLOT_COUNT]{};
+    int count{0};
+    int page{0};
+    int pressedPad{-1};
+    int startX{0};
+    int startY{0};
+    bool wasDown{false};
+    bool held{false};
+    bool visible{false};
+    uint64_t lastConfigMs{0};
+    uint64_t lastFilesMs{0};
+};
+
+static SoundboardUiState soundboardUi;
 
 static inline int requestRebootCommand(int cmd) {
     sync();
@@ -527,6 +545,150 @@ static inline void updateScrollArea(ScrollAreaState &state, TouchState *touch, i
     state.offset = clampInt(state.offset, 0, maxOffset);
 }
 
+static void refreshSoundboardFiles(FramebufferContext *fb, uint64_t nowMs) {
+    SoundboardUiState &ui = soundboardUi;
+    if (ui.lastFilesMs && nowMs - ui.lastFilesMs < 2000) return;
+    ui.lastFilesMs = nowMs;
+
+    DIR *dir = opendir(SFX_ROOT_DIR);
+    if (!dir) return;
+    char files[AUDIO_SFX_SLOT_COUNT][MIDI_SFX_PATH_MAX] = {};
+    int count = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != nullptr && count < AUDIO_SFX_SLOT_COUNT) {
+        size_t len = strlen(entry->d_name);
+        if (len < 5 || len >= MIDI_SFX_PATH_MAX || strcmp(entry->d_name + len - 4, ".wav") != 0) continue;
+        if (entry->d_type != DT_REG && entry->d_type != DT_UNKNOWN) continue;
+        snprintf(files[count++], MIDI_SFX_PATH_MAX, "%s", entry->d_name);
+    }
+    closedir(dir);
+    for (int i = 1; i < count; ++i) {
+        char name[MIDI_SFX_PATH_MAX];
+        memcpy(name, files[i], sizeof(name));
+        int pos = i;
+        while (pos > 0 && strcmp(files[pos - 1], name) > 0) {
+            memcpy(files[pos], files[pos - 1], sizeof(name));
+            --pos;
+        }
+        memcpy(files[pos], name, sizeof(name));
+    }
+
+    if (ui.wasDown) return;
+    ui.count = count;
+    memcpy(ui.files, files, sizeof(files));
+    MidiMapData map = fb->app->config->readMidiMapFile();
+    for (int i = 0; i < count; ++i) {
+        ui.modes[i] = SOUNDBOARD_MODE_PLAY;
+        for (uint32_t j = 0; j < map.soundModeCount && j < MIDI_SOUND_MODES_MAX; ++j) {
+            if (strcmp(ui.files[i], map.soundModes[j].sfxPath) == 0) {
+                ui.modes[i] = map.soundModes[j].mode;
+                break;
+            }
+        }
+    }
+}
+
+static void drawSoundboard(FramebufferContext *fb, TouchState *touch) {
+    SoundboardUiState &ui = soundboardUi;
+    const int padding = 10;
+    const int gap = 8;
+    const int columns = fb->width < 480 ? 2 : 4;
+    const int rows = 3;
+    const int pageSize = columns * rows;
+    const int headerHeight = 44;
+    const int padWidth = ((int)fb->width - 2 * padding - (columns - 1) * gap) / columns;
+    const int padHeight = ((int)fb->height - headerHeight - 2 * padding - (rows - 1) * gap) / rows;
+    const int pages = (ui.count + pageSize - 1) / pageSize;
+    ui.page = clampInt(ui.page, 0, pages > 0 ? pages - 1 : 0);
+    const bool down = touch && touch->is_pressed;
+    const int touchX = touch ? touch->x : 0;
+    const int touchY = touch ? touch->y : 0;
+
+    if (down && !ui.wasDown) {
+        ui.startX = touchX;
+        ui.startY = touchY;
+        ui.pressedPad = -1;
+        for (int cell = 0; cell < pageSize; ++cell) {
+            int index = ui.page * pageSize + cell;
+            if (index >= ui.count) break;
+            int x = padding + (cell % columns) * (padWidth + gap);
+            int y = headerHeight + padding + (cell / columns) * (padHeight + gap);
+            if (pointInRect(touchX, touchY, x, y, padWidth, padHeight)) {
+                ui.pressedPad = index;
+                if (ui.modes[index] == SOUNDBOARD_MODE_HOLD && fb->app->audio) {
+                    char path[sizeof(SFX_ROOT_DIR) + MIDI_SFX_PATH_MAX];
+                    snprintf(path, sizeof(path), "%s/%s", SFX_ROOT_DIR, ui.files[index]);
+                    ui.held = fb->app->audio->startHeldSfx(path) == RET_OK;
+                }
+                break;
+            }
+        }
+    }
+    if (down && ui.held && ui.pressedPad >= 0) {
+        int cell = ui.pressedPad % pageSize;
+        int x = padding + (cell % columns) * (padWidth + gap);
+        int y = headerHeight + padding + (cell / columns) * (padHeight + gap);
+        if (!pointInRect(touchX, touchY, x, y, padWidth, padHeight)) {
+            fb->app->audio->stopHeldSfx();
+            ui.held = false;
+        }
+    }
+    if (!down && ui.wasDown) {
+        if (ui.held && fb->app->audio) fb->app->audio->stopHeldSfx();
+        ui.held = false;
+        int dx = touchX - ui.startX;
+        int dy = touchY - ui.startY;
+        if (dx > 50 && abs(dx) > abs(dy)) ui.page = clampInt(ui.page - 1, 0, pages > 0 ? pages - 1 : 0);
+        else if (dx < -50 && abs(dx) > abs(dy)) ui.page = clampInt(ui.page + 1, 0, pages > 0 ? pages - 1 : 0);
+        else if (abs(dx) < kButtonDragThresholdPx && abs(dy) < kButtonDragThresholdPx) {
+            if (ui.startY < headerHeight) {
+                if (ui.startX < 80 && fb->app->audio) fb->app->audio->stopAllSfx();
+                else if (ui.startX >= (int)fb->width - 80) ui.page = clampInt(ui.page + 1, 0, pages > 0 ? pages - 1 : 0);
+                else if (ui.startX >= (int)fb->width - 160) ui.page = clampInt(ui.page - 1, 0, pages > 0 ? pages - 1 : 0);
+            } else if (ui.pressedPad >= 0 && ui.modes[ui.pressedPad] != SOUNDBOARD_MODE_HOLD && fb->app->audio) {
+                int cell = ui.pressedPad % pageSize;
+                int x = padding + (cell % columns) * (padWidth + gap);
+                int y = headerHeight + padding + (cell / columns) * (padHeight + gap);
+                if (pointInRect(touchX, touchY, x, y, padWidth, padHeight)) {
+                    char path[sizeof(SFX_ROOT_DIR) + MIDI_SFX_PATH_MAX];
+                    snprintf(path, sizeof(path), "%s/%s", SFX_ROOT_DIR, ui.files[ui.pressedPad]);
+                    if (fb->app->audio->triggerSfx(path) != RET_OK) {
+                        printf("[FBUI] [WARN] Could not play %s\n", path);
+                    }
+                }
+            }
+        }
+        ui.pressedPad = -1;
+    }
+    ui.wasDown = down;
+
+    fb->beginFrame();
+    fb->drawRect(0, 0, fb->width, fb->height, 15, 20, 30);
+    fb->drawRect(0, 0, fb->width, headerHeight, 25, 35, 50);
+    fb->drawText(14, 17, "STOP ALL", 245, 125, 105, 1);
+    char title[48];
+    if (fb->width < 480) snprintf(title, sizeof(title), "SFX %d/%d", ui.page + 1, pages > 0 ? pages : 1);
+    else snprintf(title, sizeof(title), "Soundboard  %d/%d", ui.page + 1, pages > 0 ? pages : 1);
+    fb->drawText(90, 17, title, 220, 232, 240, 1);
+    fb->drawText((int)fb->width - 148, 17, "<", 220, 232, 240, 1);
+    fb->drawText((int)fb->width - 68, 17, ">", 220, 232, 240, 1);
+    if (ui.count == 0) fb->drawText(padding, headerHeight + 20, "No sounds uploaded", 190, 205, 220, 1);
+    for (int cell = 0; cell < pageSize; ++cell) {
+        int index = ui.page * pageSize + cell;
+        if (index >= ui.count) break;
+        int x = padding + (cell % columns) * (padWidth + gap);
+        int y = headerHeight + padding + (cell / columns) * (padHeight + gap);
+        bool pressed = down && ui.pressedPad == index;
+        fb->drawRect(x, y, padWidth, padHeight, pressed ? 64 : 35, pressed ? 128 : 68, pressed ? 142 : 90);
+        drawRectBorder(fb, x, y, padWidth, padHeight, pressed ? 126 : 77, pressed ? 216 : 144, pressed ? 210 : 165, 2);
+        char label[MIDI_SFX_PATH_MAX];
+        trimLabelToWidth(ui.files[index], label, sizeof(label), (padWidth - 16) / 8);
+        fb->drawText(x + 8, y + padHeight / 2 - 4, label, 245, 248, 250, 1);
+        if (ui.modes[index] == SOUNDBOARD_MODE_HOLD) fb->drawText(x + 8, y + padHeight - 16, "HOLD", 160, 215, 210, 1);
+    }
+    fb->present();
+}
+
 void FramebufferContext::drawBootLogo() {
     if (!isReady()) {
         return;
@@ -693,6 +855,23 @@ void FramebufferContext::drawMain(TouchState *touchState) {
     }
 
     const bool touchDown = touchState && touchState->is_pressed;
+    uint64_t viewNowMs = uiMonotonicMs();
+    if (app && app->config && (!soundboardUi.lastConfigMs || viewNowMs - soundboardUi.lastConfigMs >= 500)) {
+        soundboardUi.lastConfigMs = viewNowMs;
+        bool visible = app->config->readConfigFile().framebufferSoundboard != 0;
+        if (soundboardUi.visible && !visible && soundboardUi.held && app->audio) app->audio->stopHeldSfx();
+        if (soundboardUi.visible != visible) {
+            soundboardUi.wasDown = touchDown;
+            soundboardUi.held = false;
+            soundboardUi.pressedPad = -1;
+        }
+        soundboardUi.visible = visible;
+    }
+    if (soundboardUi.visible) {
+        if (app && app->config) refreshSoundboardFiles(this, viewNowMs);
+        drawSoundboard(this, touchState);
+        return;
+    }
 
     if (uiSleepEnabled) {
         if (!uiSleepFrameDrawn) {

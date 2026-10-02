@@ -56,6 +56,7 @@ const state = {
   thingsSignature: '',
   effectsPollInFlight: false,
   soundboardModesBySfx: {},
+  framebufferView: 'meters',
   stopAllMidiNote: null,
   samplerToggleMidiNote: null,
   samplerKeyboardEnabled: true,
@@ -448,6 +449,7 @@ function parseConfigText(text) {
     usb_sample_rate: 48000,
     usb_sample_size: 2,
     soundboard_mode: 'play',
+    framebuffer_view: 'meters',
   };
 
   for (const rawLine of text.split(/\r?\n/)) {
@@ -459,6 +461,10 @@ function parseConfigText(text) {
     if (key === 'soundboard_mode') {
       const mode = line.slice(eq + 1).trim().toLowerCase();
       cfg.soundboard_mode = (mode === 'hold') ? 'hold' : 'play';
+      continue;
+    }
+    if (key === 'framebuffer_view') {
+      cfg.framebuffer_view = line.slice(eq + 1).trim() === 'soundboard' ? 'soundboard' : 'meters';
       continue;
     }
     const value = Number(line.slice(eq + 1).trim());
@@ -475,6 +481,7 @@ function formatConfigText(cfg) {
     `usb_sample_rate=${cfg.usb_sample_rate}`,
     `usb_sample_size=${cfg.usb_sample_size}`,
     `soundboard_mode=${cfg.soundboard_mode || 'play'}`,
+    `framebuffer_view=${cfg.framebuffer_view || 'meters'}`,
     ''
   ].join('\n');
 }
@@ -548,6 +555,7 @@ function getConfigFromForm() {
     usb_sample_rate: Number(document.getElementById('usb_sample_rate').value) || 48000,
     usb_sample_size: Number(document.getElementById('usb_sample_size').value) || 2,
     soundboard_mode: 'play',
+    framebuffer_view: state.framebufferView,
   };
 }
 
@@ -1667,6 +1675,46 @@ async function loadConfig() {
   }
 }
 
+function renderFramebufferView() {
+  const button = document.getElementById('btn-fb-view');
+  const active = state.framebufferView === 'soundboard';
+  button.textContent = active ? 'Show Meters on Display' : 'Show Soundboard on Display';
+  button.setAttribute('aria-pressed', String(active));
+}
+
+async function loadFramebufferView() {
+  try {
+    const res = await fetch('/api/framebuffer/view');
+    if (!res.ok) throw new Error(`${res.status}`);
+    const data = await res.json();
+    state.framebufferView = data.view === 'soundboard' ? 'soundboard' : 'meters';
+    renderFramebufferView();
+  } catch (err) {
+    setStatus(`display mode load failed: ${err}`, 'warn');
+  }
+}
+
+async function toggleFramebufferView() {
+  const view = state.framebufferView === 'soundboard' ? 'meters' : 'soundboard';
+  const button = document.getElementById('btn-fb-view');
+  button.disabled = true;
+  try {
+    const res = await fetch('/api/framebuffer/view', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `view=${view}`,
+    });
+    if (!res.ok) throw new Error(`${res.status} ${(await res.text()).trim()}`);
+    state.framebufferView = view;
+    renderFramebufferView();
+    setStatus(`display: ${view}`, 'ok');
+  } catch (err) {
+    setStatus(`display mode save failed: ${err}`, 'warn');
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function saveConfig() {
   const cfg = getConfigFromForm();
   const payload = formatConfigText(cfg);
@@ -2460,6 +2508,7 @@ async function saveSamplerConfig() {
 async function initializeGraphFromConfig() {
   ensureRoutingGraph();
   await loadConfig();
+  await loadFramebufferView();
   await loadSoundboardModes();
   await listSfxFiles();
   await loadMappings();
@@ -2840,6 +2889,7 @@ document.getElementById('btn-sb-refresh').addEventListener('click', async () => 
 });
 
 document.getElementById('btn-sb-stop-all').addEventListener('click', triggerStopAll);
+document.getElementById('btn-fb-view').addEventListener('click', toggleFramebufferView);
 
 document.getElementById('btn-sb-assign-stop-all').addEventListener('click', async () => {
   const isTarget = state.mappingAssignTarget === '__action_stop_all__';

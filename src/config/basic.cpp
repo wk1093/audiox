@@ -126,6 +126,8 @@ static int readConfigPath(const char *path, ConfigData *out, int warnIfMissing) 
             cfg.sampleSize = (uint32_t)strtoul(value, NULL, 10);
         } else if (strcmp(key, "soundboard_mode") == 0) {
             cfg.soundboardMode = soundboardModeFromString(value);
+        } else if (strcmp(key, "framebuffer_view") == 0) {
+            cfg.framebufferSoundboard = strcmp(value, "soundboard") == 0 ? 1 : 0;
         }
     }
 
@@ -171,6 +173,7 @@ int ConfigStore::writeConfigFile(ConfigData *cfg) {
     dprintf(fd, "usb_capture_channels=%u\n", cfg->captureChannels);
     dprintf(fd, "usb_sample_size=%u\n", cfg->sampleSize);
     dprintf(fd, "soundboard_mode=%s\n", soundboardModeToString(cfg->soundboardMode));
+    dprintf(fd, "framebuffer_view=%s\n", cfg->framebufferSoundboard ? "soundboard" : "meters");
     close(fd);
     return 0;
 }

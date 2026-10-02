@@ -192,15 +192,31 @@ static void waitUntilBlockDeadline(timespec *deadline) {
         return;
     }
 
-    (void)clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, deadline, nullptr);
-    addNs(deadline, blockPeriodNs());
+    // (void)clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, deadline, nullptr);
+    // addNs(deadline, blockPeriodNs());
 
+    // timespec now = monotonicNow();
+    // if (cmpTimespec(now, *deadline) > 0) {
+    //     // If we overran, re-anchor to avoid accumulating wakeup drift.
+    //     *deadline = now;
+    //     addNs(deadline, blockPeriodNs());
+    // }
+
+    // Old timing above, newer improved timing mechanism
+
+    (void)clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, deadline, nullptr);
     timespec now = monotonicNow();
-    if (cmpTimespec(now, *deadline) > 0) {
-        // If we overran, re-anchor to avoid accumulating wakeup drift.
+
+    long halfBlockNs = (long)(blockPeriodNs() / 2ULL);
+    timespec thresh = *deadline;
+    addNs(&thresh, halfBlockNs);
+    if (cmpTimespec(now, thresh) > 0) {
         *deadline = now;
         addNs(deadline, blockPeriodNs());
+    } else {
+        addNs(deadline, blockPeriodNs());
     }
+
 }
 
 static void initAdaptiveSrc(AdaptiveSrcController *src, float initialFill, float baseRatio) {
@@ -2293,6 +2309,44 @@ uint32_t AudioContext::pushBluetoothOutputPcm(const int16_t *stereoFrames, uint3
     return accepted;
 }
 
+void AudioContext::updateBluetoothOutputRate(uint32_t packetFrames, uint64_t nowMs) {
+    if (packetFrames == 0 || !bluetoothOutputActive.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (bluetoothOutputRateLastUpdateMs != 0 &&
+        nowMs - bluetoothOutputRateLastUpdateMs < 10U) {
+        return;
+    }
+
+    const uint32_t available = getBluetoothOutputAvailable();
+    uint64_t elapsedMs = bluetoothOutputRateLastUpdateMs == 0
+                             ? 10U
+                             : nowMs - bluetoothOutputRateLastUpdateMs;
+    if (elapsedMs > 100U) {
+        elapsedMs = 100U;
+    }
+    bluetoothOutputRateLastUpdateMs = nowMs;
+
+    if (!bluetoothOutputRateInitialized) {
+        bluetoothOutputFilteredFill = (float)available;
+        bluetoothOutputRateInitialized = 1U;
+    } else {
+        float alpha = 1.0f - expf(-(float)elapsedMs / 80.0f);
+        bluetoothOutputFilteredFill +=
+            ((float)available - bluetoothOutputFilteredFill) * alpha;
+    }
+
+    const float targetFill = (float)packetFrames * 0.5f + (float)BUFFER_FRAMES * 0.5f;
+    const float fillError = (bluetoothOutputFilteredFill - targetFill) / targetFill;
+    bluetoothOutputRateIntegral += fillError * (float)elapsedMs * 0.0000001175f;
+    if (bluetoothOutputRateIntegral > 0.003f) bluetoothOutputRateIntegral = 0.003f;
+    if (bluetoothOutputRateIntegral < -0.003f) bluetoothOutputRateIntegral = -0.003f;
+    float ratio = 1.0f + fillError * 0.0015f + bluetoothOutputRateIntegral;
+    if (ratio > 1.005f) ratio = 1.005f;
+    if (ratio < 0.995f) ratio = 0.995f;
+    bluetoothOutputRateRatio = ratio;
+}
+
 uint32_t AudioContext::resampleBluetoothOutputPcm(int16_t *stereoFrames, uint32_t outputFrames) {
     if (!stereoFrames || outputFrames == 0) {
         return 0;
@@ -2300,15 +2354,7 @@ uint32_t AudioContext::resampleBluetoothOutputPcm(int16_t *stereoFrames, uint32_
     uint32_t readIndex = bluetoothOutputRead.load(std::memory_order_relaxed);
     const uint32_t writeIndex = bluetoothOutputWrite.load(std::memory_order_acquire);
     const uint32_t available = writeIndex - readIndex;
-    const float targetFill = (float)outputFrames * 1.5f;
-    const float fillError = ((float)available - targetFill) / targetFill;
-    bluetoothOutputRateIntegral += fillError * 0.0000025f;
-    if (bluetoothOutputRateIntegral > 0.003f) bluetoothOutputRateIntegral = 0.003f;
-    if (bluetoothOutputRateIntegral < -0.003f) bluetoothOutputRateIntegral = -0.003f;
-    float ratio = 1.0f + fillError * 0.0015f + bluetoothOutputRateIntegral;
-    if (ratio > 1.005f) ratio = 1.005f;
-    if (ratio < 0.995f) ratio = 0.995f;
-    bluetoothOutputRateRatio = ratio;
+    const float ratio = bluetoothOutputRateRatio;
 
     const uint32_t neededFrames = (uint32_t)(bluetoothOutputReadFraction +
                                              (float)outputFrames * ratio) + 2U;
@@ -2350,6 +2396,9 @@ void AudioContext::setBluetoothOutputActive(bool active) {
     bluetoothOutputReadFraction = 0.0f;
     bluetoothOutputRateIntegral = 0.0f;
     bluetoothOutputRateRatio = 1.0f;
+    bluetoothOutputFilteredFill = 0.0f;
+    bluetoothOutputRateLastUpdateMs = 0;
+    bluetoothOutputRateInitialized = 0;
     if (active) {
         bluetoothOutputActive.store(1, std::memory_order_release);
     }

@@ -31,9 +31,11 @@
 #define BT_A2DP_DEFAULT_MEDIA_MTU 672U
 #define BT_A2DP_REQUESTED_MEDIA_MTU 1024U
 #define BT_A2DP_MAX_MEDIA_MTU 1024U
+#define BT_A2DP_FLUSH_TIMEOUT_MS 20U
+#define BT_A2DP_MEDIA_SNDBUF 4096U
 #define BT_A2DP_TARGET_BITPOOL 20U
 #define BT_RTP_SBC_HEADER_SIZE 13U
-#define BT_MAX_SBC_FRAMES_PER_PACKET 15U
+#define BT_MAX_SBC_FRAMES_PER_PACKET 8U
 
 #define BT_EVT_AUTH_COMPLETE 0x06
 #define BT_EVT_PIN_CODE_REQUEST 0x16
@@ -1308,10 +1310,15 @@ bool BluetoothContext::connectOutputMedia() {
     Security security = {BT_SECURITY_MEDIUM, 0};
     (void)setsockopt(outputMediaFd, BT_SOL_BLUETOOTH, BT_SECURITY_OPT,
                      &security, sizeof(security));
+    int sendBufferSize = BT_A2DP_MEDIA_SNDBUF;
+    if (setsockopt(outputMediaFd, SOL_SOCKET, SO_SNDBUF,
+                   &sendBufferSize, sizeof(sendBufferSize)) < 0) {
+        printf("[BT] [WARN] could not limit A2DP media send buffer: %s\n", strerror(errno));
+    }
     L2capOptions l2capOptions = {};
     l2capOptions.omtu = BT_A2DP_REQUESTED_MEDIA_MTU;
     l2capOptions.imtu = BT_A2DP_REQUESTED_MEDIA_MTU;
-    l2capOptions.flushTo = 0xFFFF;
+    l2capOptions.flushTo = BT_A2DP_FLUSH_TIMEOUT_MS;
     if (setsockopt(outputMediaFd, BT_SOL_L2CAP, BT_L2CAP_OPTIONS,
                    &l2capOptions, sizeof(l2capOptions)) < 0) {
         printf("[BT] [WARN] could not request larger A2DP media MTU: %s\n", strerror(errno));
@@ -1435,6 +1442,7 @@ void BluetoothContext::pumpOutputAudio() {
     }
     outputFramesPerPacket = (uint8_t)frameCount;
     const uint32_t pcmFrames = samplesPerFrame * frameCount;
+    app->audio->updateBluetoothOutputRate(pcmFrames, nowMs);
     if (app->audio->getBluetoothOutputAvailable() < pcmFrames) {
         return;
     }

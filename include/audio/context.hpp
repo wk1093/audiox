@@ -204,6 +204,9 @@ struct AudioContext {
     float bluetoothOutputReadFraction = 0.0f;
     float bluetoothOutputRateIntegral = 0.0f;
     float bluetoothOutputRateRatio = 1.0f;
+    float bluetoothOutputFilteredFill = 0.0f;
+    uint64_t bluetoothOutputRateLastUpdateMs = 0;
+    uint8_t bluetoothOutputRateInitialized = 0;
 
     // Per-thing output gain (0.0-1.0). Indexed by current routing snapshot node index.
     // Updated atomically so the audio thread reads without locking.
@@ -261,6 +264,7 @@ struct AudioContext {
     // not block and drops newest frames if the realtime consumer falls behind.
     uint32_t pushBluetoothPcm(const int16_t *stereoFrames, uint32_t frames);
     uint32_t pushBluetoothOutputPcm(const int16_t *stereoFrames, uint32_t frames);
+    void updateBluetoothOutputRate(uint32_t packetFrames, uint64_t nowMs);
     uint32_t resampleBluetoothOutputPcm(int16_t *stereoFrames, uint32_t outputFrames);
     uint32_t getBluetoothOutputAvailable() const;
     float getGraphThingChannelLevel(const char *thingId, int channelIndex) const;

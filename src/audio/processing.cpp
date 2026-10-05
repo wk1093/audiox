@@ -2,6 +2,9 @@
 #include "audio/alsa_pcm.h"
 #include "audio/effects/slot.hpp"
 #include "audio/processing_fx.hpp"
+#include "audio/pcm_convert.hpp"
+#include "audio/graph_processor.hpp"
+#include "audio/capture_ring.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -14,6 +17,10 @@
 
 namespace {
 
+#ifndef AUDIOX_USE_SHARED_GRAPH_PROCESSOR
+#define AUDIOX_USE_SHARED_GRAPH_PROCESSOR 1
+#endif
+
 constexpr uint32_t kMaxChannelsPerThing = 16;
 constexpr float kSrcRatioMin = 0.97f;
 constexpr float kSrcRatioMax = 1.03f;
@@ -22,6 +29,7 @@ constexpr float kSrcI = 0.003f;
 constexpr uint32_t kMaxCaptureStreams = 4;
 constexpr uint32_t kMaxPlaybackStreams = 4;
 constexpr uint32_t kCaptureRingFrames = BUFFER_FRAMES * 16U;
+using CaptureRing = audiox::capture::PcmCaptureRing<kCaptureRingFrames, kMaxChannelsPerThing>;
 constexpr uint32_t kReopenRetryBlocks = 200;
 constexpr float kSoundboardClipGain = 0.35f;
 constexpr float kBluetoothOutputPeakLimit = 0.2511886f;
@@ -59,41 +67,14 @@ struct RuntimeGraph {
         uint64_t startedAtBlock;
     };
 
-    struct CompiledRoute {
-        uint16_t srcNode;
-        uint16_t dstNode;
-        uint8_t srcChannel;
-        uint8_t dstChannel;
-    };
-
-    struct AlsaCaptureStream {
-        int active;
-        snd_pcm_t *pcm;
-        uint16_t nodeIndex;
-        uint8_t channels;
-        uint32_t card;
-        uint32_t device;
-        uint32_t sampleRate;
-        uint32_t reopenRetryBlocks;
-        uint32_t ringHead;
-        uint32_t ringTail;
-        uint32_t ringCount;
-        float readFrac;
-        snd_pcm_format_t format;
-        int mmapAccess;
-        AdaptiveSrcController src;
-        float lastSample[kMaxChannelsPerThing];
-        char path[64];
-        int16_t ioBlock[BUFFER_FRAMES * kMaxChannelsPerThing];
-        int32_t ioBlock32[BUFFER_FRAMES * kMaxChannelsPerThing];
-        int16_t ring[kCaptureRingFrames * kMaxChannelsPerThing];
-    };
+    using CompiledRoute = audiox::graph::BlockRoute;
 
     struct AlsaPlaybackStream {
         int active;
         snd_pcm_t *pcm;
         uint16_t nodeIndex;
         uint8_t channels;
+        uint8_t isGadget;
         uint32_t card;
         uint32_t device;
         uint32_t sampleRate;
@@ -131,12 +112,9 @@ struct RuntimeGraph {
     uint32_t effectParamsSeq[AUDIO_GRAPH_MAX_THINGS];
     SoundboardVoice soundboardVoices[kMaxSoundboardVoices];
     int16_t holdVoiceIndex;
-    int16_t nodeToCaptureStream[AUDIO_GRAPH_MAX_THINGS];
     int16_t nodeToPlaybackStream[AUDIO_GRAPH_MAX_THINGS];
     int16_t soundboardNodeIndex;
-    AlsaCaptureStream capture[kMaxCaptureStreams];
     AlsaPlaybackStream playback[kMaxPlaybackStreams];
-    uint16_t captureCount;
     uint16_t playbackCount;
     uint64_t blocksProcessed;
     uint64_t nextStatsBlock;
@@ -144,6 +122,37 @@ struct RuntimeGraph {
     char publishedPlayingBasenames[AUDIO_SFX_SLOT_COUNT][MIDI_SFX_PATH_MAX];
     std::atomic<float> channelLevels[AUDIO_GRAPH_MAX_THINGS][kMaxChannelsPerThing];
 };
+
+struct AlsaCaptureBackend {
+    struct Stream {
+        int active;
+        snd_pcm_t *pcm;
+        uint16_t nodeIndex;
+        uint8_t channels;
+        uint8_t isGadget;
+        uint32_t card;
+        uint32_t device;
+        uint32_t sampleRate;
+        uint32_t reopenRetryBlocks;
+        snd_pcm_format_t format;
+        int mmapAccess;
+        AdaptiveSrcController src;
+        char path[64];
+        int16_t ioBlock[BUFFER_FRAMES * kMaxChannelsPerThing];
+        int32_t ioBlock32[BUFFER_FRAMES * kMaxChannelsPerThing];
+        CaptureRing ring;
+    };
+
+    Stream streams[kMaxCaptureStreams];
+    uint16_t count;
+    int16_t nodeToStream[AUDIO_GRAPH_MAX_THINGS];
+
+    void reset();
+    void mapGraphSources(AudioContext *ctx, const RuntimeGraph *runtime);
+    bool attachSource(AudioContext *ctx, const RuntimeGraph *runtime, uint16_t nodeIndex);
+};
+
+using AlsaCaptureStream = AlsaCaptureBackend::Stream;
 
 static uint64_t monotonicMs() {
     struct timespec ts;
@@ -413,49 +422,42 @@ static bool resolveThingCardDevice(AudioContext *ctx,
     return false;
 }
 
-static void captureRingReset(RuntimeGraph::AlsaCaptureStream *s) {
+static bool isGadgetCaptureDevice(AudioContext *ctx, uint32_t card, uint32_t device) {
+    if (!ctx) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(ctx->devicesMutex);
+    for (const auto& entry : ctx->devices) {
+        const AudioDeviceInfo& info = entry.second;
+        if (info.cardIndex == card && info.deviceIndex == device && info.hasCapture) {
+            return info.isGadget != 0;
+        }
+    }
+    return false;
+}
+
+static void captureRingReset(AlsaCaptureStream *s) {
     if (!s) {
         return;
     }
-    s->ringHead = 0;
-    s->ringTail = 0;
-    s->ringCount = 0;
-    s->readFrac = 0.0f;
-    memset(s->lastSample, 0, sizeof(s->lastSample));
+    s->ring.reset();
 }
 
-static void captureRingPush(RuntimeGraph::AlsaCaptureStream *s, const int16_t *in, uint32_t frames) {
+static void captureRingPush(AlsaCaptureStream *s, const int16_t *in, uint32_t frames) {
     if (!s || !in || s->channels == 0 || s->channels > kMaxChannelsPerThing) {
         return;
     }
 
-    for (uint32_t f = 0; f < frames; ++f) {
-        if (s->ringCount >= kCaptureRingFrames) {
-            s->ringTail = (s->ringTail + 1U) % kCaptureRingFrames;
-            s->ringCount = kCaptureRingFrames - 1U;
-        }
-
-        int16_t *dst = &s->ring[s->ringHead * kMaxChannelsPerThing];
-        const int16_t *src = &in[f * s->channels];
-        for (uint8_t ch = 0; ch < s->channels; ++ch) {
-            dst[ch] = src[ch];
-        }
-        for (uint8_t ch = s->channels; ch < kMaxChannelsPerThing; ++ch) {
-            dst[ch] = 0;
-        }
-
-        s->ringHead = (s->ringHead + 1U) % kCaptureRingFrames;
-        ++s->ringCount;
-    }
+    s->ring.push(in, s->channels, frames);
 }
 
-static inline int16_t captureRingSample(const RuntimeGraph::AlsaCaptureStream &s,
+static inline int16_t captureRingSample(const AlsaCaptureStream &s,
                                         uint32_t frameIndex,
                                         uint8_t channel) {
-    return s.ring[frameIndex * kMaxChannelsPerThing + channel];
+    return s.ring.sample(frameIndex, channel);
 }
 
-static void closeCaptureStream(RuntimeGraph::AlsaCaptureStream *s) {
+static void closeCaptureStream(AlsaCaptureStream *s) {
     if (!s) {
         return;
     }
@@ -475,7 +477,7 @@ static void closePlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
     }
 }
 
-static bool openCaptureStream(RuntimeGraph::AlsaCaptureStream *s) {
+static bool openCaptureStream(AlsaCaptureStream *s) {
     if (!s || !s->active) {
         return false;
     }
@@ -580,6 +582,86 @@ static bool openCaptureStream(RuntimeGraph::AlsaCaptureStream *s) {
     return false;
 }
 
+void AlsaCaptureBackend::reset() {
+    for (uint16_t index = 0; index < count; ++index) {
+        closeCaptureStream(&streams[index]);
+        streams[index].active = 0;
+    }
+    count = 0;
+    for (uint16_t node = 0; node < AUDIO_GRAPH_MAX_THINGS; ++node) {
+        nodeToStream[node] = -1;
+    }
+}
+
+bool AlsaCaptureBackend::attachSource(AudioContext *ctx,
+                                     const RuntimeGraph *runtime,
+                                     uint16_t nodeIndex) {
+    if (!ctx || !runtime || nodeIndex >= runtime->snapshot.thingCount || count >= kMaxCaptureStreams) {
+        return false;
+    }
+    const AudioGraphThingInfo &thing = runtime->snapshot.things[nodeIndex];
+    uint32_t card = 0;
+    uint32_t device = 0;
+    if (!resolveThingCardDevice(ctx, thing.id, true, &card, &device)) {
+        return false;
+    }
+
+    for (uint16_t index = 0; index < count; ++index) {
+        if (streams[index].active && streams[index].card == card && streams[index].device == device) {
+            streams[index].nodeIndex = nodeIndex;
+            nodeToStream[nodeIndex] = static_cast<int16_t>(index);
+            return true;
+        }
+    }
+
+    AlsaCaptureStream &stream = streams[count];
+    stream = AlsaCaptureStream{};
+    stream.active = 1;
+    stream.nodeIndex = nodeIndex;
+    stream.card = card;
+    stream.device = device;
+    stream.isGadget = isGadgetCaptureDevice(ctx, card, device) ? 1U : 0U;
+    stream.sampleRate = SAMPLE_RATE;
+    stream.channels = static_cast<uint8_t>(thing.outputs == 0
+        ? 1U : (thing.outputs > kMaxChannelsPerThing ? kMaxChannelsPerThing : thing.outputs));
+    snprintf(stream.path, sizeof(stream.path), "hw:%u,%u", static_cast<unsigned>(card), static_cast<unsigned>(device));
+    initAdaptiveSrc(&stream.src, 0.50f, 1.0f);
+    captureRingReset(&stream);
+    if (!openCaptureStream(&stream)) {
+        stream.reopenRetryBlocks = kReopenRetryBlocks;
+    }
+    nodeToStream[nodeIndex] = static_cast<int16_t>(count);
+    ++count;
+    return true;
+}
+
+void AlsaCaptureBackend::mapGraphSources(AudioContext *ctx, const RuntimeGraph *runtime) {
+    if (!ctx || !runtime) {
+        return;
+    }
+    for (uint16_t node = 0; node < AUDIO_GRAPH_MAX_THINGS; ++node) {
+        nodeToStream[node] = -1;
+    }
+    for (uint16_t node = 0; node < runtime->snapshot.thingCount; ++node) {
+        if (runtime->nodeKind[node] != NODE_SOURCE) {
+            continue;
+        }
+        uint32_t card = 0;
+        uint32_t device = 0;
+        if (!resolveThingCardDevice(ctx, runtime->snapshot.things[node].id, true, &card, &device)) {
+            continue;
+        }
+        for (uint16_t index = 0; index < count; ++index) {
+            AlsaCaptureStream &stream = streams[index];
+            if (stream.active && stream.card == card && stream.device == device) {
+                stream.nodeIndex = node;
+                nodeToStream[node] = static_cast<int16_t>(index);
+                break;
+            }
+        }
+    }
+}
+
 static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
     if (!s || !s->active) {
         return false;
@@ -614,8 +696,8 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
     const char *lastAttemptPath = s->path;
     snd_pcm_format_t lastAttemptFormat = SND_PCM_FORMAT_UNKNOWN;
     static const snd_pcm_format_t formats[] = {
-        SND_PCM_FORMAT_S16_LE,
         SND_PCM_FORMAT_S32_LE,
+        SND_PCM_FORMAT_S16_LE,
     };
 
     for (size_t r = 0; r < (sizeof(rates) / sizeof(rates[0])); ++r) {
@@ -659,15 +741,11 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
                     s->reopenRetryBlocks = 0;
                     s->pendingFrames = 0;
                     s->pendingOffsetFrames = 0;
-                    // VERBOSE: Uncomment this for debugging playback stream open issues.
-                    // printf("[AUDIO] [INFO] playback stream opened %s (%uch, %u Hz, fmt=%s period=%u periods=%u timing=%d)\n",
-                    //        s->path,
-                    //        (unsigned)s->channels,
-                    //        (unsigned)s->sampleRate,
-                    //        snd_pcm_format_name(s->format),
-                    //        profiles[p].periodFrames,
-                    //        profiles[p].periods,
-                    //        profiles[p].configureTiming);
+                    printf("[AUDIO] [INFO] playback stream opened %s (%uch, %u Hz, fmt=%s)\n",
+                           s->path,
+                           (unsigned)s->channels,
+                           (unsigned)s->sampleRate,
+                           snd_pcm_format_name(s->format));
                     return true;
                 }
             }
@@ -681,7 +759,7 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
     return false;
 }
 
-static void maybeReopenCapture(RuntimeGraph::AlsaCaptureStream *s) {
+static void maybeReopenCapture(AlsaCaptureStream *s) {
     if (!s || !s->active || s->pcm) {
         return;
     }
@@ -715,18 +793,7 @@ static const char *mmapSampleAddress(const snd_pcm_channel_area_t *area,
     return static_cast<const char *>(area->addr) + (bitOffset / 8U);
 }
 
-static void captureRingAdvance(RuntimeGraph::AlsaCaptureStream *s, uint32_t frames) {
-    for (uint32_t frame = 0; frame < frames; ++frame) {
-        if (s->ringCount >= kCaptureRingFrames) {
-            s->ringTail = (s->ringTail + 1U) % kCaptureRingFrames;
-            s->ringCount = kCaptureRingFrames - 1U;
-        }
-        s->ringHead = (s->ringHead + 1U) % kCaptureRingFrames;
-        ++s->ringCount;
-    }
-}
-
-static snd_pcm_sframes_t captureMmapRead(RuntimeGraph::AlsaCaptureStream *s,
+static snd_pcm_sframes_t captureMmapRead(AlsaCaptureStream *s,
                                          snd_pcm_uframes_t requestedFrames) {
     snd_pcm_sframes_t available = snd_pcm_avail_update(s->pcm);
     if (available <= 0) {
@@ -755,8 +822,7 @@ static snd_pcm_sframes_t captureMmapRead(RuntimeGraph::AlsaCaptureStream *s,
     }
 
     for (uint32_t frame = 0; frame < (uint32_t)frames; ++frame) {
-        uint32_t ringFrame = (s->ringHead + frame) % kCaptureRingFrames;
-        int16_t *dst = &s->ring[ringFrame * kMaxChannelsPerThing];
+        int16_t *dst = s->ring.writableFrame(frame);
         for (uint8_t channel = 0; channel < s->channels; ++channel) {
             const char *src = mmapSampleAddress(&areas[channel], offset, frame);
             if (s->format == SND_PCM_FORMAT_S32_LE) {
@@ -774,7 +840,7 @@ static snd_pcm_sframes_t captureMmapRead(RuntimeGraph::AlsaCaptureStream *s,
 
     snd_pcm_sframes_t committed = snd_pcm_mmap_commit(s->pcm, offset, frames);
     if (committed > 0) {
-        captureRingAdvance(s, (uint32_t)committed);
+        s->ring.advanceWritten(static_cast<uint32_t>(committed));
     }
     return committed;
 }
@@ -824,20 +890,20 @@ static snd_pcm_sframes_t playbackMmapWrite(RuntimeGraph::AlsaPlaybackStream *s,
     return snd_pcm_mmap_commit(s->pcm, offset, frames);
 }
 
-static void serviceCaptureIo(RuntimeGraph *rt) {
-    if (!rt) {
+static void serviceCaptureIo(AlsaCaptureBackend *backend) {
+    if (!backend) {
         return;
     }
 
-    for (uint16_t i = 0; i < rt->captureCount; ++i) {
-        RuntimeGraph::AlsaCaptureStream &s = rt->capture[i];
+    for (uint16_t i = 0; i < backend->count; ++i) {
+        AlsaCaptureStream &s = backend->streams[i];
         maybeReopenCapture(&s);
         if (!s.pcm) {
             continue;
         }
 
-        while (s.ringCount < kCaptureRingFrames) {
-            uint32_t freeFrames = kCaptureRingFrames - s.ringCount;
+        while (s.ring.count() < kCaptureRingFrames) {
+            uint32_t freeFrames = kCaptureRingFrames - s.ring.count();
             uint32_t reqFrames = (freeFrames > BUFFER_FRAMES) ? BUFFER_FRAMES : freeFrames;
             if (reqFrames == 0) {
                 break;
@@ -903,14 +969,16 @@ static void serviceCaptureIo(RuntimeGraph *rt) {
     }
 }
 
-static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
+template <bool SingleSink>
+static void servicePlaybackIoImpl(AudioContext *ctx, RuntimeGraph *rt, uint16_t onlyNode) {
     if (!ctx || !rt) {
         return;
     }
 
     for (uint16_t i = 0; i < rt->sinkNodeCount; ++i) {
         const uint16_t node = rt->sinkNodes[i];
-        if (strcmp(rt->snapshot.things[node].id, "bluetooth_out") != 0 ||
+        if ((SingleSink && node != onlyNode) ||
+            strcmp(rt->snapshot.things[node].id, "bluetooth_out") != 0 ||
             !ctx->bluetoothOutputActive.load(std::memory_order_acquire)) {
             continue;
         }
@@ -919,16 +987,8 @@ static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
         for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
             for (uint32_t channel = 0; channel < 2; ++channel) {
                 float sample = rt->inputs[node][channel][frame];
-                if (!std::isfinite(sample)) {
-                    sample = 0.0f;
-                }
                 sample *= gain * kBluetoothOutputPeakLimit;
-                if (sample > 1.0f) sample = 1.0f;
-                if (sample < -1.0f) sample = -1.0f;
-                int32_t value = (int32_t)lrintf(sample * 32767.0f);
-                if (value > 32767) value = 32767;
-                if (value < -32768) value = -32768;
-                block[frame * 2U + channel] = (int16_t)value;
+                block[frame * 2U + channel] = audiox::pcm::toS16(sample);
             }
         }
         (void)ctx->pushBluetoothOutputPcm(block, BUFFER_FRAMES);
@@ -936,6 +996,9 @@ static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
 
     for (uint16_t i = 0; i < rt->playbackCount; ++i) {
         RuntimeGraph::AlsaPlaybackStream &s = rt->playback[i];
+        if (SingleSink && s.nodeIndex != onlyNode) {
+            continue;
+        }
         maybeReopenPlayback(&s);
         if (!s.pcm) {
             continue;
@@ -952,33 +1015,17 @@ static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
                 for (uint8_t ch = 0; ch < s.channels; ++ch) {
                     uint8_t srcCh = (ch < inChannels) ? ch : (uint8_t)(inChannels - 1);
                     float v = rt->inputs[s.nodeIndex][srcCh][frame];
-
-                    if (v > 1.0f) {
-                        v = 1.0f;
+                    const size_t sampleIndex = static_cast<size_t>(frame) * s.channels + ch;
+                    if (s.format == SND_PCM_FORMAT_S32_LE) {
+                        s.pendingBlock32[sampleIndex] = audiox::pcm::toS32(v);
+                    } else {
+                        s.pendingBlock[sampleIndex] = audiox::pcm::toS16(v);
                     }
-                    if (v < -1.0f) {
-                        v = -1.0f;
-                    }
-                    int32_t q = (int32_t)lrintf(v * 32767.0f);
-                    if (q > 32767) {
-                        q = 32767;
-                    }
-                    if (q < -32768) {
-                        q = -32768;
-                    }
-                    s.pendingBlock[frame * s.channels + ch] = (int16_t)q;
                 }
             }
 
             s.pendingFrames = BUFFER_FRAMES;
             s.pendingOffsetFrames = 0;
-
-            if (s.format == SND_PCM_FORMAT_S32_LE) {
-                uint32_t totalSamples = s.pendingFrames * s.channels;
-                for (uint32_t i = 0; i < totalSamples; ++i) {
-                    s.pendingBlock32[i] = ((int32_t)s.pendingBlock[i]) << 16;
-                }
-            }
         }
 
         if (s.pendingFrames <= s.pendingOffsetFrames) {
@@ -1036,19 +1083,17 @@ static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
     }
 }
 
-static void closeAllStreams(RuntimeGraph *rt) {
+static void closeAllStreams(RuntimeGraph *rt, AlsaCaptureBackend *captureBackend) {
     if (!rt) {
         return;
     }
-    for (uint16_t i = 0; i < rt->captureCount; ++i) {
-        closeCaptureStream(&rt->capture[i]);
-        rt->capture[i].active = 0;
+    if (captureBackend) {
+        captureBackend->reset();
     }
     for (uint16_t i = 0; i < rt->playbackCount; ++i) {
         closePlaybackStream(&rt->playback[i]);
         rt->playback[i].active = 0;
     }
-    rt->captureCount = 0;
     rt->playbackCount = 0;
 }
 
@@ -1475,7 +1520,148 @@ static void updateChannelLevels(AudioContext *ctx, RuntimeGraph *rt) {
     }
 }
 
-static void renderSourceNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex) {
+#if !AUDIOX_USE_SHARED_GRAPH_PROCESSOR
+static void routeCompiledEdge(AudioContext *ctx,
+                              RuntimeGraph *rt,
+                              const RuntimeGraph::CompiledRoute &route) {
+    const float gain = ctx->nodeGainAtomics[route.srcNode].load(std::memory_order_relaxed);
+    const float *src = rt->outputs[route.srcNode][route.srcChannel];
+    float *dstStorage = rt->inputStorage[route.dstNode][route.dstChannel];
+    float *dst = rt->inputs[route.dstNode][route.dstChannel];
+    uint8_t &contribCount = rt->inputContributionCount[route.dstNode][route.dstChannel];
+
+    if (contribCount == 0U) {
+        if (gain == 1.0f) {
+            rt->inputs[route.dstNode][route.dstChannel] = const_cast<float *>(src);
+        } else {
+            for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+                dstStorage[frame] = src[frame] * gain;
+            }
+            rt->inputs[route.dstNode][route.dstChannel] = dstStorage;
+        }
+        contribCount = 1U;
+        return;
+    }
+
+    if (dst != dstStorage) {
+        memcpy(dstStorage, dst, sizeof(float) * BUFFER_FRAMES);
+        dst = dstStorage;
+        rt->inputs[route.dstNode][route.dstChannel] = dstStorage;
+    }
+    if (gain == 1.0f) {
+        for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+            dst[frame] += src[frame];
+        }
+    } else {
+        for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+            dst[frame] += src[frame] * gain;
+        }
+    }
+    if (contribCount < 255U) {
+        ++contribCount;
+    }
+}
+
+static void copyWithClamp(const float *src, float *dst) {
+    for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+        float sample = src[frame];
+        if (sample > 1.0f) sample = 1.0f;
+        if (sample < -1.0f) sample = -1.0f;
+        dst[frame] = sample;
+    }
+}
+
+static void processNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex, uint32_t effectSeq) {
+    if (!ctx || !rt || nodeIndex >= rt->snapshot.thingCount) {
+        return;
+    }
+    const AudioGraphThingInfo &thing = rt->snapshot.things[nodeIndex];
+    const uint8_t inputChannels = std::min<uint8_t>(thing.inputs, kMaxChannelsPerThing);
+    const uint8_t outputChannels = std::min<uint8_t>(thing.outputs, kMaxChannelsPerThing);
+    const uint8_t channels = std::min(inputChannels, outputChannels);
+    if (channels == 0 || outputChannels == 0) {
+        return;
+    }
+
+    if (rt->nodeKind[nodeIndex] == NODE_EFFECT) {
+        if (rt->effectParamsSeq[nodeIndex] != effectSeq) {
+            audiox::effects::SlotParams params = {};
+            if (ctx->getEffectParams(thing.id, &params) != RET_OK) {
+                params.enabled = 1U;
+                params.type = audiox::effects::EFFECT_GAIN;
+                audiox::effects::setSlotDefaultsForType(&params, params.type);
+            }
+            rt->effectParamsCache[nodeIndex] = params;
+            rt->effectParamsSeq[nodeIndex] = effectSeq;
+        }
+
+        const auto &params = rt->effectParamsCache[nodeIndex];
+        if (!params.enabled) {
+            for (uint8_t channel = 0; channel < channels; ++channel) {
+                copyWithClamp(rt->inputs[nodeIndex][channel], rt->outputs[nodeIndex][channel]);
+            }
+        } else {
+            for (uint8_t channel = 0; channel < channels; ++channel) {
+                audiox::effects::processSlot(thing.id,
+                                             channel,
+                                             params,
+                                             rt->inputs[nodeIndex][channel],
+                                             rt->outputs[nodeIndex][channel],
+                                             BUFFER_FRAMES);
+            }
+        }
+    } else {
+        for (uint8_t channel = 0; channel < channels; ++channel) {
+            copyWithClamp(rt->inputs[nodeIndex][channel], rt->outputs[nodeIndex][channel]);
+        }
+    }
+    for (uint8_t channel = channels; channel < outputChannels; ++channel) {
+        memset(rt->outputs[nodeIndex][channel], 0, sizeof(float) * BUFFER_FRAMES);
+    }
+}
+#endif
+
+#if AUDIOX_USE_SHARED_GRAPH_PROCESSOR
+static void renderSourceNode(AudioContext *ctx,
+                             RuntimeGraph *rt,
+                             AlsaCaptureBackend *captureBackend,
+                             uint16_t nodeIndex);
+
+struct RuntimeSourceContext {
+    AudioContext* audio;
+    RuntimeGraph* runtime;
+    AlsaCaptureBackend* captureBackend;
+};
+
+static int renderRuntimeSource(void* context,
+                               uint16_t nodeIndex,
+                               audiox::graph::BlockNode&,
+                               uint32_t) {
+    RuntimeSourceContext* sourceContext = static_cast<RuntimeSourceContext*>(context);
+    if (!sourceContext || !sourceContext->audio || !sourceContext->runtime || !sourceContext->captureBackend) {
+        return RET_ERR;
+    }
+    renderSourceNode(sourceContext->audio, sourceContext->runtime, sourceContext->captureBackend, nodeIndex);
+    return RET_OK;
+}
+
+static int writeRuntimeSink(void* context,
+                            uint16_t nodeIndex,
+                            const audiox::graph::BlockNode&,
+                            uint32_t) {
+    RuntimeSourceContext* sinkContext = static_cast<RuntimeSourceContext*>(context);
+    if (!sinkContext || !sinkContext->audio || !sinkContext->runtime) {
+        return RET_ERR;
+    }
+    servicePlaybackIoImpl<true>(sinkContext->audio, sinkContext->runtime, nodeIndex);
+    return RET_OK;
+}
+#endif
+
+static void renderSourceNode(AudioContext *ctx,
+                             RuntimeGraph *rt,
+                             AlsaCaptureBackend *captureBackend,
+                             uint16_t nodeIndex) {
     if (!ctx || !rt || nodeIndex >= rt->snapshot.thingCount) {
         return;
     }
@@ -1528,57 +1714,41 @@ static void renderSourceNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeI
         return;
     }
 
-    int16_t captureIdx = rt->nodeToCaptureStream[nodeIndex];
-    if (captureIdx >= 0 && (uint16_t)captureIdx < rt->captureCount) {
-        RuntimeGraph::AlsaCaptureStream &s = rt->capture[(uint16_t)captureIdx];
-        float fillRatio = (float)s.ringCount / (float)kCaptureRingFrames;
+    const int16_t captureIdx = captureBackend ? captureBackend->nodeToStream[nodeIndex] : -1;
+    if (captureBackend && captureIdx >= 0 && (uint16_t)captureIdx < captureBackend->count) {
+        AlsaCaptureStream &s = captureBackend->streams[(uint16_t)captureIdx];
+        float fillRatio = (float)s.ring.count() / (float)kCaptureRingFrames;
         float srcRatio = adaptiveSrcStep(&s.src, fillRatio);
 
-        // Check if this is a gadget device to apply gain
-        uint8_t isGadgetSource = 0;
-        if (ctx) {
-            for (const auto &dev : ctx->devices) {
-                if (dev.second.cardIndex == s.card && dev.second.deviceIndex == s.device && dev.second.hasCapture) {
-                    isGadgetSource = dev.second.isGadget;
-                    break;
-                }
-            }
-        }
-        float gainMultiplier = isGadgetSource ? USB_GADGET_IN_GAIN : 1.0f;
+        const float gainMultiplier = s.isGadget ? USB_GADGET_IN_GAIN : 1.0f;
 
         for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
-            if (s.ringCount == 0) {
+            if (s.ring.count() == 0) {
                 for (uint8_t ch = 0; ch < outChannels; ++ch) {
                     uint8_t srcCh = (ch < s.channels) ? ch : 0;
-                    float out = s.lastSample[srcCh] * gainMultiplier;
+                    float out = s.ring.lastSample(srcCh) * gainMultiplier;
                     if (out > 1.0f) out = 1.0f;
                     if (out < -1.0f) out = -1.0f;
                     rt->outputs[nodeIndex][ch][frame] = out;
                 }
             } else {
-                uint32_t aFrame = s.ringTail;
-                uint32_t bFrame = (s.ringCount > 1) ? ((s.ringTail + 1U) % kCaptureRingFrames) : s.ringTail;
+                uint32_t aFrame = s.ring.tail();
+                uint32_t bFrame = s.ring.count() > 1
+                    ? s.ring.readFrameIndex(1U)
+                    : aFrame;
 
                 for (uint8_t ch = 0; ch < outChannels; ++ch) {
                     uint8_t srcCh = (ch < s.channels) ? ch : (uint8_t)(s.channels - 1U);
                     float a = (float)captureRingSample(s, aFrame, srcCh) / 32768.0f;
                     float b = (float)captureRingSample(s, bFrame, srcCh) / 32768.0f;
-                    float out = (a + ((b - a) * s.readFrac)) * gainMultiplier;
+                    float out = (a + ((b - a) * s.ring.readFraction())) * gainMultiplier;
                     if (out > 1.0f) out = 1.0f;
                     if (out < -1.0f) out = -1.0f;
                     rt->outputs[nodeIndex][ch][frame] = out;
-                    s.lastSample[srcCh] = out;
+                    s.ring.setLastSample(srcCh, out);
                 }
 
-                s.readFrac += srcRatio;
-                while (s.readFrac >= 1.0f && s.ringCount > 0) {
-                    s.ringTail = (s.ringTail + 1U) % kCaptureRingFrames;
-                    --s.ringCount;
-                    s.readFrac -= 1.0f;
-                }
-                if (s.ringCount == 0) {
-                    s.readFrac = 0.0f;
-                }
+                s.ring.consume(srcRatio);
             }
         }
         return;
@@ -1647,124 +1817,6 @@ static void renderSourceNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeI
         for (uint8_t ch = 0; ch < outChannels; ++ch) {
             rt->outputs[nodeIndex][ch][frame] = 0.0f;
         }
-    }
-}
-
-static void routeCompiledEdge(AudioContext *ctx, RuntimeGraph *rt, const RuntimeGraph::CompiledRoute &route) {
-    if (!rt) {
-        return;
-    }
-
-    float gain = ctx ? ctx->nodeGainAtomics[route.srcNode].load(std::memory_order_relaxed) : 1.0f;
-    const float *src = rt->outputs[route.srcNode][route.srcChannel];
-    float *dstStorage = rt->inputStorage[route.dstNode][route.dstChannel];
-    float *dst = rt->inputs[route.dstNode][route.dstChannel];
-    uint8_t &contribCount = rt->inputContributionCount[route.dstNode][route.dstChannel];
-
-    if (contribCount == 0U) {
-        if (gain == 1.0f) {
-            rt->inputs[route.dstNode][route.dstChannel] = const_cast<float *>(src);
-            rt->inputContributionCount[route.dstNode][route.dstChannel] = 1U;
-            return;
-        }
-
-        for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
-            dstStorage[frame] = src[frame] * gain;
-        }
-        rt->inputs[route.dstNode][route.dstChannel] = dstStorage;
-        rt->inputContributionCount[route.dstNode][route.dstChannel] = 1U;
-        return;
-    }
-
-    if (dst != dstStorage) {
-        memcpy(dstStorage, dst, sizeof(float) * BUFFER_FRAMES);
-        dst = dstStorage;
-        rt->inputs[route.dstNode][route.dstChannel] = dstStorage;
-    }
-
-    if (gain == 1.0f) {
-        for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
-            dst[frame] += src[frame];
-        }
-    } else {
-        for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
-            dst[frame] += src[frame] * gain;
-        }
-    }
-
-    if (contribCount < 255U) {
-        ++contribCount;
-    }
-}
-
-static void copyWithClamp(const float *src, float *dst) {
-    for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
-        float s = src[frame];
-        if (s > 1.0f) {
-            s = 1.0f;
-        }
-        if (s < -1.0f) {
-            s = -1.0f;
-        }
-        dst[frame] = s;
-    }
-}
-
-static void processNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex, uint32_t effectSeq) {
-    if (!ctx || !rt || nodeIndex >= rt->snapshot.thingCount) {
-        return;
-    }
-
-    const AudioGraphThingInfo &thing = rt->snapshot.things[nodeIndex];
-    uint8_t inChannels = (thing.inputs > kMaxChannelsPerThing) ? kMaxChannelsPerThing : thing.inputs;
-    uint8_t outChannels = (thing.outputs > kMaxChannelsPerThing) ? kMaxChannelsPerThing : thing.outputs;
-    uint8_t copyChannels = (inChannels < outChannels) ? inChannels : outChannels;
-
-    if (copyChannels == 0 || outChannels == 0) {
-        return;
-    }
-
-    if (rt->nodeKind[nodeIndex] == NODE_EFFECT) {
-        if (rt->effectParamsSeq[nodeIndex] != effectSeq) {
-            audiox::effects::SlotParams params = {};
-            if (ctx->getEffectParams(thing.id, &params) != RET_OK) {
-                params.enabled = 1U;
-                params.type = audiox::effects::EFFECT_GAIN;
-                audiox::effects::setSlotDefaultsForType(&params, params.type);
-            }
-            rt->effectParamsCache[nodeIndex] = params;
-            rt->effectParamsSeq[nodeIndex] = effectSeq;
-        }
-
-        const audiox::effects::SlotParams &params = rt->effectParamsCache[nodeIndex];
-
-        if (!params.enabled) {
-            for (uint8_t ch = 0; ch < copyChannels; ++ch) {
-                copyWithClamp(rt->inputs[nodeIndex][ch], rt->outputs[nodeIndex][ch]);
-            }
-            for (uint8_t ch = copyChannels; ch < outChannels; ++ch) {
-                memset(rt->outputs[nodeIndex][ch], 0, sizeof(float) * BUFFER_FRAMES);
-            }
-            return;
-        }
-
-        for (uint8_t ch = 0; ch < copyChannels; ++ch) {
-            audiox::effects::processSlot(thing.id,
-                                         ch,
-                                         params,
-                                         rt->inputs[nodeIndex][ch],
-                                         rt->outputs[nodeIndex][ch],
-                                         BUFFER_FRAMES);
-        }
-
-        for (uint8_t ch = copyChannels; ch < outChannels; ++ch) {
-            memset(rt->outputs[nodeIndex][ch], 0, sizeof(float) * BUFFER_FRAMES);
-        }
-        return;
-    }
-
-    for (uint8_t ch = 0; ch < copyChannels; ++ch) {
-        copyWithClamp(rt->inputs[nodeIndex][ch], rt->outputs[nodeIndex][ch]);
     }
 }
 
@@ -1882,8 +1934,11 @@ static void publishPlayingSfxSet(AudioContext *ctx, RuntimeGraph *rt) {
     ctx->sfxPlayingSeq.fetch_add(1U, std::memory_order_release);
 }
 
-static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const AudioGraphState &graph) {
-    if (!ctx || !rt) {
+static void rebuildRuntimeGraph(AudioContext *ctx,
+                                RuntimeGraph *rt,
+                                AlsaCaptureBackend *captureBackend,
+                                const AudioGraphState &graph) {
+    if (!ctx || !rt || !captureBackend) {
         return;
     }
 
@@ -1948,12 +2003,10 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
     }
 
     if (topologyChanged) {
-        closeAllStreams(rt);
-        rt->captureCount = 0;
+        closeAllStreams(rt, captureBackend);
         rt->playbackCount = 0;
 
         for (uint16_t i = 0; i < AUDIO_GRAPH_MAX_THINGS; ++i) {
-            rt->nodeToCaptureStream[i] = -1;
             rt->nodeToPlaybackStream[i] = -1;
         }
     }
@@ -1980,28 +2033,8 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
         for (uint16_t i = 0; i < rt->snapshot.thingCount; ++i) {
             const AudioGraphThingInfo &thing = rt->snapshot.things[i];
 
-            if (rt->nodeKind[i] == NODE_SOURCE && rt->captureCount < kMaxCaptureStreams) {
-                uint32_t card = 0;
-                uint32_t device = 0;
-                if (resolveThingCardDevice(ctx, thing.id, true, &card, &device)) {
-                    RuntimeGraph::AlsaCaptureStream &s = rt->capture[rt->captureCount];
-                    memset(&s, 0, sizeof(s));
-                    s.active = 1;
-                    s.pcm = nullptr;
-                    s.nodeIndex = i;
-                    s.card = card;
-                    s.device = device;
-                    s.sampleRate = SAMPLE_RATE;
-                    s.channels = (thing.outputs == 0) ? 1U : ((thing.outputs > kMaxChannelsPerThing) ? kMaxChannelsPerThing : thing.outputs);
-                    snprintf(s.path, sizeof(s.path), "hw:%u,%u", (unsigned)card, (unsigned)device);
-                    initAdaptiveSrc(&s.src, 0.5f, 1.0f);
-                    captureRingReset(&s);
-                    if (!openCaptureStream(&s)) {
-                        s.reopenRetryBlocks = kReopenRetryBlocks;
-                    }
-                    rt->nodeToCaptureStream[i] = (int16_t)rt->captureCount;
-                    ++rt->captureCount;
-                }
+            if (rt->nodeKind[i] == NODE_SOURCE) {
+                (void)captureBackend->attachSource(ctx, rt, i);
             }
 
             if (rt->nodeKind[i] == NODE_SINK && rt->playbackCount < kMaxPlaybackStreams) {
@@ -2028,25 +2061,11 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
         }
     } else {
         for (uint16_t i = 0; i < AUDIO_GRAPH_MAX_THINGS; ++i) {
-            rt->nodeToCaptureStream[i] = -1;
             rt->nodeToPlaybackStream[i] = -1;
         }
+        captureBackend->mapGraphSources(ctx, rt);
         for (uint16_t node = 0; node < rt->snapshot.thingCount; ++node) {
             const AudioGraphThingInfo &thing = rt->snapshot.things[node];
-            if (rt->nodeKind[node] == NODE_SOURCE) {
-                uint32_t card = 0;
-                uint32_t device = 0;
-                if (resolveThingCardDevice(ctx, thing.id, true, &card, &device)) {
-                    for (uint16_t i = 0; i < rt->captureCount; ++i) {
-                        RuntimeGraph::AlsaCaptureStream &s = rt->capture[i];
-                        if (s.active && s.card == card && s.device == device) {
-                            s.nodeIndex = node;
-                            rt->nodeToCaptureStream[node] = (int16_t)i;
-                            break;
-                        }
-                    }
-                }
-            }
             if (rt->nodeKind[node] == NODE_SINK) {
                 uint32_t card = 0;
                 uint32_t device = 0;
@@ -2136,45 +2155,89 @@ static void rebuildRuntimeGraph(AudioContext *ctx, RuntimeGraph *rt, const Audio
     clearRuntimeBuffers(rt);
 }
 
-static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
-    if (!ctx || !rt) {
+static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt, AlsaCaptureBackend *captureBackend) {
+    if (!ctx || !rt || !captureBackend) {
         return;
     }
 
     consumeSoundboardTriggers(ctx, rt);
     clearRuntimeBuffers(rt);
 
-    serviceCaptureIo(rt);
+    serviceCaptureIo(captureBackend);
 
-    // First pass: render all source nodes.
-    for (uint16_t i = 0; i < rt->sourceNodeCount; ++i) {
-        renderSourceNode(ctx, rt, rt->sourceNodes[i]);
-    }
-
-    // Route source output into downstream node inputs.
-    for (uint16_t i = 0; i < rt->sourceRouteCount; ++i) {
-        routeCompiledEdge(ctx, rt, rt->sourceRoutes[i]);
-    }
-
-    // Process transform/effect nodes in deterministic order and route each
-    // node's output forward immediately so chained effects work in one block.
+#if AUDIOX_USE_SHARED_GRAPH_PROCESSOR
     uint32_t effectSeq = ctx->effectStatesSeq.load(std::memory_order_acquire);
     for (uint16_t i = 0; i < rt->processNodeCount; ++i) {
         uint16_t nodeIndex = rt->processNodes[i];
-        processNode(ctx, rt, nodeIndex, effectSeq);
-
-        uint16_t routeStart = rt->processRouteStart[nodeIndex];
-        uint16_t routeLen = rt->processRouteLen[nodeIndex];
-        for (uint16_t r = 0; r < routeLen; ++r) {
-            const RuntimeGraph::CompiledRoute &route = rt->processRoutesBySrc[routeStart + r];
-            routeCompiledEdge(ctx, rt, route);
+        if (rt->nodeKind[nodeIndex] == NODE_EFFECT &&
+            rt->effectParamsSeq[nodeIndex] != effectSeq) {
+            audiox::effects::SlotParams params = {};
+            if (ctx->getEffectParams(rt->snapshot.things[nodeIndex].id, &params) != RET_OK) {
+                params.enabled = 1U;
+                params.type = audiox::effects::EFFECT_GAIN;
+                audiox::effects::setSlotDefaultsForType(&params, params.type);
+            }
+            rt->effectParamsCache[nodeIndex] = params;
+            rt->effectParamsSeq[nodeIndex] = effectSeq;
         }
     }
 
+    audiox::graph::BlockNode blockNodes[AUDIO_GRAPH_MAX_THINGS] = {};
+    RuntimeSourceContext sourceContext = {ctx, rt, captureBackend};
+    const audiox::graph::BlockDeviceAdapter deviceAdapter = {
+        &sourceContext, renderRuntimeSource, writeRuntimeSink};
+    float nodeGains[AUDIO_GRAPH_MAX_THINGS];
+    for (uint16_t node = 0; node < rt->snapshot.thingCount; ++node) {
+        blockNodes[node].id = rt->snapshot.things[node].id;
+        blockNodes[node].kind = static_cast<audiox::graph::BlockNodeKind>(rt->nodeKind[node]);
+        blockNodes[node].inputChannels = rt->snapshot.things[node].inputs;
+        blockNodes[node].outputChannels = rt->snapshot.things[node].outputs;
+        blockNodes[node].inputs = rt->inputs[node];
+        blockNodes[node].outputs = rt->outputs[node];
+        blockNodes[node].inputStorage = rt->inputStorage[node];
+        blockNodes[node].inputContributionCount = rt->inputContributionCount[node];
+        blockNodes[node].effectParams = &rt->effectParamsCache[node];
+        nodeGains[node] = ctx->nodeGainAtomics[node].load(std::memory_order_relaxed);
+    }
+
+    (void)audiox::graph::processBlock(blockNodes,
+                                     rt->snapshot.thingCount,
+                                     rt->sourceRoutes,
+                                     rt->sourceRouteCount,
+                                     rt->processNodes,
+                                     rt->processNodeCount,
+                                     rt->processRoutesBySrc,
+                                     rt->processRouteStart,
+                                     rt->processRouteLen,
+                                     nodeGains,
+                                     BUFFER_FRAMES,
+                                     rt->sourceNodes,
+                                     rt->sourceNodeCount,
+                                     rt->sinkNodes,
+                                     rt->sinkNodeCount,
+                                     &deviceAdapter);
+#else
+    for (uint16_t i = 0; i < rt->sourceNodeCount; ++i) {
+        renderSourceNode(ctx, rt, captureBackend, rt->sourceNodes[i]);
+    }
+    for (uint16_t i = 0; i < rt->sourceRouteCount; ++i) {
+        routeCompiledEdge(ctx, rt, rt->sourceRoutes[i]);
+    }
+    const uint32_t effectSeq = ctx->effectStatesSeq.load(std::memory_order_acquire);
+    for (uint16_t i = 0; i < rt->processNodeCount; ++i) {
+        const uint16_t nodeIndex = rt->processNodes[i];
+        processNode(ctx, rt, nodeIndex, effectSeq);
+        const uint16_t routeStart = rt->processRouteStart[nodeIndex];
+        const uint16_t routeLength = rt->processRouteLen[nodeIndex];
+        for (uint16_t routeIndex = 0; routeIndex < routeLength; ++routeIndex) {
+            routeCompiledEdge(ctx, rt, rt->processRoutesBySrc[routeStart + routeIndex]);
+        }
+    }
+    servicePlaybackIoImpl<false>(ctx, rt, 0);
+#endif
+
     rt->blocksProcessed++;
     updateChannelLevels(ctx, rt);
-
-    servicePlaybackIo(ctx, rt);
 
     publishPlayingSfxSet(ctx, rt);
 
@@ -2194,8 +2257,8 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
     }
 }
 
-static void maybeLogStats(RuntimeGraph *rt) {
-    if (!rt) {
+static void maybeLogStats(RuntimeGraph *rt, const AlsaCaptureBackend *captureBackend) {
+    if (!rt || !captureBackend) {
         return;
     }
 
@@ -2227,13 +2290,13 @@ static void maybeLogStats(RuntimeGraph *rt) {
     //        (unsigned)rt->snapshot.generation,
     //        peak);
 
-    for (uint16_t i = 0; i < rt->captureCount; ++i) {
-        const RuntimeGraph::AlsaCaptureStream &s = rt->capture[i];
+    for (uint16_t i = 0; i < captureBackend->count; ++i) {
+        const AlsaCaptureStream &s = captureBackend->streams[i];
         // VERBOSE
         // printf("[AUDIO] [INFO] capture[%u] ratio=%.5f ring_fill=%u/%u path=%s\n",
         //        (unsigned)i,
         //        s.src.ratio,
-        //        (unsigned)s.ringCount,
+        //        (unsigned)s.ring.count(),
         //        (unsigned)kCaptureRingFrames,
         //        s.path);
         if (!s.pcm) {
@@ -2263,6 +2326,7 @@ static void *audioProcessingThreadMain(void *arg) {
     }
 
     RuntimeGraph runtime = {};
+    AlsaCaptureBackend captureBackend = {};
     runtime.holdVoiceIndex = -1;
     runtime.effectParamsSeq[0] = 0;
     for (uint16_t i = 1; i < AUDIO_GRAPH_MAX_THINGS; ++i) {
@@ -2293,19 +2357,19 @@ static void *audioProcessingThreadMain(void *arg) {
         }
 
         if (graphSnapshot.generation != runtime.snapshot.generation) {
-            rebuildRuntimeGraph(ctx, &runtime, graphSnapshot);
+            rebuildRuntimeGraph(ctx, &runtime, &captureBackend, graphSnapshot);
             ctx->snapshotGainsForGraph(graphSnapshot);
         }
 
         if (runtime.snapshot.generation > 0 && runtime.snapshot.thingCount > 0) {
-            processGraphBlock(ctx, &runtime);
-            maybeLogStats(&runtime);
+            processGraphBlock(ctx, &runtime, &captureBackend);
+            maybeLogStats(&runtime, &captureBackend);
         }
 
         waitUntilBlockDeadline(&nextDeadline);
     }
 
-    closeAllStreams(&runtime);
+    closeAllStreams(&runtime, &captureBackend);
 
     return nullptr;
 }

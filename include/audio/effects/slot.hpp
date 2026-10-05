@@ -26,6 +26,7 @@ enum EffectType : uint8_t {
     EFFECT_PITCH = 2,
     EFFECT_REVERB = 3,
     EFFECT_GATE = 4,
+    EFFECT_CUT = 5,
 };
 
 struct SlotParams {

@@ -1781,6 +1781,9 @@ static int handleEffectSet(HttpServer *server,
 		static const char bad[] = "invalid effect id\n";
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
 	}
+	audiox::effects::SlotParams previousParams = {};
+	const bool hadPreviousParams = server->app->audio->getEffectParams(idBuf, &previousParams) == RET_OK;
+	int routingShapeChanged = 0;
 
 	int changed = 0;
 	char typeBuf[24] = {};
@@ -1788,6 +1791,10 @@ static int handleEffectSet(HttpServer *server,
 		uint8_t type = audiox::effects::effectTypeFromString(typeBuf);
 		if (server->app->audio->setEffectType(idBuf, type) == RET_OK) {
 			changed = 1;
+			if (hadPreviousParams &&
+				(previousParams.type == audiox::effects::EFFECT_CUT || type == audiox::effects::EFFECT_CUT)) {
+				routingShapeChanged = 1;
+			}
 		}
 	}
 
@@ -1818,6 +1825,13 @@ static int handleEffectSet(HttpServer *server,
 		}
 		if (server->app->audio->setEffectParam(idBuf, paramBuf, value) == RET_OK) {
 			changed = 1;
+			if (strcmp(paramBuf, "channels") == 0) {
+				audiox::effects::SlotParams updatedParams = {};
+				if (server->app->audio->getEffectParams(idBuf, &updatedParams) == RET_OK &&
+					updatedParams.type == audiox::effects::EFFECT_CUT) {
+					routingShapeChanged = 1;
+				}
+			}
 		}
 	}
 
@@ -1840,6 +1854,12 @@ static int handleEffectSet(HttpServer *server,
 	}
 	if (server->app->midi) {
 		server->app->midi->cachedMidiMap = map;
+	}
+	if (routingShapeChanged) {
+		const int reloadRc = server->app->audio->reloadRoutingGraph();
+		if (reloadRc == RET_ERR) {
+			printf("[HTTP] [WARN] reloadRoutingGraph after Cut layout change failed\n");
+		}
 	}
 
 	char out[1024];
@@ -2076,6 +2096,10 @@ static int handleEffectMidiCcSet(HttpServer *server,
 	if (!server->app->audio || server->app->audio->getEffectParams(idBuf, &effectParams) != RET_OK ||
 		audiox::effects::effectParamSpecFor(effectParams.type, paramBuf, nullptr) == nullptr) {
 		static const char bad[] = "unknown effect param for this effect type\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+	if (effectParams.type == audiox::effects::EFFECT_CUT && strcmp(paramBuf, "channels") == 0) {
+		static const char bad[] = "Cut channel count changes routing and cannot be MIDI-mapped\n";
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
 	}
 

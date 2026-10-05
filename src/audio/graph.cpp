@@ -412,7 +412,18 @@ size_t AudioContext::copyRoutingThings(AudioGraphThingInfo *out, size_t cap) con
         }
         char label[160];
         snprintf(label, sizeof(label), "FX %s", fxStates[i].thingId);
-        appendThing(out, cap, &count, fxStates[i].thingId, label, 2, 2);
+        uint32_t channels = 2;
+        if (fxStates[i].type == audiox::effects::EFFECT_CUT) {
+            for (uint8_t param = 0; param < fxStates[i].paramCount; ++param) {
+                if (strcmp(fxStates[i].paramNames[param], "channels") == 0) {
+                    channels = static_cast<uint32_t>(fxStates[i].paramValues[param] + 0.5f);
+                    break;
+                }
+            }
+            if (channels < 1) channels = 1;
+            if (channels > 16) channels = 16;
+        }
+        appendThing(out, cap, &count, fxStates[i].thingId, label, channels, channels);
     }
     if (!haveGadgetPlayback) {
         appendThing(out, cap, &count, "usb_gadget_out", "USB Gadget Out", cfg.playbackChannels, 0);

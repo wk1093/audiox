@@ -70,11 +70,16 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] fbui soundboard, for people without a midi controller, set a config option in the webui, and the normal fbui will be replaced with a steamdeck-like soundboard interface (with optional multi-page via tabs and/or swipe)
 - [x] Investigate occasional "bad boots" where there is constant underruns in the logs, but a reboot always fixes it.
 
-## Big Refactor - v1.8+
+## Big Refactor and fixes - v1.8+
 - [x] Fix versioning system (use 1.8.0-beta and whatnot instead of putting 1.8 dev stuff under 1.7.x), implement an extra version field everywhere (makefile, C++ source, JS source, etc)
 - [x] Make a config TUI like the linux kernel makefile has to allow configuring for different systems, environments, and be able to change the currently #define static settings like the buffer size and sample rate.
 - [ ] Split up code better so that we can partially compile the audio subsystem (the audio graph should be a bit more abstract, and shouldn't know about how devices actually work) so that we can test effects and stuff on my desktop instead of re-uploading to the Pi.
-- [ ] Improve modularity of the audio engine to allow easier addition of new effects and routing options.
+  - [x] Add replaceable source/sink callbacks for desktop/shared-graph builds; keep the default Pi realtime loop on a direct compile-time path after callbacks caused device-side underruns.
+  - [x] Extract the fixed-capacity PCM capture ring and SRC cursor state from the ALSA stream object; keep ALSA acquisition in the Pi adapter.
+  - [x] Move ALSA capture stream ownership, device attachment/remapping, source gadget identity, and fixed PCM/SRC state out of RuntimeGraph into an explicit capture backend; keep ALSA I/O on the direct Pi path.
+  - [x] Extract backend-neutral route mixing, node processing, and effect execution; use the same graph block processor in the Pi runtime and host tests.
+- [x] "Cut" effect/feature to mute or unmute a route, with configurable matching input/output channel counts and MIDI/Web UI toggling.
+- [x] Run the application as a child of a small PID 1 watchdog; restart it after exit or a stale main-loop heartbeat.
 
 ## Pre-release - v1.9+
 - [ ] Smarter bootloader that can detect bad initramfs and boot into a backup one:

@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AudioX Engine Bench</title>
+  <style>
+    :root { color-scheme: dark; --bg: #171b1b; --panel: #222928; --line: #3b4542; --text: #e5ece8; --muted: #a5b1aa; --accent: #79d2b1; --warn: #e6be72; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, sans-serif; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.5rem; border-bottom: 1px solid var(--line); background: #1d2321; }
+    h1 { margin: 0; font-size: 1.15rem; font-weight: 650; }
+    main { width: min(960px, 100%); margin: 0 auto; padding: 1.25rem; }
+    .transport { display: grid; grid-template-columns: auto 1fr; gap: .35rem 1rem; align-items: center; padding: 1rem 0; border-bottom: 1px solid var(--line); }
+    .transport button { grid-row: span 2; min-width: 112px; padding: .65rem .9rem; border: 1px solid #55a988; border-radius: 4px; background: #267458; color: white; font: inherit; cursor: pointer; }
+    .transport button:disabled { opacity: .55; }
+    #source { font-weight: 600; }
+    .meta { color: var(--muted); font-size: .9rem; }
+    h2 { margin: 1.4rem 0 .35rem; font-size: 1rem; }
+    .help { color: var(--muted); margin: 0 0 .8rem; font-size: .9rem; }
+    .effect { padding: .85rem 0 1rem; border-top: 1px solid var(--line); }
+    .effect-head { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
+    .effect-head strong { min-width: 80px; }
+    select, button { font: inherit; }
+    select { min-width: 150px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 3px; padding: .35rem .5rem; }
+    label.toggle { margin-left: auto; display: inline-flex; gap: .45rem; align-items: center; color: var(--muted); }
+    input[type="checkbox"] { accent-color: var(--accent); width: 1rem; height: 1rem; }
+    .params { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: .65rem 1rem; padding: .85rem 0 0 90px; }
+    .param { display: grid; grid-template-columns: 1fr auto; gap: .2rem .6rem; align-items: center; }
+    .param label { color: var(--muted); font-size: .88rem; }
+    .param output { font-variant-numeric: tabular-nums; font-size: .85rem; }
+    .param input { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); }
+    #notice { min-height: 1.4em; margin: .5rem 0; color: var(--warn); }
+    @media (max-width: 540px) { header { padding: .9rem 1rem; } main { padding: .75rem 1rem; } .params { padding-left: 0; } .transport { grid-template-columns: 1fr; } .transport button { grid-row: auto; width: 100%; } label.toggle { margin-left: 0; } }
+  </style>
+</head>
+<body>
+  <header><h1>AudioX Engine Bench</h1><span id="connection" class="meta">Connecting...</span></header>
+  <main>
+    <section class="transport" aria-label="Transport">
+      <button id="play" type="button">Pause</button>
+      <div id="source">Starting audio engine</div>
+      <div id="meta" class="meta">Waiting for ALSA output</div>
+    </section>
+    <div id="notice" role="status"></div>
+    <h2>Effect chain</h2>
+    <p class="help">Changes are applied live to the running audio stream. Start with a WAV argument or use the built-in 440 Hz test tone.</p>
+    <div id="effects"></div>
+  </main>
+  <script>
+    const effectTypes = ['gain', 'distortion', 'pitch', 'reverb', 'gate', 'cut'];
+    const effectRoot = document.getElementById('effects');
+    const notice = document.getElementById('notice');
+    let playing = true;
+    let busy = false;
+
+    async function request(path, options = {}) {
+      const response = await fetch(path, options);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      return data;
+    }
+
+    async function post(path, values) {
+      return request(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(values),
+      });
+    }
+
+    function addParam(container, effect, param) {
+      const row = document.createElement('div');
+      row.className = 'param';
+      const label = document.createElement('label');
+      label.textContent = param.label;
+      const output = document.createElement('output');
+      output.value = Number(param.value).toPrecision(3);
+      const slider = document.createElement('input');
+      slider.type = 'range';
+      slider.min = String(param.min);
+      slider.max = String(param.max);
+      slider.step = String((param.max - param.min) / 400 || 0.01);
+      slider.value = String(param.value);
+      slider.addEventListener('input', () => {
+        output.value = Number(slider.value).toPrecision(3);
+        post('/api/parameter', { id: effect.id, name: param.name, value: slider.value }).catch(showError);
+      });
+      row.append(label, output, slider);
+      container.append(row);
+    }
+
+    function renderEffects(effects) {
+      effectRoot.replaceChildren();
+      for (const effect of effects) {
+        const section = document.createElement('section');
+        section.className = 'effect';
+        const head = document.createElement('div');
+        head.className = 'effect-head';
+        const title = document.createElement('strong');
+        title.textContent = effect.id.replace('bench_fx_', 'Slot ');
+        const select = document.createElement('select');
+        select.setAttribute('aria-label', `${title.textContent} effect type`);
+        for (const type of effectTypes) {
+          const option = document.createElement('option');
+          option.value = type;
+          option.textContent = type[0].toUpperCase() + type.slice(1);
+          option.selected = effect.type === type;
+          select.append(option);
+        }
+        select.addEventListener('change', async () => {
+          try {
+            await post('/api/effect', { id: effect.id, type: select.value });
+            await refreshEffects();
+          } catch (error) { showError(error); }
+        });
+        const toggleLabel = document.createElement('label');
+        toggleLabel.className = 'toggle';
+        const toggle = document.createElement('input');
+        toggle.type = 'checkbox';
+        toggle.checked = effect.enabled;
+        toggle.addEventListener('change', () => post('/api/effect', { id: effect.id, enabled: toggle.checked ? '1' : '0' }).catch(showError));
+        toggleLabel.append(toggle, document.createTextNode(effect.type === 'cut' ? 'Mute' : 'Enabled'));
+        head.append(title, select, toggleLabel);
+        const params = document.createElement('div');
+        params.className = 'params';
+        for (const param of effect.params) addParam(params, effect, param);
+        section.append(head, params);
+        effectRoot.append(section);
+      }
+    }
+
+    async function refreshEffects() {
+      const data = await request('/api/effects');
+      renderEffects(data.effects);
+    }
+
+    async function refreshStatus() {
+      try {
+        const status = await request('/api/status');
+        playing = status.playing;
+        document.getElementById('play').textContent = playing ? 'Pause' : 'Play';
+        document.getElementById('play').disabled = !status.audioReady;
+        document.getElementById('source').textContent = status.source;
+        document.getElementById('meta').textContent = `${status.audioReady ? 'ALSA ready' : 'Waiting for ALSA'} · ${status.sampleRate} Hz / ${status.sampleFormatBits || '?'} bit · ${status.audioDevice} · ${status.underruns} xruns`;
+        document.getElementById('connection').textContent = 'Connected';
+      } catch (error) {
+        document.getElementById('connection').textContent = 'Disconnected';
+        showError(error);
+      }
+    }
+
+    function showError(error) { notice.textContent = String(error); }
+
+    document.getElementById('play').addEventListener('click', async () => {
+      try {
+        playing = !playing;
+        await post('/api/transport', { playing: playing ? '1' : '0' });
+        await refreshStatus();
+      } catch (error) { showError(error); }
+    });
+
+    refreshEffects().catch(showError);
+    refreshStatus();
+    setInterval(refreshStatus, 1000);
+  </script>
+</body>
+</html>

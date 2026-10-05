@@ -5,10 +5,17 @@ LIBS = -lm -pthread
 
 PKG_FETCH ?= curl -fsSL
 
+AUDIOX_USE_SHARED_GRAPH_PROCESSOR ?= 0
+
 # Recursive source discovery for upcoming C++ port.
 CPP_SRCS := $(shell find src -type f -name '*.cpp' 2>/dev/null)
 BOOTLOADER_SRC := src/init/bootloader.cpp
-RUNTIME_CPP_SRCS := $(filter-out $(BOOTLOADER_SRC),$(CPP_SRCS))
+RUNTIME_MAIN_SRC := src/init/init.cpp
+WATCHDOG_SRC := src/init/watchdog.cpp
+RUNTIME_CPP_SRCS := $(filter-out $(BOOTLOADER_SRC) $(RUNTIME_MAIN_SRC) $(WATCHDOG_SRC) src/audio/engine.cpp,$(CPP_SRCS))
+ifeq ($(AUDIOX_USE_SHARED_GRAPH_PROCESSOR),0)
+RUNTIME_CPP_SRCS := $(filter-out src/audio/graph_processor.cpp,$(RUNTIME_CPP_SRCS))
+endif
 RUNTIME_SRCS := $(RUNTIME_CPP_SRCS)
 RUNTIME_COMPILER := $(CXX)
 RUNTIME_FLAGS = $(CXXFLAGS)
@@ -56,7 +63,7 @@ RUNTIME_LIBS += $(SBC_STATIC_LIB)
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 8
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.2
+AUDIOX_VERSION_PRERELEASE ?= beta.8
 AUDIOX_VERSION_BUILD ?=
 AUDIOX_VERSION_BASE = $(AUDIOX_VERSION_MAJOR).$(AUDIOX_VERSION_MINOR).$(AUDIOX_VERSION_PATCH)
 AUDIOX_VERSION_STRING = $(AUDIOX_VERSION_BASE)$(if $(AUDIOX_VERSION_PRERELEASE),-$(AUDIOX_VERSION_PRERELEASE))$(if $(AUDIOX_VERSION_BUILD),+$(AUDIOX_VERSION_BUILD))
@@ -67,6 +74,8 @@ HOSTCXX ?= g++
 HOST_CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Werror
 HOST_NCURSES_CFLAGS ?= $(shell pkg-config --cflags ncursesw 2>/dev/null)
 HOST_NCURSES_LIBS ?= $(shell pkg-config --libs ncursesw 2>/dev/null)
+HOST_AUDIO_CFLAGS ?= $(shell pkg-config --cflags alsa sndfile 2>/dev/null)
+HOST_AUDIO_LIBS ?= $(shell pkg-config --libs alsa sndfile 2>/dev/null)
 
 -include $(AUDIOX_CONFIG_FILE)
 
@@ -113,6 +122,19 @@ FFMPEG_RUNTIME_LIBS ?= ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 libr
 FFMPEG_STAGE_DIR ?= $(OUT_DIR)/ffmpeg_stage
 CONFIG_MENU_BIN = $(OUT_DIR)/host/audiox-menuconfig
 CONFIG_MENU_SRC = $(SCRIPTS_DIR)/audiox-menuconfig.cpp
+AUDIO_BENCH_BIN = $(OUT_DIR)/host/audiox-audio-bench
+AUDIO_ENGINE_TEST_BIN = $(OUT_DIR)/host/audiox-audio-engine-test
+AUDIO_GRAPH_MODE_STAMP = $(OUT_DIR)/.audiox_graph_mode_$(AUDIOX_USE_SHARED_GRAPH_PROCESSOR)
+AUDIO_BENCH_SRCS = \
+	tools/audiox-audio-bench.cpp \
+	src/audio/graph_processor.cpp \
+	src/audio/engine.cpp \
+	src/audio/effects/slot.cpp \
+	src/audio/effects/gain.cpp \
+	src/audio/effects/distortion.cpp \
+	src/audio/effects/gate.cpp \
+	src/audio/effects/pitch.cpp \
+	src/audio/effects/reverb.cpp
 BOOT_CONFIG_FILE ?= $(OUT_DIR)/dev-config.txt
 BT_FIRMWARE_URL ?= https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/pios/trixie/debian/firmware/broadcom/BCM4345C0.hcd
 BT_FIRMWARE_SHA256 ?= 51c45e77ddad91a19e96dc8fb75295b2087c279940df2634b23baf71b6dea42c
@@ -132,6 +154,7 @@ DEPFLAGS = -MMD -MP
 
 RUNTIME_DEFINES = \
 	-DKERNEL_VERSION='"$(KV)"' \
+	-DAUDIOX_USE_SHARED_GRAPH_PROCESSOR=$(AUDIOX_USE_SHARED_GRAPH_PROCESSOR) \
 	-DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) \
 	-DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) \
 	-DAUDIOX_ENABLE_ALSA_LOGS=$(AUDIOX_ENABLE_ALSA_LOGS) \
@@ -146,6 +169,10 @@ RUNTIME_DEFINES = \
 BOOTLOADER_DEFINES = -DKERNEL_VERSION='"$(KV)"'
 
 RUNTIME_OBJS := $(patsubst src/%.cpp,$(RUNTIME_OBJ_DIR)/%.o,$(RUNTIME_CPP_SRCS))
+RUNTIME_MAIN_OBJ := $(patsubst src/%.cpp,$(RUNTIME_OBJ_DIR)/%.o,$(RUNTIME_MAIN_SRC))
+WATCHDOG_OBJ := $(patsubst src/%.cpp,$(RUNTIME_OBJ_DIR)/%.o,$(WATCHDOG_SRC))
+WATCHDOG_HOST_BIN := $(OUT_DIR)/host/audiox-watchdog-test
+WATCHDOG_HUNG_CHILD_BIN := $(OUT_DIR)/host/audiox-watchdog-hung-child
 BOOTLOADER_OBJS := $(patsubst src/%.cpp,$(BOOTLOADER_OBJ_DIR)/%.o,$(BOOTLOADER_SRCS))
 RUNTIME_DEPS_FILES := $(RUNTIME_OBJS:.o=.d)
 BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
@@ -153,7 +180,7 @@ BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
 .DEFAULT_GOAL := all
 
-.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg stage_ffmpeg bluetooth_firmware config menuconfig defconfig print-config
+.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg stage_ffmpeg bluetooth_firmware config menuconfig defconfig print-config audio-bench run-audio-bench test-audio-engine test-watchdog
 
 all: initramfs
 
@@ -174,11 +201,63 @@ $(AUDIOX_CONFIG_FILE): $(CONFIG_MENU_BIN) $(CURDIR)/Kconfig
 
 $(RUNTIME_OBJS): $(AUDIOX_CONFIG_FILE)
 
+$(AUDIO_GRAPH_MODE_STAMP):
+	@mkdir -p "$(OUT_DIR)"
+	@rm -f "$(OUT_DIR)"/.audiox_graph_mode_*
+	@touch "$@"
+
+$(RUNTIME_OBJ_DIR)/audio/processing.o: $(AUDIO_GRAPH_MODE_STAMP)
+
 $(CONFIG_MENU_BIN): $(CONFIG_MENU_SRC)
 	@mkdir -p "$(dir $@)"
 	@command -v "$(HOSTCXX)" >/dev/null || { echo "Host C++ compiler not found: $(HOSTCXX)"; exit 1; }
 	@pkg-config --exists ncursesw || { echo "ncurses development files are required (pkg-config ncursesw)"; exit 1; }
 	$(HOSTCXX) $(HOST_CXXFLAGS) $(HOST_NCURSES_CFLAGS) -o "$@" "$<" $(HOST_NCURSES_LIBS)
+
+audio-bench: $(AUDIO_BENCH_BIN)
+
+run-audio-bench: $(AUDIO_BENCH_BIN)
+	@"$(AUDIO_BENCH_BIN)" "$(if $(BENCH_INPUT),$(BENCH_INPUT),-)" "$(BENCH_ALSA_DEVICE)" "$(BENCH_PORT)"
+
+test-audio-engine: $(AUDIO_ENGINE_TEST_BIN)
+	@$(AUDIO_ENGINE_TEST_BIN)
+
+test-watchdog: $(WATCHDOG_HOST_BIN)
+test-watchdog: $(WATCHDOG_HOST_BIN) $(WATCHDOG_HUNG_CHILD_BIN)
+	@"$(WATCHDOG_HOST_BIN)" /bin/false 2 > "$(OUT_DIR)/watchdog-crash-test.log" 2>&1
+	@grep -q "main process exited" "$(OUT_DIR)/watchdog-crash-test.log"
+	@"$(WATCHDOG_HOST_BIN)" "$(WATCHDOG_HUNG_CHILD_BIN)" 1 > "$(OUT_DIR)/watchdog-hang-test.log" 2>&1
+	@grep -q "main-loop heartbeat timed out" "$(OUT_DIR)/watchdog-hang-test.log"
+	@echo "watchdog exit and heartbeat-timeout tests passed"
+
+BENCH_INPUT ?=
+BENCH_ALSA_DEVICE ?= default
+BENCH_PORT ?= 8765
+
+$(AUDIO_BENCH_BIN): $(AUDIO_BENCH_SRCS) $(AUDIOX_CONFIG_FILE) include/audio/pcm_convert.hpp include/audio/engine.hpp include/audio/graph_processor.hpp include/audio/effects/slot.hpp
+	@mkdir -p "$(dir $@)"
+	@command -v "$(HOSTCXX)" >/dev/null || { echo "Host C++ compiler not found: $(HOSTCXX)"; exit 1; }
+	@pkg-config --exists alsa sndfile || { echo "Host ALSA and libsndfile development files are required (pkg-config alsa sndfile)"; exit 1; }
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude $(HOST_AUDIO_CFLAGS) \
+		-DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) \
+		-DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) \
+		-DAUDIOX_BENCH_HTML='"$(CURDIR)/web/audio-bench.html"' \
+		-o "$@" $(AUDIO_BENCH_SRCS) $(HOST_AUDIO_LIBS) -pthread -lm
+
+$(AUDIO_ENGINE_TEST_BIN): tests/audio_engine_test.cpp $(filter-out tools/audiox-audio-bench.cpp,$(AUDIO_BENCH_SRCS)) include/audio/pcm_convert.hpp include/audio/engine.hpp include/audio/graph_processor.hpp $(AUDIOX_CONFIG_FILE)
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) \
+		-DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) -o "$@" tests/audio_engine_test.cpp \
+		$(filter-out tools/audiox-audio-bench.cpp,$(AUDIO_BENCH_SRCS)) -pthread -lm
+
+$(WATCHDOG_HOST_BIN): $(WATCHDOG_SRC)
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -DAUDIOX_WATCHDOG_STARTUP_TIMEOUT_MS=3000 \
+		-DAUDIOX_WATCHDOG_HEARTBEAT_TIMEOUT_MS=1200 -o "$@" "$<"
+
+$(WATCHDOG_HUNG_CHILD_BIN): tests/watchdog_hung_child.cpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -o "$@" "$<"
 
 fetch_deps:
 	@mkdir -p $(OUT_DIR)
@@ -346,11 +425,18 @@ $(BOOTLOADER_ROOTFS_DIR)/init: $(BOOTLOADER_OBJS)
 	$(BOOTLOADER_COMPILER) $(BOOTLOADER_FLAGS) \
 		-o $(BOOTLOADER_ROOTFS_DIR)/init $(BOOTLOADER_OBJS) $(LIBS)
 
-$(ROOTFS_DIR)/init: $(RUNTIME_DEPS) $(RUNTIME_OBJS) $(SBC_STATIC_LIB)
-	@echo "Compiling runtime init..."
+
+$(ROOTFS_DIR)/init: $(WATCHDOG_OBJ)
+	@echo "Compiling PID 1 watchdog..."
 	mkdir -p $(ROOTFS_DIR)
 	$(RUNTIME_COMPILER) $(RUNTIME_FLAGS) \
-		-o $(ROOTFS_DIR)/init $(RUNTIME_OBJS) $(RUNTIME_LIBS)
+		-o $(ROOTFS_DIR)/init $(WATCHDOG_OBJ) $(LIBS)
+
+$(ROOTFS_DIR)/sbin/audiox-main: $(RUNTIME_DEPS) $(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ) $(SBC_STATIC_LIB)
+	@echo "Compiling audiox main process..."
+	mkdir -p $(dir $@)
+	$(RUNTIME_COMPILER) $(RUNTIME_FLAGS) \
+		-o $@ $(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ) $(RUNTIME_LIBS)
 
 bootloader_rootfs: $(BOOTLOADER_ROOTFS_DIR)/init $(BOOT_MODULE_LOAD_LIST) $(BOOT_MODULE_LOAD_BASE_LIST)
 	@echo "Creating bootloader rootfs structure..."
@@ -360,7 +446,7 @@ bootloader_rootfs: $(BOOTLOADER_ROOTFS_DIR)/init $(BOOT_MODULE_LOAD_LIST) $(BOOT
 	cp -r $(OUT_DIR)/bootmodules_staging/* $(BOOTLOADER_ROOTFS_DIR)/lib/modules/
 	cp $(BOOT_MODULE_LOAD_BASE_LIST) $(BOOTLOADER_ROOTFS_DIR)/etc/bootmodule-load.list
 
-rootfs: $(ROOTFS_DIR)/init $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB)
+rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB)
 	@echo "Creating runtime rootfs structure..."
 	mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/sbin $(ROOTFS_DIR)/etc
 	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev

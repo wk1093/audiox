@@ -66,9 +66,19 @@ Useful targets:
 - `make fancyexport` - wait for SD mount and export build artifacts
 - `make image` - create a flashable image file (WARNING: untested, may not work)
 
+### Desktop audio engine bench
+
+Build and run the host audio testbench with `make audio-bench` and `make run-audio-bench`. It compiles the shared effect and graph-block processors without the Raspberry Pi runtime, plays a 440 Hz test tone through the system's default ALSA output, and serves a live effect control page at `http://127.0.0.1:8765`. To use a WAV source, run `make run-audio-bench BENCH_INPUT=/path/to/audio.wav`; to test headlessly, use `make run-audio-bench BENCH_ALSA_DEVICE=null`. Effect types, bypass, and parameters are changed live from the page. Playback prefers 32-bit PCM for quiet-signal resolution and falls back to 16-bit when the output does not support it. `make test-audio-engine` exercises the shared block graph, PCM conversion, and effect controls.
+
+The Cut effect passes audio when bypassed and outputs silence when enabled. Its `Channels` setting changes matching input/output port counts; since this changes routing topology, it is not MIDI-CC-mappable, but its mute state can be mapped to a MIDI note or toggled from the Web UI.
+
+The Pi runtime defaults to the direct graph-processing loop (`AUDIOX_USE_SHARED_GRAPH_PROCESSOR=0`) to avoid per-block adapter dispatch, stack graph-node setup, and shared processor code in the firmware binary. Set `AUDIOX_USE_SHARED_GRAPH_PROCESSOR=1` to compile the callback-based graph path for target-side comparison; the desktop engine uses the shared path. `processing.o` is rebuilt when the mode changes. Capture stream ownership, device attachment/remapping, and source-specific ring/SRC state live in a separate fixed-capacity ALSA capture backend. PCM I/O remains on the direct Pi path.
+
 ### Build configuration
 
 Use `make menuconfig` to edit `.config`, or `make defconfig` to regenerate it from the defaults in `Kconfig`. The build-time audio engine sample rate is set with `CONFIG_SAMPLE_RATE` in `.config`; rebuild the runtime after changing it. The Web UI does not expose the runtime USB sample-rate field, but preserves its value when saving the other `/audiox/config.txt` settings.
+
+At boot, `/init` is a small PID 1 watchdog that launches the application from `/sbin/audiox-main`. The app reports a heartbeat once per second from its main loop; if it exits or stops heartbeating, the watchdog restarts it with capped backoff. Startup has a two-minute grace period. The realtime audio thread is not involved in heartbeat reporting.
 
 ### ALSA dependency setup on amd64 host
 

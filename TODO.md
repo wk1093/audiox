@@ -73,7 +73,7 @@ The above last two features are mainly to improve my setup, but could probably b
 ## Big Refactor and fixes - v1.8+
 - [x] Fix versioning system (use 1.8.0-beta and whatnot instead of putting 1.8 dev stuff under 1.7.x), implement an extra version field everywhere (makefile, C++ source, JS source, etc)
 - [x] Make a config TUI like the linux kernel makefile has to allow configuring for different systems, environments, and be able to change the currently #define static settings like the buffer size and sample rate.
-- [ ] Split up code better so that we can partially compile the audio subsystem (the audio graph should be a bit more abstract, and shouldn't know about how devices actually work) so that we can test effects and stuff on my desktop instead of re-uploading to the Pi.
+- [x] Split up code better so that we can partially compile the audio subsystem (the audio graph should be a bit more abstract, and shouldn't know about how devices actually work) so that we can test effects and stuff on my desktop instead of re-uploading to the Pi.
   - [x] Add replaceable source/sink callbacks for desktop/shared-graph builds; keep the default Pi realtime loop on a direct compile-time path after callbacks caused device-side underruns.
   - [x] Extract the fixed-capacity PCM capture ring and SRC cursor state from the ALSA stream object; keep ALSA acquisition in the Pi adapter.
   - [x] Move ALSA capture stream ownership, device attachment/remapping, source gadget identity, and fixed PCM/SRC state out of RuntimeGraph into an explicit capture backend; keep ALSA I/O on the direct Pi path.

@@ -276,7 +276,7 @@ static inline int audio_pcm_recover(snd_pcm_t *pcm, int err, const char *path, c
         audio_pcm_track_underrun(path, op);
     }
 
-    int rc = snd_pcm_recover(pcm, err, 0);
+    int rc = snd_pcm_recover(pcm, err, 1);
     if (rc < 0) {
         printf("[AUDIO] [WARN] ALSA %s recover failed on %s: %s\n",
                op ? op : "stream",

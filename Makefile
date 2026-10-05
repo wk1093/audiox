@@ -63,7 +63,7 @@ RUNTIME_LIBS += $(SBC_STATIC_LIB)
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 8
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.8
+AUDIOX_VERSION_PRERELEASE ?= 
 AUDIOX_VERSION_BUILD ?=
 AUDIOX_VERSION_BASE = $(AUDIOX_VERSION_MAJOR).$(AUDIOX_VERSION_MINOR).$(AUDIOX_VERSION_PATCH)
 AUDIOX_VERSION_STRING = $(AUDIOX_VERSION_BASE)$(if $(AUDIOX_VERSION_PRERELEASE),-$(AUDIOX_VERSION_PRERELEASE))$(if $(AUDIOX_VERSION_BUILD),+$(AUDIOX_VERSION_BUILD))
@@ -221,6 +221,14 @@ run-audio-bench: $(AUDIO_BENCH_BIN)
 
 test-audio-engine: $(AUDIO_ENGINE_TEST_BIN)
 	@$(AUDIO_ENGINE_TEST_BIN)
+
+.PHONY: test-audio-pcm-recover
+test-audio-pcm-recover: $(OUT_DIR)/host/audiox-audio-pcm-recover-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-audio-pcm-recover-test: tests/audio_pcm_recover_test.cpp include/audio/alsa_pcm.h include/defs.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-parameter -Iinclude $(shell pkg-config --cflags alsa) -o "$@" "$<" $(shell pkg-config --libs alsa)
 
 test-watchdog: $(WATCHDOG_HOST_BIN)
 test-watchdog: $(WATCHDOG_HOST_BIN) $(WATCHDOG_HUNG_CHILD_BIN)

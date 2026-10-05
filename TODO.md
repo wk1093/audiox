@@ -68,7 +68,7 @@ The above last two features are mainly to improve my setup, but could probably b
 
 - [x] Bluetooth support: controlled by web ui, open a specific page on the webui, and it will start listing out bluetooth devices, and you can click one to pair, and it appears in the graph as a device. Will have a specific device naming, and it's graph elements will be persistent even when it isn't connected, so that when it does connect, it remembers how it was routed the last time it was used. I also need to implement some sort of routing tool like a blank effect, so that I can route to a "fake output" that routes to both wired and bluetooth so that both always work, and we have an in between instead of a bunch of individual connections to both. I guess we can use a gain module set to 1, but that adds extra processing, this blank module should be purely for nice routing in the ui and routing config, but in the audio processing should be compiled out.
 - [x] fbui soundboard, for people without a midi controller, set a config option in the webui, and the normal fbui will be replaced with a steamdeck-like soundboard interface (with optional multi-page via tabs and/or swipe)
-- [ ] Investigate occasional "bad boots" where there is constant underruns in the logs, but a reboot always fixes it.
+- [x] Investigate occasional "bad boots" where there is constant underruns in the logs, but a reboot always fixes it.
 
 ## Big Refactor - v1.8+
 - [ ] Fix versioning system (use 1.8.0-beta and whatnot instead of putting 1.8 dev stuff under 1.7.x), implement an extra version field everywhere (makefile, C++ source, JS source, etc)

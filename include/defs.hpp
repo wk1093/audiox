@@ -10,11 +10,23 @@
 #define AUDIOX_ENABLE_ALSA_LOGS 1
 #endif
 
-#define SAMPLE_RATE 48000
+#ifndef AUDIOX_SAMPLE_RATE
+#define AUDIOX_SAMPLE_RATE 48000
+#endif
+
+#ifndef AUDIOX_BUFFER_FRAMES
+#define AUDIOX_BUFFER_FRAMES 128
+#endif
+
+#define SAMPLE_RATE AUDIOX_SAMPLE_RATE
+
 #define FREQUENCY 440.0
 #define AMPLITUDE 16000
 #define PI 3.14159265358979323846
-#define BUFFER_FRAMES 128
+
+#ifndef BUFFER_FRAMES
+#define BUFFER_FRAMES AUDIOX_BUFFER_FRAMES
+#endif
 
 #define MODULE_LOAD_LIST_FILE "/etc/module-load.list"
 #define MODULE_LOAD_BASE_LIST_FILE "/etc/module-load.base.list"

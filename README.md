@@ -66,6 +66,10 @@ Useful targets:
 - `make fancyexport` - wait for SD mount and export build artifacts
 - `make image` - create a flashable image file (WARNING: untested, may not work)
 
+### Build configuration
+
+Use `make menuconfig` to edit `.config`, or `make defconfig` to regenerate it from the defaults in `Kconfig`. The build-time audio engine sample rate is set with `CONFIG_SAMPLE_RATE` in `.config`; rebuild the runtime after changing it. The Web UI does not expose the runtime USB sample-rate field, but preserves its value when saving the other `/audiox/config.txt` settings.
+
 ### ALSA dependency setup on amd64 host
 
 When building with cross compiler on amd64, the runtime now expects ALSA under `out/alsa-sysroot` and links against static `libasound.a`.

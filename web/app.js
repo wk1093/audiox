@@ -474,6 +474,8 @@ function parseConfigText(text) {
   return cfg;
 }
 
+let configuredUsbSampleRate = 48000;
+
 function formatConfigText(cfg) {
   return [
     `usb_playback_channels=${cfg.usb_playback_channels}`,
@@ -544,7 +546,7 @@ function setFormFromConfig(cfg) {
   if (!cfg) return;
   document.getElementById('usb_playback_channels').value = String(cfg.usb_playback_channels ?? 2);
   document.getElementById('usb_capture_channels').value = String(cfg.usb_capture_channels ?? 2);
-  document.getElementById('usb_sample_rate').value = String(cfg.usb_sample_rate ?? 48000);
+  configuredUsbSampleRate = Number(cfg.usb_sample_rate) || 48000;
   document.getElementById('usb_sample_size').value = String(cfg.usb_sample_size ?? 2);
 }
 
@@ -552,7 +554,7 @@ function getConfigFromForm() {
   return {
     usb_playback_channels: Number(document.getElementById('usb_playback_channels').value) || 2,
     usb_capture_channels: Number(document.getElementById('usb_capture_channels').value) || 2,
-    usb_sample_rate: Number(document.getElementById('usb_sample_rate').value) || 48000,
+    usb_sample_rate: configuredUsbSampleRate,
     usb_sample_size: Number(document.getElementById('usb_sample_size').value) || 2,
     soundboard_mode: 'play',
     framebuffer_view: state.framebufferView,

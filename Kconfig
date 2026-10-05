@@ -1,0 +1,31 @@
+mainmenu "audiox configuration"
+
+menu "Audio engine"
+
+config SAMPLE_RATE
+	int "Audio sample rate"
+	range 8000 96000
+	default 48000
+	help
+	  Sample rate in Hz used by the audio engine and USB audio gadget.
+
+config BUFFER_FRAMES
+	int "Audio buffer frames"
+	range 64 1024
+	default 128
+	help
+	  Processing block size. Supported choices are validated by the menu.
+
+config ALSA_LOGS
+	bool "Enable ALSA diagnostics"
+	default y
+
+endmenu
+
+menu "Development"
+
+config DEBUG_SHELL
+	bool "Enable boot debug shell"
+	default n
+
+endmenu

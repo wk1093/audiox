@@ -2,6 +2,8 @@
 #include "audio/alsa_pcm.h"
 #include "audio/effects/slot.hpp"
 #include "audio/processing_fx.hpp"
+#include "audio/pcm_convert.hpp"
+#include "audio/graph_processor.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -59,12 +61,7 @@ struct RuntimeGraph {
         uint64_t startedAtBlock;
     };
 
-    struct CompiledRoute {
-        uint16_t srcNode;
-        uint16_t dstNode;
-        uint8_t srcChannel;
-        uint8_t dstChannel;
-    };
+    using CompiledRoute = audiox::graph::BlockRoute;
 
     struct AlsaCaptureStream {
         int active;
@@ -614,8 +611,8 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
     const char *lastAttemptPath = s->path;
     snd_pcm_format_t lastAttemptFormat = SND_PCM_FORMAT_UNKNOWN;
     static const snd_pcm_format_t formats[] = {
-        SND_PCM_FORMAT_S16_LE,
         SND_PCM_FORMAT_S32_LE,
+        SND_PCM_FORMAT_S16_LE,
     };
 
     for (size_t r = 0; r < (sizeof(rates) / sizeof(rates[0])); ++r) {
@@ -659,15 +656,11 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
                     s->reopenRetryBlocks = 0;
                     s->pendingFrames = 0;
                     s->pendingOffsetFrames = 0;
-                    // VERBOSE: Uncomment this for debugging playback stream open issues.
-                    // printf("[AUDIO] [INFO] playback stream opened %s (%uch, %u Hz, fmt=%s period=%u periods=%u timing=%d)\n",
-                    //        s->path,
-                    //        (unsigned)s->channels,
-                    //        (unsigned)s->sampleRate,
-                    //        snd_pcm_format_name(s->format),
-                    //        profiles[p].periodFrames,
-                    //        profiles[p].periods,
-                    //        profiles[p].configureTiming);
+                          printf("[AUDIO] [INFO] playback stream opened %s (%uch, %u Hz, fmt=%s)\n",
+                              s->path,
+                              (unsigned)s->channels,
+                              (unsigned)s->sampleRate,
+                              snd_pcm_format_name(s->format));
                     return true;
                 }
             }
@@ -919,16 +912,8 @@ static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
         for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
             for (uint32_t channel = 0; channel < 2; ++channel) {
                 float sample = rt->inputs[node][channel][frame];
-                if (!std::isfinite(sample)) {
-                    sample = 0.0f;
-                }
                 sample *= gain * kBluetoothOutputPeakLimit;
-                if (sample > 1.0f) sample = 1.0f;
-                if (sample < -1.0f) sample = -1.0f;
-                int32_t value = (int32_t)lrintf(sample * 32767.0f);
-                if (value > 32767) value = 32767;
-                if (value < -32768) value = -32768;
-                block[frame * 2U + channel] = (int16_t)value;
+                block[frame * 2U + channel] = audiox::pcm::toS16(sample);
             }
         }
         (void)ctx->pushBluetoothOutputPcm(block, BUFFER_FRAMES);
@@ -952,33 +937,17 @@ static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
                 for (uint8_t ch = 0; ch < s.channels; ++ch) {
                     uint8_t srcCh = (ch < inChannels) ? ch : (uint8_t)(inChannels - 1);
                     float v = rt->inputs[s.nodeIndex][srcCh][frame];
-
-                    if (v > 1.0f) {
-                        v = 1.0f;
+                    const size_t sampleIndex = static_cast<size_t>(frame) * s.channels + ch;
+                    if (s.format == SND_PCM_FORMAT_S32_LE) {
+                        s.pendingBlock32[sampleIndex] = audiox::pcm::toS32(v);
+                    } else {
+                        s.pendingBlock[sampleIndex] = audiox::pcm::toS16(v);
                     }
-                    if (v < -1.0f) {
-                        v = -1.0f;
-                    }
-                    int32_t q = (int32_t)lrintf(v * 32767.0f);
-                    if (q > 32767) {
-                        q = 32767;
-                    }
-                    if (q < -32768) {
-                        q = -32768;
-                    }
-                    s.pendingBlock[frame * s.channels + ch] = (int16_t)q;
                 }
             }
 
             s.pendingFrames = BUFFER_FRAMES;
             s.pendingOffsetFrames = 0;
-
-            if (s.format == SND_PCM_FORMAT_S32_LE) {
-                uint32_t totalSamples = s.pendingFrames * s.channels;
-                for (uint32_t i = 0; i < totalSamples; ++i) {
-                    s.pendingBlock32[i] = ((int32_t)s.pendingBlock[i]) << 16;
-                }
-            }
         }
 
         if (s.pendingFrames <= s.pendingOffsetFrames) {
@@ -1650,124 +1619,6 @@ static void renderSourceNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeI
     }
 }
 
-static void routeCompiledEdge(AudioContext *ctx, RuntimeGraph *rt, const RuntimeGraph::CompiledRoute &route) {
-    if (!rt) {
-        return;
-    }
-
-    float gain = ctx ? ctx->nodeGainAtomics[route.srcNode].load(std::memory_order_relaxed) : 1.0f;
-    const float *src = rt->outputs[route.srcNode][route.srcChannel];
-    float *dstStorage = rt->inputStorage[route.dstNode][route.dstChannel];
-    float *dst = rt->inputs[route.dstNode][route.dstChannel];
-    uint8_t &contribCount = rt->inputContributionCount[route.dstNode][route.dstChannel];
-
-    if (contribCount == 0U) {
-        if (gain == 1.0f) {
-            rt->inputs[route.dstNode][route.dstChannel] = const_cast<float *>(src);
-            rt->inputContributionCount[route.dstNode][route.dstChannel] = 1U;
-            return;
-        }
-
-        for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
-            dstStorage[frame] = src[frame] * gain;
-        }
-        rt->inputs[route.dstNode][route.dstChannel] = dstStorage;
-        rt->inputContributionCount[route.dstNode][route.dstChannel] = 1U;
-        return;
-    }
-
-    if (dst != dstStorage) {
-        memcpy(dstStorage, dst, sizeof(float) * BUFFER_FRAMES);
-        dst = dstStorage;
-        rt->inputs[route.dstNode][route.dstChannel] = dstStorage;
-    }
-
-    if (gain == 1.0f) {
-        for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
-            dst[frame] += src[frame];
-        }
-    } else {
-        for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
-            dst[frame] += src[frame] * gain;
-        }
-    }
-
-    if (contribCount < 255U) {
-        ++contribCount;
-    }
-}
-
-static void copyWithClamp(const float *src, float *dst) {
-    for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
-        float s = src[frame];
-        if (s > 1.0f) {
-            s = 1.0f;
-        }
-        if (s < -1.0f) {
-            s = -1.0f;
-        }
-        dst[frame] = s;
-    }
-}
-
-static void processNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex, uint32_t effectSeq) {
-    if (!ctx || !rt || nodeIndex >= rt->snapshot.thingCount) {
-        return;
-    }
-
-    const AudioGraphThingInfo &thing = rt->snapshot.things[nodeIndex];
-    uint8_t inChannels = (thing.inputs > kMaxChannelsPerThing) ? kMaxChannelsPerThing : thing.inputs;
-    uint8_t outChannels = (thing.outputs > kMaxChannelsPerThing) ? kMaxChannelsPerThing : thing.outputs;
-    uint8_t copyChannels = (inChannels < outChannels) ? inChannels : outChannels;
-
-    if (copyChannels == 0 || outChannels == 0) {
-        return;
-    }
-
-    if (rt->nodeKind[nodeIndex] == NODE_EFFECT) {
-        if (rt->effectParamsSeq[nodeIndex] != effectSeq) {
-            audiox::effects::SlotParams params = {};
-            if (ctx->getEffectParams(thing.id, &params) != RET_OK) {
-                params.enabled = 1U;
-                params.type = audiox::effects::EFFECT_GAIN;
-                audiox::effects::setSlotDefaultsForType(&params, params.type);
-            }
-            rt->effectParamsCache[nodeIndex] = params;
-            rt->effectParamsSeq[nodeIndex] = effectSeq;
-        }
-
-        const audiox::effects::SlotParams &params = rt->effectParamsCache[nodeIndex];
-
-        if (!params.enabled) {
-            for (uint8_t ch = 0; ch < copyChannels; ++ch) {
-                copyWithClamp(rt->inputs[nodeIndex][ch], rt->outputs[nodeIndex][ch]);
-            }
-            for (uint8_t ch = copyChannels; ch < outChannels; ++ch) {
-                memset(rt->outputs[nodeIndex][ch], 0, sizeof(float) * BUFFER_FRAMES);
-            }
-            return;
-        }
-
-        for (uint8_t ch = 0; ch < copyChannels; ++ch) {
-            audiox::effects::processSlot(thing.id,
-                                         ch,
-                                         params,
-                                         rt->inputs[nodeIndex][ch],
-                                         rt->outputs[nodeIndex][ch],
-                                         BUFFER_FRAMES);
-        }
-
-        for (uint8_t ch = copyChannels; ch < outChannels; ++ch) {
-            memset(rt->outputs[nodeIndex][ch], 0, sizeof(float) * BUFFER_FRAMES);
-        }
-        return;
-    }
-
-    for (uint8_t ch = 0; ch < copyChannels; ++ch) {
-        copyWithClamp(rt->inputs[nodeIndex][ch], rt->outputs[nodeIndex][ch]);
-    }
-}
-
 static void buildProcessRouteIndex(RuntimeGraph *rt) {
     if (!rt) {
         return;
@@ -2151,25 +2002,48 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
         renderSourceNode(ctx, rt, rt->sourceNodes[i]);
     }
 
-    // Route source output into downstream node inputs.
-    for (uint16_t i = 0; i < rt->sourceRouteCount; ++i) {
-        routeCompiledEdge(ctx, rt, rt->sourceRoutes[i]);
-    }
-
-    // Process transform/effect nodes in deterministic order and route each
-    // node's output forward immediately so chained effects work in one block.
     uint32_t effectSeq = ctx->effectStatesSeq.load(std::memory_order_acquire);
     for (uint16_t i = 0; i < rt->processNodeCount; ++i) {
         uint16_t nodeIndex = rt->processNodes[i];
-        processNode(ctx, rt, nodeIndex, effectSeq);
-
-        uint16_t routeStart = rt->processRouteStart[nodeIndex];
-        uint16_t routeLen = rt->processRouteLen[nodeIndex];
-        for (uint16_t r = 0; r < routeLen; ++r) {
-            const RuntimeGraph::CompiledRoute &route = rt->processRoutesBySrc[routeStart + r];
-            routeCompiledEdge(ctx, rt, route);
+        if (rt->nodeKind[nodeIndex] == NODE_EFFECT &&
+            rt->effectParamsSeq[nodeIndex] != effectSeq) {
+            audiox::effects::SlotParams params = {};
+            if (ctx->getEffectParams(rt->snapshot.things[nodeIndex].id, &params) != RET_OK) {
+                params.enabled = 1U;
+                params.type = audiox::effects::EFFECT_GAIN;
+                audiox::effects::setSlotDefaultsForType(&params, params.type);
+            }
+            rt->effectParamsCache[nodeIndex] = params;
+            rt->effectParamsSeq[nodeIndex] = effectSeq;
         }
     }
+
+    audiox::graph::BlockNode blockNodes[AUDIO_GRAPH_MAX_THINGS] = {};
+    float nodeGains[AUDIO_GRAPH_MAX_THINGS];
+    for (uint16_t node = 0; node < rt->snapshot.thingCount; ++node) {
+        blockNodes[node].id = rt->snapshot.things[node].id;
+        blockNodes[node].kind = static_cast<audiox::graph::BlockNodeKind>(rt->nodeKind[node]);
+        blockNodes[node].inputChannels = rt->snapshot.things[node].inputs;
+        blockNodes[node].outputChannels = rt->snapshot.things[node].outputs;
+        blockNodes[node].inputs = rt->inputs[node];
+        blockNodes[node].outputs = rt->outputs[node];
+        blockNodes[node].inputStorage = rt->inputStorage[node];
+        blockNodes[node].inputContributionCount = rt->inputContributionCount[node];
+        blockNodes[node].effectParams = &rt->effectParamsCache[node];
+        nodeGains[node] = ctx->nodeGainAtomics[node].load(std::memory_order_relaxed);
+    }
+
+    (void)audiox::graph::processBlock(blockNodes,
+                                     rt->snapshot.thingCount,
+                                     rt->sourceRoutes,
+                                     rt->sourceRouteCount,
+                                     rt->processNodes,
+                                     rt->processNodeCount,
+                                     rt->processRoutesBySrc,
+                                     rt->processRouteStart,
+                                     rt->processRouteLen,
+                                     nodeGains,
+                                     BUFFER_FRAMES);
 
     rt->blocksProcessed++;
     updateChannelLevels(ctx, rt);

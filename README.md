@@ -68,7 +68,7 @@ Useful targets:
 
 ### Desktop audio engine bench
 
-Build and run the host-only effect testbench with `make audio-bench` and `make run-audio-bench`. It compiles the shared audio effect processor without the Raspberry Pi runtime, plays a 440 Hz test tone through the system's default ALSA output, and serves a live effect control page at `http://127.0.0.1:8765`. To use a WAV source, run `make run-audio-bench BENCH_INPUT=/path/to/audio.wav`; to test headlessly, use `make run-audio-bench BENCH_ALSA_DEVICE=null`. Effect types, bypass, and parameters are changed live from the page. `make test-audio-engine` runs the host-side engine tests.
+Build and run the host audio testbench with `make audio-bench` and `make run-audio-bench`. It compiles the shared effect and graph-block processors without the Raspberry Pi runtime, plays a 440 Hz test tone through the system's default ALSA output, and serves a live effect control page at `http://127.0.0.1:8765`. To use a WAV source, run `make run-audio-bench BENCH_INPUT=/path/to/audio.wav`; to test headlessly, use `make run-audio-bench BENCH_ALSA_DEVICE=null`. Effect types, bypass, and parameters are changed live from the page. Playback prefers 32-bit PCM for quiet-signal resolution and falls back to 16-bit when the output does not support it. `make test-audio-engine` exercises the shared block graph, PCM conversion, and effect controls.
 
 ### Build configuration
 

@@ -56,7 +56,7 @@ RUNTIME_LIBS += $(SBC_STATIC_LIB)
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 8
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.3
+AUDIOX_VERSION_PRERELEASE ?= beta.4
 AUDIOX_VERSION_BUILD ?=
 AUDIOX_VERSION_BASE = $(AUDIOX_VERSION_MAJOR).$(AUDIOX_VERSION_MINOR).$(AUDIOX_VERSION_PATCH)
 AUDIOX_VERSION_STRING = $(AUDIOX_VERSION_BASE)$(if $(AUDIOX_VERSION_PRERELEASE),-$(AUDIOX_VERSION_PRERELEASE))$(if $(AUDIOX_VERSION_BUILD),+$(AUDIOX_VERSION_BUILD))
@@ -119,6 +119,7 @@ AUDIO_BENCH_BIN = $(OUT_DIR)/host/audiox-audio-bench
 AUDIO_ENGINE_TEST_BIN = $(OUT_DIR)/host/audiox-audio-engine-test
 AUDIO_BENCH_SRCS = \
 	tools/audiox-audio-bench.cpp \
+	src/audio/graph_processor.cpp \
 	src/audio/engine.cpp \
 	src/audio/effects/slot.cpp \
 	src/audio/effects/gain.cpp \
@@ -205,7 +206,7 @@ BENCH_INPUT ?=
 BENCH_ALSA_DEVICE ?= default
 BENCH_PORT ?= 8765
 
-$(AUDIO_BENCH_BIN): $(AUDIO_BENCH_SRCS) $(AUDIOX_CONFIG_FILE)
+$(AUDIO_BENCH_BIN): $(AUDIO_BENCH_SRCS) $(AUDIOX_CONFIG_FILE) include/audio/pcm_convert.hpp include/audio/engine.hpp include/audio/graph_processor.hpp include/audio/effects/slot.hpp
 	@mkdir -p "$(dir $@)"
 	@command -v "$(HOSTCXX)" >/dev/null || { echo "Host C++ compiler not found: $(HOSTCXX)"; exit 1; }
 	@pkg-config --exists alsa sndfile || { echo "Host ALSA and libsndfile development files are required (pkg-config alsa sndfile)"; exit 1; }
@@ -215,7 +216,7 @@ $(AUDIO_BENCH_BIN): $(AUDIO_BENCH_SRCS) $(AUDIOX_CONFIG_FILE)
 		-DAUDIOX_BENCH_HTML='"$(CURDIR)/web/audio-bench.html"' \
 		-o "$@" $(AUDIO_BENCH_SRCS) $(HOST_AUDIO_LIBS) -pthread -lm
 
-$(AUDIO_ENGINE_TEST_BIN): tests/audio_engine_test.cpp $(filter-out tools/audiox-audio-bench.cpp,$(AUDIO_BENCH_SRCS)) $(AUDIOX_CONFIG_FILE)
+$(AUDIO_ENGINE_TEST_BIN): tests/audio_engine_test.cpp $(filter-out tools/audiox-audio-bench.cpp,$(AUDIO_BENCH_SRCS)) include/audio/pcm_convert.hpp include/audio/engine.hpp include/audio/graph_processor.hpp $(AUDIOX_CONFIG_FILE)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) \
 		-DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) -o "$@" tests/audio_engine_test.cpp \

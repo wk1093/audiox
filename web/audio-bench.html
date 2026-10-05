@@ -142,7 +142,7 @@
         document.getElementById('play').textContent = playing ? 'Pause' : 'Play';
         document.getElementById('play').disabled = !status.audioReady;
         document.getElementById('source').textContent = status.source;
-        document.getElementById('meta').textContent = `${status.audioReady ? 'ALSA ready' : 'Waiting for ALSA'} · ${status.sampleRate} Hz · ${status.audioDevice} · ${status.underruns} xruns`;
+        document.getElementById('meta').textContent = `${status.audioReady ? 'ALSA ready' : 'Waiting for ALSA'} · ${status.sampleRate} Hz / ${status.sampleFormatBits || '?'} bit · ${status.audioDevice} · ${status.underruns} xruns`;
         document.getElementById('connection').textContent = 'Connected';
       } catch (error) {
         document.getElementById('connection').textContent = 'Disconnected';

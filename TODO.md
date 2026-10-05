@@ -75,8 +75,10 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Make a config TUI like the linux kernel makefile has to allow configuring for different systems, environments, and be able to change the currently #define static settings like the buffer size and sample rate.
 - [ ] Split up code better so that we can partially compile the audio subsystem (the audio graph should be a bit more abstract, and shouldn't know about how devices actually work) so that we can test effects and stuff on my desktop instead of re-uploading to the Pi.
   - [x] Extract a host-buildable effect-chain engine and add a desktop ALSA/HTTP bench with live effect controls.
-  - [ ] Migrate the Raspberry Pi runtime graph and device adapters onto the shared engine interface.
+  - [x] Extract backend-neutral route mixing, node processing, and effect execution; use the same graph block processor in the Pi runtime and host tests.
+  - [ ] Move device discovery, source rendering, and PCM stream ownership behind replaceable runtime/desktop adapters.
 - [ ] Improve modularity of the audio engine to allow easier addition of new effects and routing options.
+- [ ] "Cut" effect/feature to allow adding a button (triggerable by midi or web UI) to mute or unmute a specific route (can also do multiple separate channels with one button, it should have a variable number of inputs/outputs)
 
 ## Pre-release - v1.9+
 - [ ] Smarter bootloader that can detect bad initramfs and boot into a backup one:

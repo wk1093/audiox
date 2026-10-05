@@ -19,6 +19,8 @@ struct EngineEffectInfo {
 
 class AudioEngine {
 public:
+    static constexpr size_t kMaximumEffects = 62;
+
     AudioEngine(uint32_t sampleRate, uint32_t channels);
 
     uint32_t sampleRate() const;
@@ -43,8 +45,6 @@ private:
     uint32_t sampleRate_;
     uint32_t channels_;
     std::vector<Effect> effects_;
-    std::vector<float> inputScratch_;
-    std::vector<float> outputScratch_;
     mutable std::mutex mutex_;
 };
 

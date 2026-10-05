@@ -1,4 +1,5 @@
 #include "audio/engine.hpp"
+#include "audio/pcm_convert.hpp"
 #include "defs.hpp"
 
 #include <alsa/asoundlib.h>
@@ -50,6 +51,7 @@ struct BenchState {
     SourceAudio source;
     std::atomic<bool> playing{true};
     std::atomic<int> audioReady{0};
+    std::atomic<int> audioBits{0};
     std::atomic<uint64_t> renderedFrames{0};
     std::atomic<uint64_t> underruns{0};
     std::string audioDevice = "default";
@@ -87,41 +89,57 @@ bool loadWave(const char* path, SourceAudio& source, std::string& error) {
     return true;
 }
 
-bool openOutput(const std::string& device, snd_pcm_t** output, std::string& error) {
+bool openOutput(const std::string& device,
+                snd_pcm_t** output,
+                snd_pcm_format_t* outputFormat,
+                std::string& error) {
     int rc = snd_pcm_open(output, device.c_str(), SND_PCM_STREAM_PLAYBACK, 0);
     if (rc < 0) {
         error = snd_strerror(rc);
         return false;
     }
-    rc = snd_pcm_set_params(*output,
-                            SND_PCM_FORMAT_S16_LE,
-                            SND_PCM_ACCESS_RW_INTERLEAVED,
-                            kBenchChannels,
-                            SAMPLE_RATE,
-                            1,
-                            50000);
+    const snd_pcm_format_t formats[] = {SND_PCM_FORMAT_S32_LE, SND_PCM_FORMAT_S16_LE};
+    for (snd_pcm_format_t format : formats) {
+        rc = snd_pcm_set_params(*output,
+                                format,
+                                SND_PCM_ACCESS_RW_INTERLEAVED,
+                                kBenchChannels,
+                                SAMPLE_RATE,
+                                1,
+                                50000);
+        if (rc >= 0) {
+            *outputFormat = format;
+            return true;
+        }
+        (void)snd_pcm_close(*output);
+        *output = nullptr;
+        if (format == formats[0]) {
+            rc = snd_pcm_open(output, device.c_str(), SND_PCM_STREAM_PLAYBACK, 0);
+            if (rc < 0) break;
+        }
+    }
     if (rc < 0) {
         error = snd_strerror(rc);
-        snd_pcm_close(*output);
-        *output = nullptr;
         return false;
     }
-    return true;
+    return false;
 }
 
 void audioLoop(BenchState* state) {
     std::vector<float> input(kBlockFrames * kBenchChannels);
     std::vector<float> output(kBlockFrames * kBenchChannels);
-    std::vector<int16_t> pcm(kBlockFrames * kBenchChannels);
+    std::vector<int16_t> pcm16(kBlockFrames * kBenchChannels);
+    std::vector<int32_t> pcm32(kBlockFrames * kBenchChannels);
     double sourcePosition = 0.0;
     float oscillatorPhase = 0.0f;
     snd_pcm_t* pcmDevice = nullptr;
+    snd_pcm_format_t pcmFormat = SND_PCM_FORMAT_UNKNOWN;
     std::string lastError;
 
     while (running.load(std::memory_order_relaxed)) {
         if (!pcmDevice) {
             std::string error;
-            if (!openOutput(state->audioDevice, &pcmDevice, error)) {
+            if (!openOutput(state->audioDevice, &pcmDevice, &pcmFormat, error)) {
                 state->audioReady.store(-1, std::memory_order_relaxed);
                 if (error != lastError) {
                     std::fprintf(stderr, "[bench] ALSA output unavailable: %s\n", error.c_str());
@@ -131,6 +149,8 @@ void audioLoop(BenchState* state) {
                 continue;
             }
             state->audioReady.store(1, std::memory_order_relaxed);
+            state->audioBits.store(pcmFormat == SND_PCM_FORMAT_S32_LE ? 32 : 16,
+                                   std::memory_order_relaxed);
             lastError.clear();
         }
 
@@ -162,11 +182,17 @@ void audioLoop(BenchState* state) {
             continue;
         }
         for (size_t index = 0; index < output.size(); ++index) {
-            const float sample = std::max(-1.0f, std::min(1.0f, output[index]));
-            pcm[index] = static_cast<int16_t>(sample * 32767.0f);
+            if (pcmFormat == SND_PCM_FORMAT_S32_LE) {
+                pcm32[index] = audiox::pcm::toS32(output[index]);
+            } else {
+                pcm16[index] = audiox::pcm::toS16(output[index]);
+            }
         }
 
-        snd_pcm_sframes_t written = snd_pcm_writei(pcmDevice, pcm.data(), kBlockFrames);
+        const void* pcmData = pcmFormat == SND_PCM_FORMAT_S32_LE
+            ? static_cast<const void*>(pcm32.data())
+            : static_cast<const void*>(pcm16.data());
+        snd_pcm_sframes_t written = snd_pcm_writei(pcmDevice, pcmData, kBlockFrames);
         if (written < 0) {
             written = snd_pcm_recover(pcmDevice, static_cast<int>(written), 1);
             if (written < 0) {
@@ -255,6 +281,7 @@ std::string statusJson(const BenchState& state) {
            ",\"audioReady\":" + std::string(state.audioReady.load() == 1 ? "true" : "false") +
            ",\"audioDevice\":\"" + state.audioDevice + "\",\"source\":\"" + state.source.name +
            "\",\"sampleRate\":" + std::to_string(SAMPLE_RATE) +
+           ",\"sampleFormatBits\":" + std::to_string(state.audioBits.load()) +
            ",\"renderedSeconds\":" + std::to_string(seconds) +
            ",\"underruns\":" + std::to_string(state.underruns.load()) + "}";
 }

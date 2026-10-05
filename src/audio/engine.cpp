@@ -1,10 +1,18 @@
 #include "audio/engine.hpp"
+#include "audio/graph_processor.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 
 namespace audiox {
+
+namespace {
+
+constexpr uint8_t kMaximumChannels = 16;
+constexpr uint16_t kMaximumGraphNodes = static_cast<uint16_t>(AudioEngine::kMaximumEffects + 2);
+
+}  // namespace
 
 AudioEngine::AudioEngine(uint32_t sampleRate, uint32_t channels)
     : sampleRate_(sampleRate), channels_(channels) {
@@ -33,6 +41,9 @@ int AudioEngine::addEffect(const std::string& effectId, uint8_t type, bool enabl
         return effect.id == effectId;
     });
     if (exists != effects_.end()) {
+        return -1;
+    }
+    if (effects_.size() >= kMaximumEffects) {
         return -1;
     }
 
@@ -118,34 +129,94 @@ std::vector<EngineEffectInfo> AudioEngine::effects() const {
 }
 
 int AudioEngine::process(const float* input, float* output, uint32_t frames) {
-    if (!input || !output || frames == 0 || channels_ == 0) {
+    if (!input || !output || frames == 0 || channels_ == 0 || channels_ > kMaximumChannels) {
         return -1;
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
-    inputScratch_.resize(frames);
-    outputScratch_.resize(frames);
 
-    for (uint32_t channel = 0; channel < channels_; ++channel) {
-        for (uint32_t frame = 0; frame < frames; ++frame) {
-            inputScratch_[frame] = input[static_cast<size_t>(frame) * channels_ + channel];
-        }
+    float graphBuffers[kMaximumGraphNodes][2][BUFFER_FRAMES] = {};
+    float* inputPointers[kMaximumGraphNodes] = {};
+    float* outputPointers[kMaximumGraphNodes] = {};
+    uint8_t contributions[kMaximumGraphNodes] = {};
+    graph::BlockNode nodes[kMaximumGraphNodes] = {};
+    graph::BlockRoute sourceRoutes[1] = {};
+    graph::BlockRoute processRoutes[kMaximumEffects] = {};
+    uint16_t processOrder[kMaximumEffects] = {};
+    uint16_t routeStarts[kMaximumGraphNodes] = {};
+    uint16_t routeLengths[kMaximumGraphNodes] = {};
+    float nodeGains[kMaximumGraphNodes] = {};
 
-        const float* currentInput = inputScratch_.data();
-        float* currentOutput = outputScratch_.data();
-        for (const Effect& effect : effects_) {
-            effects::processSlot(effect.id.c_str(),
-                                 static_cast<uint8_t>(channel),
-                                 effect.params,
-                                 currentInput,
-                                 currentOutput,
-                                 frames);
-            currentInput = currentOutput;
-            currentOutput = currentOutput == outputScratch_.data() ? inputScratch_.data() : outputScratch_.data();
-        }
+    const uint16_t sinkNode = static_cast<uint16_t>(effects_.size() + 1U);
+    const uint16_t nodeCount = static_cast<uint16_t>(sinkNode + 1U);
+    nodes[0].id = "desktop_source";
+    nodes[0].kind = graph::BlockNodeKind::Source;
+    nodes[0].outputChannels = 1;
+    nodes[0].outputs = &outputPointers[0];
 
-        for (uint32_t frame = 0; frame < frames; ++frame) {
-            output[static_cast<size_t>(frame) * channels_ + channel] = currentInput[frame];
+    for (uint16_t index = 0; index < nodeCount; ++index) {
+        inputPointers[index] = graphBuffers[index][0];
+        outputPointers[index] = graphBuffers[index][1];
+        nodes[index].inputs = &inputPointers[index];
+        nodes[index].outputs = &outputPointers[index];
+        nodes[index].inputStorage = graphBuffers[index];
+        nodes[index].inputContributionCount = &contributions[index];
+        nodeGains[index] = 1.0f;
+    }
+
+    for (uint16_t index = 0; index < effects_.size(); ++index) {
+        const uint16_t nodeIndex = static_cast<uint16_t>(index + 1U);
+        nodes[nodeIndex].id = effects_[index].id.c_str();
+        nodes[nodeIndex].kind = graph::BlockNodeKind::Effect;
+        nodes[nodeIndex].inputChannels = 1;
+        nodes[nodeIndex].outputChannels = 1;
+        nodes[nodeIndex].effectParams = &effects_[index].params;
+        processOrder[index] = nodeIndex;
+
+        const uint16_t routeIndex = index;
+        const uint16_t nextNode = static_cast<uint16_t>(nodeIndex + 1U);
+        processRoutes[routeIndex] = {nodeIndex, nextNode, 0, 0};
+        routeStarts[nodeIndex] = routeIndex;
+        routeLengths[nodeIndex] = 1;
+    }
+
+    sourceRoutes[0] = {0, static_cast<uint16_t>(effects_.empty() ? sinkNode : 1U), 0, 0};
+    nodes[sinkNode].kind = graph::BlockNodeKind::Sink;
+    nodes[sinkNode].inputChannels = 1;
+
+    for (uint32_t frameOffset = 0; frameOffset < frames; frameOffset += BUFFER_FRAMES) {
+        const uint32_t blockFrames = std::min<uint32_t>(BUFFER_FRAMES, frames - frameOffset);
+        for (uint8_t channel = 0; channel < channels_; ++channel) {
+            std::memset(contributions, 0, sizeof(contributions));
+            for (uint16_t node = 0; node < nodeCount; ++node) {
+                inputPointers[node] = graphBuffers[node][0];
+            }
+            graphBuffers[0][1][0] = 0.0f;
+            for (uint32_t frame = 0; frame < blockFrames; ++frame) {
+                graphBuffers[0][1][frame] = input[(static_cast<size_t>(frameOffset + frame) * channels_) + channel];
+            }
+            for (uint16_t index = 0; index < effects_.size(); ++index) {
+                nodes[index + 1U].channelOffset = channel;
+            }
+
+            if (graph::processBlock(nodes,
+                                    nodeCount,
+                                    sourceRoutes,
+                                    1,
+                                    processOrder,
+                                    static_cast<uint16_t>(effects_.size()),
+                                    processRoutes,
+                                    routeStarts,
+                                    routeLengths,
+                                    nodeGains,
+                                    blockFrames) != 0) {
+                return -1;
+            }
+
+            for (uint32_t frame = 0; frame < blockFrames; ++frame) {
+                output[(static_cast<size_t>(frameOffset + frame) * channels_) + channel] =
+                    nodes[sinkNode].inputs[0][frame];
+            }
         }
     }
     return 0;

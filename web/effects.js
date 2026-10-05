@@ -42,6 +42,11 @@
 
   function paramMetaForType(type) {
     const t = String(type || 'gain').trim();
+    if (t === 'cut') {
+      return {
+        channels: { label: 'Channels', min: 1, max: 16, step: 1, precision: 0 },
+      };
+    }
     if (t === 'pitch') {
       return {
         gain: { label: 'Input Gain', min: 0, max: 4, step: 0.01, precision: 2 },
@@ -95,8 +100,8 @@
         label: String(raw?.label || name),
         min: Number.isFinite(Number(raw?.min)) ? Number(raw.min) : 0,
         max: Number.isFinite(Number(raw?.max)) ? Number(raw.max) : 1,
-        step: 0.01,
-        precision: 2,
+        step: name === 'channels' ? 1 : 0.01,
+        precision: name === 'channels' ? 0 : 2,
         value: toNumber(params[name], Number(raw?.default) || 0),
       });
     }
@@ -176,6 +181,7 @@
         const effectId = normalizeEffectId(fx.id);
         const params = fx.params || {};
         const midi = fx.midi || {};
+        const isCut = fx.type === 'cut';
         const cc = midi.cc || {};
         const light = midi.light || {};
         const paramList = dynamicParamList(fx);
@@ -193,14 +199,19 @@
         enabledRow.className = 'fx-map-row';
         const enabledMeta = document.createElement('div');
         enabledMeta.className = 'fx-map-meta';
-        enabledMeta.textContent = `State: ${enabled ? 'Enabled' : 'Bypassed'}`;
+        enabledMeta.textContent = isCut
+          ? `State: ${enabled ? 'Muted' : 'Passing'}`
+          : `State: ${enabled ? 'Enabled' : 'Bypassed'}`;
         const enabledBtn = document.createElement('button');
-        enabledBtn.textContent = enabled ? 'Bypass' : 'Enable';
+        enabledBtn.textContent = isCut ? (enabled ? 'Unmute' : 'Mute') : (enabled ? 'Bypass' : 'Enable');
         enabledBtn.addEventListener('click', async () => {
           try {
             enabledBtn.disabled = true;
             await this.setEnabled(effectId, !toEnabled(this.effectsById.get(effectId)?.enabled));
-            this.setPanelStatus(`${effectId} ${toEnabled(this.effectsById.get(effectId)?.enabled) ? 'enabled' : 'bypassed'}`, 'ok');
+            const nowEnabled = toEnabled(this.effectsById.get(effectId)?.enabled);
+            this.setPanelStatus(isCut
+              ? `${effectId} ${nowEnabled ? 'muted' : 'passing'}`
+              : `${effectId} ${nowEnabled ? 'enabled' : 'bypassed'}`, 'ok');
           } catch (err) {
             this.setPanelStatus(String(err), 'warn');
           } finally {
@@ -217,7 +228,7 @@
 
           const left = document.createElement('div');
           left.className = 'fx-map-meta';
-          left.textContent = `${row.label}: ${toNumber(row.value, 0).toFixed(2)}`;
+          left.textContent = `${row.label}: ${toNumber(row.value, 0).toFixed(row.precision)}`;
 
           const badge = document.createElement('span');
           const rowCc = toNumber(cc[row.name], -1);
@@ -226,6 +237,7 @@
 
           const mapBtn = document.createElement('button');
           mapBtn.textContent = 'Map';
+          mapBtn.disabled = isCut && row.name === 'channels';
           mapBtn.addEventListener('click', async () => {
             await this.beginCcCapture(effectId, row.name);
             this.setPanelStatus(`Move a MIDI CC for ${effectId}.${row.name}`, 'ok');
@@ -259,7 +271,7 @@
         bypassRow.className = 'fx-map-row';
         const bypassMeta = document.createElement('div');
         bypassMeta.className = 'fx-map-meta';
-        bypassMeta.textContent = 'Bypass Toggle';
+        bypassMeta.textContent = isCut ? 'Mute Toggle' : 'Bypass Toggle';
         const note = toNumber(midi.toggle_note, -1);
         const bypassBadge = document.createElement('span');
         bypassBadge.className = `fx-map-badge${note >= 0 ? '' : ' unset'}`;
@@ -268,7 +280,7 @@
         bypassMap.textContent = 'Map';
         bypassMap.addEventListener('click', async () => {
           await this.beginNoteCapture(effectId);
-          this.setPanelStatus(`Press a MIDI note for ${effectId} bypass`, 'ok');
+          this.setPanelStatus(`Press a MIDI note for ${effectId} ${isCut ? 'mute' : 'bypass'}`, 'ok');
         });
         const bypassClear = document.createElement('button');
         bypassClear.className = 'flat';
@@ -295,7 +307,7 @@
         lightRow.className = 'fx-map-row';
         const lightMeta = document.createElement('div');
         lightMeta.className = 'fx-map-meta';
-        lightMeta.textContent = 'LED Colors (enabled / bypassed)';
+        lightMeta.textContent = isCut ? 'LED Colors (muted / passing)' : 'LED Colors (enabled / bypassed)';
 
         const enabledInput = document.createElement('input');
         enabledInput.type = 'number';
@@ -467,7 +479,10 @@
       try {
         await this.postSet({ id: effectId, enabled: nextEnabled ? 1 : 0 });
         await this.loadEffects();
-        this.setStatus(`${effectId} ${nextEnabled ? 'enabled' : 'bypassed'}`, 'ok');
+        const isCut = this.effectsById.get(effectId)?.type === 'cut';
+        this.setStatus(isCut
+          ? `${effectId} ${nextEnabled ? 'muted' : 'passing'}`
+          : `${effectId} ${nextEnabled ? 'enabled' : 'bypassed'}`, 'ok');
       } finally {
         this.mutationInFlight--;
       }
@@ -715,7 +730,8 @@
         clearInterval(this.notePoll);
       }
 
-      this.setStatus(`Press a MIDI note to map ${effectId} bypass toggle...`, 'ok');
+      const isCut = this.effectsById.get(effectId)?.type === 'cut';
+      this.setStatus(`Press a MIDI note to map ${effectId} ${isCut ? 'mute' : 'bypass'} toggle...`, 'ok');
       this.renderPanel();
       this.notePoll = setInterval(() => this.pollNoteCapture(), 220);
     }
@@ -747,7 +763,8 @@
             this.notePoll = null;
           }
           await this.setEffectToggle(target.effectId, note);
-          this.setPanelStatus(`Mapped note ${note} to ${target.effectId} bypass`, 'ok');
+          const isCut = this.effectsById.get(target.effectId)?.type === 'cut';
+          this.setPanelStatus(`Mapped note ${note} to ${target.effectId} ${isCut ? 'mute' : 'bypass'}`, 'ok');
         }
       } catch (_) {}
     }
@@ -771,7 +788,7 @@
       node.widgets = [];
       node.size = [340, hasFx ? Math.max(210, 150 + (paramList.length * 36)) : 130];
       node.title = hasFx
-        ? `${effectId} (${type}${enabled ? '' : ' bypass'})`
+        ? `${effectId} (${type}${type === 'cut' ? (enabled ? ' muted' : '') : (enabled ? '' : ' bypass')})`
         : `${effectId} (loading...)`;
 
       if (!hasFx) {

@@ -34,6 +34,12 @@ struct BlockNode {
     const effects::SlotParams* effectParams;
 };
 
+struct BlockDeviceAdapter {
+    void* context;
+    int (*render)(void* context, uint16_t nodeIndex, BlockNode& node, uint32_t frames);
+    int (*write)(void* context, uint16_t nodeIndex, const BlockNode& node, uint32_t frames);
+};
+
 int processBlock(BlockNode* nodes,
                  uint16_t nodeCount,
                  const BlockRoute* sourceRoutes,
@@ -44,6 +50,11 @@ int processBlock(BlockNode* nodes,
                  const uint16_t* processRouteStart,
                  const uint16_t* processRouteLength,
                  const float* nodeGains,
-                 uint32_t frames);
+                 uint32_t frames,
+                 const uint16_t* sourceNodes = nullptr,
+                 uint16_t sourceNodeCount = 0,
+                 const uint16_t* sinkNodes = nullptr,
+                 uint16_t sinkNodeCount = 0,
+                 const BlockDeviceAdapter* deviceAdapter = nullptr);
 
 }  // namespace audiox::graph

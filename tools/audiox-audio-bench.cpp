@@ -381,7 +381,7 @@ void handleClient(int client, BenchState& state) {
         if (fields.count("type")) {
             const std::string& type = fields.at("type");
             const bool validType = type == "gain" || type == "distortion" || type == "pitch" ||
-                type == "reverb" || type == "gate";
+                type == "reverb" || type == "gate" || type == "cut";
             if (!validType) {
                 sendResponse(client, "400 Bad Request", "application/json", "{\"error\":\"invalid effect type\"}");
                 return;

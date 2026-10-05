@@ -48,7 +48,7 @@
     <div id="effects"></div>
   </main>
   <script>
-    const effectTypes = ['gain', 'distortion', 'pitch', 'reverb', 'gate'];
+    const effectTypes = ['gain', 'distortion', 'pitch', 'reverb', 'gate', 'cut'];
     const effectRoot = document.getElementById('effects');
     const notice = document.getElementById('notice');
     let playing = true;
@@ -120,7 +120,7 @@
         toggle.type = 'checkbox';
         toggle.checked = effect.enabled;
         toggle.addEventListener('change', () => post('/api/effect', { id: effect.id, enabled: toggle.checked ? '1' : '0' }).catch(showError));
-        toggleLabel.append(toggle, document.createTextNode('Enabled'));
+        toggleLabel.append(toggle, document.createTextNode(effect.type === 'cut' ? 'Mute' : 'Enabled'));
         head.append(title, select, toggleLabel);
         const params = document.createElement('div');
         params.className = 'params';

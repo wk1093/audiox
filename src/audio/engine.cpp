@@ -12,6 +12,44 @@ namespace {
 constexpr uint8_t kMaximumChannels = 16;
 constexpr uint16_t kMaximumGraphNodes = static_cast<uint16_t>(AudioEngine::kMaximumEffects + 2);
 
+struct InterleavedInputContext {
+    const float* samples;
+    float* output;
+    uint32_t frameOffset;
+    uint32_t channel;
+    uint32_t channelCount;
+};
+
+int renderInterleavedInput(void* context,
+                           uint16_t,
+                           graph::BlockNode& node,
+                           uint32_t frames) {
+    const auto* input = static_cast<const InterleavedInputContext*>(context);
+    if (!input || !input->samples || !node.outputs || !node.outputs[0]) {
+        return -1;
+    }
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        node.outputs[0][frame] = input->samples[
+            (static_cast<size_t>(input->frameOffset + frame) * input->channelCount) + input->channel];
+    }
+    return 0;
+}
+
+int writeInterleavedOutput(void* context,
+                           uint16_t,
+                           const graph::BlockNode& node,
+                           uint32_t frames) {
+    const auto* output = static_cast<const InterleavedInputContext*>(context);
+    if (!output || !output->output || !node.inputs || !node.inputs[0]) {
+        return -1;
+    }
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        output->output[(static_cast<size_t>(output->frameOffset + frame) * output->channelCount) + output->channel] =
+            node.inputs[0][frame];
+    }
+    return 0;
+}
+
 }  // namespace
 
 AudioEngine::AudioEngine(uint32_t sampleRate, uint32_t channels)
@@ -32,7 +70,7 @@ size_t AudioEngine::effectCount() const {
 }
 
 int AudioEngine::addEffect(const std::string& effectId, uint8_t type, bool enabled) {
-    if (effectId.empty() || type > effects::EFFECT_GATE) {
+    if (effectId.empty() || type > effects::EFFECT_CUT) {
         return -1;
     }
 
@@ -69,7 +107,7 @@ int AudioEngine::removeEffect(const std::string& effectId) {
 }
 
 int AudioEngine::setEffectType(const std::string& effectId, uint8_t type) {
-    if (type > effects::EFFECT_GATE) {
+    if (type > effects::EFFECT_CUT) {
         return -1;
     }
     std::lock_guard<std::mutex> lock(mutex_);
@@ -191,10 +229,11 @@ int AudioEngine::process(const float* input, float* output, uint32_t frames) {
             for (uint16_t node = 0; node < nodeCount; ++node) {
                 inputPointers[node] = graphBuffers[node][0];
             }
-            graphBuffers[0][1][0] = 0.0f;
-            for (uint32_t frame = 0; frame < blockFrames; ++frame) {
-                graphBuffers[0][1][frame] = input[(static_cast<size_t>(frameOffset + frame) * channels_) + channel];
-            }
+            InterleavedInputContext inputContext = {input, output, frameOffset, channel, channels_};
+            const graph::BlockDeviceAdapter deviceAdapter = {
+                &inputContext, renderInterleavedInput, writeInterleavedOutput};
+            const uint16_t sourceNode = 0;
+            const uint16_t sinkNodeIndex = sinkNode;
             for (uint16_t index = 0; index < effects_.size(); ++index) {
                 nodes[index + 1U].channelOffset = channel;
             }
@@ -209,13 +248,13 @@ int AudioEngine::process(const float* input, float* output, uint32_t frames) {
                                     routeStarts,
                                     routeLengths,
                                     nodeGains,
-                                    blockFrames) != 0) {
+                                    blockFrames,
+                                    &sourceNode,
+                                    1,
+                                    &sinkNodeIndex,
+                                    1,
+                                    &deviceAdapter) != 0) {
                 return -1;
-            }
-
-            for (uint32_t frame = 0; frame < blockFrames; ++frame) {
-                output[(static_cast<size_t>(frameOffset + frame) * channels_) + channel] =
-                    nodes[sinkNode].inputs[0][frame];
             }
         }
     }

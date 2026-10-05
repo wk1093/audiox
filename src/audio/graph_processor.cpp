@@ -99,9 +99,27 @@ int processBlock(BlockNode* nodes,
                  const uint16_t* processRouteStart,
                  const uint16_t* processRouteLength,
                  const float* nodeGains,
-                 uint32_t frames) {
+                 uint32_t frames,
+                 const uint16_t* sourceNodes,
+                 uint16_t sourceNodeCount,
+                 const uint16_t* sinkNodes,
+                 uint16_t sinkNodeCount,
+                 const BlockDeviceAdapter* deviceAdapter) {
     if ((!nodes && nodeCount != 0) || (!processNodes && processNodeCount != 0) || frames == 0) {
         return -1;
+    }
+
+    if (deviceAdapter && deviceAdapter->render) {
+        if (!sourceNodes && sourceNodeCount != 0) {
+            return -1;
+        }
+        for (uint16_t index = 0; index < sourceNodeCount; ++index) {
+            const uint16_t nodeIndex = sourceNodes[index];
+            if (nodeIndex >= nodeCount || nodes[nodeIndex].kind != BlockNodeKind::Source ||
+                deviceAdapter->render(deviceAdapter->context, nodeIndex, nodes[nodeIndex], frames) != 0) {
+                return -1;
+            }
+        }
     }
 
     for (uint16_t index = 0; index < sourceRouteCount; ++index) {
@@ -127,6 +145,19 @@ int processBlock(BlockNode* nodes,
                 return -1;
             }
             routeBlock(route, nodes, nodeGains, frames);
+        }
+    }
+
+    if (deviceAdapter && deviceAdapter->write) {
+        if (!sinkNodes && sinkNodeCount != 0) {
+            return -1;
+        }
+        for (uint16_t index = 0; index < sinkNodeCount; ++index) {
+            const uint16_t nodeIndex = sinkNodes[index];
+            if (nodeIndex >= nodeCount || nodes[nodeIndex].kind != BlockNodeKind::Sink ||
+                deviceAdapter->write(deviceAdapter->context, nodeIndex, nodes[nodeIndex], frames) != 0) {
+                return -1;
+            }
         }
     }
 

@@ -656,11 +656,11 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
                     s->reopenRetryBlocks = 0;
                     s->pendingFrames = 0;
                     s->pendingOffsetFrames = 0;
-                          printf("[AUDIO] [INFO] playback stream opened %s (%uch, %u Hz, fmt=%s)\n",
-                              s->path,
-                              (unsigned)s->channels,
-                              (unsigned)s->sampleRate,
-                              snd_pcm_format_name(s->format));
+                    printf("[AUDIO] [INFO] playback stream opened %s (%uch, %u Hz, fmt=%s)\n",
+                           s->path,
+                           (unsigned)s->channels,
+                           (unsigned)s->sampleRate,
+                           snd_pcm_format_name(s->format));
                     return true;
                 }
             }
@@ -896,14 +896,16 @@ static void serviceCaptureIo(RuntimeGraph *rt) {
     }
 }
 
-static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
+template <bool SingleSink>
+static void servicePlaybackIoImpl(AudioContext *ctx, RuntimeGraph *rt, uint16_t onlyNode) {
     if (!ctx || !rt) {
         return;
     }
 
     for (uint16_t i = 0; i < rt->sinkNodeCount; ++i) {
         const uint16_t node = rt->sinkNodes[i];
-        if (strcmp(rt->snapshot.things[node].id, "bluetooth_out") != 0 ||
+        if ((SingleSink && node != onlyNode) ||
+            strcmp(rt->snapshot.things[node].id, "bluetooth_out") != 0 ||
             !ctx->bluetoothOutputActive.load(std::memory_order_acquire)) {
             continue;
         }
@@ -921,6 +923,9 @@ static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
 
     for (uint16_t i = 0; i < rt->playbackCount; ++i) {
         RuntimeGraph::AlsaPlaybackStream &s = rt->playback[i];
+        if (SingleSink && s.nodeIndex != onlyNode) {
+            continue;
+        }
         maybeReopenPlayback(&s);
         if (!s.pcm) {
             continue;
@@ -1004,6 +1009,18 @@ static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
         }
     }
 }
+
+#if !AUDIOX_USE_SHARED_GRAPH_PROCESSOR
+static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
+    servicePlaybackIoImpl<false>(ctx, rt, 0);
+}
+#endif
+
+#if AUDIOX_USE_SHARED_GRAPH_PROCESSOR
+static void servicePlaybackIoNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t node) {
+    servicePlaybackIoImpl<true>(ctx, rt, node);
+}
+#endif
 
 static void closeAllStreams(RuntimeGraph *rt) {
     if (!rt) {
@@ -1443,6 +1460,144 @@ static void updateChannelLevels(AudioContext *ctx, RuntimeGraph *rt) {
         }
     }
 }
+
+#ifndef AUDIOX_USE_SHARED_GRAPH_PROCESSOR
+#define AUDIOX_USE_SHARED_GRAPH_PROCESSOR 1
+#endif
+
+#if !AUDIOX_USE_SHARED_GRAPH_PROCESSOR
+static void routeCompiledEdge(AudioContext *ctx,
+                              RuntimeGraph *rt,
+                              const RuntimeGraph::CompiledRoute &route) {
+    const float gain = ctx->nodeGainAtomics[route.srcNode].load(std::memory_order_relaxed);
+    const float *src = rt->outputs[route.srcNode][route.srcChannel];
+    float *dstStorage = rt->inputStorage[route.dstNode][route.dstChannel];
+    float *dst = rt->inputs[route.dstNode][route.dstChannel];
+    uint8_t &contribCount = rt->inputContributionCount[route.dstNode][route.dstChannel];
+
+    if (contribCount == 0U) {
+        if (gain == 1.0f) {
+            rt->inputs[route.dstNode][route.dstChannel] = const_cast<float *>(src);
+        } else {
+            for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+                dstStorage[frame] = src[frame] * gain;
+            }
+            rt->inputs[route.dstNode][route.dstChannel] = dstStorage;
+        }
+        contribCount = 1U;
+        return;
+    }
+
+    if (dst != dstStorage) {
+        memcpy(dstStorage, dst, sizeof(float) * BUFFER_FRAMES);
+        dst = dstStorage;
+        rt->inputs[route.dstNode][route.dstChannel] = dstStorage;
+    }
+    if (gain == 1.0f) {
+        for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+            dst[frame] += src[frame];
+        }
+    } else {
+        for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+            dst[frame] += src[frame] * gain;
+        }
+    }
+    if (contribCount < 255U) {
+        ++contribCount;
+    }
+}
+
+static void copyWithClamp(const float *src, float *dst) {
+    for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+        float sample = src[frame];
+        if (sample > 1.0f) sample = 1.0f;
+        if (sample < -1.0f) sample = -1.0f;
+        dst[frame] = sample;
+    }
+}
+
+static void processNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex, uint32_t effectSeq) {
+    if (!ctx || !rt || nodeIndex >= rt->snapshot.thingCount) {
+        return;
+    }
+    const AudioGraphThingInfo &thing = rt->snapshot.things[nodeIndex];
+    const uint8_t inputChannels = std::min<uint8_t>(thing.inputs, kMaxChannelsPerThing);
+    const uint8_t outputChannels = std::min<uint8_t>(thing.outputs, kMaxChannelsPerThing);
+    const uint8_t channels = std::min(inputChannels, outputChannels);
+    if (channels == 0 || outputChannels == 0) {
+        return;
+    }
+
+    if (rt->nodeKind[nodeIndex] == NODE_EFFECT) {
+        if (rt->effectParamsSeq[nodeIndex] != effectSeq) {
+            audiox::effects::SlotParams params = {};
+            if (ctx->getEffectParams(thing.id, &params) != RET_OK) {
+                params.enabled = 1U;
+                params.type = audiox::effects::EFFECT_GAIN;
+                audiox::effects::setSlotDefaultsForType(&params, params.type);
+            }
+            rt->effectParamsCache[nodeIndex] = params;
+            rt->effectParamsSeq[nodeIndex] = effectSeq;
+        }
+
+        const auto &params = rt->effectParamsCache[nodeIndex];
+        if (!params.enabled) {
+            for (uint8_t channel = 0; channel < channels; ++channel) {
+                copyWithClamp(rt->inputs[nodeIndex][channel], rt->outputs[nodeIndex][channel]);
+            }
+        } else {
+            for (uint8_t channel = 0; channel < channels; ++channel) {
+                audiox::effects::processSlot(thing.id,
+                                             channel,
+                                             params,
+                                             rt->inputs[nodeIndex][channel],
+                                             rt->outputs[nodeIndex][channel],
+                                             BUFFER_FRAMES);
+            }
+        }
+    } else {
+        for (uint8_t channel = 0; channel < channels; ++channel) {
+            copyWithClamp(rt->inputs[nodeIndex][channel], rt->outputs[nodeIndex][channel]);
+        }
+    }
+    for (uint8_t channel = channels; channel < outputChannels; ++channel) {
+        memset(rt->outputs[nodeIndex][channel], 0, sizeof(float) * BUFFER_FRAMES);
+    }
+}
+#endif
+
+#if AUDIOX_USE_SHARED_GRAPH_PROCESSOR
+static void renderSourceNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex);
+
+struct RuntimeSourceContext {
+    AudioContext* audio;
+    RuntimeGraph* runtime;
+};
+
+static int renderRuntimeSource(void* context,
+                               uint16_t nodeIndex,
+                               audiox::graph::BlockNode&,
+                               uint32_t) {
+    RuntimeSourceContext* sourceContext = static_cast<RuntimeSourceContext*>(context);
+    if (!sourceContext || !sourceContext->audio || !sourceContext->runtime) {
+        return RET_ERR;
+    }
+    renderSourceNode(sourceContext->audio, sourceContext->runtime, nodeIndex);
+    return RET_OK;
+}
+
+static int writeRuntimeSink(void* context,
+                            uint16_t nodeIndex,
+                            const audiox::graph::BlockNode&,
+                            uint32_t) {
+    RuntimeSourceContext* sinkContext = static_cast<RuntimeSourceContext*>(context);
+    if (!sinkContext || !sinkContext->audio || !sinkContext->runtime) {
+        return RET_ERR;
+    }
+    servicePlaybackIoNode(sinkContext->audio, sinkContext->runtime, nodeIndex);
+    return RET_OK;
+}
+#endif
 
 static void renderSourceNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex) {
     if (!ctx || !rt || nodeIndex >= rt->snapshot.thingCount) {
@@ -1997,11 +2152,7 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
 
     serviceCaptureIo(rt);
 
-    // First pass: render all source nodes.
-    for (uint16_t i = 0; i < rt->sourceNodeCount; ++i) {
-        renderSourceNode(ctx, rt, rt->sourceNodes[i]);
-    }
-
+#if AUDIOX_USE_SHARED_GRAPH_PROCESSOR
     uint32_t effectSeq = ctx->effectStatesSeq.load(std::memory_order_acquire);
     for (uint16_t i = 0; i < rt->processNodeCount; ++i) {
         uint16_t nodeIndex = rt->processNodes[i];
@@ -2019,6 +2170,9 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
     }
 
     audiox::graph::BlockNode blockNodes[AUDIO_GRAPH_MAX_THINGS] = {};
+    RuntimeSourceContext sourceContext = {ctx, rt};
+    const audiox::graph::BlockDeviceAdapter deviceAdapter = {
+        &sourceContext, renderRuntimeSource, writeRuntimeSink};
     float nodeGains[AUDIO_GRAPH_MAX_THINGS];
     for (uint16_t node = 0; node < rt->snapshot.thingCount; ++node) {
         blockNodes[node].id = rt->snapshot.things[node].id;
@@ -2043,12 +2197,34 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt) {
                                      rt->processRouteStart,
                                      rt->processRouteLen,
                                      nodeGains,
-                                     BUFFER_FRAMES);
+                                     BUFFER_FRAMES,
+                                     rt->sourceNodes,
+                                     rt->sourceNodeCount,
+                                     rt->sinkNodes,
+                                     rt->sinkNodeCount,
+                                     &deviceAdapter);
+#else
+    for (uint16_t i = 0; i < rt->sourceNodeCount; ++i) {
+        renderSourceNode(ctx, rt, rt->sourceNodes[i]);
+    }
+    for (uint16_t i = 0; i < rt->sourceRouteCount; ++i) {
+        routeCompiledEdge(ctx, rt, rt->sourceRoutes[i]);
+    }
+    const uint32_t effectSeq = ctx->effectStatesSeq.load(std::memory_order_acquire);
+    for (uint16_t i = 0; i < rt->processNodeCount; ++i) {
+        const uint16_t nodeIndex = rt->processNodes[i];
+        processNode(ctx, rt, nodeIndex, effectSeq);
+        const uint16_t routeStart = rt->processRouteStart[nodeIndex];
+        const uint16_t routeLength = rt->processRouteLen[nodeIndex];
+        for (uint16_t routeIndex = 0; routeIndex < routeLength; ++routeIndex) {
+            routeCompiledEdge(ctx, rt, rt->processRoutesBySrc[routeStart + routeIndex]);
+        }
+    }
+    servicePlaybackIo(ctx, rt);
+#endif
 
     rt->blocksProcessed++;
     updateChannelLevels(ctx, rt);
-
-    servicePlaybackIo(ctx, rt);
 
     publishPlayingSfxSet(ctx, rt);
 

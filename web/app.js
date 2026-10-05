@@ -659,7 +659,7 @@ async function deleteRoutingHelper() {
 }
 
 async function createEffectFromTemplate(type) {
-  const allowed = new Set(['gain', 'distortion', 'pitch', 'reverb', 'gate']);
+  const allowed = new Set(['gain', 'distortion', 'pitch', 'reverb', 'gate', 'cut']);
   const safeType = allowed.has(String(type || '').trim()) ? String(type).trim() : 'gain';
   const res = await fetch('/api/effect/create', {
     method: 'POST',
@@ -1124,6 +1124,21 @@ function ensureRoutingGraph() {
     AudioxEffectGateNode.filter = 'audiox';
     window.LiteGraph.registerNodeType('audiox/effect_gate', AudioxEffectGateNode);
   }
+
+  if (!window.LiteGraph.registered_node_types['audiox/effect_cut']) {
+    function AudioxEffectCutNode() {
+      this.size = [220, 80];
+      this.properties = { effectTypeTemplate: 'cut', nodeKind: 'template' };
+      this.title = 'Add Cut';
+      this.addInput('in 1', 'audio');
+      this.addInput('in 2', 'audio');
+      this.addOutput('out 1', 'audio');
+      this.addOutput('out 2', 'audio');
+    }
+    AudioxEffectCutNode.title = 'Cut';
+    AudioxEffectCutNode.filter = 'audiox';
+    window.LiteGraph.registerNodeType('audiox/effect_cut', AudioxEffectCutNode);
+  }
   state.graphCanvas.background_image = null;
   window.LiteGraph.NODE_DEFAULT_COLOR = '#1f4a62';
   window.LiteGraph.NODE_DEFAULT_BGCOLOR = '#102635';
@@ -1232,7 +1247,8 @@ function ensureRoutingGraph() {
       templateType === 'distortion' ||
       templateType === 'pitch' ||
       templateType === 'reverb' ||
-      templateType === 'gate') {
+      templateType === 'gate' ||
+      templateType === 'cut') {
       const pos = Array.isArray(node.pos) ? { x: node.pos[0], y: node.pos[1] } : null;
       state.internalGraphMutation = true;
       state.graph.remove(node);

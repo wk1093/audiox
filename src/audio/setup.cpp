@@ -776,7 +776,8 @@ int AudioContext::setEffectType(const char *thingId, uint8_t type) {
         type != audiox::effects::EFFECT_DISTORTION &&
         type != audiox::effects::EFFECT_PITCH &&
         type != audiox::effects::EFFECT_REVERB &&
-        type != audiox::effects::EFFECT_GATE) {
+        type != audiox::effects::EFFECT_GATE &&
+        type != audiox::effects::EFFECT_CUT) {
         return RET_ERR;
     }
     const uint8_t enabled = it->second.enabled;
@@ -910,7 +911,7 @@ int AudioContext::createEffect(const char *type, char *outId, size_t outIdSize) 
 
     uint8_t effectType = audiox::effects::effectTypeFromString(type ? type : "gain");
     audiox::effects::SlotParams params = {};
-    params.enabled = 1U;
+    params.enabled = (effectType == audiox::effects::EFFECT_CUT) ? 0U : 1U;
     params.type = effectType;
     audiox::effects::setSlotDefaultsForType(&params, effectType);
     audiox::effects::clampSlotParams(&params);

@@ -15,6 +15,31 @@ bool near(float actual, float expected) {
 }  // namespace
 
 int main() {
+    audiox::effects::SlotParams cut = {};
+    cut.enabled = 0;
+    cut.type = audiox::effects::EFFECT_CUT;
+    audiox::effects::setSlotDefaultsForType(&cut, audiox::effects::EFFECT_CUT);
+    cut.type = audiox::effects::EFFECT_CUT;
+    if (audiox::effects::setSlotParamValue(&cut, "channels", 3.6f) != 0 ||
+        !near(cut.values[0], 4.0f)) {
+        std::fprintf(stderr, "Cut channel count did not snap to an integer\n");
+        return 1;
+    }
+    const float cutInput[] = {0.25f, -0.5f};
+    float cutOutput[] = {1.0f, 1.0f};
+    cut.enabled = 1;
+    audiox::effects::processSlot("test_cut", 0, cut, cutInput, cutOutput, 2);
+    if (!near(cutOutput[0], 0.0f) || !near(cutOutput[1], 0.0f)) {
+        std::fprintf(stderr, "Active Cut effect did not mute its signal\n");
+        return 1;
+    }
+    cut.enabled = 0;
+    audiox::effects::processSlot("test_cut", 0, cut, cutInput, cutOutput, 2);
+    if (!near(cutOutput[0], cutInput[0]) || !near(cutOutput[1], cutInput[1])) {
+        std::fprintf(stderr, "Bypassed Cut effect did not pass its signal\n");
+        return 1;
+    }
+
     const float quietSample = 0.00001f;
     if (audiox::pcm::toS16(quietSample) != 0 || audiox::pcm::toS32(quietSample) == 0 ||
         audiox::pcm::toS32(std::numeric_limits<float>::quiet_NaN()) != 0 ||
@@ -89,6 +114,50 @@ int main() {
                                     BUFFER_FRAMES) != 0 ||
         !near(sinkInputs[0][0], 0.75f) || !near(sinkInputs[0][BUFFER_FRAMES - 1], 0.75f)) {
         std::fprintf(stderr, "shared graph block processor did not mix sources and process the graph\n");
+        return 1;
+    }
+
+    graphGain.type = audiox::effects::EFFECT_CUT;
+    audiox::effects::setSlotDefaultsForType(&graphGain, audiox::effects::EFFECT_CUT);
+    graphGain.type = audiox::effects::EFFECT_CUT;
+    graphGain.enabled = 1;
+    effectInputs[0] = effectStorage[0];
+    sinkInputs[0] = sinkStorage[0];
+    effectContributions[0] = 0;
+    sinkContributions[0] = 0;
+    if (audiox::graph::processBlock(graphNodes,
+                                    4,
+                                    sourceRoutes,
+                                    2,
+                                    processOrder,
+                                    1,
+                                    processRoutes,
+                                    routeStarts,
+                                    routeLengths,
+                                    graphNodeGains,
+                                    BUFFER_FRAMES) != 0 ||
+        !near(sinkInputs[0][0], 0.0f) || !near(sinkInputs[0][BUFFER_FRAMES - 1], 0.0f)) {
+        std::fprintf(stderr, "shared graph processor did not mute an active Cut node\n");
+        return 1;
+    }
+    graphGain.enabled = 0;
+    effectInputs[0] = effectStorage[0];
+    sinkInputs[0] = sinkStorage[0];
+    effectContributions[0] = 0;
+    sinkContributions[0] = 0;
+    if (audiox::graph::processBlock(graphNodes,
+                                    4,
+                                    sourceRoutes,
+                                    2,
+                                    processOrder,
+                                    1,
+                                    processRoutes,
+                                    routeStarts,
+                                    routeLengths,
+                                    graphNodeGains,
+                                    BUFFER_FRAMES) != 0 ||
+        !near(sinkInputs[0][0], 0.25f) || !near(sinkInputs[0][BUFFER_FRAMES - 1], 0.25f)) {
+        std::fprintf(stderr, "shared graph processor did not bypass a Cut node\n");
         return 1;
     }
 

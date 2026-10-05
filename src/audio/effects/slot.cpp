@@ -8,6 +8,7 @@
 #include "audio/effects/pitch.hpp"
 #include "audio/effects/reverb.hpp"
 
+#include <math.h>
 #include <string.h>
 #include <string>
 #include <unordered_map>
@@ -55,12 +56,18 @@ constexpr EffectParamSpec kGateParams[kGateParamCount] = {
     {"range_db", "Range dB", 0.0f, 80.0f, 30.0f},
 };
 
+constexpr uint8_t kCutParamCount = 1;
+constexpr EffectParamSpec kCutParams[kCutParamCount] = {
+    {"channels", "Channels", 1.0f, 16.0f, 2.0f},
+};
+
 constexpr EffectTypeSpec kTypeSpecs[] = {
     {EFFECT_GAIN, kGainParams, kGainParamCount},
     {EFFECT_DISTORTION, kDistortionParams, kDistortionParamCount},
     {EFFECT_PITCH, kPitchParams, kPitchParamCount},
     {EFFECT_REVERB, kReverbParams, kReverbParamCount},
     {EFFECT_GATE, kGateParams, kGateParamCount},
+    {EFFECT_CUT, kCutParams, kCutParamCount},
 };
 
 inline float clampValue(float value, float minValue, float maxValue) {
@@ -168,6 +175,9 @@ uint8_t effectTypeFromString(const char *text) {
     if (strcmp(text, "gate") == 0) {
         return EFFECT_GATE;
     }
+    if (strcmp(text, "cut") == 0) {
+        return EFFECT_CUT;
+    }
     return EFFECT_GAIN;
 }
 
@@ -181,6 +191,8 @@ const char *effectTypeToString(uint8_t type) {
             return "reverb";
         case EFFECT_GATE:
             return "gate";
+        case EFFECT_CUT:
+            return "cut";
         case EFFECT_GAIN:
         default:
             return "gain";
@@ -226,6 +238,9 @@ int setSlotParamValue(SlotParams *params, const char *paramName, float value) {
     }
 
     params->values[index] = clampValue(value, spec->minValue, spec->maxValue);
+    if (params->type == EFFECT_CUT && index == 0) {
+        params->values[index] = roundf(params->values[index]);
+    }
     return RET_OK;
 }
 
@@ -242,7 +257,7 @@ int setSlotParamNormalized(SlotParams *params, const char *paramName, float norm
 
     normalized = clampValue(normalized, 0.0f, 1.0f);
     const float value = spec->minValue + (spec->maxValue - spec->minValue) * normalized;
-    params->values[index] = value;
+    params->values[index] = (params->type == EFFECT_CUT && index == 0) ? roundf(value) : value;
     return RET_OK;
 }
 
@@ -284,7 +299,8 @@ void clampSlotParams(SlotParams *params) {
         params->type != EFFECT_DISTORTION &&
         params->type != EFFECT_PITCH &&
         params->type != EFFECT_REVERB &&
-        params->type != EFFECT_GATE) {
+        params->type != EFFECT_GATE &&
+        params->type != EFFECT_CUT) {
         params->type = EFFECT_GAIN;
     }
 
@@ -292,6 +308,9 @@ void clampSlotParams(SlotParams *params) {
     const uint8_t limit = (spec->paramCount > EFFECT_PARAM_MAX) ? EFFECT_PARAM_MAX : spec->paramCount;
     for (uint8_t i = 0; i < limit; ++i) {
         params->values[i] = clampValue(params->values[i], spec->params[i].minValue, spec->params[i].maxValue);
+    }
+    if (params->type == EFFECT_CUT) {
+        params->values[0] = roundf(params->values[0]);
     }
     for (uint8_t i = limit; i < EFFECT_PARAM_MAX; ++i) {
         params->values[i] = 0.0f;
@@ -361,6 +380,9 @@ void processSlot(const char *effectId,
                         clamped.values[2],
                         clamped.values[3],
                         getGateStateFor(effectId, channel));
+            return;
+        case EFFECT_CUT:
+            memset(out, 0, sizeof(float) * frames);
             return;
         case EFFECT_GAIN:
         default:

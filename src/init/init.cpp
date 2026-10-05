@@ -64,7 +64,10 @@ static void sendWatchdogHeartbeat(uint64_t sequence) {
     }();
 
     if (heartbeatFd >= 0) {
-        (void)write(heartbeatFd, &sequence, sizeof(sequence));
+        if (write(heartbeatFd, &sequence, sizeof(sequence)) != sizeof(sequence)) {
+            printf("[INIT] [WARN] failed to send watchdog heartbeat\n");
+        }
+        fsync(heartbeatFd); // ensure the heartbeat is actually sent
     }
 }
 

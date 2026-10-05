@@ -70,7 +70,7 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] fbui soundboard, for people without a midi controller, set a config option in the webui, and the normal fbui will be replaced with a steamdeck-like soundboard interface (with optional multi-page via tabs and/or swipe)
 - [x] Investigate occasional "bad boots" where there is constant underruns in the logs, but a reboot always fixes it.
 
-## Big Refactor - v1.8+
+## Big Refactor and fixes - v1.8+
 - [x] Fix versioning system (use 1.8.0-beta and whatnot instead of putting 1.8 dev stuff under 1.7.x), implement an extra version field everywhere (makefile, C++ source, JS source, etc)
 - [x] Make a config TUI like the linux kernel makefile has to allow configuring for different systems, environments, and be able to change the currently #define static settings like the buffer size and sample rate.
 - [ ] Split up code better so that we can partially compile the audio subsystem (the audio graph should be a bit more abstract, and shouldn't know about how devices actually work) so that we can test effects and stuff on my desktop instead of re-uploading to the Pi.
@@ -79,8 +79,7 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Move ALSA capture stream ownership, device attachment/remapping, source gadget identity, and fixed PCM/SRC state out of RuntimeGraph into an explicit capture backend; keep ALSA I/O on the direct Pi path.
   - [x] Extract backend-neutral route mixing, node processing, and effect execution; use the same graph block processor in the Pi runtime and host tests.
 - [x] "Cut" effect/feature to mute or unmute a route, with configurable matching input/output channel counts and MIDI/Web UI toggling.
-- [ ] Improve modularity of the audio engine to allow easier addition of new effects and routing options.
-- [ ] Make it so that the main program is not the init process, and there is a separate small "watchdog" process that monitors it and restarts it if it crashes or hangs (this is to prevent kernel faults when something goes wrong).
+- [x] Run the application as a child of a small PID 1 watchdog; restart it after exit or a stale main-loop heartbeat.
 
 ## Pre-release - v1.9+
 - [ ] Smarter bootloader that can detect bad initramfs and boot into a backup one:

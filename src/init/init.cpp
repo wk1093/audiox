@@ -3,6 +3,8 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+#include <stdlib.h>
+#include <stdint.h>
 
 #include "defs.hpp"
 #include "context.hpp"
@@ -47,9 +49,28 @@
         } \
     } while (0)
 
+static void sendWatchdogHeartbeat(uint64_t sequence) {
+    static const int heartbeatFd = []() {
+        const char *value = getenv("AUDIOX_WATCHDOG_FD");
+        if (!value || !value[0]) {
+            return -1;
+        }
+        char *end = nullptr;
+        long fd = strtol(value, &end, 10);
+        if (!end || *end != '\0' || fd < 3 || fd > 1024) {
+            return -1;
+        }
+        return static_cast<int>(fd);
+    }();
+
+    if (heartbeatFd >= 0) {
+        (void)write(heartbeatFd, &sequence, sizeof(sequence));
+    }
+}
 
 int main() {
     umask(0);
+    printf("[INIT] audiox main process pid=%d ppid=%d\n", getpid(), getppid());
 
     // global appstate context
     Audiox mainContext;
@@ -126,6 +147,7 @@ int main() {
     mainContext.setReady();
     flushLogs();
     int logFlushCounter = 0;
+    uint64_t watchdogSequence = 0;
     while (1) {
         // nothing in this loop is super high-importance, so I am going to add a small delay to give the kernel 
         // more of an opportunity to dedicate resources to audio processing.
@@ -133,6 +155,7 @@ int main() {
         if (++logFlushCounter >= 100) {
             flushLogs();
             logFlushCounter = 0;
+            sendWatchdogHeartbeat(++watchdogSequence);
         }
         mainContext.eventLoop();
         touch.poll();

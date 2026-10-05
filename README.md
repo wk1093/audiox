@@ -78,6 +78,8 @@ The Pi runtime defaults to the direct graph-processing loop (`AUDIOX_USE_SHARED_
 
 Use `make menuconfig` to edit `.config`, or `make defconfig` to regenerate it from the defaults in `Kconfig`. The build-time audio engine sample rate is set with `CONFIG_SAMPLE_RATE` in `.config`; rebuild the runtime after changing it. The Web UI does not expose the runtime USB sample-rate field, but preserves its value when saving the other `/audiox/config.txt` settings.
 
+At boot, `/init` is a small PID 1 watchdog that launches the application from `/sbin/audiox-main`. The app reports a heartbeat once per second from its main loop; if it exits or stops heartbeating, the watchdog restarts it with capped backoff. Startup has a two-minute grace period. The realtime audio thread is not involved in heartbeat reporting.
+
 ### ALSA dependency setup on amd64 host
 
 When building with cross compiler on amd64, the runtime now expects ALSA under `out/alsa-sysroot` and links against static `libasound.a`.

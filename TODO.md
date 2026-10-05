@@ -71,7 +71,7 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Investigate occasional "bad boots" where there is constant underruns in the logs, but a reboot always fixes it.
 
 ## Big Refactor - v1.8+
-- [ ] Fix versioning system (use 1.8.0-beta and whatnot instead of putting 1.8 dev stuff under 1.7.x), implement an extra version field everywhere (makefile, C++ source, JS source, etc)
+- [x] Fix versioning system (use 1.8.0-beta and whatnot instead of putting 1.8 dev stuff under 1.7.x), implement an extra version field everywhere (makefile, C++ source, JS source, etc)
 - [ ] Make a config TUI like the linux kernel makefile has to allow configuring for different systems.
 - [ ] Split up code better so that we can partially compile the audio subsystem (the audio graph should be a bit more abstract, and shouldn't know about how devices actually work) so that we can test effects and stuff on my desktop instead of re-uploading to the Pi.
 - [ ] Improve modularity of the audio engine to allow easier addition of new effects and routing options.

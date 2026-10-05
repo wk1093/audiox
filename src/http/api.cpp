@@ -3370,8 +3370,10 @@ static int handleSystemInfo(HttpServer *server,
 	if (!server) return -1;
 
 	const char *version_str = "unknown";
-#if defined(AUDIOX_VERSION_MAJOR) && defined(AUDIOX_VERSION_MINOR) && defined(AUDIOX_VERSION_PATCH)
-	char version_buf[32];
+#if defined(AUDIOX_VERSION_STRING)
+	version_str = AUDIOX_VERSION_STRING;
+#elif defined(AUDIOX_VERSION_MAJOR) && defined(AUDIOX_VERSION_MINOR) && defined(AUDIOX_VERSION_PATCH)
+	char version_buf[48];
 	snprintf(version_buf, sizeof(version_buf), "%d.%d.%d",
 			 AUDIOX_VERSION_MAJOR, AUDIOX_VERSION_MINOR, AUDIOX_VERSION_PATCH);
 	version_str = version_buf;
@@ -3454,7 +3456,14 @@ static int handleVersion(HttpServer *server,
 		return -1;
 	}
 
-#if defined(AUDIOX_VERSION_MAJOR) && defined(AUDIOX_VERSION_MINOR) && defined(AUDIOX_VERSION_PATCH)
+#if defined(AUDIOX_VERSION_STRING)
+	char out[96];
+	int n = snprintf(out, sizeof(out), "%s\n", AUDIOX_VERSION_STRING);
+	if (n < 0) {
+		n = 0;
+	}
+	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", out, (size_t)n);
+#elif defined(AUDIOX_VERSION_MAJOR) && defined(AUDIOX_VERSION_MINOR) && defined(AUDIOX_VERSION_PATCH)
 	char out[64];
 	int n = snprintf(out,
 					 sizeof(out),

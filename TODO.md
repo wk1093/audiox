@@ -68,26 +68,32 @@ The above last two features are mainly to improve my setup, but could probably b
 
 - [x] Bluetooth support: controlled by web ui, open a specific page on the webui, and it will start listing out bluetooth devices, and you can click one to pair, and it appears in the graph as a device. Will have a specific device naming, and it's graph elements will be persistent even when it isn't connected, so that when it does connect, it remembers how it was routed the last time it was used. I also need to implement some sort of routing tool like a blank effect, so that I can route to a "fake output" that routes to both wired and bluetooth so that both always work, and we have an in between instead of a bunch of individual connections to both. I guess we can use a gain module set to 1, but that adds extra processing, this blank module should be purely for nice routing in the ui and routing config, but in the audio processing should be compiled out.
 - [x] fbui soundboard, for people without a midi controller, set a config option in the webui, and the normal fbui will be replaced with a steamdeck-like soundboard interface (with optional multi-page via tabs and/or swipe)
-- [ ] More advanced effects
-  - [ ] Noice gate
-  - [ ] Voice noise cancellation/reduction
-  - [ ] Compressor
-  - [ ] Limiter
-  - [ ] Parametric EQ
-  - [ ] Multi-band compressor
-- [ ] Investigate occasional "bad boots" where there is constant underruns in the logs, but a reboot always fixes it.
+- [x] Investigate occasional "bad boots" where there is constant underruns in the logs, but a reboot always fixes it.
 
-## Pre-release - v1.8+
+## Big Refactor - v1.8+
+- [ ] Fix versioning system (use 1.8.0-beta and whatnot instead of putting 1.8 dev stuff under 1.7.x), implement an extra version field everywhere (makefile, C++ source, JS source, etc)
+- [ ] Make a config TUI like the linux kernel makefile has to allow configuring for different systems.
+- [ ] Split up code better so that we can partially compile the audio subsystem (the audio graph should be a bit more abstract, and shouldn't know about how devices actually work) so that we can test effects and stuff on my desktop instead of re-uploading to the Pi.
+- [ ] Improve modularity of the audio engine to allow easier addition of new effects and routing options.
+
+## Pre-release - v1.9+
 - [ ] Smarter bootloader that can detect bad initramfs and boot into a backup one:
   - [ ] File for storing the number of bad boots, and a feature in the main initramfs that will reset that counter once everything has booted properly. If the bootloader sees that this counter is above 2 or 3, it will boot into a backup initramfs instead of the main one.
   - [ ] Make it so that the bootloader can update the kernel as well.
   - [ ] Is it possible to add a custom listener or hook into a kernel panic? Maybe automatically make a kernel panic trigger a reboot into the backup initramfs?
 - [ ] Somehow be able to update the bootloader itself. This could be done by having the main initram update the bootloader, since the bootloader updates the main initram, but they can't edit themselves. So maybe just update the bootloader first from the main initramfs right when the update is triggered, and then reboot into the new bootloader to update the main initramfs. Or I could make them two separate processes, where you could choose to update one or the other. That is probably better since the bootloader won't be updated as often, and we won't have to require a larger update file. The update file will eventually be a custom format that is kinda like a tar, it contains a bit of metadata, and then two separate files (or just one). The update metadata will contain a version number, and then it will also tell the program if it is a bootloader update, initram update, or both.
 
-# Quick Fixes - v1.9+
+# Quick Fixes and features - v1.10+
 - [ ] See if we can increase bluetooth quality.
 - [ ] Windows volume changing doesn't work properly (volume seems to be locked at 100% even when windows volume is changed, and it is really boosted and distorted even if the volume on the device is reduced). Windows probably does something weird with the gadget that I didn't handle.
 - [ ] Investigate using LV2 plugins for effects, and if possible, make it so that the user can upload their own LV2 plugins to the device and use them in the audio engine. This would allow for a lot more flexibility and customization for users who want to use their own effects.
+- [ ] More advanced effects
+  - [ ] Noise gate
+  - [ ] Voice noise cancellation/reduction
+  - [ ] Compressor
+  - [ ] Limiter
+  - [ ] Parametric EQ
+  - [ ] Multi-band compressor
 
 ## Release - v2.0+
 

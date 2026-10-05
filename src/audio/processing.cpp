@@ -10,6 +10,7 @@
 #include <sched.h>
 #include <sys/mman.h>
 #include <time.h>
+#include <unistd.h>
 
 namespace {
 
@@ -1255,6 +1256,48 @@ static bool tryReadPublishedGraph(const AudioContext *ctx,
     return true;
 }
 
+static bool waitForAlsaDeviceReady(AudioContext *ctx, uint64_t timeoutMs) {
+    if (!ctx) {
+        return false;
+    }
+
+    const uint64_t start = monotonicMs();
+    uint64_t lastLogMs = 0U;
+    uint32_t pollMs = 50U;
+
+    while (true) {
+        int rescanRc = ctx->forceRescan();
+        {
+            std::lock_guard<std::mutex> lock(ctx->devicesMutex);
+            if (!ctx->devices.empty()) {
+                return true;
+            }
+        }
+
+        const uint64_t now = monotonicMs();
+        if ((now - start) >= timeoutMs) {
+            break;
+        }
+
+        if (lastLogMs == 0U || (now - lastLogMs) >= 500U) {
+            const uint64_t remaining = (timeoutMs > (now - start)) ? (timeoutMs - (now - start)) : 0U;
+            printf("[AUDIO] [INFO] waiting for ALSA devices to settle before starting processing thread (%ums remaining)\n",
+                   (unsigned)remaining);
+            lastLogMs = now;
+        }
+
+        if (rescanRc == RET_ERR) {
+            break;
+        }
+
+        usleep((useconds_t)pollMs * 1000U);
+    }
+
+    printf("[AUDIO] [WARN] ALSA device readiness timeout after %ums; continuing with startup without waiting further\n",
+           (unsigned)timeoutMs);
+    return false;
+}
+
 static void configureRealtimeScheduling() {
     sched_param param = {};
     param.sched_priority = 99;
@@ -2408,6 +2451,9 @@ int AudioContext::setupThreads() {
     if (processingThreadStarted) {
         return RET_OK;
     }
+
+    const uint64_t alsaReadyTimeoutMs = 2000U;
+    (void)waitForAlsaDeviceReady(this, alsaReadyTimeoutMs);
 
     int initGraphRc = forceRescan();
     if (initGraphRc == RET_ERR) {

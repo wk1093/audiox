@@ -1,5 +1,6 @@
 #include "audio/engine.hpp"
 #include "audio/graph_processor.hpp"
+#include "audio/capture_ring.hpp"
 #include "audio/pcm_convert.hpp"
 
 #include <cmath>
@@ -15,6 +16,27 @@ bool near(float actual, float expected) {
 }  // namespace
 
 int main() {
+    audiox::capture::PcmCaptureRing<4, 2> captureRing;
+    const int16_t capturedSamples[] = {1, -1, 2, -2, 3, -3, 4, -4, 5, -5};
+    captureRing.push(capturedSamples, 2, 5);
+    if (captureRing.count() != 4 || captureRing.sample(captureRing.tail(), 0) != 2 ||
+        captureRing.sample(captureRing.tail(), 1) != -2 ||
+        captureRing.sample(captureRing.readFrameIndex(3), 0) != 5) {
+        std::fprintf(stderr, "capture ring overflow policy did not retain the newest frames\n");
+        return 1;
+    }
+    captureRing.setReadFraction(0.25f);
+    captureRing.consume(0.5f);
+    if (captureRing.count() != 4 || std::fabs(captureRing.readFraction() - 0.75f) > 0.0001f) {
+        std::fprintf(stderr, "capture ring fractional resampling state was not preserved\n");
+        return 1;
+    }
+    captureRing.reset();
+    if (captureRing.count() != 0 || captureRing.readFraction() != 0.0f) {
+        std::fprintf(stderr, "capture ring reset failed\n");
+        return 1;
+    }
+
     audiox::effects::SlotParams cut = {};
     cut.enabled = 0;
     cut.type = audiox::effects::EFFECT_CUT;

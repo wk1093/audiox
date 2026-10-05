@@ -66,6 +66,10 @@ Useful targets:
 - `make fancyexport` - wait for SD mount and export build artifacts
 - `make image` - create a flashable image file (WARNING: untested, may not work)
 
+### Desktop audio engine bench
+
+Build and run the host-only effect testbench with `make audio-bench` and `make run-audio-bench`. It compiles the shared audio effect processor without the Raspberry Pi runtime, plays a 440 Hz test tone through the system's default ALSA output, and serves a live effect control page at `http://127.0.0.1:8765`. To use a WAV source, run `make run-audio-bench BENCH_INPUT=/path/to/audio.wav`; to test headlessly, use `make run-audio-bench BENCH_ALSA_DEVICE=null`. Effect types, bypass, and parameters are changed live from the page. `make test-audio-engine` runs the host-side engine tests.
+
 ### Build configuration
 
 Use `make menuconfig` to edit `.config`, or `make defconfig` to regenerate it from the defaults in `Kconfig`. The build-time audio engine sample rate is set with `CONFIG_SAMPLE_RATE` in `.config`; rebuild the runtime after changing it. The Web UI does not expose the runtime USB sample-rate field, but preserves its value when saving the other `/audiox/config.txt` settings.

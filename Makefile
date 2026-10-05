@@ -56,7 +56,7 @@ RUNTIME_LIBS += $(SBC_STATIC_LIB)
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 8
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.2
+AUDIOX_VERSION_PRERELEASE ?= beta.3
 AUDIOX_VERSION_BUILD ?=
 AUDIOX_VERSION_BASE = $(AUDIOX_VERSION_MAJOR).$(AUDIOX_VERSION_MINOR).$(AUDIOX_VERSION_PATCH)
 AUDIOX_VERSION_STRING = $(AUDIOX_VERSION_BASE)$(if $(AUDIOX_VERSION_PRERELEASE),-$(AUDIOX_VERSION_PRERELEASE))$(if $(AUDIOX_VERSION_BUILD),+$(AUDIOX_VERSION_BUILD))
@@ -67,6 +67,8 @@ HOSTCXX ?= g++
 HOST_CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Werror
 HOST_NCURSES_CFLAGS ?= $(shell pkg-config --cflags ncursesw 2>/dev/null)
 HOST_NCURSES_LIBS ?= $(shell pkg-config --libs ncursesw 2>/dev/null)
+HOST_AUDIO_CFLAGS ?= $(shell pkg-config --cflags alsa sndfile 2>/dev/null)
+HOST_AUDIO_LIBS ?= $(shell pkg-config --libs alsa sndfile 2>/dev/null)
 
 -include $(AUDIOX_CONFIG_FILE)
 
@@ -113,6 +115,17 @@ FFMPEG_RUNTIME_LIBS ?= ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 libr
 FFMPEG_STAGE_DIR ?= $(OUT_DIR)/ffmpeg_stage
 CONFIG_MENU_BIN = $(OUT_DIR)/host/audiox-menuconfig
 CONFIG_MENU_SRC = $(SCRIPTS_DIR)/audiox-menuconfig.cpp
+AUDIO_BENCH_BIN = $(OUT_DIR)/host/audiox-audio-bench
+AUDIO_ENGINE_TEST_BIN = $(OUT_DIR)/host/audiox-audio-engine-test
+AUDIO_BENCH_SRCS = \
+	tools/audiox-audio-bench.cpp \
+	src/audio/engine.cpp \
+	src/audio/effects/slot.cpp \
+	src/audio/effects/gain.cpp \
+	src/audio/effects/distortion.cpp \
+	src/audio/effects/gate.cpp \
+	src/audio/effects/pitch.cpp \
+	src/audio/effects/reverb.cpp
 BOOT_CONFIG_FILE ?= $(OUT_DIR)/dev-config.txt
 BT_FIRMWARE_URL ?= https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/pios/trixie/debian/firmware/broadcom/BCM4345C0.hcd
 BT_FIRMWARE_SHA256 ?= 51c45e77ddad91a19e96dc8fb75295b2087c279940df2634b23baf71b6dea42c
@@ -153,7 +166,7 @@ BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
 .DEFAULT_GOAL := all
 
-.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg stage_ffmpeg bluetooth_firmware config menuconfig defconfig print-config
+.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg stage_ffmpeg bluetooth_firmware config menuconfig defconfig print-config audio-bench run-audio-bench test-audio-engine
 
 all: initramfs
 
@@ -179,6 +192,34 @@ $(CONFIG_MENU_BIN): $(CONFIG_MENU_SRC)
 	@command -v "$(HOSTCXX)" >/dev/null || { echo "Host C++ compiler not found: $(HOSTCXX)"; exit 1; }
 	@pkg-config --exists ncursesw || { echo "ncurses development files are required (pkg-config ncursesw)"; exit 1; }
 	$(HOSTCXX) $(HOST_CXXFLAGS) $(HOST_NCURSES_CFLAGS) -o "$@" "$<" $(HOST_NCURSES_LIBS)
+
+audio-bench: $(AUDIO_BENCH_BIN)
+
+run-audio-bench: $(AUDIO_BENCH_BIN)
+	@"$(AUDIO_BENCH_BIN)" "$(if $(BENCH_INPUT),$(BENCH_INPUT),-)" "$(BENCH_ALSA_DEVICE)" "$(BENCH_PORT)"
+
+test-audio-engine: $(AUDIO_ENGINE_TEST_BIN)
+	@$(AUDIO_ENGINE_TEST_BIN)
+
+BENCH_INPUT ?=
+BENCH_ALSA_DEVICE ?= default
+BENCH_PORT ?= 8765
+
+$(AUDIO_BENCH_BIN): $(AUDIO_BENCH_SRCS) $(AUDIOX_CONFIG_FILE)
+	@mkdir -p "$(dir $@)"
+	@command -v "$(HOSTCXX)" >/dev/null || { echo "Host C++ compiler not found: $(HOSTCXX)"; exit 1; }
+	@pkg-config --exists alsa sndfile || { echo "Host ALSA and libsndfile development files are required (pkg-config alsa sndfile)"; exit 1; }
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude $(HOST_AUDIO_CFLAGS) \
+		-DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) \
+		-DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) \
+		-DAUDIOX_BENCH_HTML='"$(CURDIR)/web/audio-bench.html"' \
+		-o "$@" $(AUDIO_BENCH_SRCS) $(HOST_AUDIO_LIBS) -pthread -lm
+
+$(AUDIO_ENGINE_TEST_BIN): tests/audio_engine_test.cpp $(filter-out tools/audiox-audio-bench.cpp,$(AUDIO_BENCH_SRCS)) $(AUDIOX_CONFIG_FILE)
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) \
+		-DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) -o "$@" tests/audio_engine_test.cpp \
+		$(filter-out tools/audiox-audio-bench.cpp,$(AUDIO_BENCH_SRCS)) -pthread -lm
 
 fetch_deps:
 	@mkdir -p $(OUT_DIR)

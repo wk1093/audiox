@@ -56,17 +56,29 @@ RUNTIME_LIBS += $(SBC_STATIC_LIB)
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 8
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.1
+AUDIOX_VERSION_PRERELEASE ?= beta.2
 AUDIOX_VERSION_BUILD ?=
 AUDIOX_VERSION_BASE = $(AUDIOX_VERSION_MAJOR).$(AUDIOX_VERSION_MINOR).$(AUDIOX_VERSION_PATCH)
 AUDIOX_VERSION_STRING = $(AUDIOX_VERSION_BASE)$(if $(AUDIOX_VERSION_PRERELEASE),-$(AUDIOX_VERSION_PRERELEASE))$(if $(AUDIOX_VERSION_BUILD),+$(AUDIOX_VERSION_BUILD))
+
+# Kernel-style configuration.
+AUDIOX_CONFIG_FILE ?= $(CURDIR)/.config
+HOSTCXX ?= g++
+HOST_CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Werror
+HOST_NCURSES_CFLAGS ?= $(shell pkg-config --cflags ncursesw 2>/dev/null)
+HOST_NCURSES_LIBS ?= $(shell pkg-config --libs ncursesw 2>/dev/null)
+
+-include $(AUDIOX_CONFIG_FILE)
+
+AUDIOX_SAMPLE_RATE ?= $(CONFIG_SAMPLE_RATE)
+AUDIOX_BUFFER_FRAMES ?= $(CONFIG_BUFFER_FRAMES)
+AUDIOX_ENABLE_ALSA_LOGS ?= $(if $(filter y,$(CONFIG_ALSA_LOGS)),1,0)
+DEBUG_SHELL ?= $(if $(filter y,$(CONFIG_DEBUG_SHELL)),1,0)
 
 # Auto-detected from firmware after fetch_deps runs.
 KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")
 VC4_OVERLAY ?= vc4-fkms-v3d-pi4
 DSI_TOUCH_OVERLAY ?=
-DEBUG_SHELL ?= 0
-
 # Paths
 ARCH ?= aarch64
 OUT_DIR = $(CURDIR)/out
@@ -99,6 +111,8 @@ FFMPEG_ARCHIVE ?= $(OUT_DIR)/downloads/ffmpeg.pkg
 FFMPEG_CROSS_LIB_DIR ?= /usr/aarch64-linux-gnu/lib
 FFMPEG_RUNTIME_LIBS ?= ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 librt.so.1 libpthread.so.0 libgcc_s.so.1
 FFMPEG_STAGE_DIR ?= $(OUT_DIR)/ffmpeg_stage
+CONFIG_MENU_BIN = $(OUT_DIR)/host/audiox-menuconfig
+CONFIG_MENU_SRC = $(SCRIPTS_DIR)/audiox-menuconfig.cpp
 BOOT_CONFIG_FILE ?= $(OUT_DIR)/dev-config.txt
 BT_FIRMWARE_URL ?= https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/pios/trixie/debian/firmware/broadcom/BCM4345C0.hcd
 BT_FIRMWARE_SHA256 ?= 51c45e77ddad91a19e96dc8fb75295b2087c279940df2634b23baf71b6dea42c
@@ -118,6 +132,9 @@ DEPFLAGS = -MMD -MP
 
 RUNTIME_DEFINES = \
 	-DKERNEL_VERSION='"$(KV)"' \
+	-DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) \
+	-DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) \
+	-DAUDIOX_ENABLE_ALSA_LOGS=$(AUDIOX_ENABLE_ALSA_LOGS) \
 	-DAUDIOX_VERSION_MAJOR=$(AUDIOX_VERSION_MAJOR) \
 	-DAUDIOX_VERSION_MINOR=$(AUDIOX_VERSION_MINOR) \
 	-DAUDIOX_VERSION_PATCH=$(AUDIOX_VERSION_PATCH) \
@@ -133,9 +150,35 @@ BOOTLOADER_OBJS := $(patsubst src/%.cpp,$(BOOTLOADER_OBJ_DIR)/%.o,$(BOOTLOADER_S
 RUNTIME_DEPS_FILES := $(RUNTIME_OBJS:.o=.d)
 BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
-.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg stage_ffmpeg bluetooth_firmware
+
+.DEFAULT_GOAL := all
+
+.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg stage_ffmpeg bluetooth_firmware config menuconfig defconfig print-config
 
 all: initramfs
+
+config: menuconfig
+
+menuconfig: $(CONFIG_MENU_BIN)
+	@$(CONFIG_MENU_BIN) "$(AUDIOX_CONFIG_FILE)" "$(CURDIR)/Kconfig"
+
+defconfig: $(CONFIG_MENU_BIN)
+	@$(CONFIG_MENU_BIN) --defconfig "$(CURDIR)/Kconfig" "$(AUDIOX_CONFIG_FILE)"
+	@echo "Default audiox configuration written to $(AUDIOX_CONFIG_FILE)"
+
+print-config:
+	@cat "$(AUDIOX_CONFIG_FILE)"
+
+$(AUDIOX_CONFIG_FILE): $(CONFIG_MENU_BIN) $(CURDIR)/Kconfig
+	@$(CONFIG_MENU_BIN) --defconfig "$(CURDIR)/Kconfig" "$(AUDIOX_CONFIG_FILE)"
+
+$(RUNTIME_OBJS): $(AUDIOX_CONFIG_FILE)
+
+$(CONFIG_MENU_BIN): $(CONFIG_MENU_SRC)
+	@mkdir -p "$(dir $@)"
+	@command -v "$(HOSTCXX)" >/dev/null || { echo "Host C++ compiler not found: $(HOSTCXX)"; exit 1; }
+	@pkg-config --exists ncursesw || { echo "ncurses development files are required (pkg-config ncursesw)"; exit 1; }
+	$(HOSTCXX) $(HOST_CXXFLAGS) $(HOST_NCURSES_CFLAGS) -o "$@" "$<" $(HOST_NCURSES_LIBS)
 
 fetch_deps:
 	@mkdir -p $(OUT_DIR)

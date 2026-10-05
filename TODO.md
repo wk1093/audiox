@@ -72,7 +72,7 @@ The above last two features are mainly to improve my setup, but could probably b
 
 ## Big Refactor - v1.8+
 - [x] Fix versioning system (use 1.8.0-beta and whatnot instead of putting 1.8 dev stuff under 1.7.x), implement an extra version field everywhere (makefile, C++ source, JS source, etc)
-- [ ] Make a config TUI like the linux kernel makefile has to allow configuring for different systems.
+- [x] Make a config TUI like the linux kernel makefile has to allow configuring for different systems, environments, and be able to change the currently #define static settings like the buffer size and sample rate.
 - [ ] Split up code better so that we can partially compile the audio subsystem (the audio graph should be a bit more abstract, and shouldn't know about how devices actually work) so that we can test effects and stuff on my desktop instead of re-uploading to the Pi.
 - [ ] Improve modularity of the audio engine to allow easier addition of new effects and routing options.
 
@@ -86,6 +86,7 @@ The above last two features are mainly to improve my setup, but could probably b
 # Quick Fixes and features - v1.10+
 - [ ] See if we can increase bluetooth quality.
 - [ ] Windows volume changing doesn't work properly (volume seems to be locked at 100% even when windows volume is changed, and it is really boosted and distorted even if the volume on the device is reduced). Windows probably does something weird with the gadget that I didn't handle.
+- [ ] Investigate occasional kernel faults
 - [ ] Investigate using LV2 plugins for effects, and if possible, make it so that the user can upload their own LV2 plugins to the device and use them in the audio engine. This would allow for a lot more flexibility and customization for users who want to use their own effects.
 - [ ] More advanced effects
   - [ ] Noise gate

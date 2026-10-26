@@ -61,9 +61,9 @@ RUNTIME_LIBS += $(SBC_STATIC_LIB)
 # Override on the command line with e.g.:
 #   make AUDIOX_VERSION_MAJOR=1 AUDIOX_VERSION_MINOR=8 AUDIOX_VERSION_PATCH=0 AUDIOX_VERSION_PRERELEASE=beta.2
 AUDIOX_VERSION_MAJOR ?= 1
-AUDIOX_VERSION_MINOR ?= 8
-AUDIOX_VERSION_PATCH ?= 2
-AUDIOX_VERSION_PRERELEASE ?= 
+AUDIOX_VERSION_MINOR ?= 9
+AUDIOX_VERSION_PATCH ?= 0
+AUDIOX_VERSION_PRERELEASE ?= beta.2
 AUDIOX_VERSION_BUILD ?=
 AUDIOX_VERSION_BASE = $(AUDIOX_VERSION_MAJOR).$(AUDIOX_VERSION_MINOR).$(AUDIOX_VERSION_PATCH)
 AUDIOX_VERSION_STRING = $(AUDIOX_VERSION_BASE)$(if $(AUDIOX_VERSION_PRERELEASE),-$(AUDIOX_VERSION_PRERELEASE))$(if $(AUDIOX_VERSION_BUILD),+$(AUDIOX_VERSION_BUILD))
@@ -86,6 +86,7 @@ DEBUG_SHELL ?= $(if $(filter y,$(CONFIG_DEBUG_SHELL)),1,0)
 
 # Auto-detected from firmware after fetch_deps runs.
 KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")
+# TODO: Be able to change this overlay with config
 VC4_OVERLAY ?= vc4-fkms-v3d-pi4
 DSI_TOUCH_OVERLAY ?=
 # Paths
@@ -136,12 +137,14 @@ AUDIO_BENCH_SRCS = \
 	src/audio/effects/pitch.cpp \
 	src/audio/effects/reverb.cpp
 BOOT_CONFIG_FILE ?= $(OUT_DIR)/dev-config.txt
+# TODO: Be able to change this BT firmware with the config system
 BT_FIRMWARE_URL ?= https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/pios/trixie/debian/firmware/broadcom/BCM4345C0.hcd
 BT_FIRMWARE_SHA256 ?= 51c45e77ddad91a19e96dc8fb75295b2087c279940df2634b23baf71b6dea42c
 BT_FIRMWARE_FILE ?= $(OUT_DIR)/downloads/BCM4345C0.hcd
-# Pin firmware updates to a known-good commit on master to avoid surprise kernel bumps.
+# TODO: Be able to change kernel version with config
 FIRMWARE_GIT_URL ?= https://github.com/raspberrypi/firmware.git
-FIRMWARE_GIT_REF ?= 2cfe163628eb33eed11c97bfe3fb8169755d7e7a
+FIRMWARE_GIT_REF ?= 88a0ae8876e800801ee5c27624138b3d02a21c63
+# TODO: Be able to change the default IP with config
 PI_HOST ?= 169.254.1.2
 PI_PORT ?= 80
 
@@ -180,7 +183,7 @@ BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
 .DEFAULT_GOAL := all
 
-.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg stage_ffmpeg bluetooth_firmware config menuconfig defconfig print-config audio-bench run-audio-bench test-audio-engine test-watchdog
+.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg upload_bootloader upload_kernel stage_ffmpeg bluetooth_firmware config menuconfig defconfig print-config audio-bench run-audio-bench test-audio-engine test-watchdog
 
 all: initramfs
 
@@ -592,6 +595,32 @@ upload_ffmpeg: stage_ffmpeg
 		http://$(PI_HOST):$(PI_PORT)/api/rootfs/ffmpeg
 	@echo "ffmpeg uploaded successfully."
 
+upload_bootloader: bootloader_initramfs
+	@echo "Uploading bootloader to http://$(PI_HOST):$(PI_PORT)/api/boot/loader ..."
+	@mkdir -p "$(OUT_DIR)"
+	@status=$$(curl --silent --show-error --output "$(OUT_DIR)/upload-bootloader.response" --write-out "%{http_code}" -X PUT --data-binary @"$(INITRAMFS)" "http://$(PI_HOST):$(PI_PORT)/api/boot/loader") || { cat "$(OUT_DIR)/upload-bootloader.response"; exit 1; }; \
+	cat "$(OUT_DIR)/upload-bootloader.response"; \
+	if [ "$$status" -lt 200 ] || [ "$$status" -ge 300 ]; then \
+		echo "Bootloader upload failed with HTTP $$status"; \
+		exit 1; \
+	fi
+	@echo "Bootloader upload complete."
+
+upload_kernel: fetch_deps
+	@if [ ! -f "$(OUT_DIR)/bootfiles/kernel8.img" ]; then \
+		echo "Error: kernel image not found at $(OUT_DIR)/bootfiles/kernel8.img"; \
+		exit 1; \
+	fi
+	@echo "Uploading kernel to http://$(PI_HOST):$(PI_PORT)/api/boot/kernel ..."
+	@mkdir -p "$(OUT_DIR)"
+	@status=$$(curl --silent --show-error --output "$(OUT_DIR)/upload-kernel.response" --write-out "%{http_code}" -X PUT --data-binary @"$(OUT_DIR)/bootfiles/kernel8.img" "http://$(PI_HOST):$(PI_PORT)/api/boot/kernel") || { cat "$(OUT_DIR)/upload-kernel.response"; exit 1; }; \
+	cat "$(OUT_DIR)/upload-kernel.response"; \
+	if [ "$$status" -lt 200 ] || [ "$$status" -ge 300 ]; then \
+		echo "Kernel upload failed with HTTP $$status"; \
+		exit 1; \
+	fi
+	@echo "Kernel upload complete."
+
 fancyexport: initramfs
 	@$(SCRIPTS_DIR)/wait_and_export.sh "$(SD_MOUNT_BOOT)" "$(CURDIR)"
 
@@ -642,13 +671,29 @@ $(BOOT_CONFIG_FILE):
 		> "$@"
 	@if [ -n "$(DSI_TOUCH_OVERLAY)" ]; then echo "dtoverlay=$(DSI_TOUCH_OVERLAY)" >> "$@"; fi
 
-dev: program_initramfs $(BOOT_CONFIG_FILE)
+dev: $(BOOT_CONFIG_FILE)
+	@$(MAKE) fetch_deps
+	@$(MAKE) initramfs
 	@grep -q '^dtoverlay=miniuart-bt$$' "$(BOOT_CONFIG_FILE)" || echo 'dtoverlay=miniuart-bt' >> "$(BOOT_CONFIG_FILE)"
 	@grep -q '^core_freq=250$$' "$(BOOT_CONFIG_FILE)" || echo 'core_freq=250' >> "$(BOOT_CONFIG_FILE)"
 	@grep -q '^core_freq_min=250$$' "$(BOOT_CONFIG_FILE)" || echo 'core_freq_min=250' >> "$(BOOT_CONFIG_FILE)"
 	@grep -q '^arm_boost=1$$' "$(BOOT_CONFIG_FILE)" || echo 'arm_boost=1' >> "$(BOOT_CONFIG_FILE)"
+	@echo "Uploading kernel to http://$(PI_HOST):$(PI_PORT)/api/boot/kernel ..."
+	@status=$$(curl --silent --show-error --output "$(OUT_DIR)/dev-kernel.response" --write-out "%{http_code}" -X PUT --data-binary @"$(OUT_DIR)/bootfiles/kernel8.img" "http://$(PI_HOST):$(PI_PORT)/api/boot/kernel") || { cat "$(OUT_DIR)/dev-kernel.response"; exit 1; }; \
+	cat "$(OUT_DIR)/dev-kernel.response"; \
+	if [ "$$status" -lt 200 ] || [ "$$status" -ge 300 ]; then \
+		echo "Kernel upload failed with HTTP $$status"; \
+		exit 1; \
+	fi
+	@echo "Uploading bootloader to http://$(PI_HOST):$(PI_PORT)/api/boot/loader ..."
+	@status=$$(curl --silent --show-error --output "$(OUT_DIR)/dev-bootloader.response" --write-out "%{http_code}" -X PUT --data-binary @"$(INITRAMFS)" "http://$(PI_HOST):$(PI_PORT)/api/boot/loader") || { cat "$(OUT_DIR)/dev-bootloader.response"; exit 1; }; \
+	cat "$(OUT_DIR)/dev-bootloader.response"; \
+	if [ "$$status" -lt 200 ] || [ "$$status" -ge 300 ]; then \
+		echo "Bootloader upload failed with HTTP $$status"; \
+		exit 1; \
+	fi
 	@echo "Uploading boot config to http://$(PI_HOST):$(PI_PORT)/api/boot/config.txt ..."
-	@status=$$(curl --silent --show-error --output $(OUT_DIR)/dev-boot-config.response --write-out "%{http_code}" -X PUT --data-binary @$(BOOT_CONFIG_FILE) http://$(PI_HOST):$(PI_PORT)/api/boot/config.txt); \
+	@status=$$(curl --silent --show-error --output "$(OUT_DIR)/dev-boot-config.response" --write-out "%{http_code}" -X PUT --data-binary @"$(BOOT_CONFIG_FILE)" "http://$(PI_HOST):$(PI_PORT)/api/boot/config.txt"); \
 	cat $(OUT_DIR)/dev-boot-config.response; \
 	if [ "$$status" -lt 200 ] || [ "$$status" -ge 300 ]; then \
 		echo "Warning: boot config upload failed with HTTP $$status; continuing with runtime upload."; \
@@ -656,13 +701,13 @@ dev: program_initramfs $(BOOT_CONFIG_FILE)
 		echo "Boot config upload complete."; \
 	fi
 	@echo "Uploading initramfs to http://$(PI_HOST):$(PI_PORT)/api/initram ..."
-	@status=$$(curl --silent --show-error --output $(OUT_DIR)/dev-upload.response --write-out "%{http_code}" -X PUT --data-binary @$(PROGRAM_INITRAMFS) http://$(PI_HOST):$(PI_PORT)/api/initram); \
-	cat $(OUT_DIR)/dev-upload.response; \
+	@status=$$(curl --silent --show-error --output "$(OUT_DIR)/dev-upload.response" --write-out "%{http_code}" -X PUT --data-binary @"$(PROGRAM_INITRAMFS)" "http://$(PI_HOST):$(PI_PORT)/api/initram") || { cat "$(OUT_DIR)/dev-upload.response"; exit 1; }; \
+	cat "$(OUT_DIR)/dev-upload.response"; \
 	if [ "$$status" -lt 200 ] || [ "$$status" -ge 300 ]; then \
-		echo "HTTP $$status"; \
+		echo "Runtime initramfs upload failed with HTTP $$status"; \
 		exit 1; \
 	fi
-	@echo "Upload complete. Device will reboot once to install the staged runtime, then reboot into the new image."
+	@echo "All uploads complete. Device will reboot once to install the staged runtime, then reboot into the new kernel and images."
 
 image: initramfs ffmpeg
 	@$(SCRIPTS_DIR)/build_image.sh "$(IMG_FILE)" "$(IMG_SIZE_MB)" "$(OUT_DIR)" "$(INITRAMFS)" "$(PROGRAM_INITRAMFS)" "$(VC4_OVERLAY)" "$(DSI_TOUCH_OVERLAY)" "$(FFMPEG_BIN)"

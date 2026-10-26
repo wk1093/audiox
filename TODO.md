@@ -87,9 +87,10 @@ The above last two features are mainly to improve my setup, but could probably b
   - [ ] Make it so that the bootloader can update the kernel as well.
   - [ ] Is it possible to add a custom listener or hook into a kernel panic? Maybe automatically make a kernel panic trigger a reboot into the backup initramfs?
 - [ ] Somehow be able to update the bootloader itself. This could be done by having the main initram update the bootloader, since the bootloader updates the main initram, but they can't edit themselves. So maybe just update the bootloader first from the main initramfs right when the update is triggered, and then reboot into the new bootloader to update the main initramfs. Or I could make them two separate processes, where you could choose to update one or the other. That is probably better since the bootloader won't be updated as often, and we won't have to require a larger update file. The update file will eventually be a custom format that is kinda like a tar, it contains a bit of metadata, and then two separate files (or just one). The update metadata will contain a version number, and then it will also tell the program if it is a bootloader update, initram update, or both.
+- [ ] Improve make config options, like being able to change board type, like switching between pi 4 (the only currently tested board) and other models.
 
 # Quick Fixes and features - v1.10+
-- [ ] See if we can increase bluetooth quality.
+- [ ] See if we can increase bluetooth quality. Not just audio quality, but quality of life, needs better interface (not just UI, also auto-connect features, easier device management, and more reliable connections).
 - [ ] Windows volume changing doesn't work properly (volume seems to be locked at 100% even when windows volume is changed, and it is really boosted and distorted even if the volume on the device is reduced). Windows probably does something weird with the gadget that I didn't handle.
 - [ ] Investigate occasional kernel faults
 - [ ] Investigate using LV2 plugins for effects, and if possible, make it so that the user can upload their own LV2 plugins to the device and use them in the audio engine. This would allow for a lot more flexibility and customization for users who want to use their own effects.

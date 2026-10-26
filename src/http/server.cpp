@@ -27,7 +27,7 @@
 #define HTTP_BOOT_LOADER_PATH "/api/boot/loader"
 #define HTTP_BOOT_LOADER_FILE "/boot/initramfs.cpio.gz"
 #define HTTP_BOOT_KERNEL_PATH "/api/boot/kernel"
-#define HTTP_BOOT_KERNEL_FILE "/boot/kernel.img"
+#define HTTP_BOOT_KERNEL_FILE "/boot/kernel8.img"
 #define HTTP_BOOT_UPLOAD_MAX (150u * 1024u * 1024u)
 #define HTTP_INITRAM_RCV_TIMEOUT_SEC 10
 #define HTTP_ROOTFS_PREFIX "/api/rootfs/"

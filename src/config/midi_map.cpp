@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace {
@@ -310,7 +311,8 @@ static int parseEffectStateLine(const char *value,
         strcmp(parts[1], "distortion") != 0 &&
         strcmp(parts[1], "pitch") != 0 &&
         strcmp(parts[1], "reverb") != 0 &&
-        strcmp(parts[1], "gate") != 0) {
+        strcmp(parts[1], "gate") != 0 &&
+        strcmp(parts[1], "cut") != 0) {
         return RET_ERR;
     }
 
@@ -1038,5 +1040,58 @@ int ConfigStore::writeMidiMapFile(MidiMapData *data) {
     if (rc != RET_OK || fxRc != RET_OK) {
         return RET_ERR;
     }
+    return RET_OK;
+}
+
+int ConfigStore::purgeMissingSoundMappings(MidiMapData *data) {
+    if (!data) {
+        return RET_ERR;
+    }
+
+    MidiMapData cleaned = *data;
+    bool changed = false;
+    auto purge = [&](auto &entries, uint32_t &count) -> int {
+        if (count > sizeof(entries) / sizeof(entries[0])) {
+            printf("[CONFIG] [WARN] invalid sound mapping count: %u\n", (unsigned)count);
+            return RET_ERR;
+        }
+        uint32_t kept = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            char path[512];
+            const char *sfx = entries[i].sfxPath;
+            int n = sfx[0] == '/' ? snprintf(path, sizeof(path), "%s", sfx)
+                                  : snprintf(path, sizeof(path), "%s/%s", SFX_ROOT_DIR, sfx);
+            if (n <= 0 || (size_t)n >= sizeof(path)) {
+                printf("[CONFIG] [WARN] SFX path too long: %s\n", sfx);
+                return RET_ERR;
+            }
+            struct stat st;
+            if (stat(path, &st) < 0) {
+                if (errno != ENOENT && errno != ENOTDIR) {
+                    printf("[CONFIG] [WARN] failed to stat %s: %s\n", path, strerror(errno));
+                    return RET_ERR;
+                }
+                changed = true;
+                continue;
+            }
+            if (!S_ISREG(st.st_mode)) {
+                changed = true;
+                continue;
+            }
+            entries[kept++] = entries[i];
+        }
+        count = kept;
+        return RET_OK;
+    };
+
+    if (purge(cleaned.mappings, cleaned.mappingCount) != RET_OK ||
+        purge(cleaned.soundLights, cleaned.soundLightCount) != RET_OK ||
+        purge(cleaned.soundModes, cleaned.soundModeCount) != RET_OK) {
+        return RET_ERR;
+    }
+    if (changed && writeMidiMapFile(&cleaned) != RET_OK) {
+        return RET_ERR;
+    }
+    *data = cleaned;
     return RET_OK;
 }

@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -387,6 +388,9 @@ MidiContext::MidiContext(Audiox *context)
         app->midi = this;
         if (app->config) {
             cachedMidiMap = app->config->readMidiMapFile();
+            if (reloadSoundboardMappings() != RET_OK) {
+                printf("[MIDI] [WARN] failed to purge missing sounds at startup\n");
+            }
         }
     }
     for (int i = 0; i < 128; ++i) {
@@ -441,6 +445,54 @@ void MidiContext::refreshAllLighting() {
         ledStateByNote[i] = 255;
     }
     refreshLightingFromState();
+}
+
+int MidiContext::reloadSoundboardMappings() {
+    if (!app || !app->config) {
+        return RET_ERR;
+    }
+    bool selectedMissing = false;
+    if (samplerSelectedValid) {
+        char path[256];
+        if (buildAbsoluteSfxPath(samplerSelectedSfx, path, sizeof(path)) != RET_OK) {
+            printf("[MIDI] [WARN] invalid selected SFX path: %s\n", samplerSelectedSfx);
+            return RET_ERR;
+        }
+        struct stat st;
+        if (stat(path, &st) < 0) {
+            if (errno != ENOENT && errno != ENOTDIR) {
+                printf("[MIDI] [WARN] failed to stat %s: %s\n", path, strerror(errno));
+                return RET_ERR;
+            }
+            selectedMissing = true;
+        } else {
+            selectedMissing = !S_ISREG(st.st_mode);
+        }
+    }
+
+    MidiMapData data = app->config->readMidiMapFile();
+    if (app->config->purgeMissingSoundMappings(&data) != RET_OK) {
+        return RET_ERR;
+    }
+
+    bool heldMapped = false;
+    for (uint32_t i = 0; i < data.mappingCount; ++i) {
+        heldMapped |= data.mappings[i].note == heldNote;
+    }
+    if (holdActive && !heldMapped) {
+        if (app->audio) {
+            app->audio->stopHeldSfx();
+        }
+        holdActive = 0;
+        heldNote = 255;
+    }
+    if (selectedMissing) {
+        samplerSelectedValid = 0;
+        samplerSelectedSfx[0] = '\0';
+    }
+    cachedMidiMap = data;
+    refreshAllLighting();
+    return RET_OK;
 }
 
 void MidiContext::refreshLightingFromState() {

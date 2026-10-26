@@ -50,4 +50,5 @@ struct MidiContext {
     void refreshAllLighting();
 
     void refreshLightingFromState();
+    int reloadSoundboardMappings();
 };

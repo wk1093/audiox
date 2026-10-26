@@ -97,6 +97,17 @@ static int body_get_value(const char *body,
 static void copy_bound(char *dst, size_t dst_sz, const char *src);
 static int mapping_normalize_sfx(const char *raw, char *out, size_t out_sz);
 
+static int purgeMissingSoundMappings(HttpServer *server) {
+	if (!server->app || !server->app->config) {
+		return RET_ERR;
+	}
+	if (server->app->midi) {
+		return server->app->midi->reloadSoundboardMappings();
+	}
+	MidiMapData data = server->app->config->readMidiMapFile();
+	return server->app->config->purgeMissingSoundMappings(&data);
+}
+
 static int sendMethodNotAllowed(HttpServer *server, int cfd) {
 	static const char mna[] = "method not allowed\n";
 	return server->sendResponse(cfd, "405 Method Not Allowed", "text/plain; charset=utf-8", mna, sizeof(mna) - 1);
@@ -420,6 +431,11 @@ static int handleApiDeleteRootfs(HttpServer *server, int cfd, const char *path) 
 		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
 	}
 
+	if (strncmp(suffix, "sfx/", 4) == 0 && purgeMissingSoundMappings(server) != RET_OK) {
+		static const char err[] = "audio deleted, but MIDI cleanup failed; retry soundboard reload\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
 	static const char ok[] = "ok\n";
 	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
 }
@@ -565,6 +581,10 @@ static int handleSoundboardReload(HttpServer *server,
 	}
 
 	int rc = server->app->audio->reloadSfxBank();
+	if (purgeMissingSoundMappings(server) != RET_OK) {
+		static const char err[] = "failed to clean up missing sound MIDI mappings\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
 	uint32_t loaded = server->app->audio->loadedSfxCount();
 	char out[128];
 	int n = snprintf(out,

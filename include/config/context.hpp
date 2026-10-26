@@ -181,6 +181,7 @@ struct ConfigStore {
     // midi_map.txt: note→sfx mappings + lighting config (separate from config.txt)
     MidiMapData readMidiMapFile() const;
     int writeMidiMapFile(MidiMapData *data);
+    int purgeMissingSoundMappings(MidiMapData *data);
 
     // volumes.txt: per-thing output gain values
     int readVolumesFile(VolumeEntry *out, uint32_t *count_out, uint32_t cap) const;

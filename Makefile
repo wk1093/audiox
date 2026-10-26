@@ -62,7 +62,7 @@ RUNTIME_LIBS += $(SBC_STATIC_LIB)
 #   make AUDIOX_VERSION_MAJOR=1 AUDIOX_VERSION_MINOR=8 AUDIOX_VERSION_PATCH=0 AUDIOX_VERSION_PRERELEASE=beta.2
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 8
-AUDIOX_VERSION_PATCH ?= 1
+AUDIOX_VERSION_PATCH ?= 2
 AUDIOX_VERSION_PRERELEASE ?= 
 AUDIOX_VERSION_BUILD ?=
 AUDIOX_VERSION_BASE = $(AUDIOX_VERSION_MAJOR).$(AUDIOX_VERSION_MINOR).$(AUDIOX_VERSION_PATCH)
@@ -221,6 +221,22 @@ run-audio-bench: $(AUDIO_BENCH_BIN)
 
 test-audio-engine: $(AUDIO_ENGINE_TEST_BIN)
 	@$(AUDIO_ENGINE_TEST_BIN)
+
+.PHONY: test-soundboard-config
+test-soundboard-config: $(OUT_DIR)/host/audiox-soundboard-config-test
+	@"$<"
+
+SOUNDBOARD_CONFIG_TEST_SRCS = tests/soundboard_config_test.cpp src/context.cpp \
+	src/config/basic.cpp src/config/midi_map.cpp \
+	src/midi/midi.cpp src/audio/setup.cpp src/http/server.cpp \
+	$(filter-out tools/audiox-audio-bench.cpp src/audio/engine.cpp src/audio/graph_processor.cpp,$(AUDIO_BENCH_SRCS))
+
+$(OUT_DIR)/host/audiox-soundboard-config-test: $(SOUNDBOARD_CONFIG_TEST_SRCS) src/http/api.cpp $(wildcard include/config/*.hpp include/midi/*.hpp include/audio/*.hpp include/audio/effects/*.hpp include/http/*.hpp) include/defs.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-format-truncation -Wno-unused-parameter -Iinclude \
+		-DROOT_MOUNT_POINT='"."' -ffunction-sections -fdata-sections \
+		-Wl,--gc-sections -o "$@" $(SOUNDBOARD_CONFIG_TEST_SRCS) \
+		$(shell pkg-config --cflags --libs alsa) -pthread -lm
 
 .PHONY: test-audio-pcm-recover
 test-audio-pcm-recover: $(OUT_DIR)/host/audiox-audio-pcm-recover-test

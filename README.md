@@ -39,7 +39,8 @@ Once I believe this is stable enough for general use, I will release v2.0.0
 	- `POST /api/system/restart` - reboots
 	- `POST /api/system/shutdown` - powers off
 - Exposes a web soundboard with per-card MIDI assignment and automatic polling
-- Supports MIDI note-to-SFX mappings from config stored in `/audiox/config.txt` and targeting files in `/audiox/sfx/`
+- Supports MIDI note-to-SFX mappings stored in `/audiox/midi_map.txt` and targeting files in `/audiox/sfx/`
+- Removing a sound clears its MIDI note assignments, per-sound lights, and playback-mode overrides and refreshes controller LEDs. Startup and soundboard reload also purge references to missing files.
 - Preprocesses uploaded soundboard files under `/audiox/sfx/` through `ffmpeg` into 48kHz stereo PCM16 WAV so MP3/OGG/etc work with the current WAV-only loader
 - Web UI with 4 main pages: Routing (graph + metrics), Config (audio settings), Soundboard (cards + upload/assign/remove), System (device stats)
 
@@ -70,7 +71,9 @@ Useful targets:
 
 Build and run the host audio testbench with `make audio-bench` and `make run-audio-bench`. It compiles the shared effect and graph-block processors without the Raspberry Pi runtime, plays a 440 Hz test tone through the system's default ALSA output, and serves a live effect control page at `http://127.0.0.1:8765`. To use a WAV source, run `make run-audio-bench BENCH_INPUT=/path/to/audio.wav`; to test headlessly, use `make run-audio-bench BENCH_ALSA_DEVICE=null`. Effect types, bypass, and parameters are changed live from the page. Playback prefers 32-bit PCM for quiet-signal resolution and falls back to 16-bit when the output does not support it. `make test-audio-engine` exercises the shared block graph, PCM conversion, and effect controls.
 
-The Cut effect passes audio when bypassed and outputs silence when enabled. Its `Channels` setting changes matching input/output port counts; since this changes routing topology, it is not MIDI-CC-mappable, but its mute state can be mapped to a MIDI note or toggled from the Web UI.
+The Cut effect passes audio when bypassed and outputs silence when enabled. Its `Channels` setting changes matching input/output port counts; since this changes routing topology, it is not MIDI-CC-mappable, but its mute state can be mapped to a MIDI note or toggled from the Web UI. Like other effects, its instance, mute state, and channel count persist across reboots.
+
+Run `make test-soundboard-config` to check Cut persistence and missing-sound MIDI cleanup, including controller LED output. This host test requires ALSA development files and uses an isolated temporary configuration directory.
 
 The Pi runtime defaults to the direct graph-processing loop (`AUDIOX_USE_SHARED_GRAPH_PROCESSOR=0`) to avoid per-block adapter dispatch, stack graph-node setup, and shared processor code in the firmware binary. Set `AUDIOX_USE_SHARED_GRAPH_PROCESSOR=1` to compile the callback-based graph path for target-side comparison; the desktop engine uses the shared path. `processing.o` is rebuilt when the mode changes. Capture stream ownership, device attachment/remapping, and source-specific ring/SRC state live in a separate fixed-capacity ALSA capture backend. PCM I/O remains on the direct Pi path.
 

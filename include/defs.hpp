@@ -54,7 +54,9 @@
 
 #define WARN_UNUSED __attribute__((warn_unused_result))
 
+#ifndef ROOT_MOUNT_POINT
 #define ROOT_MOUNT_POINT "/audiox"
+#endif
 #define STAGING_DIR_NAME "staging"
 #define PROGRAM_STAGED_PATH ROOT_MOUNT_POINT "/" STAGING_DIR_NAME "/" PROGRAM_INITRAMFS_NAME
 

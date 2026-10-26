@@ -45,10 +45,10 @@ make show_alsa # show ALSA build config
 make alsa # build ALSA from source
 make initramfs # build bootloader and program initramfs
 make image # build full SD card image
-make dev # build and upload runtime (only works if you have a running AudioX device already setup)
+make dev # build and upload matching kernel, bootloader, and runtime (requires a running AudioX device)
 ```
 
-WARNING: `make dev` overwrites the runtime on the device, it doesn't have the capacity (yet) to update the bootloader or kernel, so if I update the firmware to use a newer kernel, your device will not work with `make dev` because the kernel modules in the program will be newer than the kernel on the device. For now, this requires you to reflash (or use `make fancyexport`). This can also happen if you break the runtime image (kernel panic, http server crash, failed init, etc). THIS IS NOT PERMANENT, I plan on adding recovery and update safety features in the future, but for now, be careful with `make dev`.
+WARNING: `make dev` replaces the device kernel and bootloader before staging the runtime update, so use it only with a running AudioX device. It does not provide recovery if an update breaks boot; you may need to reflash the SD card (via `make fancyexport` or `make image`). Be careful when testing kernel and bootloader changes.
 
 ## Project layout
 

@@ -4,7 +4,7 @@
 
 Right now it boots through a tiny custom bootloader initramfs into a separate runtime initramfs, brings up a USB UAC2 gadget, plays local WAV voices, routes audio with real-time metering, and renders touchscreen + MIDI control with a responsive framebuffer UI; long term the same software will drive multiple reverse-HAT board variants with patchable analog/digital routing, effects, and persistent user configuration.
 
-Warning: This is very work-in-progress and not yet stable. The `make dev` target will build and upload a new runtime image, but be warned that certain updates require a full reflash (via `make fancyexport` or `make image`) to work properly. The bootloader is very simple and does not have a recovery mode, so if you break the runtime image you will need to reflash the SD card.
+Warning: This is very work-in-progress and not yet stable. `make dev` builds and uploads the matching kernel, bootloader, and runtime image, but the bootloader is very simple and does not have a recovery mode. If an update breaks boot, you may need to reflash the SD card.
 
 ## Contributing
 
@@ -31,7 +31,7 @@ Once I believe this is stable enough for general use, I will release v2.0.0
 - Accepts firmware updates with `PUT /api/initram`, stages a new `program.cpio.gz`, reboots into the bootloader, promotes the staged image to the boot partition, and reboots again
 - Streams boot-partition files over HTTP:
 	- `GET`/`PUT /api/boot/loader` reads or replaces `/boot/initramfs.cpio.gz`
-	- `GET`/`PUT /api/boot/kernel` reads or replaces `/boot/kernel.img`
+	- `GET`/`PUT /api/boot/kernel` reads or replaces `/boot/kernel8.img`
 	- Boot uploads are limited to 150 MiB and replace the destination only after a complete upload
 - Exposes basic rootfs file APIs over HTTP:
 	- `GET /api/rootfs/<path>` -> reads `/audiox/<path>`
@@ -66,10 +66,14 @@ Useful targets:
 - `make show_kernel` - show detected kernel version
 - `make show_alsa` - print ALSA dependency mode and resolved paths/flags
 - `make alsa` - prepare static `libasound.a` into `out/alsa-sysroot`
-- `make dev` - build runtime image, upload it over HTTP, then let the Pi reboot twice to install it
+- `make upload_bootloader` - build and upload `out/initramfs.cpio.gz` to `/api/boot/loader`
+- `make upload_kernel` - stage firmware and upload `out/bootfiles/kernel8.img` to `/api/boot/kernel`
+- `make dev` - sync firmware, build matching kernel modules and images, upload kernel and bootloader, then upload the runtime to trigger installation and reboot
 - `make qemu` - boot in QEMU (aarch64) // doesn't work because qemu raspi support is very minimal (no gui, no USB, no audio)
 - `make fancyexport` - wait for SD mount and export build artifacts
 - `make image` - create a flashable image file (WARNING: untested, may not work)
+
+The standalone bootloader and kernel upload targets directly replace files on the device's boot partition and do not reboot it. `make dev` performs these uploads in order before staging the runtime update.
 
 ### Desktop audio engine bench
 

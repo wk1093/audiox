@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/mount.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
@@ -23,6 +24,11 @@
 #define HTTP_BODY_MAX 49152
 #define HTTP_INITRAM_PATH "/api/initram"
 #define HTTP_INITRAM_MAX (64u * 1024u * 1024u)
+#define HTTP_BOOT_LOADER_PATH "/api/boot/loader"
+#define HTTP_BOOT_LOADER_FILE "/boot/initramfs.cpio.gz"
+#define HTTP_BOOT_KERNEL_PATH "/api/boot/kernel"
+#define HTTP_BOOT_KERNEL_FILE "/boot/kernel.img"
+#define HTTP_BOOT_UPLOAD_MAX (150u * 1024u * 1024u)
 #define HTTP_INITRAM_RCV_TIMEOUT_SEC 10
 #define HTTP_ROOTFS_PREFIX "/api/rootfs/"
 #define HTTP_ROOTFS_UPLOAD_MAX (150u * 1024u * 1024u)
@@ -133,6 +139,144 @@ static int writeAllToFd(int fd, const void *buf, size_t len) {
     return 0;
 }
 
+static int streamRequestBodyToFd(int cfd,
+                                 int fd,
+                                 const char *initial_body,
+                                 size_t initial_body_len,
+                                 size_t content_length) {
+    size_t written = 0;
+    size_t initial_write = initial_body_len;
+    if (initial_write > content_length) {
+        initial_write = content_length;
+    }
+    if (initial_write > 0 && writeAllToFd(fd, initial_body, initial_write) < 0) {
+        return -1;
+    }
+    written = initial_write;
+
+    char buf[16384];
+    while (written < content_length) {
+        size_t want = content_length - written;
+        if (want > sizeof(buf)) {
+            want = sizeof(buf);
+        }
+
+        ssize_t nr = recv(cfd, buf, want, 0);
+        if (nr < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        if (nr == 0) {
+            return 1;
+        }
+        if (writeAllToFd(fd, buf, (size_t)nr) < 0) {
+            return -1;
+        }
+        written += (size_t)nr;
+    }
+    return 0;
+}
+
+static int mountBootPartition(void) {
+    if (mkdir("/boot", 0755) < 0 && errno != EEXIST) {
+        return -1;
+    }
+    if (mount("/dev/mmcblk0p1", "/boot", "vfat", MS_NOATIME, NULL) < 0 && errno != EBUSY) {
+        return -1;
+    }
+    return 0;
+}
+
+static int handleBootFile(HttpServer *server,
+                          int cfd,
+                          const char *method,
+                          const char *path,
+                          size_t content_length,
+                          const char *initial_body,
+                          size_t initial_body_len) {
+    const char *file_path = NULL;
+    if (strcmp(path, HTTP_BOOT_LOADER_PATH) == 0) {
+        file_path = HTTP_BOOT_LOADER_FILE;
+    } else if (strcmp(path, HTTP_BOOT_KERNEL_PATH) == 0) {
+        file_path = HTTP_BOOT_KERNEL_FILE;
+    } else {
+        return -1;
+    }
+
+    if (strcmp(method, "GET") != 0 && strcmp(method, "PUT") != 0) {
+        static const char mna[] = "method not allowed\n";
+        return server->sendResponse(cfd, "405 Method Not Allowed", "text/plain; charset=utf-8", mna, sizeof(mna) - 1);
+    }
+    if (mountBootPartition() < 0) {
+        static const char err[] = "boot partition unavailable\n";
+        return server->sendResponse(cfd, "503 Service Unavailable", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+    }
+
+    if (strcmp(method, "GET") == 0) {
+        if (access(file_path, R_OK) < 0) {
+            static const char err[] = "boot file unavailable\n";
+            return server->sendResponse(cfd, "404 Not Found", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+        }
+        return server->sendFilePath(cfd, file_path, "application/octet-stream");
+    }
+
+    if (content_length == 0) {
+        static const char bad[] = "missing body\n";
+        return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+    }
+    if (content_length > HTTP_BOOT_UPLOAD_MAX) {
+        static const char too_large[] = "payload too large\n";
+        return server->sendResponse(cfd, "413 Payload Too Large", "text/plain; charset=utf-8", too_large, sizeof(too_large) - 1);
+    }
+
+    char temp_path[sizeof(HTTP_BOOT_LOADER_FILE) + sizeof(".part")];
+    int path_len = snprintf(temp_path, sizeof(temp_path), "%s.part", file_path);
+    if (path_len <= 0 || (size_t)path_len >= sizeof(temp_path)) {
+        static const char err[] = "boot file path too long\n";
+        return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+    }
+
+    int fd = open(temp_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "boot upload open failed", errno);
+    }
+
+    int stream_rc = streamRequestBodyToFd(cfd, fd, initial_body, initial_body_len, content_length);
+    if (stream_rc < 0) {
+        int saved_errno = errno;
+        close(fd);
+        unlink(temp_path);
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "boot upload failed", saved_errno);
+    }
+    if (stream_rc > 0) {
+        close(fd);
+        unlink(temp_path);
+        static const char err[] = "incomplete upload\n";
+        return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+    }
+    if (fsync(fd) < 0) {
+        int saved_errno = errno;
+        close(fd);
+        unlink(temp_path);
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "boot upload sync failed", saved_errno);
+    }
+    if (close(fd) < 0) {
+        int saved_errno = errno;
+        unlink(temp_path);
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "boot upload close failed", saved_errno);
+    }
+    if (rename(temp_path, file_path) < 0) {
+        int saved_errno = errno;
+        unlink(temp_path);
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "boot upload finalize failed", saved_errno);
+    }
+
+    static const char ok[] = "{\"ok\":true}\n";
+    return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
+}
+
 static int handleInitramUpload(HttpServer *server,
                                int cfd,
                                const char *initial_body,
@@ -160,49 +304,18 @@ static int handleInitramUpload(HttpServer *server,
         return sendErrnoResponse(server, cfd, "500 Internal Server Error", "staging open failed", errno);
     }
 
-    size_t written = 0;
-    size_t initial_write = initial_body_len;
-    if (initial_write > content_length) {
-        initial_write = content_length;
-    }
-    if (initial_write > 0 && writeAllToFd(fd, initial_body, initial_write) < 0) {
+    int stream_rc = streamRequestBodyToFd(cfd, fd, initial_body, initial_body_len, content_length);
+    if (stream_rc < 0) {
         int saved_errno = errno;
         close(fd);
         unlink(HTTP_STAGE_INITRAMFS_PART_PATH);
         return sendErrnoResponse(server, cfd, "500 Internal Server Error", "staging write failed", saved_errno);
     }
-    written = initial_write;
-
-    char buf[16384];
-    while (written < content_length) {
-        size_t want = content_length - written;
-        if (want > sizeof(buf)) {
-            want = sizeof(buf);
-        }
-
-        ssize_t nr = recv(cfd, buf, want, 0);
-        if (nr < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            int saved_errno = errno;
-            close(fd);
-            unlink(HTTP_STAGE_INITRAMFS_PART_PATH);
-            return sendErrnoResponse(server, cfd, "500 Internal Server Error", "upload read failed", saved_errno);
-        }
-        if (nr == 0) {
-            close(fd);
-            unlink(HTTP_STAGE_INITRAMFS_PART_PATH);
-            static const char err[] = "incomplete upload\n";
-            return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
-        }
-        if (writeAllToFd(fd, buf, (size_t)nr) < 0) {
-            int saved_errno = errno;
-            close(fd);
-            unlink(HTTP_STAGE_INITRAMFS_PART_PATH);
-            return sendErrnoResponse(server, cfd, "500 Internal Server Error", "staging write failed", saved_errno);
-        }
-        written += (size_t)nr;
+    if (stream_rc > 0) {
+        close(fd);
+        unlink(HTTP_STAGE_INITRAMFS_PART_PATH);
+        static const char err[] = "incomplete upload\n";
+        return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
     }
 
     if (fsync(fd) < 0) {
@@ -477,47 +590,16 @@ static int handleRootfsUpload(HttpServer *server,
         return sendErrnoResponse(server, cfd, "500 Internal Server Error", "open failed", errno);
     }
 
-    size_t written = 0;
-    size_t initial_write = initial_body_len;
-    if (initial_write > content_length) {
-        initial_write = content_length;
-    }
-    if (initial_write > 0 && writeAllToFd(fd, initial_body, initial_write) < 0) {
+    int stream_rc = streamRequestBodyToFd(cfd, fd, initial_body, initial_body_len, content_length);
+    if (stream_rc < 0) {
         int saved_errno = errno;
         close(fd);
         return sendErrnoResponse(server, cfd, "500 Internal Server Error", "write failed", saved_errno);
     }
-    written = initial_write;
-
-    char buf[16384];
-    while (written < content_length) {
-        size_t want = content_length - written;
-        if (want > sizeof(buf)) {
-            want = sizeof(buf);
-        }
-
-        ssize_t nr = recv(cfd, buf, want, 0);
-        if (nr < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            int saved_errno = errno;
-            close(fd);
-            return sendErrnoResponse(server, cfd, "500 Internal Server Error", "upload read failed", saved_errno);
-        }
-        if (nr == 0) {
-            close(fd);
-            static const char err[] = "incomplete upload\n";
-            return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
-        }
-
-        if (writeAllToFd(fd, buf, (size_t)nr) < 0) {
-            int saved_errno = errno;
-            close(fd);
-            return sendErrnoResponse(server, cfd, "500 Internal Server Error", "write failed", saved_errno);
-        }
-
-        written += (size_t)nr;
+    if (stream_rc > 0) {
+        close(fd);
+        static const char err[] = "incomplete upload\n";
+        return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
     }
 
     if (fsync(fd) < 0) {
@@ -711,6 +793,22 @@ static void handleClient(HttpServer *server, int cfd) {
 
     size_t body_off = (size_t)header_end;
     size_t initial_body_len = have > body_off ? have - body_off : 0;
+
+    if (strcmp(path, HTTP_BOOT_LOADER_PATH) == 0 ||
+        strcmp(path, HTTP_BOOT_KERNEL_PATH) == 0) {
+        if (strcmp(method, "PUT") == 0 &&
+            setSocketTimeouts(cfd, 10000, 5000) < 0) {
+            printf("[INIT] [WARN] failed to set boot upload socket timeout: %s\n", strerror(errno));
+        }
+        (void)handleBootFile(server,
+                             cfd,
+                             method,
+                             path,
+                             (size_t)content_length,
+                             req + body_off,
+                             initial_body_len);
+        return;
+    }
 
     if (strcmp(path, HTTP_INITRAM_PATH) == 0) {
         if (strcmp(method, "PUT") != 0) {
@@ -1085,4 +1183,3 @@ int HttpServer::sendStaticFromWebRoot(int cfd, const char *path) const {
 
     return sendFilePath(cfd, full, NULL);
 }
-

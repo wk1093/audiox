@@ -29,6 +29,10 @@ Once I believe this is stable enough for general use, I will release v2.0.0
 - Runs a basic HTTP server on port 80 for web tooling
 - Serves a static page from `/etc/www/index.html`
 - Accepts firmware updates with `PUT /api/initram`, stages a new `program.cpio.gz`, reboots into the bootloader, promotes the staged image to the boot partition, and reboots again
+- Streams boot-partition files over HTTP:
+	- `GET`/`PUT /api/boot/loader` reads or replaces `/boot/initramfs.cpio.gz`
+	- `GET`/`PUT /api/boot/kernel` reads or replaces `/boot/kernel.img`
+	- Boot uploads are limited to 150 MiB and replace the destination only after a complete upload
 - Exposes basic rootfs file APIs over HTTP:
 	- `GET /api/rootfs/<path>` -> reads `/audiox/<path>`
 	- `PUT /api/rootfs/<path>` -> writes `/audiox/<path>`

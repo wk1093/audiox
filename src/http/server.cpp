@@ -2,6 +2,7 @@
 #include "http/ffmpeg.hpp"
 #include "audio/context.hpp"
 #include "system.hpp"
+#include "update_archive.hpp"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -29,6 +30,9 @@
 #define HTTP_BOOT_KERNEL_PATH "/api/boot/kernel"
 #define HTTP_BOOT_KERNEL_FILE "/boot/kernel8.img"
 #define HTTP_BOOT_UPLOAD_MAX (150u * 1024u * 1024u)
+#define HTTP_BOOT_CONFIG_FILE "/boot/config.txt"
+#define HTTP_UPDATE_PATH "/api/update"
+#define HTTP_UPDATE_MAX (256u * 1024u * 1024u)
 #define HTTP_INITRAM_RCV_TIMEOUT_SEC 10
 #define HTTP_ROOTFS_PREFIX "/api/rootfs/"
 #define HTTP_ROOTFS_UPLOAD_MAX (150u * 1024u * 1024u)
@@ -39,6 +43,7 @@
 #define HTTP_STAGE_DIR ROOT_MOUNT_POINT "/staging"
 #define HTTP_STAGE_INITRAMFS_PATH PROGRAM_STAGED_PATH
 #define HTTP_STAGE_INITRAMFS_PART_PATH PROGRAM_STAGED_PATH ".part"
+#define HTTP_STAGE_UPDATE_PATH HTTP_STAGE_DIR "/update.axu.part"
 
 namespace {
 
@@ -339,6 +344,272 @@ static int handleInitramUpload(HttpServer *server,
     usleep(200000);
     if (reboot(RB_AUTOBOOT) < 0) {
         printf("[INIT] [ERR] HTTP initram reboot failed: %s\n", strerror(errno));
+    }
+    return 0;
+}
+
+struct UpdateEntry {
+    uint32_t crc;
+    uint64_t size;
+    off_t offset;
+};
+
+static int readExactAt(int fd, void *buf, size_t len, off_t offset) {
+    unsigned char *p = (unsigned char *)buf;
+    size_t done = 0;
+    while (done < len) {
+        ssize_t nr = pread(fd, p + done, len - done, offset + (off_t)done);
+        if (nr < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        if (nr == 0) {
+            errno = EIO;
+            return -1;
+        }
+        done += (size_t)nr;
+    }
+    return 0;
+}
+
+static int checkUpdateEntryCrc(int fd, const UpdateEntry &entry) {
+    unsigned char buf[16384];
+    uint64_t done = 0;
+    uint32_t crc = 0;
+    while (done < entry.size) {
+        size_t want = sizeof(buf);
+        if (entry.size - done < want) {
+            want = (size_t)(entry.size - done);
+        }
+        if (readExactAt(fd, buf, want, entry.offset + (off_t)done) < 0) {
+            return -1;
+        }
+        crc = audioxUpdateCrc32(crc, buf, want);
+        done += want;
+    }
+    return crc == entry.crc ? 0 : 1;
+}
+
+static const char *parseUpdateArchive(int fd, uint64_t archive_size, UpdateEntry entries[AUDIOX_UPDATE_ENTRY_COUNT]) {
+    uint8_t header[AUDIOX_UPDATE_HEADER_SIZE];
+    if (archive_size < sizeof(header) || readExactAt(fd, header, sizeof(header), 0) < 0) {
+        return "update archive header is incomplete\n";
+    }
+    if (memcmp(header, AUDIOX_UPDATE_MAGIC, AUDIOX_UPDATE_MAGIC_SIZE) != 0) {
+        return "invalid update archive magic\n";
+    }
+    if (audioxUpdateGetU32(header + 8) != AUDIOX_UPDATE_VERSION) {
+        return "unsupported update archive version\n";
+    }
+    if (audioxUpdateGetU32(header + 12) != AUDIOX_UPDATE_ENTRY_COUNT) {
+        return "update archive must contain exactly four entries\n";
+    }
+
+    uint32_t seen = 0;
+    uint64_t offset = sizeof(header);
+    for (uint32_t i = 0; i < AUDIOX_UPDATE_ENTRY_COUNT; ++i) {
+        uint8_t entry_header[AUDIOX_UPDATE_ENTRY_HEADER_SIZE];
+        if (archive_size - offset < sizeof(entry_header) ||
+            readExactAt(fd, entry_header, sizeof(entry_header), (off_t)offset) < 0) {
+            return "update archive entry header is incomplete\n";
+        }
+        offset += sizeof(entry_header);
+
+        uint32_t type = audioxUpdateGetU32(entry_header);
+        uint64_t size = audioxUpdateGetU64(entry_header + 8);
+        if (type < AUDIOX_UPDATE_CONFIG || type > AUDIOX_UPDATE_PROGRAM) {
+            return "unknown update archive entry type\n";
+        }
+        uint32_t bit = 1u << (type - 1u);
+        if ((seen & bit) != 0) {
+            return "duplicate update archive entry\n";
+        }
+        if (size == 0 || size > archive_size - offset) {
+            return "invalid update archive entry size\n";
+        }
+        if (type == AUDIOX_UPDATE_CONFIG && size > AUDIOX_UPDATE_CONFIG_MAX) {
+            return "boot config entry is too large\n";
+        }
+
+        UpdateEntry &entry = entries[type - 1u];
+        entry.crc = audioxUpdateGetU32(entry_header + 4);
+        entry.size = size;
+        entry.offset = (off_t)offset;
+        int crc_rc = checkUpdateEntryCrc(fd, entry);
+        if (crc_rc < 0) {
+            return "failed to read update archive entry\n";
+        }
+        if (crc_rc > 0) {
+            return "update archive entry checksum mismatch\n";
+        }
+        seen |= bit;
+        offset += size;
+    }
+
+    if (offset != archive_size || seen != 0x0fu) {
+        return "update archive has unexpected trailing data or missing entries\n";
+    }
+    return NULL;
+}
+
+static int writeUpdateEntry(int archive_fd, const UpdateEntry &entry, const char *dest_path) {
+    int out_fd = open(dest_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (out_fd < 0) {
+        return -1;
+    }
+
+    unsigned char buf[16384];
+    uint64_t done = 0;
+    while (done < entry.size) {
+        size_t want = sizeof(buf);
+        if (entry.size - done < want) {
+            want = (size_t)(entry.size - done);
+        }
+        if (readExactAt(archive_fd, buf, want, entry.offset + (off_t)done) < 0 ||
+            writeAllToFd(out_fd, buf, want) < 0) {
+            int saved_errno = errno;
+            close(out_fd);
+            unlink(dest_path);
+            errno = saved_errno;
+            return -1;
+        }
+        done += want;
+    }
+
+    if (fsync(out_fd) < 0) {
+        int saved_errno = errno;
+        close(out_fd);
+        unlink(dest_path);
+        errno = saved_errno;
+        return -1;
+    }
+    if (close(out_fd) < 0) {
+        int saved_errno = errno;
+        unlink(dest_path);
+        errno = saved_errno;
+        return -1;
+    }
+    return 0;
+}
+
+static void cleanupUpdateFiles(void) {
+    unlink(HTTP_STAGE_UPDATE_PATH);
+    unlink(HTTP_STAGE_INITRAMFS_PART_PATH);
+    unlink(HTTP_BOOT_CONFIG_FILE ".update");
+    unlink(HTTP_BOOT_LOADER_FILE ".update");
+    unlink(HTTP_BOOT_KERNEL_FILE ".update");
+}
+
+static int handleUpdateUpload(HttpServer *server,
+                              int cfd,
+                              const char *initial_body,
+                              size_t initial_body_len,
+                              size_t content_length) {
+    if (content_length == 0) {
+        static const char bad[] = "missing body\n";
+        return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+    }
+
+    // The archive and its extracted runtime are both temporarily stored in staging.
+    if (checkStageCapacity(server, cfd, content_length * 2u) < 0) {
+        return 0;
+    }
+    if (ensureDir(HTTP_STAGE_DIR, 0755) != RET_OK) {
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "staging mkdir failed", errno);
+    }
+
+    cleanupUpdateFiles();
+    int archive_fd = open(HTTP_STAGE_UPDATE_PATH, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (archive_fd < 0) {
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "update archive open failed", errno);
+    }
+
+    int stream_rc = streamRequestBodyToFd(cfd, archive_fd, initial_body, initial_body_len, content_length);
+    if (stream_rc < 0) {
+        int saved_errno = errno;
+        close(archive_fd);
+        cleanupUpdateFiles();
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "update archive write failed", saved_errno);
+    }
+    if (stream_rc > 0) {
+        close(archive_fd);
+        cleanupUpdateFiles();
+        static const char err[] = "incomplete upload\n";
+        return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+    }
+    if (fsync(archive_fd) < 0) {
+        int saved_errno = errno;
+        close(archive_fd);
+        cleanupUpdateFiles();
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "update archive sync failed", saved_errno);
+    }
+
+    UpdateEntry entries[AUDIOX_UPDATE_ENTRY_COUNT];
+    memset(entries, 0, sizeof(entries));
+    const char *parse_error = parseUpdateArchive(archive_fd, content_length, entries);
+    if (parse_error) {
+        close(archive_fd);
+        cleanupUpdateFiles();
+        return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", parse_error, strlen(parse_error));
+    }
+    if (mountBootPartition() < 0) {
+        close(archive_fd);
+        cleanupUpdateFiles();
+        static const char err[] = "boot partition unavailable\n";
+        return server->sendResponse(cfd, "503 Service Unavailable", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+    }
+
+    struct UpdateTarget {
+        uint32_t type;
+        const char *temp_path;
+        const char *final_path;
+    };
+    static const UpdateTarget boot_targets[] = {
+        {AUDIOX_UPDATE_CONFIG, HTTP_BOOT_CONFIG_FILE ".update", HTTP_BOOT_CONFIG_FILE},
+        {AUDIOX_UPDATE_BOOTLOADER, HTTP_BOOT_LOADER_FILE ".update", HTTP_BOOT_LOADER_FILE},
+        {AUDIOX_UPDATE_KERNEL, HTTP_BOOT_KERNEL_FILE ".update", HTTP_BOOT_KERNEL_FILE},
+    };
+
+    if (writeUpdateEntry(archive_fd, entries[AUDIOX_UPDATE_PROGRAM - 1u], HTTP_STAGE_INITRAMFS_PART_PATH) < 0) {
+        int saved_errno = errno;
+        close(archive_fd);
+        cleanupUpdateFiles();
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "runtime extract failed", saved_errno);
+    }
+    for (const UpdateTarget &target : boot_targets) {
+        if (writeUpdateEntry(archive_fd, entries[target.type - 1u], target.temp_path) < 0) {
+            int saved_errno = errno;
+            close(archive_fd);
+            cleanupUpdateFiles();
+            return sendErrnoResponse(server, cfd, "500 Internal Server Error", "boot file extract failed", saved_errno);
+        }
+    }
+    close(archive_fd);
+
+    for (const UpdateTarget &target : boot_targets) {
+        if (rename(target.temp_path, target.final_path) < 0) {
+            int saved_errno = errno;
+            cleanupUpdateFiles();
+            return sendErrnoResponse(server, cfd, "500 Internal Server Error", "boot file install failed", saved_errno);
+        }
+    }
+    sync();
+
+    if (rename(HTTP_STAGE_INITRAMFS_PART_PATH, HTTP_STAGE_INITRAMFS_PATH) < 0) {
+        int saved_errno = errno;
+        cleanupUpdateFiles();
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "runtime staging failed", saved_errno);
+    }
+    unlink(HTTP_STAGE_UPDATE_PATH);
+
+    static const char ok[] = "ok update installed rebooting\n";
+    (void)server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
+    sync();
+    usleep(200000);
+    if (reboot(RB_AUTOBOOT) < 0) {
+        printf("[INIT] [ERR] HTTP update reboot failed: %s\n", strerror(errno));
     }
     return 0;
 }
@@ -807,6 +1078,28 @@ static void handleClient(HttpServer *server, int cfd) {
                              (size_t)content_length,
                              req + body_off,
                              initial_body_len);
+        return;
+    }
+
+    if (strcmp(path, HTTP_UPDATE_PATH) == 0) {
+        if (strcmp(method, "PUT") != 0) {
+            static const char mna[] = "method not allowed\n";
+            (void)server->sendResponse(cfd, "405 Method Not Allowed", "text/plain; charset=utf-8", mna, sizeof(mna) - 1);
+            return;
+        }
+        if ((size_t)content_length > HTTP_UPDATE_MAX) {
+            static const char too_large[] = "payload too large\n";
+            (void)server->sendResponse(cfd, "413 Payload Too Large", "text/plain; charset=utf-8", too_large, sizeof(too_large) - 1);
+            return;
+        }
+        if (setSocketTimeouts(cfd, HTTP_INITRAM_RCV_TIMEOUT_SEC * 1000, 5000) < 0) {
+            printf("[INIT] [WARN] failed to set update socket timeout: %s\n", strerror(errno));
+        }
+        (void)handleUpdateUpload(server,
+                                 cfd,
+                                 req + body_off,
+                                 initial_body_len,
+                                 (size_t)content_length);
         return;
     }
 

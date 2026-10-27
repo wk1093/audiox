@@ -695,6 +695,10 @@ select {
   align-items: start;
 }
 
+.update-progress {
+  width: 100%;
+}
+
 .logs-toolbar {
   display: flex;
   gap: 8px;

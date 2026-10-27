@@ -343,6 +343,17 @@
           <div class="small" id="logs-summary">No logs loaded yet.</div>
           <pre id="logs-view" class="logs-view" aria-live="polite"></pre>
         </section>
+
+        <section class="card stack">
+          <h2>Firmware Update</h2>
+          <div class="cfg-row" style="margin-top: 0;">
+            <label for="update_file">Update Image</label>
+            <input id="update_file" type="file" accept=".axu,application/octet-stream">
+          </div>
+          <progress id="update-progress" class="update-progress" max="100" value="0" hidden></progress>
+          <div id="update-status" class="small">Upload an .axu image built with make update_archive. The device reboots after installing it.</div>
+          <button id="btn-update-upload" class="warn">Install Update</button>
+        </section>
       </div>
     </section>
   </main>

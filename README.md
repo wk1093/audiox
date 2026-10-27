@@ -29,6 +29,7 @@ Once I believe this is stable enough for general use, I will release v2.0.0
 - Runs a basic HTTP server on port 80 for web tooling
 - Serves a static page from `/etc/www/index.html`
 - Accepts firmware updates with `PUT /api/initram`, stages a new `program.cpio.gz`, reboots into the bootloader, promotes the staged image to the boot partition, and reboots again
+- Accepts complete update archives with `PUT /api/update`; the device validates and unpacks the archive, installs `config.txt`, the bootloader, and `kernel8.img`, then stages `program.cpio.gz` and reboots
 - Streams boot-partition files over HTTP:
 	- `GET`/`PUT /api/boot/loader` reads or replaces `/boot/initramfs.cpio.gz`
 	- `GET`/`PUT /api/boot/kernel` reads or replaces `/boot/kernel8.img`
@@ -69,11 +70,16 @@ Useful targets:
 - `make upload_bootloader` - build and upload `out/initramfs.cpio.gz` to `/api/boot/loader`
 - `make upload_kernel` - stage firmware and upload `out/bootfiles/kernel8.img` to `/api/boot/kernel`
 - `make dev` - sync firmware, build matching kernel modules and images, upload kernel and bootloader, then upload the runtime to trigger installation and reboot
+- `make update_archive` - build `out/audiox-update.axu` containing boot config, bootloader, kernel, and runtime
+- `make upload_update` - build the update archive and upload it to `/api/update`; devices running an older runtime need one `make dev` first
+- The System page can also upload an `.axu` update image
 - `make qemu` - boot in QEMU (aarch64) // doesn't work because qemu raspi support is very minimal (no gui, no USB, no audio)
 - `make fancyexport` - wait for SD mount and export build artifacts
 - `make image` - create a flashable image file (WARNING: untested, may not work)
 
 The standalone bootloader and kernel upload targets directly replace files on the device's boot partition and do not reboot it. `make dev` performs these uploads in order before staging the runtime update.
+
+Update archives (`.axu`) use a little-endian binary format: an 8-byte `AXUPDATE` magic, `u32` version `1`, and `u32` entry count `4`, followed by four entries. Each entry is `u32 type`, `u32 crc32`, `u64 size`, then its payload. Types are `1` for `config.txt`, `2` for `initramfs.cpio.gz`, `3` for `kernel8.img`, and `4` for `program.cpio.gz`. The device stores the complete archive and validates every entry before replacing any boot file.
 
 ### Desktop audio engine bench
 

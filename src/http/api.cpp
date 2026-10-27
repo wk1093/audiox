@@ -3267,23 +3267,34 @@ static void getFfmpegVersion(char *out, size_t out_sz) {
 	}
 
 	char line[256] = {0};
-	if (fgets(line, sizeof(line), fp)) {
+	bool have_line = fgets(line, sizeof(line), fp) != NULL;
+	if (have_line) {
 		line[strcspn(line, "\r\n")] = '\0';
-		if (line[0]) {
-			snprintf(out, out_sz, "%s", line);
-			fclose(fp);
-			int status;
-			waitpid(pid, &status, 0);
-			return;
-		}
-	} else {
-		printf("[API] getFfmpegVersion: fgets returned nothing\n");
+	}
+	fclose(fp);
+	int status = 0;
+	waitpid(pid, &status, 0);
+
+	static bool failure_logged = false;
+	if (have_line && line[0]) {
+		snprintf(out, out_sz, "%s", line);
+		failure_logged = false;
+		return;
 	}
 
-	fclose(fp);
-	int status;
-	waitpid(pid, &status, 0);
-	printf("[API] getFfmpegVersion: setting to Unavailable\n");
+	if (!failure_logged) {
+		if (WIFEXITED(status)) {
+			printf("[API] getFfmpegVersion: %s produced no version (exit %d%s)\n",
+				   ffmpeg_path,
+				   WEXITSTATUS(status),
+				   WEXITSTATUS(status) == 127 ? ", exec failed; check /lib/ld-linux-aarch64.so.1" : "");
+		} else if (WIFSIGNALED(status)) {
+			printf("[API] getFfmpegVersion: %s killed by signal %d\n", ffmpeg_path, WTERMSIG(status));
+		} else {
+			printf("[API] getFfmpegVersion: %s produced no version\n", ffmpeg_path);
+		}
+		failure_logged = true;
+	}
 	snprintf(out, out_sz, "Unavailable");
 }
 

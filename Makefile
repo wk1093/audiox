@@ -62,7 +62,7 @@ RUNTIME_LIBS += $(SBC_STATIC_LIB)
 #   make AUDIOX_VERSION_MAJOR=1 AUDIOX_VERSION_MINOR=8 AUDIOX_VERSION_PATCH=0 AUDIOX_VERSION_PRERELEASE=beta.2
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 9
-AUDIOX_VERSION_PATCH ?= 3
+AUDIOX_VERSION_PATCH ?= 4
 AUDIOX_VERSION_PRERELEASE ?=
 AUDIOX_VERSION_BUILD ?=
 AUDIOX_VERSION_BASE = $(AUDIOX_VERSION_MAJOR).$(AUDIOX_VERSION_MINOR).$(AUDIOX_VERSION_PATCH)
@@ -553,6 +553,14 @@ rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(MODULE_LOAD_LIST) $(
 	mkdir -p $(ROOTFS_DIR)/lib/firmware/brcm
 	rm -f $(ROOTFS_DIR)/lib/firmware/brcm/*.hcd
 	cp "$(BT_FIRMWARE_FILE)" "$(ROOTFS_DIR)/lib/firmware/brcm/$(BT_FIRMWARE).hcd"
+	@echo "Staging glibc runtime for /audiox/ffmpeg from $(FFMPEG_CROSS_LIB_DIR)..."
+	@for lib in $(FFMPEG_RUNTIME_LIBS); do \
+		if [ ! -e "$(FFMPEG_CROSS_LIB_DIR)/$$lib" ]; then \
+			echo "Error: missing $$lib in $(FFMPEG_CROSS_LIB_DIR)"; \
+			exit 1; \
+		fi; \
+		cp -Lf "$(FFMPEG_CROSS_LIB_DIR)/$$lib" "$(ROOTFS_DIR)/lib/$$lib"; \
+	done
 	
 	@echo "Staging root folder contents..."
 	@if [ -d "$(CURDIR)/root" ]; then \
@@ -607,22 +615,10 @@ rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(MODULE_LOAD_LIST) $(
 stage_ffmpeg: ffmpeg
 	@echo "Staging ffmpeg for rootfs deployment..."
 	@if [ -f "$(FFMPEG_BIN)" ]; then \
-		mkdir -p "$(ROOTFS_DIR)" "$(FFMPEG_STAGE_DIR)"; \
+		mkdir -p "$(FFMPEG_STAGE_DIR)"; \
 		cp "$(FFMPEG_BIN)" "$(FFMPEG_STAGE_DIR)/ffmpeg"; \
 		chmod 0755 "$(FFMPEG_STAGE_DIR)/ffmpeg"; \
-		if readelf -l "$(FFMPEG_BIN)" 2>/dev/null | grep -q "Requesting program interpreter"; then \
-			echo "ffmpeg is dynamically linked; staging runtime libs in rootfs from $(FFMPEG_CROSS_LIB_DIR)..."; \
-			mkdir -p "$(ROOTFS_DIR)/lib"; \
-			for lib in $(FFMPEG_RUNTIME_LIBS); do \
-				if [ ! -e "$(FFMPEG_CROSS_LIB_DIR)/$$lib" ]; then \
-					echo "Error: missing $$lib in $(FFMPEG_CROSS_LIB_DIR)"; \
-					exit 1; \
-				fi; \
-				cp -Lf "$(FFMPEG_CROSS_LIB_DIR)/$$lib" "$(ROOTFS_DIR)/lib/$$lib"; \
-			done; \
-		else \
-			echo "ffmpeg appears statically linked; no extra runtime libs needed."; \
-		fi; \
+		echo "ffmpeg runtime libraries are staged by the rootfs target."; \
 	else \
 		echo "Warning: ffmpeg binary not found at $(FFMPEG_BIN) (ffmpeg deployment disabled)"; \
 	fi

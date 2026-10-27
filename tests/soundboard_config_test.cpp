@@ -160,6 +160,16 @@ int main() {
         HttpServer http(&app);
         int response[2];
         assert(socketpair(AF_UNIX, SOCK_STREAM, 0, response) == 0);
+        assert(handleSystemInfo(&http, response[0], "GET", "/api/system/info") == 0);
+        char systemReply[2048] = {};
+        assert(read(response[1], systemReply, sizeof(systemReply) - 1) > 0);
+        assert(strstr(systemReply, "200 OK"));
+        char expectedBoard[32];
+        snprintf(expectedBoard, sizeof(expectedBoard), "\"board\":\"%s\"", audioxDetectBoard());
+        assert(strstr(systemReply, expectedBoard));
+        close(response[0]);
+        close(response[1]);
+        assert(socketpair(AF_UNIX, SOCK_STREAM, 0, response) == 0);
         assert(handleApiDeleteRootfs(&http, response[0], "/api/rootfs/sfx/remove.wav") == 0);
         char reply[512] = {};
         assert(read(response[1], reply, sizeof(reply) - 1) > 0);

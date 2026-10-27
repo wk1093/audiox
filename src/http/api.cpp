@@ -3551,9 +3551,10 @@ static int handleSystemInfo(HttpServer *server,
 	char ffmpeg_version[256];
 	getFfmpegVersion(ffmpeg_version, sizeof(ffmpeg_version));
 
-	char out[640];
+	char out[768];
 	int n = snprintf(out, sizeof(out),
 					 "{\"version\":\"%s\",\"kernel\":\"%s\","
+					 "\"board\":\"%s\","
 					 "\"model\":\"%s\","
 					 "\"cpu_freq_mhz\":%ld,"
 					 "\"uptime_secs\":%ld,"
@@ -3561,7 +3562,7 @@ static int handleSystemInfo(HttpServer *server,
 					 "\"mem_avail_mb\":%ld,"
 					 "\"load1\":%.2f,"
 					 "\"ffmpeg\":\"%s\"}\n",
-					 version_str, kernel_buf, model_buf, cpu_freq_mhz,
+					 version_str, kernel_buf, audioxDetectBoard(), model_buf, cpu_freq_mhz,
 					 uptime_secs, mem_total_mb, mem_avail_mb, load1,
 					 ffmpeg_version);
 	if (n < 0 || n >= (int)sizeof(out)) n = 0;

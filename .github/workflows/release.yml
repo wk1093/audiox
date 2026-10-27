@@ -59,6 +59,8 @@ jobs:
     needs: tag
     permissions:
       contents: write
+      pages: write
+      id-token: write
     uses: ./.github/workflows/c-cpp.yml
     with:
       tag: ${{ needs.tag.outputs.tag }}

@@ -10,6 +10,10 @@ export MOCK="$WORK/github"
 mkdir -p "$MOCK/assets" "$WORK/package"
 echo '[]' > "$MOCK/releases.json"
 printf 'fixture image' > "$WORK/audiox.img"
+for board in pi4 pi5; do
+    printf 'AXUPDATE fixture %s' "$board" > "$WORK/package/audiox-update-$board.axu"
+    (cd "$WORK/package" && sha256sum "audiox-update-$board.axu" > "audiox-update-$board.axu.sha256")
+done
 
 # Persist simulated release state across the publisher's gh invocations.
 gh() {
@@ -21,6 +25,10 @@ gh() {
             echo "$BUILD_COMMIT"
         elif [[ "$2" == repos/*/git/matching-refs/* ]]; then
             echo 1
+        elif [[ "$2" == repos/*/releases/latest ]]; then
+            jq '[.[] | select(.draft == false and .prerelease == false)] | last' "$MOCK/releases.json"
+        elif [[ "$2" == repos/*/releases/tags/* ]]; then
+            jq --arg tag "${2##*/}" '.[] | select(.tag_name == $tag)' "$MOCK/releases.json"
         fi
         return
     fi
@@ -54,9 +62,9 @@ gh() {
                     return 1
                 fi
                 cp "$file" "$MOCK/assets/$tag/"
-                jq --arg tag "$tag" --arg name "${file##*/}" \
+                jq --arg tag "$tag" --arg name "${file##*/}" --argjson size "$(stat -c%s "$file")" \
                     'map(if .tag_name == $tag then .assets |=
-                        ((. + [{name: $name}]) | unique_by(.name)) else . end)' \
+                        ((. + [{name: $name, state: "uploaded", size: $size}]) | unique_by(.name)) else . end)' \
                     "$MOCK/releases.json" > "$MOCK/new.json"
                 mv "$MOCK/new.json" "$MOCK/releases.json"
             done
@@ -75,20 +83,26 @@ gh() {
             mv "$MOCK/new.json" "$MOCK/releases.json"
             ;;
         download)
-            local output="" directory="" matched=false
+            local output="" directory="" matched=false clobber=false destination
             local -a patterns=()
             while (( $# )); do
                 case "$1" in
                     --pattern) patterns+=("$2"); shift ;;
                     --output) output="$2"; shift ;;
                     --dir) directory="$2"; shift ;;
+                    --clobber) clobber=true ;;
                 esac
                 shift
             done
             for arg in "${patterns[@]}"; do
                 for file in "$MOCK/assets/$tag/"*; do
                     if [[ "${file##*/}" == $arg && -f "$file" ]]; then
-                        cp "$file" "${output:-$directory/${file##*/}}"
+                        destination="${output:-$directory/${file##*/}}"
+                        if [[ -e "$destination" && "$clobber" != true ]]; then
+                            echo "Download destination already exists: $destination" >&2
+                            return 1
+                        fi
+                        cp "$file" "$destination"
                         matched=true
                     fi
                 done
@@ -141,6 +155,12 @@ EDIT_LINE="$(grep -n '^release edit nightly ' "$MOCK/calls" | cut -d: -f1)"
 DELETE_LINE="$(grep -n '^release delete ' "$MOCK/calls" | head -1 | cut -d: -f1)"
 (( EDIT_LINE < DELETE_LINE ))
 echo "PASS: keeps exactly 25 nightlies, newest first; prunes only after catalog publication"
+for board in pi4 pi5; do
+    cmp "$WORK/package/audiox-update-$board.axu" "$MOCK/assets/nightly-27/audiox-update-$board.axu"
+    cmp "$WORK/package/audiox-update-$board.axu" "$MOCK/assets/nightly/audiox-update-$board.axu"
+    (cd "$MOCK/assets/nightly" && sha256sum --check "audiox-update-$board.axu.sha256")
+done
+echo "PASS: both AXU archives and checksums reach the versioned and rolling nightly releases"
 
 echo '' > "$MOCK/calls"
 CHANNEL=nightly RELEASE_TAG=nightly-26 GITHUB_RUN_NUMBER=26 \
@@ -171,6 +191,7 @@ for board in pi4 pi5; do
     bash "$ROOT/scripts/package-imager.sh" "$WORK/audiox.img" "$WORK/stable" \
         "$board" stable "$GH_REPO" v2.0.0 2026-10-26 2.0.0
 done
+cp "$WORK/package/"*.axu "$WORK/package/"*.axu.sha256 "$WORK/stable/"
 echo '' > "$MOCK/calls"
 if CHANNEL=stable RELEASE_TAG=v2.0.0 FAIL_CATALOG=1 \
     bash "$ROOT/scripts/publish-imager.sh" "$WORK/stable" > "$WORK/failure.log" 2>&1; then
@@ -187,6 +208,56 @@ if CHANNEL=stable RELEASE_TAG=v2.0.0 bash "$ROOT/scripts/publish-imager.sh" "$WO
     echo "Expected an existing stable release to be protected" >&2; exit 1
 fi
 echo "PASS: stable catalog includes all stable releases, including legacy manifests"
+for board in pi4 pi5; do
+    cmp "$WORK/stable/audiox-update-$board.axu" "$MOCK/assets/v2.0.0/audiox-update-$board.axu"
+done
+echo "PASS: both AXU archives are published on stable releases"
+
+GH_REPO="$GH_REPO" bash "$ROOT/scripts/mirror-updates.sh" "$WORK/pages"
+jq -e '.stable.tag == "v2.0.0" and .nightly.tag == "nightly-28" and
+    (.stable.assets | keys == ["pi4", "pi5"]) and
+    (.nightly.assets | keys == ["pi4", "pi5"])' "$WORK/pages/updates.json" > /dev/null
+for board in pi4 pi5; do
+    cmp "$WORK/stable/audiox-update-$board.axu" "$WORK/pages/updates/v2.0.0/audiox-update-$board.axu"
+    cmp "$WORK/package/audiox-update-$board.axu" "$WORK/pages/updates/nightly-28/audiox-update-$board.axu"
+    HASH="$(sha256sum "$WORK/stable/audiox-update-$board.axu" | cut -d ' ' -f 1)"
+    jq -e --arg board "$board" --arg hash "$HASH" '.stable.assets[$board].sha256 == $hash' \
+        "$WORK/pages/updates.json" > /dev/null
+    jq -e --arg board "$board" --slurpfile images "$MOCK/assets/v2.0.0/images.json" '
+        ($images[0].os_list[] | select(.devices | index($board + "-64bit"))) as $image |
+        .stable.assets[$board] as $asset |
+        $asset.name == $image.name and $asset.image.url == $image.url and
+        $asset.image.size == $image.image_download_size and
+        $asset.image.sha256 == $image.image_download_sha256 and
+        ($asset.checksum_url | endswith(".axu.sha256"))' "$WORK/pages/updates.json" > /dev/null
+done
+for file in index.html downloads.css downloads.js; do
+    cmp "$ROOT/site/$file" "$WORK/pages/$file"
+done
+cmp "$ROOT/web/styles.css" "$WORK/pages/styles.css"
+cmp "$ROOT/logo.svg" "$WORK/pages/logo.svg"
+cmp "$ROOT/logo_small.png" "$WORK/pages/logo_small.png"
+[[ -f "$WORK/pages/.nojekyll" ]]
+echo "PASS: download site includes styles, logos, matching board images, AXUs and checksums"
+
+cp "$MOCK/assets/v2.0.0/images.json" "$WORK/images-backup.json"
+jq '.os_list |= map(select(.devices | index("pi4-64bit")))' "$WORK/images-backup.json" \
+    > "$MOCK/assets/v2.0.0/images.json"
+if bash "$ROOT/scripts/mirror-updates.sh" "$WORK/missing-image" > "$WORK/failure.log" 2>&1; then
+    echo "Expected missing board image metadata to fail deployment" >&2; exit 1
+fi
+grep -q 'Expected exactly one SD image for pi5' "$WORK/failure.log"
+cp "$WORK/images-backup.json" "$MOCK/assets/v2.0.0/images.json"
+
+cp "$MOCK/releases.json" "$WORK/releases-backup.json"
+jq 'map(if .tag_name == "v2.0.0" then .assets |= map(.digest = "sha256:invalid") else . end)' \
+    "$WORK/releases-backup.json" > "$MOCK/releases.json"
+if bash "$ROOT/scripts/mirror-updates.sh" "$WORK/bad-digest" > "$WORK/failure.log" 2>&1; then
+    echo "Expected an archive checksum mismatch to fail deployment" >&2; exit 1
+fi
+grep -q 'Mirror archive checksum differs from GitHub' "$WORK/failure.log"
+cp "$WORK/releases-backup.json" "$MOCK/releases.json"
+echo "PASS: invalid image metadata or archive digests prevent deployment"
 
 # Start with just the original rolling nightly and verify migration preserves it.
 echo '[]' > "$MOCK/releases.json"
@@ -202,6 +273,10 @@ jq -e '.os_list | length == 4 and any(.[]; .url | contains("/nightly-legacy-1000
 echo "PASS: the existing rolling nightly is archived before replacement"
 
 echo '[]' > "$MOCK/releases.json"
+bash "$ROOT/scripts/mirror-updates.sh" "$WORK/empty-pages"
+jq -e '. == {}' "$WORK/empty-pages/updates.json" > /dev/null
+[[ -f "$WORK/empty-pages/index.html" ]]
+echo "PASS: download site can deploy before the first release"
 CHANNEL=nightly RELEASE_TAG=nightly-27 bash "$ROOT/scripts/publish-imager.sh" "$WORK/package"
 jq -e '.os_list | length == 2 and all(.[]; .url | contains("/nightly-27/"))' \
     "$MOCK/assets/nightly/os_list.json" > /dev/null

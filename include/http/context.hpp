@@ -6,6 +6,8 @@
 #include <pthread.h>
 #include <stddef.h>
 
+const char *audioxDetectBoard();
+
 int handleApiRequest(HttpServer *server,
                      int cfd,
                      const char *method,

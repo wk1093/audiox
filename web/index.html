@@ -358,6 +358,18 @@
 
         <section class="card stack">
           <h2>Firmware Update</h2>
+          <p class="small">Check GitHub using this browser's internet connection. The Pi does not need internet access. Installation requires confirmation and reboots the device.</p>
+          <div class="cfg-row">
+            <label for="update-channel">Release Channel</label>
+            <select id="update-channel">
+              <option value="stable">Stable</option>
+              <option value="nightly">Nightly (may be unstable)</option>
+            </select>
+          </div>
+          <button id="btn-update-check" class="flat">Check GitHub Releases</button>
+          <div id="update-release" class="small" aria-live="polite">No release checked yet.</div>
+          <a id="update-download" class="small" target="_blank" rel="noopener noreferrer" hidden>Download matching AXU manually</a>
+          <button id="btn-update-online" class="warn" disabled>Download and Install Release</button>
           <div class="cfg-row" style="margin-top: 0;">
             <label for="update_file">Update Image</label>
             <input id="update_file" type="file" accept=".axu,application/octet-stream">
@@ -372,6 +384,7 @@
 
   <script src="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/build/litegraph.js"></script>
   <script src="/effects.js"></script>
+  <script src="/updates.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

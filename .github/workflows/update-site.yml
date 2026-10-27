@@ -1,0 +1,60 @@
+name: Deploy AudioX Downloads
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'site/**'
+      - 'scripts/mirror-updates.sh'
+      - 'web/styles.css'
+      - 'logo.svg'
+      - 'logo_small.png'
+      - '.github/workflows/update-site.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy download site and update mirror
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: audiox-update-mirror
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout site and mirror tools
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: |
+            scripts
+            site
+            web
+          persist-credentials: false
+
+      - name: Prepare latest stable and nightly update archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/mirror-updates.sh out/update-pages
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload update mirror
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: out/update-pages
+
+      - name: Deploy update mirror
+        id: deployment
+        uses: actions/deploy-pages@v4

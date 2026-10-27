@@ -9,6 +9,7 @@ on:
       - 'root/**'
       - 'web/**'
       - 'scripts/**'
+      - '!scripts/mirror-updates.sh'
       - 'Makefile'
       - 'Kconfig'
       - 'bootmod.txt'
@@ -178,6 +179,8 @@ jobs:
           bash .publishing-tools/scripts/package-imager.sh out/audiox.img out/imager \
             "$BOARD" "$CHANNEL" "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$RELEASE_DATE" \
             "$(make --no-print-directory --eval='imager-version: ; @printf "%s\n" "$(AUDIOX_VERSION_STRING)"' imager-version)"
+          cp out/audiox-update.axu "out/imager/audiox-update-$BOARD.axu"
+          (cd out/imager && sha256sum "audiox-update-$BOARD.axu" > "audiox-update-$BOARD.axu.sha256")
 
       - name: Upload Imager publishing files
         if: github.event_name != 'pull_request'
@@ -250,3 +253,12 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           BUILD_COMMIT: ${{ needs.prepare.outputs.commit }}
         run: bash scripts/publish-imager.sh release
+
+  update-mirror:
+    name: Deploy browser update mirror
+    needs: publish
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/update-site.yml

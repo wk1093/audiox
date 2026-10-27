@@ -2968,64 +2968,7 @@ document.getElementById('btn-system-shutdown').addEventListener('click', async (
   await runSystemAction('/api/system/shutdown', 'shutdown');
 });
 
-function uploadUpdateImage() {
-  const fileEl = document.getElementById('update_file');
-  const buttonEl = document.getElementById('btn-update-upload');
-  const progressEl = document.getElementById('update-progress');
-  const statusTextEl = document.getElementById('update-status');
-  const file = fileEl.files[0];
-  if (!file) {
-    setStatus('pick an update image first', 'warn');
-    return;
-  }
-  if (!window.confirm(`Install ${file.name}? The device will reboot after the update is installed.`)) {
-    return;
-  }
-
-  const setUpdateStatus = (text, kind = '') => {
-    statusTextEl.textContent = text;
-    setStatus(text, kind);
-  };
-
-  buttonEl.disabled = true;
-  fileEl.disabled = true;
-  progressEl.hidden = false;
-  progressEl.value = 0;
-  setUpdateStatus(`uploading ${file.name}...`);
-
-  // XHR exposes upload progress and sends the File without loading it into memory first.
-  const xhr = new XMLHttpRequest();
-  xhr.open('PUT', '/api/update');
-  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-  xhr.upload.addEventListener('progress', (event) => {
-    if (event.lengthComputable) {
-      progressEl.value = Math.round((event.loaded / event.total) * 100);
-      setUpdateStatus(`uploading ${file.name}: ${progressEl.value}%`);
-    }
-  });
-  xhr.upload.addEventListener('load', () => {
-    progressEl.value = 100;
-    setUpdateStatus('upload complete; validating and installing...');
-  });
-  xhr.addEventListener('load', () => {
-    const txt = (xhr.responseText || '').trim();
-    if (xhr.status >= 200 && xhr.status < 300) {
-      setUpdateStatus(txt || 'update installed; rebooting', 'ok');
-      return;
-    }
-    buttonEl.disabled = false;
-    fileEl.disabled = false;
-    setUpdateStatus(`update failed: ${xhr.status} ${txt}`, 'warn');
-  });
-  xhr.addEventListener('error', () => {
-    buttonEl.disabled = false;
-    fileEl.disabled = false;
-    setUpdateStatus('update request failed; the device may be rebooting or unreachable', 'warn');
-  });
-  xhr.send(file);
-}
-
-document.getElementById('btn-update-upload').addEventListener('click', uploadUpdateImage);
+AudioxUpdates.init({ setStatus });
 
 if (logsSourceEl && logsLevelEl && logsTextEl && logsLimitEl && logsViewEl && logsSummaryEl) {
   document.getElementById('btn-logs-refresh').addEventListener('click', loadLogs);

@@ -1287,6 +1287,10 @@ static void handleClient(HttpServer *server, int cfd) {
 
 } // namespace
 
+const char *audioxDetectBoard() {
+    return detectBoard();
+}
+
 HttpServer::HttpServer(Audiox *context) : app(context) {
     listen_fd = -1;
     started = 0;

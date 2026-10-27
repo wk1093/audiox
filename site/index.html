@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Download AudioX for Raspberry Pi 4 and Pi 5. Stable releases, nightly builds, SD card images, and firmware updates.">
+  <title>AudioX Downloads</title>
+  <link rel="icon" href="./logo_small.png">
+  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./downloads.css">
+  <script src="./downloads.js" defer></script>
+</head>
+<body>
+  <main class="app downloads-app">
+    <header class="app-header">
+      <a class="brand" href="./" aria-label="AudioX downloads home">
+        <img class="logo-img" src="./logo.svg" alt="AudioX" width="170">
+        <span class="brand-meta">
+          <span class="brand-title">Raspberry Pi audio workstation</span>
+          <span class="version">Images &amp; firmware updates</span>
+        </span>
+      </a>
+      <nav class="download-nav" aria-label="Project links">
+        <a href="https://github.com/wk1093/audiox">Source code</a>
+        <a href="https://github.com/wk1093/audiox/releases">Release history</a>
+      </nav>
+    </header>
+
+    <section class="download-hero">
+      <span class="eyebrow">Built for sound. Made for Raspberry Pi.</span>
+      <h1>Your next AudioX build.</h1>
+      <p>Flash a fresh SD card or update the AudioX device you already have.
+        Choose your release channel, then pick the image for your hardware.</p>
+      <div class="channel-picker" role="group" aria-label="Release channel">
+        <button id="channel-stable" class="tab-btn active" type="button" aria-pressed="true">Stable</button>
+        <button id="channel-nightly" class="tab-btn" type="button" aria-pressed="false">Nightly</button>
+      </div>
+      <p id="channel-description" class="small">Manually published releases. The recommended starting point.</p>
+    </section>
+
+    <section class="download-content" aria-labelledby="release-heading">
+      <div class="release-heading">
+        <div>
+          <h2 id="release-heading">Latest stable release</h2>
+          <p id="release-meta" class="small" aria-live="polite">Loading release information...</p>
+        </div>
+        <a id="release-link" class="download-secondary" hidden>Release notes &amp; assets</a>
+      </div>
+      <p id="download-error" class="download-notice" role="alert" hidden></p>
+      <div id="download-cards" class="download-grid"></div>
+      <noscript><p class="download-notice">Enable JavaScript to view downloads, or browse <a href="https://github.com/wk1093/audiox/releases">GitHub Releases</a>.</p></noscript>
+    </section>
+
+    <section class="download-guide">
+      <article class="card">
+        <span class="eyebrow">01 / Fresh install</span>
+        <h2>Start with an SD image</h2>
+        <p>Download the <code>.img.xz</code> for your Pi. Flash it with Raspberry Pi Imager's
+          <strong>Use custom</strong> option, or choose AudioX in the AudioX Imager fork.</p>
+        <p class="small">Flashing erases the selected drive. Back up your files first.</p>
+      </article>
+      <article class="card">
+        <span class="eyebrow">02 / Existing device</span>
+        <h2>Update without reflashing</h2>
+        <p>In the AudioX Web UI, open <strong>System &gt; Firmware Update</strong>.
+          Check for a release, or download the matching <code>.axu</code> here and select it for manual installation.</p>
+        <p class="small">Your browser needs internet for online downloads. Your Pi does not.
+          Installation validates the archive and reboots the device.</p>
+      </article>
+    </section>
+
+    <footer class="download-footer">
+      <span>AudioX is a work in progress. Back up your configuration before updating.</span>
+      <a href="https://github.com/wk1093/audiox/issues">Report an issue</a>
+    </footer>
+  </main>
+
+  <template id="download-card">
+    <article class="card download-card">
+      <span class="eyebrow board-label"></span>
+      <h3 class="board-name"></h3>
+      <p class="board-description"></p>
+      <div class="download-actions">
+        <a class="download-primary image-link">Download SD image <span class="image-size"></span></a>
+        <a class="download-secondary axu-link">Download AXU update <span class="axu-size"></span></a>
+      </div>
+      <details class="download-checksums">
+        <summary>Verify your downloads</summary>
+        <p class="small">SHA-256 / AXU update</p>
+        <code class="axu-hash"></code>
+        <a class="axu-checksum-link small">Download AXU checksum</a>
+        <p class="small">SHA-256 / compressed SD image</p>
+        <code class="image-hash"></code>
+        <a class="image-checksum-link small">Download image checksum</a>
+      </details>
+    </article>
+  </template>
+</body>
+</html>

@@ -76,7 +76,7 @@ Useful targets:
 - `make dev` - sync firmware, build matching kernel modules and images, upload kernel, bootloader, `cmdline.txt` and `config.txt`, then upload the runtime to trigger installation and reboot
 - `make update_archive` - build `out/audiox-update.axu` containing build metadata, boot config, kernel command line, bootloader, kernel, and runtime
 - `make upload_update` - build the update archive and upload it to `/api/update`; devices running an older runtime need one `make dev` first
-- The System page can also upload an `.axu` update image
+- The System page can upload an `.axu` update image or check GitHub for a board-matched Stable/Nightly release and download/install it through the browser (see [Browser-driven updates](#browser-driven-updates))
 - `make qemu` - boot in QEMU (aarch64) // doesn't work because qemu raspi support is very minimal (no gui, no USB, no audio)
 - `make fancyexport` - wait for SD mount and export build artifacts
 - `make image` - create a flashable image file (WARNING: untested, may not work)
@@ -128,6 +128,24 @@ The checked-in [os_list.json](os_list.json) includes the Imager version/update U
 The repository must allow Actions to write release contents and update/delete nightly tags. Repository release immutability must be disabled to allow rolling nightly assets and history pruning. Direct rolling-image downloads are not atomic during replacement, but Imager uses versioned URLs and is unaffected by those replacements. Cached catalogs referring to an expired (older than the last 25) nightly must be refreshed. Failed catalog publication does not prune history; rerun the workflow to finish publication. On the first history-enabled nightly build, the existing rolling-only nightly is archived as `nightly-legacy-<release-id>` and counts toward the 25-build limit. Nightlies already overwritten before this change cannot be recovered. Stable history is rebuilt on each stable publication, including older releases with the previous `os_list.json` manifest format.
 
 Run `bash tests/imager_package_test.sh` for image names, metadata, and checksums, and `bash tests/imager_publish_test.sh` for history, migration, pruning, and failure handling using a local mock of GitHub (requires `jq` and `xz`; publishes nothing).
+
+### Browser-driven updates
+
+New stable and versioned nightly releases include `audiox-update-pi4.axu` and `audiox-update-pi5.axu`, plus SHA-256 sidecars. The rolling `nightly` release also carries the latest copies. AXU archives follow the same release retention policy as their images; previously published releases are not backfilled.
+
+On the Web UI's **System > Firmware Update** card, select Stable or Nightly and click **Check GitHub Releases**. The browser reads the Pi's `/api/system/info` response (including the hardware-detected `board` field), queries GitHub's public API, and selects only the matching board's AXU asset. Nightly lookup resolves the rolling release to a versioned nightly so its metadata does not change during download. The current version and selected release are displayed; already-installed releases cannot be installed again through the online button. Other installs, including downgrades, require explicit confirmation.
+
+**One-time repository setup:** under **Settings > Pages > Build and deployment**, set **Source** to **GitHub Actions**. Allow the `github-pages` deployment environment to deploy from `main`. After a successful release publication, the **Deploy browser update mirror** job calls **Deploy AudioX Downloads**, downloads only the latest stable/nightly AXUs from GitHub Releases, verifies their sizes and available GitHub digests, and deploys a Pages site at `https://wk1093.github.io/audiox/`. The caller stable workflow grants Pages/OIDC permissions to the reusable build workflow as well.
+
+The public download site shares the device Web UI's stylesheet, colors, and logos. It offers Stable/Nightly selection, separate Pi 4/Pi 5 cards, SD images for fresh installs, AXU updates, SHA-256 checksums, and release-history links. SD images link directly to GitHub Releases; AXUs download from Pages. The site includes `updates.json` and up to four latest board/channel archives, not the complete release history. Older downloads remain in GitHub Releases under the existing retention policy.
+
+Site sources live in `site/`; `scripts/mirror-updates.sh` assembles the deployable site and catalog. Changes to the site or mirror script deploy independently without creating a nightly image build. Shared device styles/logos also redeploy the site (and still trigger normal firmware builds). Run **Deploy AudioX Downloads** manually from Actions to retry a deployment or refresh the site without rebuilding firmware.
+
+GitHub release-storage downloads do not provide the cross-origin headers needed for JavaScript to read their bytes, so the browser uses the CORS-enabled Pages mirror for the actual AXU transfer. It requires the mirror's release tag, asset path, and size to match GitHub metadata before enabling installation. If Pages deployment has not finished, the UI reports that and leaves the direct GitHub download link available for manual file upload. A Pages failure does not undo a successful GitHub Release; rerun the failed mirror job. The mirror replaces this repository's Pages site, so use a separate hosting location if the repository already has a site you need to preserve. Forks must change both `repository` and `mirror` in `web/updates.js`, the project links in `site/index.html`, plus the Imager catalog URLs.
+
+The **browser/computer needs internet access; the Pi does not**. The browser buffers the archive (up to 256 MiB), checks its length and AXU magic, then sends it to the existing `PUT /api/update` handler with upload progress. That handler still validates the archive's CRCs, hardware metadata, and boot configuration before installation and reboot. No GitHub token is stored in the browser or device. GitHub API rate limits, offline browsers, unavailable mirrors, and upload failures are reported in the update status. Manual `.axu` upload remains available. Older runtimes that expose only a Pi 4/5 Model B model string are supported, but need an initial manual update to obtain this new UI.
+
+Run `node --test tests/web_updates_test.js` for browser-side selection, mirror/version checks, downloads, confirmation, and upload tests; `bash tests/imager_publish_test.sh` also exercises AXU publishing and mirror generation without contacting GitHub.
 
 ### Build configuration
 

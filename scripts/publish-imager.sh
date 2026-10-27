@@ -92,8 +92,14 @@ printf 'Build commit: `%s`\n\n[Workflow run](%s/%s/actions/runs/%s)\n\n<!-- audi
 
 # Published versioned nightly assets are never overwritten, including on reruns.
 if [[ -z "$CURRENT" ]] || jq -e .draft <<< "$CURRENT" > /dev/null; then
+    for BOARD in pi4 pi5; do
+        if [[ ! -s "$FILES/audiox-update-$BOARD.axu" ]]; then
+            echo "Missing update archive: $FILES/audiox-update-$BOARD.axu" >&2
+            exit 1
+        fi
+    done
     jq -s '{os_list: .}' "$FILES/pi4.json" "$FILES/pi5.json" > "$WORK/images.json"
-    gh release upload "$RELEASE_TAG" "$FILES/"*.img.xz "$FILES/"*.sha256 \
+    gh release upload "$RELEASE_TAG" "$FILES/"*.img.xz "$FILES/"*.axu "$FILES/"*.sha256 \
         "$WORK/images.json" --clobber
     if [[ "$CHANNEL" == nightly ]]; then
         gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false --notes-file "$WORK/notes.md"
@@ -148,7 +154,7 @@ else
             --draft --prerelease --latest=false
     fi
     mkdir "$WORK/latest"
-    gh release download "$RELEASE_TAG" --pattern '*.img.xz' --pattern '*.sha256' --dir "$WORK/latest"
+    gh release download "$RELEASE_TAG" --pattern '*.img.xz' --pattern '*.axu' --pattern '*.sha256' --dir "$WORK/latest"
     gh release upload nightly "$WORK/latest/"* --clobber
     gh release upload nightly "$WORK/os_list.json" --clobber
     REFS="$(gh api "repos/$GH_REPO/git/matching-refs/tags/nightly" \

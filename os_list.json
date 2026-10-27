@@ -1,0 +1,36 @@
+{
+  "imager": {
+    "latest_version": "1.0.0",
+    "url": "https://github.com/wk1093/audiox-imager",
+    "devices": [
+      {
+        "tags": ["pi5-64bit"],
+        "name": "Raspberry Pi 5",
+        "icon": "https://cdn.jsdelivr.net/gh/selfhst/icons@main/png/raspberry-pi.png",
+        "capabilities": [],
+        "matching_type": "exclusive"
+      },
+      {
+        "tags": ["pi4-64bit"],
+        "name": "Raspberry Pi 4",
+        "icon": "https://cdn.jsdelivr.net/gh/selfhst/icons@main/png/raspberry-pi.png",
+        "capabilities": [],
+        "matching_type": "exclusive"
+      }
+    ]
+  },
+  "os_list": [
+    {
+      "name": "AudioX Stable",
+      "description": "Manually published stable releases",
+      "icon": "https://raw.githubusercontent.com/wk1093/audiox/main/logo_small.png",
+      "subitems_url": "https://github.com/wk1093/audiox/releases/latest/download/os_list.json"
+    },
+    {
+      "name": "AudioX Nightly",
+      "description": "Latest successful main-branch build; may be unstable",
+      "icon": "https://raw.githubusercontent.com/wk1093/audiox/main/logo_small.png",
+      "subitems_url": "https://github.com/wk1093/audiox/releases/download/nightly/os_list.json"
+    }
+  ]
+}

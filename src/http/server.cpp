@@ -33,6 +33,7 @@
 #define HTTP_BOOT_KERNEL_TEMP_FILE HTTP_BOOT_DIR "/audiox-kernel.update"
 #define HTTP_BOOT_UPLOAD_MAX (150u * 1024u * 1024u)
 #define HTTP_BOOT_CONFIG_FILE "/boot/config.txt"
+#define HTTP_BOOT_CMDLINE_FILE "/boot/cmdline.txt"
 #define HTTP_UPDATE_PATH "/api/update"
 #define HTTP_UPDATE_MAX (256u * 1024u * 1024u)
 #define HTTP_INITRAM_RCV_TIMEOUT_SEC 10
@@ -446,129 +447,14 @@ static int handleInitramUpload(HttpServer *server,
     return 0;
 }
 
-struct UpdateEntry {
-    uint32_t crc;
-    uint64_t size;
-    off_t offset;
-};
-
-static int readExactAt(int fd, void *buf, size_t len, off_t offset) {
-    unsigned char *p = (unsigned char *)buf;
-    size_t done = 0;
-    while (done < len) {
-        ssize_t nr = pread(fd, p + done, len - done, offset + (off_t)done);
-        if (nr < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return -1;
-        }
-        if (nr == 0) {
-            errno = EIO;
-            return -1;
-        }
-        done += (size_t)nr;
-    }
-    return 0;
-}
-
-static int checkUpdateEntryCrc(int fd, const UpdateEntry &entry) {
-    unsigned char buf[16384];
-    uint64_t done = 0;
-    uint32_t crc = 0;
-    while (done < entry.size) {
-        size_t want = sizeof(buf);
-        if (entry.size - done < want) {
-            want = (size_t)(entry.size - done);
-        }
-        if (readExactAt(fd, buf, want, entry.offset + (off_t)done) < 0) {
-            return -1;
-        }
-        crc = audioxUpdateCrc32(crc, buf, want);
-        done += want;
-    }
-    return crc == entry.crc ? 0 : 1;
-}
-
-static const char *parseUpdateArchive(int fd, uint64_t archive_size, UpdateEntry entries[AUDIOX_UPDATE_ENTRY_COUNT]) {
-    uint8_t header[AUDIOX_UPDATE_HEADER_SIZE];
-    if (archive_size < sizeof(header) || readExactAt(fd, header, sizeof(header), 0) < 0) {
-        return "update archive header is incomplete\n";
-    }
-    if (memcmp(header, AUDIOX_UPDATE_MAGIC, AUDIOX_UPDATE_MAGIC_SIZE) != 0) {
-        return "invalid update archive magic\n";
-    }
-    const uint32_t version = audioxUpdateGetU32(header + 8);
-    uint32_t entry_count = 0;
-    uint32_t max_type = AUDIOX_UPDATE_PROGRAM;
-    if (version == AUDIOX_UPDATE_VERSION_V1) {
-        entry_count = AUDIOX_UPDATE_ENTRY_COUNT_V1;
-    } else if (version == AUDIOX_UPDATE_VERSION) {
-        entry_count = AUDIOX_UPDATE_ENTRY_COUNT;
-        max_type = AUDIOX_UPDATE_METADATA;
-    } else {
-        return "unsupported update archive version\n";
-    }
-    if (audioxUpdateGetU32(header + 12) != entry_count) {
-        return "update archive has the wrong number of entries\n";
-    }
-
-    uint32_t seen = 0;
-    uint64_t offset = sizeof(header);
-    for (uint32_t i = 0; i < entry_count; ++i) {
-        uint8_t entry_header[AUDIOX_UPDATE_ENTRY_HEADER_SIZE];
-        if (archive_size - offset < sizeof(entry_header) ||
-            readExactAt(fd, entry_header, sizeof(entry_header), (off_t)offset) < 0) {
-            return "update archive entry header is incomplete\n";
-        }
-        offset += sizeof(entry_header);
-
-        uint32_t type = audioxUpdateGetU32(entry_header);
-        uint64_t size = audioxUpdateGetU64(entry_header + 8);
-        if (type < AUDIOX_UPDATE_CONFIG || type > max_type) {
-            return "unknown update archive entry type\n";
-        }
-        uint32_t bit = 1u << (type - 1u);
-        if ((seen & bit) != 0) {
-            return "duplicate update archive entry\n";
-        }
-        if (size == 0 || size > archive_size - offset) {
-            return "invalid update archive entry size\n";
-        }
-        if (type == AUDIOX_UPDATE_CONFIG && size > AUDIOX_UPDATE_CONFIG_MAX) {
-            return "boot config entry is too large\n";
-        }
-        if (type == AUDIOX_UPDATE_METADATA && size > AUDIOX_UPDATE_METADATA_MAX) {
-            return "metadata entry is too large\n";
-        }
-
-        UpdateEntry &entry = entries[type - 1u];
-        entry.crc = audioxUpdateGetU32(entry_header + 4);
-        entry.size = size;
-        entry.offset = (off_t)offset;
-        int crc_rc = checkUpdateEntryCrc(fd, entry);
-        if (crc_rc < 0) {
-            return "failed to read update archive entry\n";
-        }
-        if (crc_rc > 0) {
-            return "update archive entry checksum mismatch\n";
-        }
-        seen |= bit;
-        offset += size;
-    }
-
-    if (offset != archive_size || seen != (1u << entry_count) - 1u) {
-        return "update archive has unexpected trailing data or missing entries\n";
-    }
-    return NULL;
-}
+typedef AudioxUpdateEntry UpdateEntry;
 
 static int readUpdateEntryText(int fd, const UpdateEntry &entry, char *buf, size_t buf_sz) {
     if (entry.size >= buf_sz) {
         errno = EFBIG;
         return -1;
     }
-    if (readExactAt(fd, buf, (size_t)entry.size, entry.offset) < 0) {
+    if (audioxUpdateReadAt(fd, buf, (size_t)entry.size, entry.offset) < 0) {
         return -1;
     }
     buf[entry.size] = '\0';
@@ -577,7 +463,7 @@ static int readUpdateEntryText(int fd, const UpdateEntry &entry, char *buf, size
 
 // Reads the metadata (v1 archives default to kernel8.img with no board), rejects archives built
 // for another board, and requires the archive's config.txt to boot the archive's kernel.
-static const char *checkUpdateMetadata(int fd, const UpdateEntry entries[AUDIOX_UPDATE_ENTRY_COUNT], AudioxUpdateMetadata *meta) {
+static const char *checkUpdateMetadata(int fd, const UpdateEntry entries[AUDIOX_UPDATE_KNOWN_TYPES], AudioxUpdateMetadata *meta) {
     const UpdateEntry &meta_entry = entries[AUDIOX_UPDATE_METADATA - 1u];
     if (meta_entry.size == 0) {
         memset(meta, 0, sizeof(*meta));
@@ -613,6 +499,17 @@ static const char *checkUpdateMetadata(int fd, const UpdateEntry entries[AUDIOX_
     if (strcmp(config_kernel, meta->kernel) != 0) {
         return "update archive config.txt does not boot the archive kernel\n";
     }
+
+    const UpdateEntry &cmdline_entry = entries[AUDIOX_UPDATE_CMDLINE - 1u];
+    if (cmdline_entry.size != 0) {
+        char cmdline[AUDIOX_UPDATE_CMDLINE_MAX + 1];
+        if (readUpdateEntryText(fd, cmdline_entry, cmdline, sizeof(cmdline)) < 0) {
+            return "failed to read cmdline entry\n";
+        }
+        if (audioxValidateCmdline(cmdline, (size_t)cmdline_entry.size) != NULL) {
+            return "update archive cmdline.txt is invalid (must be one line containing rdinit=/init)\n";
+        }
+    }
     return NULL;
 }
 
@@ -629,7 +526,7 @@ static int writeUpdateEntry(int archive_fd, const UpdateEntry &entry, const char
         if (entry.size - done < want) {
             want = (size_t)(entry.size - done);
         }
-        if (readExactAt(archive_fd, buf, want, entry.offset + (off_t)done) < 0 ||
+        if (audioxUpdateReadAt(archive_fd, buf, want, entry.offset + (off_t)done) < 0 ||
             writeAllToFd(out_fd, buf, want) < 0) {
             int saved_errno = errno;
             close(out_fd);
@@ -660,6 +557,7 @@ static void cleanupUpdateFiles(void) {
     unlink(HTTP_STAGE_UPDATE_PATH);
     unlink(HTTP_STAGE_INITRAMFS_PART_PATH);
     unlink(HTTP_BOOT_CONFIG_FILE ".update");
+    unlink(HTTP_BOOT_CMDLINE_FILE ".update");
     unlink(HTTP_BOOT_LOADER_FILE ".update");
     unlink(HTTP_BOOT_KERNEL_TEMP_FILE);
 }
@@ -708,9 +606,9 @@ static int handleUpdateUpload(HttpServer *server,
         return sendErrnoResponse(server, cfd, "500 Internal Server Error", "update archive sync failed", saved_errno);
     }
 
-    UpdateEntry entries[AUDIOX_UPDATE_ENTRY_COUNT];
+    UpdateEntry entries[AUDIOX_UPDATE_KNOWN_TYPES];
     memset(entries, 0, sizeof(entries));
-    const char *parse_error = parseUpdateArchive(archive_fd, content_length, entries);
+    const char *parse_error = audioxUpdateParseArchive(archive_fd, content_length, entries);
     if (parse_error) {
         close(archive_fd);
         cleanupUpdateFiles();
@@ -743,9 +641,11 @@ static int handleUpdateUpload(HttpServer *server,
         const char *final_path;
     };
     // config.txt goes last: it selects the kernel, so it only switches once that kernel exists.
+    // The optional cmdline entry is skipped when absent so the device keeps its current one.
     const UpdateTarget boot_targets[] = {
         {AUDIOX_UPDATE_KERNEL, HTTP_BOOT_KERNEL_TEMP_FILE, kernel_path},
         {AUDIOX_UPDATE_BOOTLOADER, HTTP_BOOT_LOADER_FILE ".update", HTTP_BOOT_LOADER_FILE},
+        {AUDIOX_UPDATE_CMDLINE, HTTP_BOOT_CMDLINE_FILE ".update", HTTP_BOOT_CMDLINE_FILE},
         {AUDIOX_UPDATE_CONFIG, HTTP_BOOT_CONFIG_FILE ".update", HTTP_BOOT_CONFIG_FILE},
     };
 
@@ -756,6 +656,9 @@ static int handleUpdateUpload(HttpServer *server,
         return sendErrnoResponse(server, cfd, "500 Internal Server Error", "runtime extract failed", saved_errno);
     }
     for (const UpdateTarget &target : boot_targets) {
+        if (entries[target.type - 1u].size == 0) {
+            continue;
+        }
         if (writeUpdateEntry(archive_fd, entries[target.type - 1u], target.temp_path) < 0) {
             int saved_errno = errno;
             close(archive_fd);
@@ -772,6 +675,9 @@ static int handleUpdateUpload(HttpServer *server,
     }
 
     for (const UpdateTarget &target : boot_targets) {
+        if (entries[target.type - 1u].size == 0) {
+            continue;
+        }
         if (rename(target.temp_path, target.final_path) < 0) {
             int saved_errno = errno;
             cleanupUpdateFiles();

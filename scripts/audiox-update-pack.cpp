@@ -123,6 +123,7 @@ static int writeMetadataFile(const char *path, const char *text) {
 static void usage(const char *argv0) {
     fprintf(stderr,
             "usage: %s --board <pi4|pi5> [--kernel-name <name>] [--version <v>] [--kernel-version <kv>]\n"
+            "          [--cmdline <cmdline.txt>]\n"
             "          <output> <config.txt> <bootloader> <kernel> <program>\n"
             "  --kernel-name defaults to the file name of <kernel>\n",
             argv0);
@@ -135,6 +136,7 @@ int main(int argc, char **argv) {
     const char *kernel_name = NULL;
     const char *version = NULL;
     const char *kernel_version = NULL;
+    const char *cmdline_path = NULL;
     int argi = 1;
     while (argi < argc && strncmp(argv[argi], "--", 2) == 0) {
         const char *opt = argv[argi];
@@ -151,6 +153,8 @@ int main(int argc, char **argv) {
             version = value;
         } else if (strcmp(opt, "--kernel-version") == 0) {
             kernel_version = value;
+        } else if (strcmp(opt, "--cmdline") == 0) {
+            cmdline_path = value;
         } else {
             fprintf(stderr, "unknown option: %s\n", opt);
             usage(argv[0]);
@@ -203,6 +207,21 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    if (cmdline_path) {
+        char cmdline_text[AUDIOX_UPDATE_CMDLINE_MAX + 1];
+        size_t cmdline_len = 0;
+        if (readSmallFile(cmdline_path, cmdline_text, sizeof(cmdline_text), &cmdline_len) < 0) {
+            return 1;
+        }
+        const char *cmdline_error = cmdline_len > AUDIOX_UPDATE_CMDLINE_MAX
+                                        ? "cmdline is too long"
+                                        : audioxValidateCmdline(cmdline_text, cmdline_len);
+        if (cmdline_error) {
+            fprintf(stderr, "invalid %s: %s\n", cmdline_path, cmdline_error);
+            return 1;
+        }
+    }
+
     char meta_path[4096];
     int n = snprintf(meta_path, sizeof(meta_path), "%s.metadata", output);
     if (n <= 0 || (size_t)n >= sizeof(meta_path)) {
@@ -213,14 +232,17 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    InputFile inputs[AUDIOX_UPDATE_ENTRY_COUNT] = {
+    InputFile inputs[AUDIOX_UPDATE_ENTRY_COUNT + 1u] = {
         {AUDIOX_UPDATE_METADATA, meta_path, 0, 0},
         {AUDIOX_UPDATE_CONFIG, config_path, 0, 0},
         {AUDIOX_UPDATE_BOOTLOADER, argv[argi + 2], 0, 0},
         {AUDIOX_UPDATE_KERNEL, kernel_path, 0, 0},
         {AUDIOX_UPDATE_PROGRAM, argv[argi + 4], 0, 0},
+        {AUDIOX_UPDATE_CMDLINE, cmdline_path, 0, 0},
     };
-    for (InputFile &input : inputs) {
+    const uint32_t input_count = cmdline_path ? AUDIOX_UPDATE_ENTRY_COUNT + 1u : AUDIOX_UPDATE_ENTRY_COUNT;
+    for (uint32_t i = 0; i < input_count; ++i) {
+        InputFile &input = inputs[i];
         if (scanFile(input) < 0) {
             unlink(meta_path);
             return 1;
@@ -245,10 +267,10 @@ int main(int argc, char **argv) {
     uint8_t header[AUDIOX_UPDATE_HEADER_SIZE];
     memcpy(header, AUDIOX_UPDATE_MAGIC, AUDIOX_UPDATE_MAGIC_SIZE);
     audioxUpdatePutU32(header + 8, AUDIOX_UPDATE_VERSION);
-    audioxUpdatePutU32(header + 12, AUDIOX_UPDATE_ENTRY_COUNT);
+    audioxUpdatePutU32(header + 12, input_count);
     int failed = writeAll(out, header, sizeof(header));
-    for (const InputFile &input : inputs) {
-        if (!failed && appendFile(out, input) < 0) {
+    for (uint32_t i = 0; i < input_count; ++i) {
+        if (!failed && appendFile(out, inputs[i]) < 0) {
             failed = 1;
         }
     }
@@ -270,6 +292,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    printf("Created update archive %s (board=%s, kernel=%s)\n", output, parsed.board, parsed.kernel);
+    printf("Created update archive %s (board=%s, kernel=%s%s)\n", output, parsed.board, parsed.kernel,
+           cmdline_path ? ", with cmdline.txt" : "");
     return 0;
 }

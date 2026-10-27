@@ -62,7 +62,7 @@ RUNTIME_LIBS += $(SBC_STATIC_LIB)
 #   make AUDIOX_VERSION_MAJOR=1 AUDIOX_VERSION_MINOR=8 AUDIOX_VERSION_PATCH=0 AUDIOX_VERSION_PRERELEASE=beta.2
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 9
-AUDIOX_VERSION_PATCH ?= 0
+AUDIOX_VERSION_PATCH ?= 1
 AUDIOX_VERSION_PRERELEASE ?=
 AUDIOX_VERSION_BUILD ?=
 AUDIOX_VERSION_BASE = $(AUDIOX_VERSION_MAJOR).$(AUDIOX_VERSION_MINOR).$(AUDIOX_VERSION_PATCH)
@@ -220,7 +220,7 @@ BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
 .DEFAULT_GOAL := all
 
-.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg upload_bootloader upload_kernel update_archive upload_update boot_config stage_ffmpeg bluetooth_firmware config menuconfig defconfig pi4_defconfig pi5_defconfig olddefconfig print-config audio-bench run-audio-bench test-audio-engine test-watchdog
+.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg upload_bootloader upload_kernel upload_cmdline update_archive upload_update boot_config stage_ffmpeg bluetooth_firmware config menuconfig defconfig pi4_defconfig pi5_defconfig olddefconfig print-config audio-bench run-audio-bench test-audio-engine test-watchdog
 
 all: initramfs
 
@@ -681,6 +681,16 @@ upload_kernel: fetch_deps
 	fi
 	@echo "Kernel upload complete."
 
+upload_cmdline: $(BOOT_CMDLINE_FILE)
+	@echo "Uploading kernel command line to http://$(PI_HOST):$(PI_PORT)/api/boot/cmdline.txt ..."
+	@status=$$(curl --silent --show-error --output "$(OUT_DIR)/upload-cmdline.response" --write-out "%{http_code}" -X PUT --data-binary @"$(BOOT_CMDLINE_FILE)" "http://$(PI_HOST):$(PI_PORT)/api/boot/cmdline.txt") || { cat "$(OUT_DIR)/upload-cmdline.response"; exit 1; }; \
+	cat "$(OUT_DIR)/upload-cmdline.response"; \
+	if [ "$$status" -lt 200 ] || [ "$$status" -ge 300 ]; then \
+		echo "Kernel command line upload failed with HTTP $$status"; \
+		exit 1; \
+	fi
+	@echo "Kernel command line upload complete."
+
 fancyexport: initramfs
 	@$(SCRIPTS_DIR)/wait_and_export.sh "$(SD_MOUNT_BOOT)" "$(CURDIR)"
 
@@ -707,7 +717,7 @@ $(BOOT_CMDLINE_FILE): $(AUDIOX_CONFIG_FILE)
 	@mkdir -p "$(dir $@)"
 	@printf '%s\n' '$(KERNEL_CMDLINE)' > "$@"
 
-boot_config: $(BOOT_CONFIG_FILE)
+boot_config: $(BOOT_CONFIG_FILE) $(BOOT_CMDLINE_FILE)
 
 $(UPDATE_PACK_BIN): $(UPDATE_PACK_SRC) include/update_archive.hpp
 	@mkdir -p "$(dir $@)"
@@ -719,6 +729,7 @@ update_archive: $(UPDATE_PACK_BIN)
 	@$(MAKE) boot_config
 	@"$(UPDATE_PACK_BIN)" --board "$(AUDIOX_BOARD)" --kernel-name "$(KERNEL_IMAGE)" --version "$(AUDIOX_VERSION_STRING)" \
 		--kernel-version "$$($(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+" "$(KERNEL_UNAME_FILE)")" \
+		--cmdline "$(BOOT_CMDLINE_FILE)" \
 		"$(UPDATE_ARCHIVE)" "$(BOOT_CONFIG_FILE)" "$(INITRAMFS)" "$(BOOT_KERNEL_FILE)" "$(PROGRAM_INITRAMFS)"
 
 upload_update: update_archive
@@ -736,7 +747,7 @@ upload_update: update_archive
 	fi
 	@echo "Update upload complete. Device will install the staged runtime and reboot."
 
-dev: $(BOOT_CONFIG_FILE)
+dev: $(BOOT_CONFIG_FILE) $(BOOT_CMDLINE_FILE)
 	@$(MAKE) fetch_deps
 	@$(MAKE) initramfs
 	@$(MAKE) boot_config
@@ -752,6 +763,15 @@ dev: $(BOOT_CONFIG_FILE)
 	cat "$(OUT_DIR)/dev-bootloader.response"; \
 	if [ "$$status" -lt 200 ] || [ "$$status" -ge 300 ]; then \
 		echo "Bootloader upload failed with HTTP $$status"; \
+		exit 1; \
+	fi
+	@echo "Uploading kernel command line to http://$(PI_HOST):$(PI_PORT)/api/boot/cmdline.txt ..."
+	@status=$$(curl --silent --show-error --output "$(OUT_DIR)/dev-cmdline.response" --write-out "%{http_code}" -X PUT --data-binary @"$(BOOT_CMDLINE_FILE)" "http://$(PI_HOST):$(PI_PORT)/api/boot/cmdline.txt") || { cat "$(OUT_DIR)/dev-cmdline.response"; exit 1; }; \
+	cat "$(OUT_DIR)/dev-cmdline.response"; \
+	if [ "$$status" = "404" ]; then \
+		echo "Warning: device runtime has no cmdline endpoint yet; cmdline.txt left unchanged (it updates after this install)."; \
+	elif [ "$$status" -lt 200 ] || [ "$$status" -ge 300 ]; then \
+		echo "Kernel command line upload failed with HTTP $$status"; \
 		exit 1; \
 	fi
 	@echo "Uploading boot config to http://$(PI_HOST):$(PI_PORT)/api/boot/config.txt ..."

@@ -4,7 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <fcntl.h>
+
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -77,6 +80,106 @@ void testMetadata() {
     const char no_line[] = "boot_delay=0\n";
     audioxConfigKernelName(no_line, sizeof(no_line) - 1, name, sizeof(name));
     check(strcmp(name, "kernel8.img") == 0, "config kernel defaults to kernel8.img");
+
+    const char cmdline[] = "console=tty1 quiet rdinit=/init panic=10\n";
+    check(audioxValidateCmdline(cmdline, sizeof(cmdline) - 1) == NULL, "cmdline valid");
+    const char cmdline_crlf[] = "rdinit=/init\r\n";
+    check(audioxValidateCmdline(cmdline_crlf, sizeof(cmdline_crlf) - 1) == NULL, "cmdline crlf valid");
+    const char no_rdinit[] = "console=tty1 quiet\n";
+    check(audioxValidateCmdline(no_rdinit, sizeof(no_rdinit) - 1) != NULL, "cmdline requires rdinit");
+    const char wrong_rdinit[] = "rdinit=/init2 quiet\n";
+    check(audioxValidateCmdline(wrong_rdinit, sizeof(wrong_rdinit) - 1) != NULL, "cmdline rdinit must be exact");
+    const char multi[] = "rdinit=/init\nquiet\n";
+    check(audioxValidateCmdline(multi, sizeof(multi) - 1) != NULL, "cmdline rejects multiple lines");
+    check(audioxValidateCmdline("\n", 1) != NULL, "cmdline rejects empty");
+    const char ctrl[] = "rdinit=/init \x01";
+    check(audioxValidateCmdline(ctrl, sizeof(ctrl) - 1) != NULL, "cmdline rejects control chars");
+}
+
+struct TestEntry {
+    uint32_t type;
+    std::string payload;
+};
+
+std::string buildArchive(uint32_t version, const std::vector<TestEntry> &items) {
+    std::string out(AUDIOX_UPDATE_MAGIC, AUDIOX_UPDATE_MAGIC_SIZE);
+    uint8_t buf[AUDIOX_UPDATE_ENTRY_HEADER_SIZE];
+    audioxUpdatePutU32(buf, version);
+    audioxUpdatePutU32(buf + 4, (uint32_t)items.size());
+    out.append((const char *)buf, 8);
+    for (const TestEntry &item : items) {
+        audioxUpdatePutU32(buf, item.type);
+        audioxUpdatePutU32(buf + 4, audioxUpdateCrc32(0, item.payload.data(), item.payload.size()));
+        audioxUpdatePutU64(buf + 8, item.payload.size());
+        out.append((const char *)buf, sizeof(buf));
+        out += item.payload;
+    }
+    return out;
+}
+
+const char *parseArchive(const char *dir, const std::string &archive, AudioxUpdateEntry entries[AUDIOX_UPDATE_KNOWN_TYPES]) {
+    char path[1100];
+    snprintf(path, sizeof(path), "%s/test.axu", dir);
+    FILE *fp = fopen(path, "wb");
+    if (!fp) {
+        return "open failed";
+    }
+    fwrite(archive.data(), 1, archive.size(), fp);
+    fclose(fp);
+    int fd = open(path, O_RDONLY);
+    const char *error = audioxUpdateParseArchive(fd, archive.size(), entries);
+    close(fd);
+    unlink(path);
+    return error;
+}
+
+std::vector<TestEntry> baseEntries() {
+    return {
+        {AUDIOX_UPDATE_METADATA, "board=pi4\nkernel=kernel8.img\n"},
+        {AUDIOX_UPDATE_CONFIG, "kernel=kernel8.img\n"},
+        {AUDIOX_UPDATE_BOOTLOADER, "loader"},
+        {AUDIOX_UPDATE_KERNEL, "kernel"},
+        {AUDIOX_UPDATE_PROGRAM, "program"},
+    };
+}
+
+void testArchiveParse(const char *dir) {
+    AudioxUpdateEntry entries[AUDIOX_UPDATE_KNOWN_TYPES];
+    std::vector<TestEntry> items = baseEntries();
+    check(parseArchive(dir, buildArchive(2, items), entries) == NULL, "v2 archive parses");
+    check(entries[AUDIOX_UPDATE_CMDLINE - 1].size == 0, "cmdline absent");
+    check(entries[AUDIOX_UPDATE_KERNEL - 1].size == 6, "kernel entry located");
+
+    items.push_back({AUDIOX_UPDATE_CMDLINE, "rdinit=/init\n"});
+    items.push_back({0x40, "future optional entry"});
+    items.push_back({0x41, ""});
+    check(parseArchive(dir, buildArchive(2, items), entries) == NULL, "unknown optional entries skipped");
+    check(entries[AUDIOX_UPDATE_CMDLINE - 1].size == 13, "cmdline located after skipping");
+
+    std::vector<TestEntry> required = baseEntries();
+    required.push_back({AUDIOX_UPDATE_TYPE_REQUIRED | 0x40, "must understand"});
+    check(parseArchive(dir, buildArchive(2, required), entries) != NULL, "unknown required entry rejected");
+
+    std::vector<TestEntry> missing = baseEntries();
+    missing.pop_back();
+    check(parseArchive(dir, buildArchive(2, missing), entries) != NULL, "missing required entry rejected");
+
+    std::vector<TestEntry> duplicate = baseEntries();
+    duplicate.push_back({AUDIOX_UPDATE_KERNEL, "kernel2"});
+    check(parseArchive(dir, buildArchive(2, duplicate), entries) != NULL, "duplicate entry rejected");
+
+    check(parseArchive(dir, buildArchive(3, baseEntries()), entries) != NULL, "newer header version rejected");
+
+    std::vector<TestEntry> v1 = baseEntries();
+    v1.erase(v1.begin());
+    check(parseArchive(dir, buildArchive(1, v1), entries) == NULL, "v1 archive parses");
+    v1.push_back({0x40, "x"});
+    check(parseArchive(dir, buildArchive(1, v1), entries) != NULL, "v1 rejects extra entries");
+
+    std::string corrupt = buildArchive(2, baseEntries());
+    corrupt[corrupt.size() - 1] ^= 1;
+    check(parseArchive(dir, corrupt, entries) != NULL, "checksum mismatch rejected");
+    check(parseArchive(dir, buildArchive(2, baseEntries()) + "x", entries) != NULL, "trailing data rejected");
 }
 
 } // namespace
@@ -96,6 +199,7 @@ int main() {
     mkdir(root, 0755);
     mkdir(boot, 0755);
     testMetadata();
+    testArchiveParse(base);
     installBootSet(boot, "old", "kernel8.img");
     writeFile(root, "stdout.log", "runtime crashed here\n");
 
@@ -124,6 +228,7 @@ int main() {
         }
     }
     check(fileEquals(boot, "kernel8.img", "old"), "kernel restored");
+    check(fileEquals(boot, "cmdline.txt", "old"), "cmdline restored");
     check(fileEquals(boot, "config.txt", "# old\nkernel=kernel8.img\narm_64bit=1\n"), "config restored");
     check(!bootRecoveryTrialPending(root), "trial cleared after revert");
     check(!bootRecoveryHasBackup(root), "backup removed after revert");

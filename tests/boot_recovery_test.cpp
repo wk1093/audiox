@@ -40,10 +40,43 @@ bool exists(const char *dir, const char *name) {
     return access(path, F_OK) == 0;
 }
 
-void installNewBootSet(const char *boot) {
+void installBootSet(const char *boot, const char *text, const char *kernel) {
     for (size_t i = 0; bootRecoveryFileName(i); ++i) {
-        writeFile(boot, bootRecoveryFileName(i), "new");
+        if (strcmp(bootRecoveryFileName(i), "config.txt") != 0) {
+            writeFile(boot, bootRecoveryFileName(i), text);
+        }
     }
+    writeFile(boot, kernel, text);
+    std::string config = std::string("# ") + text + "\nkernel=" + kernel + "\narm_64bit=1\n";
+    writeFile(boot, "config.txt", config.c_str());
+}
+
+void installNewBootSet(const char *boot) {
+    installBootSet(boot, "new", "kernel8.img");
+}
+
+void testMetadata() {
+    AudioxUpdateMetadata meta;
+    const char good[] = "board=pi5\nkernel=kernel_2712.img\nversion=1.9.0-beta.4\nkernel_version=6.18.58-v8-16k+\nfuture=x\n";
+    check(audioxUpdateParseMetadata(good, sizeof(good) - 1, &meta) == NULL, "metadata parses");
+    check(strcmp(meta.board, "pi5") == 0 && strcmp(meta.kernel, "kernel_2712.img") == 0, "metadata board/kernel");
+    check(strcmp(meta.kernel_version, "6.18.58-v8-16k+") == 0, "metadata kernel version");
+    const char traversal[] = "board=pi4\nkernel=../kernel8.img\n";
+    check(audioxUpdateParseMetadata(traversal, sizeof(traversal) - 1, &meta) != NULL, "metadata rejects paths");
+    const char bad_board[] = "board=pi3\nkernel=kernel8.img\n";
+    check(audioxUpdateParseMetadata(bad_board, sizeof(bad_board) - 1, &meta) != NULL, "metadata rejects unknown board");
+    const char no_kernel[] = "board=pi4\n";
+    check(audioxUpdateParseMetadata(no_kernel, sizeof(no_kernel) - 1, &meta) != NULL, "metadata requires kernel");
+    check(!audioxUpdateValidKernelName("config.txt") && !audioxUpdateValidKernelName("kernel.img.bak"),
+          "kernel name pattern");
+
+    char name[AUDIOX_UPDATE_VALUE_MAX];
+    const char config[] = "boot_delay=0\n  kernel=kernel_2712.img # comment\nkernel=kernel8.img\n";
+    audioxConfigKernelName(config, sizeof(config) - 1, name, sizeof(name));
+    check(strcmp(name, "kernel_2712.img") == 0, "config kernel line found");
+    const char no_line[] = "boot_delay=0\n";
+    audioxConfigKernelName(no_line, sizeof(no_line) - 1, name, sizeof(name));
+    check(strcmp(name, "kernel8.img") == 0, "config kernel defaults to kernel8.img");
 }
 
 } // namespace
@@ -62,9 +95,8 @@ int main() {
     snprintf(state, sizeof(state), "%s/system", root);
     mkdir(root, 0755);
     mkdir(boot, 0755);
-    for (size_t i = 0; bootRecoveryFileName(i); ++i) {
-        writeFile(boot, bootRecoveryFileName(i), "old");
-    }
+    testMetadata();
+    installBootSet(boot, "old", "kernel8.img");
     writeFile(root, "stdout.log", "runtime crashed here\n");
 
     unsigned attempts = 0;
@@ -87,8 +119,12 @@ int main() {
     check(bootRecoveryBeginBoot(root, "2.0.0", &attempts) == BOOT_TRIAL_REVERT, "revert after max attempts");
     check(bootRecoveryRevert(root, boot, "2.0.0", attempts) == 0, "revert restores backup");
     for (size_t i = 0; bootRecoveryFileName(i); ++i) {
-        check(fileEquals(boot, bootRecoveryFileName(i), "old"), "boot file restored");
+        if (strcmp(bootRecoveryFileName(i), "config.txt") != 0) {
+            check(fileEquals(boot, bootRecoveryFileName(i), "old"), "boot file restored");
+        }
     }
+    check(fileEquals(boot, "kernel8.img", "old"), "kernel restored");
+    check(fileEquals(boot, "config.txt", "# old\nkernel=kernel8.img\narm_64bit=1\n"), "config restored");
     check(!bootRecoveryTrialPending(root), "trial cleared after revert");
     check(!bootRecoveryHasBackup(root), "backup removed after revert");
     char report[8192];
@@ -99,7 +135,20 @@ int main() {
     check(strstr(report, "restored_version=1.0.0\n") != NULL, "report has restored version");
     check(strstr(report, "runtime crashed here") != NULL, "report has runtime log");
     check(strstr(report, "trial boot failed: test") != NULL, "report has trial events");
+    check(strstr(report, ",config.txt\n") != NULL && strstr(report, "kernel8.img") != NULL,
+          "report lists restored files with config.txt last");
     check(bootRecoveryBeginBoot(root, "1.0.0", &attempts) == BOOT_TRIAL_NONE, "restored image boots normally");
+
+    // Switching kernel file names (pi4 kernel8.img -> kernel_2712.img) must restore the old kernel and config.
+    check(bootRecoveryPrepareUpdate(root, boot, "1.0.0\n") == 0, "prepare kernel rename update");
+    check(exists(state, BOOT_RECOVERY_BACKUP_NAME "/kernel8.img"), "backup holds the kernel config.txt boots");
+    installBootSet(boot, "renamed", "kernel_2712.img");
+    check(bootRecoveryBeginBoot(root, "5.0.0", &attempts) == BOOT_TRIAL_ATTEMPT, "renamed trial attempt");
+    writeFile(state, BOOT_RECOVERY_TRIAL_NAME, "attempts=99\n");
+    check(bootRecoveryBeginBoot(root, "5.0.0", &attempts) == BOOT_TRIAL_REVERT, "renamed trial reverts");
+    check(bootRecoveryRevert(root, boot, "5.0.0", attempts) == 0, "renamed revert");
+    check(fileEquals(boot, "config.txt", "# old\nkernel=kernel8.img\narm_64bit=1\n"), "renamed config restored");
+    check(fileEquals(boot, "kernel8.img", "old"), "original kernel still present after revert");
 
     // A healthy update is confirmed and its safety copy dropped.
     check(bootRecoveryPrepareUpdate(root, boot, "1.0.0\n") == 0, "prepare healthy update");

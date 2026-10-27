@@ -9,6 +9,7 @@
 //   last-boot-failure.txt  report written when the bootloader reverts to the backup
 
 #include "defs.hpp"
+#include "update_archive.hpp"
 
 #include <dirent.h>
 #include <errno.h>
@@ -48,12 +49,50 @@ enum BootTrialAction {
 
 static inline const char *bootRecoveryFileName(size_t index) {
     static const char *const names[] = {
-        "config.txt",
         "initramfs.cpio.gz",
-        "kernel8.img",
         "program.cpio.gz",
+        "config.txt",
     };
     return index < sizeof(names) / sizeof(names[0]) ? names[index] : NULL;
+}
+
+static inline bool bootRecoveryIsBootFile(const char *name) {
+    for (size_t i = 0; bootRecoveryFileName(i); ++i) {
+        if (strcmp(name, bootRecoveryFileName(i)) == 0) {
+            return true;
+        }
+    }
+    return audioxUpdateValidKernelName(name);
+}
+
+#define BOOT_RECOVERY_MAX_FILES 8
+
+// Boot files present in a backup directory, ordered so config.txt (which selects the kernel) is last.
+static inline size_t bootRecoveryListBackup(const char *backup_dir, char names[BOOT_RECOVERY_MAX_FILES][AUDIOX_UPDATE_VALUE_MAX]) {
+    size_t count = 0;
+    bool has_config = false;
+    DIR *d = opendir(backup_dir);
+    if (!d) {
+        return 0;
+    }
+    struct dirent *entry;
+    while ((entry = readdir(d)) != NULL) {
+        if (!bootRecoveryIsBootFile(entry->d_name) || strlen(entry->d_name) >= AUDIOX_UPDATE_VALUE_MAX) {
+            continue;
+        }
+        if (strcmp(entry->d_name, "config.txt") == 0) {
+            has_config = true;
+            continue;
+        }
+        if (count < BOOT_RECOVERY_MAX_FILES - 1) {
+            snprintf(names[count++], AUDIOX_UPDATE_VALUE_MAX, "%s", entry->d_name);
+        }
+    }
+    closedir(d);
+    if (has_config) {
+        snprintf(names[count++], AUDIOX_UPDATE_VALUE_MAX, "%s", "config.txt");
+    }
+    return count;
 }
 
 static inline int brPath(char *out, size_t out_sz, const char *a, const char *b, const char *c) {
@@ -257,11 +296,20 @@ static inline int bootRecoveryPrepareUpdate(const char *root_dir, const char *bo
         if (mkdir(tmp_dir, 0755) < 0) {
             return -1;
         }
-        for (size_t i = 0; bootRecoveryFileName(i); ++i) {
+        char config_path[512];
+        char config_text[16384];
+        char kernel_name[AUDIOX_UPDATE_VALUE_MAX];
+        ssize_t config_len = -1;
+        if (brPath(config_path, sizeof(config_path), boot_dir, "config.txt", NULL) == 0) {
+            config_len = brReadSmallFile(config_path, config_text, sizeof(config_text));
+        }
+        audioxConfigKernelName(config_text, config_len > 0 ? (size_t)config_len : 0, kernel_name, sizeof(kernel_name));
+        const char *backup_names[] = {bootRecoveryFileName(0), bootRecoveryFileName(1), bootRecoveryFileName(2), kernel_name};
+        for (const char *name : backup_names) {
             char src[512];
             char dst[512];
-            if (brPath(src, sizeof(src), boot_dir, bootRecoveryFileName(i), NULL) < 0 ||
-                brPath(dst, sizeof(dst), tmp_dir, bootRecoveryFileName(i), NULL) < 0) {
+            if (brPath(src, sizeof(src), boot_dir, name, NULL) < 0 ||
+                brPath(dst, sizeof(dst), tmp_dir, name, NULL) < 0) {
                 errno = ENAMETOOLONG;
                 return -1;
             }
@@ -384,6 +432,8 @@ static inline int bootRecoveryRevert(const char *root_dir, const char *boot_dir,
     }
 
     const int has_backup = bootRecoveryHasBackup(root_dir);
+    char restore_names[BOOT_RECOVERY_MAX_FILES][AUDIOX_UPDATE_VALUE_MAX];
+    const size_t restore_count = has_backup ? bootRecoveryListBackup(backup_dir, restore_names) : 0;
     char restored_version[128] = "none";
     if (has_backup) {
         char version_path[512];
@@ -411,13 +461,8 @@ static inline int bootRecoveryRevert(const char *root_dir, const char *boot_dir,
         fprintf(report, "attempts=%u\n", attempts);
         fprintf(report, "reverted=%s\n", has_backup ? "yes" : "no");
         fprintf(report, "restored_files=");
-        int first = 1;
-        for (size_t i = 0; has_backup && bootRecoveryFileName(i); ++i) {
-            char src[512];
-            if (brPath(src, sizeof(src), backup_dir, bootRecoveryFileName(i), NULL) == 0 && access(src, F_OK) == 0) {
-                fprintf(report, "%s%s", first ? "" : ",", bootRecoveryFileName(i));
-                first = 0;
-            }
+        for (size_t i = 0; i < restore_count; ++i) {
+            fprintf(report, "%s%s", i == 0 ? "" : ",", restore_names[i]);
         }
         fprintf(report, "\n\nThe updated image failed to stay healthy for %u boot attempt(s).\n", attempts);
         if (!has_backup) {
@@ -443,12 +488,12 @@ static inline int bootRecoveryRevert(const char *root_dir, const char *boot_dir,
     }
 
     int rc = 0;
-    for (size_t i = 0; has_backup && bootRecoveryFileName(i); ++i) {
+    for (size_t i = 0; i < restore_count; ++i) {
         char src[512];
         char dst[512];
         char tmp[512];
-        if (brPath(src, sizeof(src), backup_dir, bootRecoveryFileName(i), NULL) < 0 ||
-            brPath(dst, sizeof(dst), boot_dir, bootRecoveryFileName(i), NULL) < 0 ||
+        if (brPath(src, sizeof(src), backup_dir, restore_names[i], NULL) < 0 ||
+            brPath(dst, sizeof(dst), boot_dir, restore_names[i], NULL) < 0 ||
             snprintf(tmp, sizeof(tmp), "%s.restore", dst) >= (int)sizeof(tmp)) {
             rc = -1;
             continue;

@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-IMG_FILE="${1:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <bootloader_initramfs> <program_initramfs> <vc4_overlay> [dsi_overlay] [ffmpeg_bin]}"
-IMG_SIZE_MB="${2:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <bootloader_initramfs> <program_initramfs> <vc4_overlay> [dsi_overlay] [ffmpeg_bin]}"
-OUT_DIR="${3:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <bootloader_initramfs> <program_initramfs> <vc4_overlay> [dsi_overlay] [ffmpeg_bin]}"
-INITRAMFS="${4:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <bootloader_initramfs> <program_initramfs> <vc4_overlay> [dsi_overlay] [ffmpeg_bin]}"
-PROGRAM_INITRAMFS="${5:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <bootloader_initramfs> <program_initramfs> <vc4_overlay> [dsi_overlay] [ffmpeg_bin]}"
-VC4_OVERLAY="${6:?usage: build_image.sh <img_file> <img_size_mb> <out_dir> <bootloader_initramfs> <program_initramfs> <vc4_overlay> [dsi_overlay] [ffmpeg_bin]}"
-DSI_TOUCH_OVERLAY="${7:-}"
+USAGE="usage: build_image.sh <img_file> <img_size_mb> <out_dir> <bootloader_initramfs> <program_initramfs> <boot_config> <cmdline> [ffmpeg_bin]"
+IMG_FILE="${1:?${USAGE}}"
+IMG_SIZE_MB="${2:?${USAGE}}"
+OUT_DIR="${3:?${USAGE}}"
+INITRAMFS="${4:?${USAGE}}"
+PROGRAM_INITRAMFS="${5:?${USAGE}}"
+BOOT_CONFIG="${6:?${USAGE}}"
+BOOT_CMDLINE="${7:?${USAGE}}"
 FFMPEG_BIN="${8:-}"
 
 MNT_BOOT="${OUT_DIR}/mnt_boot"
@@ -67,19 +68,8 @@ echo "Writing distribution files..."
 sudo cp -r "${OUT_DIR}/bootfiles/." "${MNT_BOOT}/"
 sudo cp "${INITRAMFS}" "${MNT_BOOT}/initramfs.cpio.gz"
 sudo cp "${PROGRAM_INITRAMFS}" "${MNT_BOOT}/program.cpio.gz"
-sudo sh -c "echo 'initramfs initramfs.cpio.gz,program.cpio.gz followkernel' > '${MNT_BOOT}/config.txt'"
-sudo sh -c "echo 'dtoverlay=${VC4_OVERLAY}' >> '${MNT_BOOT}/config.txt'"
-sudo sh -c "echo 'dtoverlay=miniuart-bt' >> '${MNT_BOOT}/config.txt'"
-sudo sh -c "echo 'enable_uart=1' >> '${MNT_BOOT}/config.txt'"
-sudo sh -c "echo 'core_freq=250' >> '${MNT_BOOT}/config.txt'"
-sudo sh -c "echo 'core_freq_min=250' >> '${MNT_BOOT}/config.txt'"
-sudo sh -c "echo 'arm_boost=1' >> '${MNT_BOOT}/config.txt'"
-sudo sh -c "echo 'krnbt=on' >> '${MNT_BOOT}/config.txt'"
-if [[ -n "${DSI_TOUCH_OVERLAY}" ]]; then
-    sudo sh -c "echo 'dtoverlay=${DSI_TOUCH_OVERLAY}' >> '${MNT_BOOT}/config.txt'"
-fi
-sudo sh -c "echo 'dtoverlay=dwc2,dr_mode=peripheral' >> '${MNT_BOOT}/config.txt'"
-sudo sh -c "echo 'console=fbcon console=tty1 quiet loglevel=3 rdinit=/init panic=10' > '${MNT_BOOT}/cmdline.txt'"
+sudo cp "${BOOT_CONFIG}" "${MNT_BOOT}/config.txt"
+sudo cp "${BOOT_CMDLINE}" "${MNT_BOOT}/cmdline.txt"
 
 if [[ -n "${FFMPEG_BIN}" && -f "${FFMPEG_BIN}" ]]; then
     echo "Staging ffmpeg into STORAGE partition as /ffmpeg..."

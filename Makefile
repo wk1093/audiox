@@ -63,7 +63,7 @@ RUNTIME_LIBS += $(SBC_STATIC_LIB)
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 9
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.4
+AUDIOX_VERSION_PRERELEASE ?=
 AUDIOX_VERSION_BUILD ?=
 AUDIOX_VERSION_BASE = $(AUDIOX_VERSION_MAJOR).$(AUDIOX_VERSION_MINOR).$(AUDIOX_VERSION_PATCH)
 AUDIOX_VERSION_STRING = $(AUDIOX_VERSION_BASE)$(if $(AUDIOX_VERSION_PRERELEASE),-$(AUDIOX_VERSION_PRERELEASE))$(if $(AUDIOX_VERSION_BUILD),+$(AUDIOX_VERSION_BUILD))
@@ -84,11 +84,26 @@ AUDIOX_BUFFER_FRAMES ?= $(CONFIG_BUFFER_FRAMES)
 AUDIOX_ENABLE_ALSA_LOGS ?= $(if $(filter y,$(CONFIG_ALSA_LOGS)),1,0)
 DEBUG_SHELL ?= $(if $(filter y,$(CONFIG_DEBUG_SHELL)),1,0)
 
-# Auto-detected from firmware after fetch_deps runs.
-KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+")
-# TODO: Be able to change this overlay with config
-VC4_OVERLAY ?= vc4-fkms-v3d-pi4
-DSI_TOUCH_OVERLAY ?=
+# Kconfig string values are quoted in .config.
+config_str = $(subst ",,$(CONFIG_$(1)))
+
+# Board selection (see Kconfig; make pi4_defconfig / pi5_defconfig).
+AUDIOX_BOARD = $(if $(filter y,$(CONFIG_BOARD_PI5)),pi5,pi4)
+KERNEL_IMAGE ?= $(call config_str,KERNEL_IMAGE)
+BOARD_DTBS ?= $(call config_str,BOARD_DTBS)
+BOARD_FIRMWARE_FILES ?= $(call config_str,BOARD_FIRMWARE_FILES)
+AUDIOX_USB_GADGET_UDC ?= $(call config_str,USB_GADGET_UDC)
+AUDIOX_DEVICE_IP ?= $(call config_str,DEVICE_IP)
+KERNEL_CMDLINE ?= $(call config_str,KERNEL_CMDLINE)
+VC4_OVERLAY ?= $(call config_str,VC4_OVERLAY)
+DSI_TOUCH_OVERLAY ?= $(call config_str,DSI_TOUCH_OVERLAY)
+BOOT_OVERLAYS = $(VC4_OVERLAY) $(DSI_TOUCH_OVERLAY) dwc2 $(if $(filter y,$(CONFIG_BT_MINIUART)),miniuart-bt)
+
+# Auto-detected from firmware after fetch_deps runs, using the uname file that
+# matches the kernel image (kernel_2712.img -> uname_string_2712).
+KERNEL_UNAME_FILE = uname_string$(patsubst kernel%.img,%,$(KERNEL_IMAGE))
+KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+" "$(KERNEL_UNAME_FILE)")
+
 # Paths
 ARCH ?= aarch64
 OUT_DIR = $(CURDIR)/out
@@ -140,15 +155,31 @@ AUDIO_BENCH_SRCS = \
 	src/audio/effects/pitch.cpp \
 	src/audio/effects/reverb.cpp
 BOOT_CONFIG_FILE ?= $(OUT_DIR)/dev-config.txt
-# TODO: Be able to change this BT firmware with the config system
-BT_FIRMWARE_URL ?= https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/pios/trixie/debian/firmware/broadcom/BCM4345C0.hcd
-BT_FIRMWARE_SHA256 ?= 51c45e77ddad91a19e96dc8fb75295b2087c279940df2634b23baf71b6dea42c
-BT_FIRMWARE_FILE ?= $(OUT_DIR)/downloads/BCM4345C0.hcd
-# TODO: Be able to change kernel version with config
+BOOT_KERNEL_FILE = $(OUT_DIR)/bootfiles/$(KERNEL_IMAGE)
+BOOT_CMDLINE_FILE ?= $(OUT_DIR)/dev-cmdline.txt
+# Generated boot partition config.txt; kernel= points at the board's kernel file name.
+BOOT_CONFIG_LINES = \
+	'initramfs initramfs.cpio.gz,program.cpio.gz followkernel' \
+	$(if $(filter y,$(CONFIG_BOOT_CD_FIRMWARE)),'start_cd=1') \
+	'boot_delay=0' \
+	'disable_splash=1' \
+	'dtoverlay=$(VC4_OVERLAY)' \
+	$(if $(filter y,$(CONFIG_BT_MINIUART)),'dtoverlay=miniuart-bt') \
+	'enable_uart=1' \
+	$(if $(filter y,$(CONFIG_BT_MINIUART)),'core_freq=250' 'core_freq_min=250') \
+	$(if $(filter y,$(CONFIG_ARM_BOOST)),'arm_boost=1') \
+	'krnbt=on' \
+	'dtoverlay=dwc2,dr_mode=peripheral' \
+	$(if $(DSI_TOUCH_OVERLAY),'dtoverlay=$(DSI_TOUCH_OVERLAY)') \
+	'kernel=$(KERNEL_IMAGE)' \
+	'arm_64bit=1'
+BT_FIRMWARE ?= $(call config_str,BT_FIRMWARE)
+BT_FIRMWARE_URL ?= https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/pios/trixie/debian/firmware/broadcom/$(BT_FIRMWARE).hcd
+BT_FIRMWARE_SHA256 ?= $(call config_str,BT_FIRMWARE_SHA256)
+BT_FIRMWARE_FILE ?= $(OUT_DIR)/downloads/$(BT_FIRMWARE).hcd
 FIRMWARE_GIT_URL ?= https://github.com/raspberrypi/firmware.git
-FIRMWARE_GIT_REF ?= 88a0ae8876e800801ee5c27624138b3d02a21c63
-# TODO: Be able to change the default IP with config
-PI_HOST ?= 169.254.1.2
+FIRMWARE_GIT_REF ?= $(call config_str,FIRMWARE_GIT_REF)
+PI_HOST ?= $(AUDIOX_DEVICE_IP)
 PI_PORT ?= 80
 
 SD_MOUNT_BOOT ?= /run/media/$(USER)/bootfs
@@ -170,6 +201,9 @@ RUNTIME_DEFINES = \
 	-DAUDIOX_VERSION_PRERELEASE='"$(AUDIOX_VERSION_PRERELEASE)"' \
 	-DAUDIOX_VERSION_BUILD='"$(AUDIOX_VERSION_BUILD)"' \
 	-DAUDIOX_VERSION_STRING='"$(AUDIOX_VERSION_STRING)"' \
+	-DAUDIOX_USB_GADGET_UDC='"$(AUDIOX_USB_GADGET_UDC)"' \
+	-DAUDIOX_USB_NET_SERVER_IP='"$(AUDIOX_DEVICE_IP)"' \
+	-DAUDIOX_BOARD='"$(AUDIOX_BOARD)"' \
 	-DDEBUG_SHELL=$(DEBUG_SHELL)
 
 BOOTLOADER_DEFINES = -DKERNEL_VERSION='"$(KV)"'
@@ -186,7 +220,7 @@ BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
 .DEFAULT_GOAL := all
 
-.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg upload_bootloader upload_kernel update_archive upload_update boot_config stage_ffmpeg bluetooth_firmware config menuconfig defconfig print-config audio-bench run-audio-bench test-audio-engine test-watchdog
+.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg upload_bootloader upload_kernel update_archive upload_update boot_config stage_ffmpeg bluetooth_firmware config menuconfig defconfig pi4_defconfig pi5_defconfig olddefconfig print-config audio-bench run-audio-bench test-audio-engine test-watchdog
 
 all: initramfs
 
@@ -197,17 +231,23 @@ archive: update_archive
 menuconfig: $(CONFIG_MENU_BIN)
 	@$(CONFIG_MENU_BIN) "$(AUDIOX_CONFIG_FILE)" "$(CURDIR)/Kconfig"
 
-defconfig: $(CONFIG_MENU_BIN)
-	@$(CONFIG_MENU_BIN) --defconfig "$(CURDIR)/Kconfig" "$(AUDIOX_CONFIG_FILE)"
-	@echo "Default audiox configuration written to $(AUDIOX_CONFIG_FILE)"
+defconfig: pi4_defconfig
+
+pi4_defconfig pi5_defconfig: $(CONFIG_MENU_BIN)
+	@$(CONFIG_MENU_BIN) --defconfig "$(CURDIR)/Kconfig" "$(AUDIOX_CONFIG_FILE)" BOARD_$(shell echo "$(@:_defconfig=)" | tr a-z A-Z)
+	@echo "Default $(@:_defconfig=) audiox configuration written to $(AUDIOX_CONFIG_FILE)"
+
+olddefconfig: $(CONFIG_MENU_BIN)
+	@$(CONFIG_MENU_BIN) --olddefconfig "$(CURDIR)/Kconfig" "$(AUDIOX_CONFIG_FILE)"
 
 print-config:
 	@cat "$(AUDIOX_CONFIG_FILE)"
 
+# Keeps existing choices and fills in options added to Kconfig since the last run.
 $(AUDIOX_CONFIG_FILE): $(CONFIG_MENU_BIN) $(CURDIR)/Kconfig
-	@$(CONFIG_MENU_BIN) --defconfig "$(CURDIR)/Kconfig" "$(AUDIOX_CONFIG_FILE)"
+	@$(CONFIG_MENU_BIN) --olddefconfig "$(CURDIR)/Kconfig" "$(AUDIOX_CONFIG_FILE)"
 
-$(RUNTIME_OBJS): $(AUDIOX_CONFIG_FILE)
+$(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ) $(WATCHDOG_OBJ) $(BOOTLOADER_OBJS): $(AUDIOX_CONFIG_FILE)
 
 $(AUDIO_GRAPH_MODE_STAMP):
 	@mkdir -p "$(OUT_DIR)"
@@ -250,7 +290,7 @@ $(OUT_DIR)/host/audiox-soundboard-config-test: $(SOUNDBOARD_CONFIG_TEST_SRCS) sr
 test-boot-recovery: $(OUT_DIR)/host/audiox-boot-recovery-test
 	@"$<"
 
-$(OUT_DIR)/host/audiox-boot-recovery-test: tests/boot_recovery_test.cpp include/boot_recovery.hpp include/defs.hpp
+$(OUT_DIR)/host/audiox-boot-recovery-test: tests/boot_recovery_test.cpp include/boot_recovery.hpp include/defs.hpp include/update_archive.hpp
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" "$<"
 
@@ -290,7 +330,7 @@ $(AUDIO_ENGINE_TEST_BIN): tests/audio_engine_test.cpp $(filter-out tools/audiox-
 		-DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) -o "$@" tests/audio_engine_test.cpp \
 		$(filter-out tools/audiox-audio-bench.cpp,$(AUDIO_BENCH_SRCS)) -pthread -lm
 
-$(WATCHDOG_HOST_BIN): $(WATCHDOG_SRC) include/boot_recovery.hpp
+$(WATCHDOG_HOST_BIN): $(WATCHDOG_SRC) include/boot_recovery.hpp include/update_archive.hpp
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -DAUDIOX_WATCHDOG_STARTUP_TIMEOUT_MS=3000 \
 		-DAUDIOX_WATCHDOG_HEARTBEAT_TIMEOUT_MS=1200 -o "$@" "$<"
@@ -301,7 +341,7 @@ $(WATCHDOG_HUNG_CHILD_BIN): tests/watchdog_hung_child.cpp
 
 fetch_deps:
 	@mkdir -p $(OUT_DIR)
-	@$(SCRIPTS_DIR)/sync_firmware.sh "$(FIRMWARE_GIT_URL)" "$(FIRMWARE_GIT_REF)" "$(OUT_DIR)" "$(VC4_OVERLAY)" "$(DSI_TOUCH_OVERLAY)"
+	@$(SCRIPTS_DIR)/sync_firmware.sh "$(FIRMWARE_GIT_URL)" "$(FIRMWARE_GIT_REF)" "$(OUT_DIR)" "$(KERNEL_IMAGE)" "$(BOARD_DTBS)" "$(BOARD_FIRMWARE_FILES)" "$(BOOT_OVERLAYS)"
 
 fetch_modules: fetch_deps
 	@$(SCRIPTS_DIR)/resolve_modules.sh "$(KV)" "$(OUT_DIR)" "$(DEP_FILE)"
@@ -445,7 +485,9 @@ $(BT_FIRMWARE_FILE):
 	@mkdir -p "$(dir $@)"
 	@echo "Fetching Raspberry Pi Bluetooth firmware..."
 	@$(PKG_FETCH) "$(BT_FIRMWARE_URL)" -o "$@.tmp"
-	@test "$$(sha256sum "$@.tmp" | awk '{print $$1}')" = "$(BT_FIRMWARE_SHA256)" || { echo "Bluetooth firmware checksum mismatch"; rm -f "$@.tmp"; exit 1; }
+	@if [ -n "$(BT_FIRMWARE_SHA256)" ]; then \
+		test "$$(sha256sum "$@.tmp" | awk '{print $$1}')" = "$(BT_FIRMWARE_SHA256)" || { echo "Bluetooth firmware checksum mismatch"; rm -f "$@.tmp"; exit 1; }; \
+	fi
 	@mv "$@.tmp" "$@"
 
 
@@ -483,7 +525,8 @@ bootloader_rootfs: $(BOOTLOADER_ROOTFS_DIR)/init $(BOOT_MODULE_LOAD_LIST) $(BOOT
 	mkdir -p $(BOOTLOADER_ROOTFS_DIR)/etc $(BOOTLOADER_ROOTFS_DIR)/lib/modules
 	mkdir -p $(BOOTLOADER_ROOTFS_DIR)/proc $(BOOTLOADER_ROOTFS_DIR)/sys $(BOOTLOADER_ROOTFS_DIR)/dev
 	mkdir -p $(BOOTLOADER_ROOTFS_DIR)/mnt/boot $(BOOTLOADER_ROOTFS_DIR)/mnt/rootfs
-	cp -r $(OUT_DIR)/bootmodules_staging/* $(BOOTLOADER_ROOTFS_DIR)/lib/modules/
+	rm -rf $(BOOTLOADER_ROOTFS_DIR)/lib/modules/*
+	cp -r "$(OUT_DIR)/bootmodules_staging/$(KV)" $(BOOTLOADER_ROOTFS_DIR)/lib/modules/
 	cp $(BOOT_MODULE_LOAD_BASE_LIST) $(BOOTLOADER_ROOTFS_DIR)/etc/bootmodule-load.list
 
 rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB)
@@ -493,7 +536,8 @@ rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(MODULE_LOAD_LIST) $(
 	mkdir -p $(ROOTFS_DIR)/etc/www
 	mkdir -p $(ROOTFS_DIR)/lib/modules
 	mkdir -p $(ROOTFS_DIR)/lib/firmware/brcm
-	cp "$(BT_FIRMWARE_FILE)" "$(ROOTFS_DIR)/lib/firmware/brcm/BCM4345C0.hcd"
+	rm -f $(ROOTFS_DIR)/lib/firmware/brcm/*.hcd
+	cp "$(BT_FIRMWARE_FILE)" "$(ROOTFS_DIR)/lib/firmware/brcm/$(BT_FIRMWARE).hcd"
 	
 	@echo "Staging root folder contents..."
 	@if [ -d "$(CURDIR)/root" ]; then \
@@ -503,7 +547,8 @@ rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(MODULE_LOAD_LIST) $(
 	@echo "Staging kernel objects into target lib tree..."
 	@mkdir -p "$(ROOTFS_DIR)/usr/share/licenses/audiox/libsbc"
 	cp "$(SBC_SRC_DIR)/COPYING.LIB" "$(ROOTFS_DIR)/usr/share/licenses/audiox/libsbc/COPYING.LIB"
-	cp -r $(OUT_DIR)/modules_staging/* $(ROOTFS_DIR)/lib/modules/
+	rm -rf $(ROOTFS_DIR)/lib/modules/*
+	cp -r "$(OUT_DIR)/modules_staging/$(KV)" $(ROOTFS_DIR)/lib/modules/
 	cp $(MODULE_LOAD_LIST) $(ROOTFS_DIR)/etc/module-load.list
 	cp $(MODULE_LOAD_BASE_LIST) $(ROOTFS_DIR)/etc/module-load.base.list
 	cp $(MODULE_LOAD_NORMAL_LIST) $(ROOTFS_DIR)/etc/module-load.normal.list
@@ -588,11 +633,12 @@ $(COMBINED_INITRAMFS): initramfs
 	cat $(INITRAMFS) $(PROGRAM_INITRAMFS) > $(COMBINED_INITRAMFS)
 
 qemu: $(COMBINED_INITRAMFS)
+	@if [ "$(CONFIG_BOARD_PI4)" != "y" ]; then echo "qemu only emulates the Raspberry Pi 4; run make pi4_defconfig first."; exit 1; fi
 	@echo "Launching QEMU in Raspberry Pi 4 Mode..."
 	qemu-system-aarch64 \
 		-M raspi4b \
 		-m 2048 \
-		-kernel $(OUT_DIR)/bootfiles/kernel8.img \
+		-kernel $(BOOT_KERNEL_FILE) \
 		-dtb $(OUT_DIR)/bootfiles/bcm2711-rpi-4-b.dtb \
 		-initrd $(COMBINED_INITRAMFS) \
 		-append "console=fbcon console=tty1 quiet loglevel=3 rdinit=/init" \
@@ -621,13 +667,13 @@ upload_bootloader: bootloader_initramfs
 	@echo "Bootloader upload complete."
 
 upload_kernel: fetch_deps
-	@if [ ! -f "$(OUT_DIR)/bootfiles/kernel8.img" ]; then \
-		echo "Error: kernel image not found at $(OUT_DIR)/bootfiles/kernel8.img"; \
+	@if [ ! -f "$(BOOT_KERNEL_FILE)" ]; then \
+		echo "Error: kernel image not found at $(BOOT_KERNEL_FILE)"; \
 		exit 1; \
 	fi
 	@echo "Uploading kernel to http://$(PI_HOST):$(PI_PORT)/api/boot/kernel ..."
 	@mkdir -p "$(OUT_DIR)"
-	@status=$$(curl --silent --show-error --output "$(OUT_DIR)/upload-kernel.response" --write-out "%{http_code}" -X PUT --data-binary @"$(OUT_DIR)/bootfiles/kernel8.img" "http://$(PI_HOST):$(PI_PORT)/api/boot/kernel") || { cat "$(OUT_DIR)/upload-kernel.response"; exit 1; }; \
+	@status=$$(curl --silent --show-error --output "$(OUT_DIR)/upload-kernel.response" --write-out "%{http_code}" -X PUT --data-binary @"$(BOOT_KERNEL_FILE)" "http://$(PI_HOST):$(PI_PORT)/api/boot/kernel?name=$(KERNEL_IMAGE)") || { cat "$(OUT_DIR)/upload-kernel.response"; exit 1; }; \
 	cat "$(OUT_DIR)/upload-kernel.response"; \
 	if [ "$$status" -lt 200 ] || [ "$$status" -ge 300 ]; then \
 		echo "Kernel upload failed with HTTP $$status"; \
@@ -638,7 +684,7 @@ upload_kernel: fetch_deps
 fancyexport: initramfs
 	@$(SCRIPTS_DIR)/wait_and_export.sh "$(SD_MOUNT_BOOT)" "$(CURDIR)"
 
-export: initramfs
+export: initramfs $(BOOT_CONFIG_FILE) $(BOOT_CMDLINE_FILE)
 	@if [ ! -d "$(SD_MOUNT_BOOT)" ]; then \
 		echo "Error: SD mount point $(SD_MOUNT_BOOT) not found."; \
 		exit 1; \
@@ -647,49 +693,21 @@ export: initramfs
 	cp $(OUT_DIR)/bootfiles/* $(SD_MOUNT_BOOT)/ -r
 	cp $(INITRAMFS) $(SD_MOUNT_BOOT)/initramfs.cpio.gz
 	cp $(PROGRAM_INITRAMFS) $(SD_MOUNT_BOOT)/program.cpio.gz
-	@echo "initramfs initramfs.cpio.gz,program.cpio.gz followkernel" > $(SD_MOUNT_BOOT)/config.txt
-	# if we enable cd start it might be a bit faster
-	@echo "start_cd=1" >> $(SD_MOUNT_BOOT)/config.txt
-	@echo "boot_delay=0" >> $(SD_MOUNT_BOOT)/config.txt
-	@echo "disable_splash=1" >> $(SD_MOUNT_BOOT)/config.txt
-	@echo "dtoverlay=$(VC4_OVERLAY)" >> $(SD_MOUNT_BOOT)/config.txt
-	@echo "dtoverlay=miniuart-bt" >> $(SD_MOUNT_BOOT)/config.txt
-	@echo "enable_uart=1" >> $(SD_MOUNT_BOOT)/config.txt
-	@echo "core_freq=250" >> $(SD_MOUNT_BOOT)/config.txt
-	@echo "core_freq_min=250" >> $(SD_MOUNT_BOOT)/config.txt
-	@echo "arm_boost=1" >> $(SD_MOUNT_BOOT)/config.txt
-	@echo "krnbt=on" >> $(SD_MOUNT_BOOT)/config.txt
-	@if [ -n "$(DSI_TOUCH_OVERLAY)" ]; then \
-		echo "dtoverlay=$(DSI_TOUCH_OVERLAY)" >> $(SD_MOUNT_BOOT)/config.txt; \
-	fi
-	@echo "dtoverlay=dwc2,dr_mode=peripheral" >> $(SD_MOUNT_BOOT)/config.txt
-	@echo "console=fbcon console=tty1 quiet loglevel=3 rdinit=/init fbcon=map:0 panic=10" > $(SD_MOUNT_BOOT)/cmdline.txt
+	cp "$(BOOT_CONFIG_FILE)" $(SD_MOUNT_BOOT)/config.txt
+	cp "$(BOOT_CMDLINE_FILE)" $(SD_MOUNT_BOOT)/cmdline.txt
 	sync
 	@echo "SD Card Flashed and ready for hardware execution!"
 
-$(BOOT_CONFIG_FILE):
+$(BOOT_CONFIG_FILE): $(AUDIOX_CONFIG_FILE) $(CURDIR)/Makefile
 	@mkdir -p "$(dir $@)"
-	@printf '%s\n' \
-		'initramfs initramfs.cpio.gz,program.cpio.gz followkernel' \
-		'start_cd=1' \
-		'boot_delay=0' \
-		'disable_splash=1' \
-		'dtoverlay=$(VC4_OVERLAY)' \
-		'dtoverlay=miniuart-bt' \
-		'enable_uart=1' \
-		'core_freq=250' \
-		'core_freq_min=250' \
-		'arm_boost=1' \
-		'krnbt=on' \
-		'dtoverlay=dwc2,dr_mode=peripheral' \
-		> "$@"
-	@if [ -n "$(DSI_TOUCH_OVERLAY)" ]; then echo "dtoverlay=$(DSI_TOUCH_OVERLAY)" >> "$@"; fi
+	@printf '%s\n' $(BOOT_CONFIG_LINES) > "$@.tmp"
+	@mv "$@.tmp" "$@"
+
+$(BOOT_CMDLINE_FILE): $(AUDIOX_CONFIG_FILE)
+	@mkdir -p "$(dir $@)"
+	@printf '%s\n' '$(KERNEL_CMDLINE)' > "$@"
 
 boot_config: $(BOOT_CONFIG_FILE)
-	@grep -q '^dtoverlay=miniuart-bt$$' "$(BOOT_CONFIG_FILE)" || echo 'dtoverlay=miniuart-bt' >> "$(BOOT_CONFIG_FILE)"
-	@grep -q '^core_freq=250$$' "$(BOOT_CONFIG_FILE)" || echo 'core_freq=250' >> "$(BOOT_CONFIG_FILE)"
-	@grep -q '^core_freq_min=250$$' "$(BOOT_CONFIG_FILE)" || echo 'core_freq_min=250' >> "$(BOOT_CONFIG_FILE)"
-	@grep -q '^arm_boost=1$$' "$(BOOT_CONFIG_FILE)" || echo 'arm_boost=1' >> "$(BOOT_CONFIG_FILE)"
 
 $(UPDATE_PACK_BIN): $(UPDATE_PACK_SRC) include/update_archive.hpp
 	@mkdir -p "$(dir $@)"
@@ -699,7 +717,9 @@ update_archive: $(UPDATE_PACK_BIN)
 	@$(MAKE) fetch_deps
 	@$(MAKE) initramfs
 	@$(MAKE) boot_config
-	@"$(UPDATE_PACK_BIN)" "$(UPDATE_ARCHIVE)" "$(BOOT_CONFIG_FILE)" "$(INITRAMFS)" "$(OUT_DIR)/bootfiles/kernel8.img" "$(PROGRAM_INITRAMFS)"
+	@"$(UPDATE_PACK_BIN)" --board "$(AUDIOX_BOARD)" --kernel-name "$(KERNEL_IMAGE)" --version "$(AUDIOX_VERSION_STRING)" \
+		--kernel-version "$$($(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+" "$(KERNEL_UNAME_FILE)")" \
+		"$(UPDATE_ARCHIVE)" "$(BOOT_CONFIG_FILE)" "$(INITRAMFS)" "$(BOOT_KERNEL_FILE)" "$(PROGRAM_INITRAMFS)"
 
 upload_update: update_archive
 	@status=$$(curl --silent --show-error --max-time 5 --output /dev/null --write-out "%{http_code}" "http://$(PI_HOST):$(PI_PORT)/api/update") || exit 1; \
@@ -721,7 +741,7 @@ dev: $(BOOT_CONFIG_FILE)
 	@$(MAKE) initramfs
 	@$(MAKE) boot_config
 	@echo "Uploading kernel to http://$(PI_HOST):$(PI_PORT)/api/boot/kernel ..."
-	@status=$$(curl --silent --show-error --output "$(OUT_DIR)/dev-kernel.response" --write-out "%{http_code}" -X PUT --data-binary @"$(OUT_DIR)/bootfiles/kernel8.img" "http://$(PI_HOST):$(PI_PORT)/api/boot/kernel") || { cat "$(OUT_DIR)/dev-kernel.response"; exit 1; }; \
+	@status=$$(curl --silent --show-error --output "$(OUT_DIR)/dev-kernel.response" --write-out "%{http_code}" -X PUT --data-binary @"$(BOOT_KERNEL_FILE)" "http://$(PI_HOST):$(PI_PORT)/api/boot/kernel?name=$(KERNEL_IMAGE)") || { cat "$(OUT_DIR)/dev-kernel.response"; exit 1; }; \
 	cat "$(OUT_DIR)/dev-kernel.response"; \
 	if [ "$$status" -lt 200 ] || [ "$$status" -ge 300 ]; then \
 		echo "Kernel upload failed with HTTP $$status"; \
@@ -751,8 +771,8 @@ dev: $(BOOT_CONFIG_FILE)
 	fi
 	@echo "All uploads complete. Device will reboot once to install the staged runtime, then reboot into the new kernel and images."
 
-image: initramfs ffmpeg
-	@$(SCRIPTS_DIR)/build_image.sh "$(IMG_FILE)" "$(IMG_SIZE_MB)" "$(OUT_DIR)" "$(INITRAMFS)" "$(PROGRAM_INITRAMFS)" "$(VC4_OVERLAY)" "$(DSI_TOUCH_OVERLAY)" "$(FFMPEG_BIN)"
+image: initramfs ffmpeg $(BOOT_CONFIG_FILE) $(BOOT_CMDLINE_FILE)
+	@$(SCRIPTS_DIR)/build_image.sh "$(IMG_FILE)" "$(IMG_SIZE_MB)" "$(OUT_DIR)" "$(INITRAMFS)" "$(PROGRAM_INITRAMFS)" "$(BOOT_CONFIG_FILE)" "$(BOOT_CMDLINE_FILE)" "$(FFMPEG_BIN)"
 
 clean:
 	rm -rf $(OUT_DIR)

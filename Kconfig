@@ -1,24 +1,169 @@
 mainmenu "audiox configuration"
 
+menu "Target board"
+
+choice
+	prompt "Raspberry Pi model"
+	default BOARD_PI4
+	help
+	  Board the image is built for. Most options below have per-board
+	  defaults; switching the board in menuconfig moves every option that is
+	  still at its old default to the new board's default. Use
+	  "make pi4_defconfig" or "make pi5_defconfig" to start from scratch.
+
+config BOARD_PI4
+	bool "Raspberry Pi 4 Model B"
+
+config BOARD_PI5
+	bool "Raspberry Pi 5 (untested)"
+
+endchoice
+
+config KERNEL_IMAGE
+	string "Kernel image"
+	values "kernel8.img" "kernel_2712.img" "kernel8_rt.img"
+	default "kernel_2712.img" if BOARD_PI5
+	default "kernel8.img"
+	help
+	  Kernel taken from the Raspberry Pi firmware repository. It is always
+	  installed on the boot partition as kernel8.img. kernel8.img is the
+	  generic 4K-page kernel (Pi 4 and Pi 5), kernel_2712.img is the Pi 5
+	  16K-page kernel, and kernel8_rt.img is the PREEMPT_RT kernel.
+
+config BOARD_DTBS
+	string "Device tree blobs"
+	default "bcm2712-rpi-5-b.dtb bcm2712d0-rpi-5-b.dtb bcm2712-d-rpi-5-b.dtb" if BOARD_PI5
+	default "bcm2711-rpi-4-b.dtb"
+	help
+	  Space-separated device tree files copied to the boot partition. The
+	  firmware picks the one matching the board revision.
+
+config BOARD_FIRMWARE_FILES
+	string "GPU firmware files"
+	default "" if BOARD_PI5
+	default "bootcode.bin fixup.dat start.elf start_cd.elf start4.elf start4cd.elf"
+	help
+	  Space-separated GPU firmware files copied to the boot partition. The
+	  Pi 5 loads its firmware from EEPROM and needs none.
+
+config USB_GADGET_UDC
+	string "USB device controller"
+	default "1000480000.usb" if BOARD_PI5
+	default "fe980000.usb"
+	help
+	  Name of the dwc2 controller under /sys/class/udc that the USB audio
+	  and network gadget binds to.
+
+endmenu
+
+menu "Boot configuration"
+
+config VC4_OVERLAY
+	string "Display driver overlay"
+	default "vc4-kms-v3d-pi5" if BOARD_PI5
+	default "vc4-fkms-v3d-pi4"
+	help
+	  Display overlay written to config.txt. The Pi 5 only supports full
+	  KMS; the Pi 4 defaults to FKMS.
+
+config DSI_TOUCH_OVERLAY
+	string "DSI touchscreen overlay"
+	default ""
+	help
+	  Optional extra overlay for a DSI touchscreen. Leave empty to rely on
+	  automatic panel detection.
+
+config BOOT_CD_FIRMWARE
+	bool "Use cut-down GPU firmware (start_cd=1)"
+	default y if BOARD_PI4
+	default n
+	help
+	  Boots the smaller start_cd.elf GPU firmware. Has no effect on the Pi 5.
+
+config BT_MINIUART
+	bool "Move Bluetooth to the mini UART"
+	default y if BOARD_PI4
+	default n
+	help
+	  Adds dtoverlay=miniuart-bt and pins core_freq to 250 MHz so the mini
+	  UART baud rate stays stable. Pi 4 only; the Pi 5 has a dedicated
+	  Bluetooth UART.
+
+config ARM_BOOST
+	bool "Enable arm_boost"
+	default y if BOARD_PI4
+	default n
+	help
+	  Raises the Pi 4 ARM clock to 1.8 GHz on boards that support it.
+
+config KERNEL_CMDLINE
+	string "Kernel command line"
+	default "console=fbcon console=tty1 quiet loglevel=3 rdinit=/init fbcon=map:0 panic=10"
+	help
+	  Written to cmdline.txt by "make export" and "make image".
+
+endmenu
+
+menu "Firmware and Bluetooth"
+
+config FIRMWARE_GIT_REF
+	string "Raspberry Pi firmware commit"
+	default "88a0ae8876e800801ee5c27624138b3d02a21c63"
+	help
+	  Commit, tag, or branch of github.com/raspberrypi/firmware that
+	  provides the kernel, modules, device trees, and overlays. This
+	  selects the kernel version.
+
+config BT_FIRMWARE
+	string "Bluetooth firmware"
+	default "BCM4345C0"
+	help
+	  Firmware basename from the RPi-Distro bluez-firmware repository. Both
+	  the Pi 4 and the Pi 5 use the CYW43455 (BCM4345C0).
+
+config BT_FIRMWARE_SHA256
+	string "Bluetooth firmware SHA-256"
+	default "51c45e77ddad91a19e96dc8fb75295b2087c279940df2634b23baf71b6dea42c"
+	help
+	  Expected checksum of the downloaded firmware. Leave empty to skip
+	  verification.
+
+endmenu
+
+menu "Network"
+
+config DEVICE_IP
+	string "Device USB network address"
+	default "169.254.1.2"
+	help
+	  IPv4 address the device assigns to its USB network interface
+	  (netmask 255.255.0.0). Also the default PI_HOST for uploads.
+
+endmenu
+
 menu "Audio engine"
 
 config SAMPLE_RATE
-	int "Audio sample rate"
-	range 8000 96000
+	int "Audio sample rate (Hz)"
+	values 8000 16000 22050 32000 44100 48000 96000
 	default 48000
 	help
-	  Sample rate in Hz used by the audio engine and USB audio gadget.
+	  Build-time engine sample rate. The USB sample rate in
+	  /audiox/config.txt remains independently configurable.
 
 config BUFFER_FRAMES
 	int "Audio buffer frames"
-	range 64 1024
+	values 64 128 256 512 1024
 	default 128
 	help
-	  Processing block size. Supported choices are validated by the menu.
+	  Number of frames processed per audio block. Larger values increase
+	  latency and reduce scheduling pressure.
 
 config ALSA_LOGS
 	bool "Enable ALSA diagnostics"
 	default y
+	help
+	  Enables additional ALSA diagnostics in the runtime log.
 
 endmenu
 
@@ -27,5 +172,8 @@ menu "Development"
 config DEBUG_SHELL
 	bool "Enable boot debug shell"
 	default n
+	help
+	  Enables the temporary debug shell during boot. Keep disabled for
+	  normal use.
 
 endmenu

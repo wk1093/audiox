@@ -22,13 +22,13 @@
   "os_list": [
     {
       "name": "AudioX Stable",
-      "description": "Manually published stable releases",
+      "description": "All manually published stable releases",
       "icon": "https://raw.githubusercontent.com/wk1093/audiox/main/logo_small.png",
       "subitems_url": "https://github.com/wk1093/audiox/releases/latest/download/os_list.json"
     },
     {
       "name": "AudioX Nightly",
-      "description": "Latest successful main-branch build; may be unstable",
+      "description": "Last 25 successful main-branch builds; may be unstable",
       "icon": "https://raw.githubusercontent.com/wk1093/audiox/main/logo_small.png",
       "subitems_url": "https://github.com/wk1093/audiox/releases/download/nightly/os_list.json"
     }

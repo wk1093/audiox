@@ -45,7 +45,7 @@ jobs:
             echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           else
             echo "channel=nightly" >> "$GITHUB_OUTPUT"
-            echo "tag=nightly" >> "$GITHUB_OUTPUT"
+            echo "tag=nightly-$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Checkout build source
@@ -157,7 +157,8 @@ jobs:
           RELEASE_DATE: ${{ needs.prepare.outputs.date }}
         run: |
           bash .publishing-tools/scripts/package-imager.sh out/audiox.img out/imager \
-            "$BOARD" "$CHANNEL" "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$RELEASE_DATE"
+            "$BOARD" "$CHANNEL" "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$RELEASE_DATE" \
+            "$(make --no-print-directory --eval='imager-version: ; @printf "%s\n" "$(AUDIOX_VERSION_STRING)"' imager-version)"
 
       - name: Upload Imager publishing files
         if: github.event_name != 'pull_request'
@@ -205,9 +206,16 @@ jobs:
     permissions:
       contents: write
     concurrency:
-      group: audiox-publish-${{ needs.prepare.outputs.channel }}
+      group: audiox-publish
       cancel-in-progress: false
     steps:
+      - name: Checkout publishing tools
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: scripts
+          persist-credentials: false
+
       - name: Download both boards' Imager files
         uses: actions/download-artifact@v4
         with:
@@ -222,63 +230,4 @@ jobs:
           CHANNEL: ${{ needs.prepare.outputs.channel }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           BUILD_COMMIT: ${{ needs.prepare.outputs.commit }}
-        run: |
-          jq -s '{os_list: .}' release/pi4.json release/pi5.json > release/os_list.json
-          if [[ "$CHANNEL" == stable ]]; then
-            tagged_commit=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)
-            if [[ "$tagged_commit" != "$BUILD_COMMIT" ]]; then
-              echo "::error::Release tag moved since this build started; refusing to publish."
-              exit 1
-            fi
-          fi
-          release_tags=$(gh api --paginate "repos/$GH_REPO/releases" --jq '.[].tag_name')
-          if grep -Fxq "$RELEASE_TAG" <<< "$release_tags"; then
-            if [[ "$CHANNEL" == stable ]]; then
-              state=$(gh release view "$RELEASE_TAG" --json isDraft,targetCommitish)
-              if ! jq -e --arg commit "$BUILD_COMMIT" \
-                '.isDraft and .targetCommitish == $commit' <<< "$state" > /dev/null; then
-                echo "::error::Release $RELEASE_TAG already exists and is not a draft for this commit."
-                exit 1
-              fi
-            else
-              state=$(gh release view "$RELEASE_TAG" --json isPrerelease,isDraft)
-              if ! jq -e '.isPrerelease or .isDraft' <<< "$state" > /dev/null; then
-                echo "::error::The nightly tag belongs to a stable release; refusing to overwrite it."
-                exit 1
-              fi
-              notes=$(gh release view "$RELEASE_TAG" --json body --jq .body)
-              if [[ "$notes" =~ audiox-run-number:\ ([0-9]+) ]] && (( BASH_REMATCH[1] > GITHUB_RUN_NUMBER )); then
-                echo "A newer nightly has already been published; skipping this older run."
-                exit 0
-              fi
-            fi
-          elif [[ "$CHANNEL" == nightly ]]; then
-            gh release create "$RELEASE_TAG" --target "$BUILD_COMMIT" \
-              --title "AudioX Nightly" --draft --prerelease --latest=false
-          else
-            gh release create "$RELEASE_TAG" --verify-tag --target "$BUILD_COMMIT" \
-              --title "AudioX $RELEASE_TAG" --draft --latest=false
-          fi
-
-          printf 'Build commit: `%s`\n\n[Workflow run](%s/%s/actions/runs/%s)\n\n<!-- audiox-run-number: %s -->\n' \
-            "$BUILD_COMMIT" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" \
-            "$GITHUB_RUN_NUMBER" > release/notes.md
-          gh release upload "$RELEASE_TAG" release/*.img.xz release/*.sha256 --clobber
-          # Publish checksums and URLs only after both images have been uploaded.
-          gh release upload "$RELEASE_TAG" release/os_list.json --clobber
-          if [[ "$CHANNEL" == nightly ]]; then
-            nightly_refs=$(gh api "repos/$GH_REPO/git/matching-refs/tags/nightly" \
-              --jq 'map(select(.ref == "refs/tags/nightly")) | length')
-            if [[ "$nightly_refs" == 0 ]]; then
-              gh api --method POST "repos/$GH_REPO/git/refs" \
-                -f ref=refs/tags/nightly -f sha="$BUILD_COMMIT"
-            else
-              gh api --method PATCH "repos/$GH_REPO/git/refs/tags/nightly" \
-                -f sha="$BUILD_COMMIT" -F force=true
-            fi
-            gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false \
-              --notes-file release/notes.md
-          else
-            gh release edit "$RELEASE_TAG" --draft=false --prerelease=false --latest \
-              --notes-file release/notes.md
-          fi
+        run: bash scripts/publish-imager.sh release

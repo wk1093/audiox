@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-USAGE="usage: package-imager.sh <image> <output_dir> <pi4|pi5> <stable|nightly> <owner/repo> <tag> <YYYY-MM-DD>"
+USAGE="usage: package-imager.sh <image> <output_dir> <pi4|pi5> <stable|nightly> <owner/repo> <tag> <YYYY-MM-DD> <version>"
 IMAGE="${1:?${USAGE}}"
 OUTPUT_DIR="${2:?${USAGE}}"
 BOARD="${3:?${USAGE}}"
@@ -9,10 +9,12 @@ CHANNEL="${4:?${USAGE}}"
 REPOSITORY="${5:?${USAGE}}"
 TAG="${6:?${USAGE}}"
 RELEASE_DATE="${7:?${USAGE}}"
+VERSION="${8:?${USAGE}}"
+VERSION_BASE="${VERSION%%[-+]*}"
 
 case "$BOARD" in
     pi4) MODEL="4" ;;
-    pi5) MODEL="5 (untested on hardware)" ;;
+    pi5) MODEL="5 (untested)" ;;
     *) echo "Unsupported board: $BOARD" >&2; exit 1 ;;
 esac
 case "$CHANNEL" in
@@ -28,8 +30,8 @@ DOWNLOAD_SHA256="$(sha256sum "$OUTPUT_DIR/$NAME" | cut -d ' ' -f 1)"
 printf '%s  %s\n' "$DOWNLOAD_SHA256" "$NAME" > "$OUTPUT_DIR/$NAME.sha256"
 
 jq -n \
-    --arg name "AudioX Raspberry Pi $MODEL ($CHANNEL)" \
-    --arg description "AudioX audio workstation - $CHANNEL ($TAG)" \
+    --arg name "AudioX $VERSION_BASE Raspberry Pi $MODEL ($CHANNEL)" \
+    --arg description "AudioX $VERSION - $CHANNEL ($TAG), $RELEASE_DATE" \
     --arg url "https://github.com/$REPOSITORY/releases/download/$TAG/$NAME" \
     --arg website "https://github.com/$REPOSITORY" \
     --arg icon "https://raw.githubusercontent.com/$REPOSITORY/main/logo_small.png" \

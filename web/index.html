@@ -23,6 +23,18 @@
 
       <div id="status" class="status">idle</div>
 
+      <section id="boot-failure-banner" class="boot-failure-banner" hidden>
+        <div class="boot-failure-text">
+          <strong id="boot-failure-title">Last update failed to boot and was reverted.</strong>
+          <span id="boot-failure-summary"></span>
+        </div>
+        <div class="boot-failure-actions">
+          <button id="btn-boot-failure-view" class="flat">View report</button>
+          <button id="btn-boot-failure-dismiss" class="warn">Dismiss</button>
+        </div>
+        <pre id="boot-failure-report" class="logs-view" hidden></pre>
+      </section>
+
       <nav class="tabs" id="tabs">
         <button class="tab-btn active" data-tab="routing">Routing</button>
         <button class="tab-btn" data-tab="bluetooth">Bluetooth</button>

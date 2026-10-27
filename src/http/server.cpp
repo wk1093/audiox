@@ -2,6 +2,7 @@
 #include "http/ffmpeg.hpp"
 #include "audio/context.hpp"
 #include "system.hpp"
+#include "init.hpp"
 #include "update_archive.hpp"
 
 #include <arpa/inet.h>
@@ -272,6 +273,11 @@ static int handleBootFile(HttpServer *server,
         unlink(temp_path);
         return sendErrnoResponse(server, cfd, "500 Internal Server Error", "boot upload close failed", saved_errno);
     }
+    if (prepareBootUpdateRecovery() != RET_OK) {
+        int saved_errno = errno;
+        unlink(temp_path);
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "boot backup failed", saved_errno);
+    }
     if (rename(temp_path, file_path) < 0) {
         int saved_errno = errno;
         unlink(temp_path);
@@ -331,6 +337,12 @@ static int handleInitramUpload(HttpServer *server,
     }
 
     close(fd);
+
+    if (prepareBootUpdateRecovery() != RET_OK) {
+        int saved_errno = errno;
+        unlink(HTTP_STAGE_INITRAMFS_PART_PATH);
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "boot backup failed", saved_errno);
+    }
 
     if (rename(HTTP_STAGE_INITRAMFS_PART_PATH, HTTP_STAGE_INITRAMFS_PATH) < 0) {
         int saved_errno = errno;
@@ -587,6 +599,12 @@ static int handleUpdateUpload(HttpServer *server,
         }
     }
     close(archive_fd);
+
+    if (prepareBootUpdateRecovery() != RET_OK) {
+        int saved_errno = errno;
+        cleanupUpdateFiles();
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "boot backup failed", saved_errno);
+    }
 
     for (const UpdateTarget &target : boot_targets) {
         if (rename(target.temp_path, target.final_path) < 0) {

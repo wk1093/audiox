@@ -82,10 +82,10 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Run the application as a child of a small PID 1 watchdog; restart it after exit or a stale main-loop heartbeat.
 
 ## Pre-release - v1.9+
-- [ ] Smarter bootloader that can detect bad initramfs and boot into a backup one:
-  - [ ] File for storing the number of bad boots, and a feature in the main initramfs that will reset that counter once everything has booted properly. If the bootloader sees that this counter is above 2 or 3, it will boot into a backup initramfs instead of the main one.
+- [x] Smarter bootloader that can detect bad initramfs and boot into a backup one:
+  - [x] File for storing the number of bad boots, and a feature in the main initramfs that will reset that counter once everything has booted properly. If the bootloader sees that this counter is above 2 or 3, it will boot into a backup initramfs instead of the main one.
   - [x] Make it so that the bootloader can update the kernel as well.
-  - [ ] Is it possible to add a custom listener or hook into a kernel panic? Maybe automatically make a kernel panic trigger a reboot into the backup initramfs?
+  - [x] Is it possible to add a custom listener or hook into a kernel panic? Maybe automatically make a kernel panic trigger a reboot into the backup initramfs? (`panic=10` reboots, which counts as a failed trial boot)
 - [x] Somehow be able to update the bootloader itself. This could be done by having the main initram update the bootloader, since the bootloader updates the main initram, but they can't edit themselves. So maybe just update the bootloader first from the main initramfs right when the update is triggered, and then reboot into the new bootloader to update the main initramfs. Or I could make them two separate processes, where you could choose to update one or the other. That is probably better since the bootloader won't be updated as often, and we won't have to require a larger update file. The update file will eventually be a custom format that is kinda like a tar, it contains a bit of metadata, and then two separate files (or just one). The update metadata will contain a version number, and then it will also tell the program if it is a bootloader update, initram update, or both.
 - [ ] Improve make config options, like being able to change board type, like switching between pi 4 (the only currently tested board) and other models.
 

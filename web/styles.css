@@ -699,6 +699,41 @@ select {
   width: 100%;
 }
 
+.boot-failure-banner {
+  flex-basis: 100%;
+  order: 10;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  border: 1px solid #8a574a;
+  border-radius: 10px;
+  background: #3a221d;
+  color: #ffd8ce;
+  padding: 10px 12px;
+}
+
+.boot-failure-banner[hidden],
+.boot-failure-banner pre[hidden] {
+  display: none;
+}
+
+.boot-failure-text span {
+  color: var(--warn);
+  margin-left: 6px;
+}
+
+.boot-failure-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.boot-failure-banner pre {
+  flex-basis: 100%;
+  white-space: pre-wrap;
+}
+
 .logs-toolbar {
   display: flex;
   gap: 8px;

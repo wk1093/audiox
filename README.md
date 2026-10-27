@@ -103,6 +103,28 @@ Run `make test-soundboard-config` to check Cut persistence and missing-sound MID
 
 The Pi runtime defaults to the direct graph-processing loop (`AUDIOX_USE_SHARED_GRAPH_PROCESSOR=0`) to avoid per-block adapter dispatch, stack graph-node setup, and shared processor code in the firmware binary. Set `AUDIOX_USE_SHARED_GRAPH_PROCESSOR=1` to compile the callback-based graph path for target-side comparison; the desktop engine uses the shared path. `processing.o` is rebuilt when the mode changes. Capture stream ownership, device attachment/remapping, and source-specific ring/SRC state live in a separate fixed-capacity ALSA capture backend. PCM I/O remains on the direct Pi path.
 
+### Imager publishing
+
+The GitHub Actions build workflow runs separate Pi 4 (`make defconfig`) and Pi 5 (`make pi5_defconfig`) builds. Each uploads an SD card image, update archive, bootloader initramfs, and runtime initramfs, with artifact names suffixed by `-pi4` or `-pi5`. Pi 5 builds remain untested on hardware.
+
+Publishing runs entirely in GitHub Actions using the repository's `GITHUB_TOKEN`:
+
+- **Nightly:** after both main-branch builds succeed, the workflow creates or updates the rolling `nightly` prerelease. It replaces `audiox-latest-nightly-pi4.img.xz`, `audiox-latest-nightly-pi5.img.xz`, their compressed-file SHA-256 sidecars, and `os_list.json`. These assets do not expire and remain available until replaced. The `nightly` tag moves to the published commit, and the firmware version includes `-nightly` and the commit ID. Older nightly images are not retained, and an older workflow run cannot overwrite a newer published nightly.
+- **Stable:** create and push a release tag such as `v2.0.0`, then open **Actions > Build AudioX OS Image > Run workflow** on `main` and enter that tag. The workflow builds that exact commit with the tag's firmware version, stages both boards' assets in a draft release, and publishes it as the latest stable release only after all uploads succeed. Stable assets are named `audiox-latest-pi4.img.xz` and `audiox-latest-pi5.img.xz`. Previous stable releases are retained; published releases are never overwritten. A failed upload can be retried using the same tag while its release is still a draft for the same commit. Merely pushing a tag does not publish a stable release.
+- **Pull requests:** build artifacts only; never publish releases.
+
+Point the Imager fork's repository URL at:
+
+```text
+https://raw.githubusercontent.com/wk1093/audiox/main/os_list.json
+```
+
+The checked-in [os_list.json](os_list.json) includes the Imager version/update URL and Pi 4/Pi 5 hardware selectors, using `pi4-64bit` and `pi5-64bit` tags that match the generated image entries. It offers **AudioX Stable** and **AudioX Nightly**, each loading its generated release manifest with Pi 4 and Pi 5 choices, icons, device filters, image sizes, and SHA-256 hashes. The stable manifest references version-specific asset URLs, while the nightly manifest references the rolling `nightly` assets. The Stable category becomes usable after the first stable release, and Nightly after the first successful main build. No generated manifest commits or external hosting are needed. Forks must update repository-specific URLs in the checked-in manifest.
+
+The repository must allow Actions to write release contents and update the rolling `nightly` tag. Repository release immutability must be disabled to allow rolling nightly assets. Nightly image replacement is not atomic: an Imager client with an older cached manifest may get a checksum error during/after replacement and should reload the catalog. A failed publishing upload leaves the previous nightly manifest in place but may already have replaced one image; rerun the workflow to repair it. Stable releases avoid this by remaining drafts until complete.
+
+Run `bash tests/imager_package_test.sh` to test both boards and channels with small fixture images (requires `jq` and `xz`).
+
 ### Build configuration
 
 Use `make menuconfig` to edit `.config`. Configuration targets:
@@ -110,8 +132,6 @@ Use `make menuconfig` to edit `.config`. Configuration targets:
 - `make defconfig` / `make pi4_defconfig` - regenerate `.config` with the Raspberry Pi 4 defaults
 - `make pi5_defconfig` - regenerate `.config` with the Raspberry Pi 5 defaults (untested on hardware)
 - `make olddefconfig` - keep existing choices and fill in defaults for new options (also run automatically when `Kconfig` changes)
-
-The GitHub Actions build workflow runs separate Pi 4 (`make defconfig`) and Pi 5 (`make pi5_defconfig`) builds. Each uploads an SD card image, update archive, bootloader initramfs, and runtime initramfs, with artifact names suffixed by `-pi4` or `-pi5`. Pi 5 builds remain untested on hardware.
 
 `Kconfig` is the single source of truth. The board is a `choice` (`BOARD_PI4` / `BOARD_PI5`), and per-board defaults use standard `default VALUE if BOARD_PI5` lines, where the first matching default wins. A non-standard `values` keyword lists the allowed values of a string or int option, and menuconfig shows these as a selector. In menuconfig, Left/Right cycles values, Enter edits, `R` resets to the selected board's defaults, and `s` saves. Changing the board also moves every option that still has its old default to the new board's default. Options covered:
 

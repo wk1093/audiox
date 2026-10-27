@@ -5,10 +5,64 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing stable release tag (vX.Y.Z)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.release.outputs.channel }}
+      tag: ${{ steps.release.outputs.tag }}
+      major: ${{ steps.release.outputs.major }}
+      minor: ${{ steps.release.outputs.minor }}
+      patch: ${{ steps.release.outputs.patch }}
+      commit: ${{ steps.commit.outputs.commit }}
+      date: ${{ steps.commit.outputs.date }}
+    steps:
+      - name: Select publishing channel
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "::error::Stable releases require an existing vX.Y.Z tag (no prerelease suffix)."
+              exit 1
+            fi
+            echo "major=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+            echo "minor=${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+            echo "patch=${BASH_REMATCH[3]}" >> "$GITHUB_OUTPUT"
+            echo "channel=stable" >> "$GITHUB_OUTPUT"
+            echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "channel=nightly" >> "$GITHUB_OUTPUT"
+            echo "tag=nightly" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout build source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.sha }}
+          persist-credentials: false
+
+      - name: Resolve build commit
+        id: commit
+        run: |
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "date=$(git show -s --format=%cs HEAD)" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build AudioX (${{ matrix.board }})
+    needs: prepare
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -22,6 +76,38 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+
+      - name: Set published firmware version
+        if: github.event_name != 'pull_request'
+        env:
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+          BUILD_COMMIT: ${{ needs.prepare.outputs.commit }}
+          VERSION_MAJOR: ${{ needs.prepare.outputs.major }}
+          VERSION_MINOR: ${{ needs.prepare.outputs.minor }}
+          VERSION_PATCH: ${{ needs.prepare.outputs.patch }}
+        run: |
+          if [[ "$CHANNEL" == stable ]]; then
+            echo "AUDIOX_VERSION_MAJOR=$VERSION_MAJOR" >> "$GITHUB_ENV"
+            echo "AUDIOX_VERSION_MINOR=$VERSION_MINOR" >> "$GITHUB_ENV"
+            echo "AUDIOX_VERSION_PATCH=$VERSION_PATCH" >> "$GITHUB_ENV"
+            echo "AUDIOX_VERSION_PRERELEASE=" >> "$GITHUB_ENV"
+            echo "AUDIOX_VERSION_BUILD=" >> "$GITHUB_ENV"
+          else
+            echo "AUDIOX_VERSION_PRERELEASE=nightly" >> "$GITHUB_ENV"
+            echo "AUDIOX_VERSION_BUILD=${BUILD_COMMIT:0:12}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Checkout publishing tools from the workflow revision
+        if: github.event_name != 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .publishing-tools
+          sparse-checkout: scripts
+          persist-credentials: false
 
       - name: Install cross-compiler and build dependencies
         run: |
@@ -39,6 +125,8 @@ jobs:
             mtools \
             libarchive-tools \
             libncurses-dev \
+            xz-utils \
+            jq \
             pkg-config
 
       - name: Configure ${{ matrix.board }} defaults
@@ -59,6 +147,27 @@ jobs:
       - name: Build Update Archive (.axu)
         run: |
           make update_archive
+
+      - name: Package Imager image
+        if: github.event_name != 'pull_request'
+        env:
+          BOARD: ${{ matrix.board }}
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_DATE: ${{ needs.prepare.outputs.date }}
+        run: |
+          bash .publishing-tools/scripts/package-imager.sh out/audiox.img out/imager \
+            "$BOARD" "$CHANNEL" "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$RELEASE_DATE"
+
+      - name: Upload Imager publishing files
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imager-${{ matrix.board }}
+          path: out/imager/*
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Upload SD Card Image Artifact
         uses: actions/upload-artifact@v4
@@ -87,3 +196,89 @@ jobs:
           name: program-initramfs-${{ matrix.board }}
           path: out/program.cpio.gz
           retention-days: 7
+
+  publish:
+    name: Publish ${{ needs.prepare.outputs.channel }}
+    needs: [prepare, build]
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: audiox-publish-${{ needs.prepare.outputs.channel }}
+      cancel-in-progress: false
+    steps:
+      - name: Download both boards' Imager files
+        uses: actions/download-artifact@v4
+        with:
+          pattern: imager-*
+          path: release
+          merge-multiple: true
+
+      - name: Publish release assets and Imager manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          BUILD_COMMIT: ${{ needs.prepare.outputs.commit }}
+        run: |
+          jq -s '{os_list: .}' release/pi4.json release/pi5.json > release/os_list.json
+          if [[ "$CHANNEL" == stable ]]; then
+            tagged_commit=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)
+            if [[ "$tagged_commit" != "$BUILD_COMMIT" ]]; then
+              echo "::error::Release tag moved since this build started; refusing to publish."
+              exit 1
+            fi
+          fi
+          release_tags=$(gh api --paginate "repos/$GH_REPO/releases" --jq '.[].tag_name')
+          if grep -Fxq "$RELEASE_TAG" <<< "$release_tags"; then
+            if [[ "$CHANNEL" == stable ]]; then
+              state=$(gh release view "$RELEASE_TAG" --json isDraft,targetCommitish)
+              if ! jq -e --arg commit "$BUILD_COMMIT" \
+                '.isDraft and .targetCommitish == $commit' <<< "$state" > /dev/null; then
+                echo "::error::Release $RELEASE_TAG already exists and is not a draft for this commit."
+                exit 1
+              fi
+            else
+              state=$(gh release view "$RELEASE_TAG" --json isPrerelease,isDraft)
+              if ! jq -e '.isPrerelease or .isDraft' <<< "$state" > /dev/null; then
+                echo "::error::The nightly tag belongs to a stable release; refusing to overwrite it."
+                exit 1
+              fi
+              notes=$(gh release view "$RELEASE_TAG" --json body --jq .body)
+              if [[ "$notes" =~ audiox-run-number:\ ([0-9]+) ]] && (( BASH_REMATCH[1] > GITHUB_RUN_NUMBER )); then
+                echo "A newer nightly has already been published; skipping this older run."
+                exit 0
+              fi
+            fi
+          elif [[ "$CHANNEL" == nightly ]]; then
+            gh release create "$RELEASE_TAG" --target "$BUILD_COMMIT" \
+              --title "AudioX Nightly" --draft --prerelease --latest=false
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --target "$BUILD_COMMIT" \
+              --title "AudioX $RELEASE_TAG" --draft --latest=false
+          fi
+
+          printf 'Build commit: `%s`\n\n[Workflow run](%s/%s/actions/runs/%s)\n\n<!-- audiox-run-number: %s -->\n' \
+            "$BUILD_COMMIT" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" \
+            "$GITHUB_RUN_NUMBER" > release/notes.md
+          gh release upload "$RELEASE_TAG" release/*.img.xz release/*.sha256 --clobber
+          # Publish checksums and URLs only after both images have been uploaded.
+          gh release upload "$RELEASE_TAG" release/os_list.json --clobber
+          if [[ "$CHANNEL" == nightly ]]; then
+            nightly_refs=$(gh api "repos/$GH_REPO/git/matching-refs/tags/nightly" \
+              --jq 'map(select(.ref == "refs/tags/nightly")) | length')
+            if [[ "$nightly_refs" == 0 ]]; then
+              gh api --method POST "repos/$GH_REPO/git/refs" \
+                -f ref=refs/tags/nightly -f sha="$BUILD_COMMIT"
+            else
+              gh api --method PATCH "repos/$GH_REPO/git/refs/tags/nightly" \
+                -f sha="$BUILD_COMMIT" -F force=true
+            fi
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false \
+              --notes-file release/notes.md
+          else
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease=false --latest \
+              --notes-file release/notes.md
+          fi

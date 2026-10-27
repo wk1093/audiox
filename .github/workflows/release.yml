@@ -1,0 +1,64 @@
+name: Release AudioX Stable
+run-name: Release AudioX ${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Stable version (X.Y.Z, for example 1.9.2)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: Tag stable version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Validate version and create tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "::error::Run this workflow from main to release its selected commit."
+            exit 1
+          fi
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Enter a stable version in X.Y.Z format, without a v prefix or prerelease suffix."
+            exit 1
+          fi
+          tag="v$VERSION"
+          refs=$(gh api "repos/$GH_REPO/git/matching-refs/tags/$tag" \
+            --jq "map(select(.ref == \"refs/tags/$tag\")) | length")
+          if [[ "$refs" != 0 ]]; then
+            commit=$(gh api "repos/$GH_REPO/commits/$tag" --jq .sha)
+            if [[ "$commit" != "$GITHUB_SHA" ]]; then
+              echo "::error::$tag already points to a different commit. Choose a new version; release tags are never moved."
+              exit 1
+            fi
+            echo "Reusing existing $tag at $GITHUB_SHA."
+          else
+            gh api --method POST "repos/$GH_REPO/git/refs" \
+              -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          printf '## Stable release requested\n\nTag: `%s`\n\nCommit: `%s`\n\nThe build-and-publish job will build both boards and publish automatically after successful uploads.\n' \
+            "$tag" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: Build and publish stable release
+    needs: tag
+    permissions:
+      contents: write
+    uses: ./.github/workflows/c-cpp.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}

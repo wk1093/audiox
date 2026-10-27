@@ -3,9 +3,28 @@ name: Build AudioX OS Image
 on:
   push:
     branches: [ "main" ]
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'root/**'
+      - 'web/**'
+      - 'scripts/**'
+      - 'Makefile'
+      - 'Kconfig'
+      - 'bootmod.txt'
+      - 'depmod.txt'
+      - 'logo*.png'
+      - 'logo*.svg'
+      - 'logo*.ppm'
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing stable release tag (vX.Y.Z)"
+        required: true
+        type: string
+  workflow_call:
     inputs:
       tag:
         description: "Existing stable release tag (vX.Y.Z)"

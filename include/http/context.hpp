@@ -35,7 +35,8 @@ struct HttpServer {
                      const char *status,
                      const char *content_type,
                      const void *body,
-                     size_t body_len) const;
+                     size_t body_len,
+                     const char *download_name = nullptr) const;
 
     int sendFilePath(int cfd,
                      const char *path,

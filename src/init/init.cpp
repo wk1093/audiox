@@ -17,6 +17,7 @@
 #include "http/context.hpp"
 #include "http/network.hpp"
 #include "bluetooth/context.hpp"
+#include "watchdog_heartbeat.hpp"
 
 #define HANDLE_ERROR(func) \
     do { \
@@ -48,28 +49,6 @@
             printf("[INIT] [WARN] %s returned unexpected code %d\n", #func, ret); \
         } \
     } while (0)
-
-static void sendWatchdogHeartbeat(uint64_t sequence) {
-    static const int heartbeatFd = []() {
-        const char *value = getenv("AUDIOX_WATCHDOG_FD");
-        if (!value || !value[0]) {
-            return -1;
-        }
-        char *end = nullptr;
-        long fd = strtol(value, &end, 10);
-        if (!end || *end != '\0' || fd < 3 || fd > 1024) {
-            return -1;
-        }
-        return static_cast<int>(fd);
-    }();
-
-    if (heartbeatFd >= 0) {
-        if (write(heartbeatFd, &sequence, sizeof(sequence)) != sizeof(sequence)) {
-            printf("[INIT] [WARN] failed to send watchdog heartbeat\n");
-        }
-        fsync(heartbeatFd); // ensure the heartbeat is actually sent
-    }
-}
 
 int main() {
     umask(0);
@@ -151,7 +130,6 @@ int main() {
     mainContext.setReady();
     flushLogs();
     int logFlushCounter = 0;
-    uint64_t watchdogSequence = 0;
     while (1) {
         // nothing in this loop is super high-importance, so I am going to add a small delay to give the kernel 
         // more of an opportunity to dedicate resources to audio processing.
@@ -159,7 +137,7 @@ int main() {
         if (++logFlushCounter >= 100) {
             flushLogs();
             logFlushCounter = 0;
-            sendWatchdogHeartbeat(++watchdogSequence);
+            audioxWatchdogHeartbeat();
         }
         mainContext.eventLoop();
         pollBootRecovery();

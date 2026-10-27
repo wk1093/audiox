@@ -77,7 +77,8 @@ test('browser downloads mirror bytes, checks length and magic, and reports progr
 function controller() {
   const elements = new Map();
   for (const id of ['update-channel', 'btn-update-check', 'btn-update-online', 'btn-update-upload',
-    'update_file', 'update-progress', 'update-status', 'update-release', 'update-download']) {
+    'update_file', 'update-progress', 'update-status', 'update-release', 'update-download',
+    'btn-config-backup', 'btn-config-restore', 'backup_file']) {
     elements.set(id, {
       value: id === 'update-channel' ? 'stable' : 0, files: [], disabled: false, listeners: {},
       addEventListener(event, callback) { this.listeners[event] = callback; },

@@ -17,6 +17,27 @@ a:hover {
   text-decoration: none;
 }
 
+.site-tabs a {
+  text-decoration: none;
+}
+
+.site-page {
+  animation: page-in 220ms ease;
+}
+
+.home-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 28px 0 20px;
+}
+
+.site-tabs a:focus-visible,
+.home-actions a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
 .download-nav,
 .download-footer {
   display: flex;
@@ -151,6 +172,10 @@ a:hover {
 
 .download-guide h2 {
   margin-top: 16px;
+}
+
+.home-features h2 {
+  line-height: 1.6;
 }
 
 .download-notice {

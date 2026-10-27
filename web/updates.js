@@ -133,6 +133,10 @@
     function controls(locked) {
       busy = locked;
       for (const control of [channel, check, manual, file]) control.disabled = locked;
+      for (const id of ['btn-config-backup', 'btn-config-restore', 'backup_file']) {
+        const control = element(id);
+        if (control) control.disabled = locked;
+      }
       online.disabled = locked || !selected || selected.installed || !selected.mirrorUrl;
     }
     function invalidate() {

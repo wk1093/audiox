@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Download AudioX for Raspberry Pi 4 and Pi 5. Stable releases, nightly builds, SD card images, and firmware updates.">
-  <title>AudioX Downloads</title>
+  <meta name="description" content="AudioX is a Raspberry Pi audio workstation with flexible routing, effects, a MIDI soundboard, and a browser-based control desk.">
+  <title>AudioX</title>
   <link rel="icon" href="./logo_small.png">
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="./downloads.css">
@@ -13,60 +13,121 @@
 <body>
   <main class="app downloads-app">
     <header class="app-header">
-      <a class="brand" href="./" aria-label="AudioX downloads home">
+      <a class="brand" href="#home" aria-label="AudioX home">
         <img class="logo-img" src="./logo.svg" alt="AudioX" width="170">
         <span class="brand-meta">
           <span class="brand-title">Raspberry Pi audio workstation</span>
-          <span class="version">Images &amp; firmware updates</span>
+          <span class="version">Route. Shape. Play.</span>
         </span>
       </a>
+      <nav class="tabs site-tabs" aria-label="Main navigation">
+        <a id="nav-home" class="tab-btn active" href="#home" aria-controls="page-home" aria-current="page">Home</a>
+        <a id="nav-download" class="tab-btn" href="#download" aria-controls="page-download">Download</a>
+      </nav>
       <nav class="download-nav" aria-label="Project links">
         <a href="https://github.com/wk1093/audiox">Source code</a>
         <a href="https://github.com/wk1093/audiox/releases">Release history</a>
       </nav>
     </header>
 
-    <section class="download-hero">
-      <span class="eyebrow">Built for sound. Made for Raspberry Pi.</span>
-      <h1>Your next AudioX build.</h1>
-      <p>Flash a fresh SD card or update the AudioX device you already have.
-        Choose your release channel, then pick the image for your hardware.</p>
-      <div class="channel-picker" role="group" aria-label="Release channel">
-        <button id="channel-stable" class="tab-btn active" type="button" aria-pressed="true">Stable</button>
-        <button id="channel-nightly" class="tab-btn" type="button" aria-pressed="false">Nightly</button>
-      </div>
-      <p id="channel-description" class="small">Manually published releases. The recommended starting point.</p>
-    </section>
-
-    <section class="download-content" aria-labelledby="release-heading">
-      <div class="release-heading">
-        <div>
-          <h2 id="release-heading">Latest stable release</h2>
-          <p id="release-meta" class="small" aria-live="polite">Loading release information...</p>
+    <section id="page-home" class="site-page" aria-labelledby="home-heading">
+      <div class="download-hero">
+        <span class="eyebrow">Built for sound. Made for Raspberry Pi.</span>
+        <h1 id="home-heading">Your audio.<br>Your signal path.</h1>
+        <p>AudioX turns a Raspberry Pi into a dedicated audio workstation.
+          Connect USB audio, build your routing, shape it with effects, and trigger
+          sounds from a MIDI controller or the Web UI.</p>
+        <div class="home-actions">
+          <a class="download-primary" href="#download">Get AudioX</a>
+          <a class="download-secondary" href="https://github.com/wk1093/audiox#readme">Read the documentation</a>
         </div>
-        <a id="release-link" class="download-secondary" hidden>Release notes &amp; assets</a>
+        <p class="small">Open source and actively developed. Raspberry Pi 4 and Pi 5 builds
+          are available; Pi 5 support is untested on hardware.</p>
       </div>
-      <p id="download-error" class="download-notice" role="alert" hidden></p>
-      <div id="download-cards" class="download-grid"></div>
-      <noscript><p class="download-notice">Enable JavaScript to view downloads, or browse <a href="https://github.com/wk1093/audiox/releases">GitHub Releases</a>.</p></noscript>
+
+      <div class="download-guide home-features">
+        <article class="card">
+          <span class="eyebrow">01 / Connect &amp; route</span>
+          <h2>Make the connections you need</h2>
+          <p>Route capture devices through effects to playback outputs.
+            The browser-based routing desk gives you a visual signal graph and live meters,
+            with USB audio and USB networking for host-to-Pi control.</p>
+        </article>
+        <article class="card">
+          <span class="eyebrow">02 / Shape your sound</span>
+          <h2>Effects in your signal path</h2>
+          <p>Add processing such as gain, distortion, gate, pitch, and reverb.
+            Save effect parameters and output levels, and map MIDI controls to your setup.</p>
+        </article>
+        <article class="card">
+          <span class="eyebrow">03 / Play &amp; perform</span>
+          <h2>A soundboard at your fingertips</h2>
+          <p>Upload sounds, assign MIDI notes, choose playback modes, and configure
+            controller lighting. Control AudioX from its Web UI, MIDI inputs,
+            or the device's touchscreen interface.</p>
+        </article>
+        <article class="card">
+          <span class="eyebrow">04 / Keep your setup</span>
+          <h2>Built to be your workstation</h2>
+          <p>Keep routing, MIDI, effects, and volumes between boots.
+            Back up settings and soundboard files before a fresh install,
+            or install a board-matched firmware update through your browser.</p>
+        </article>
+      </div>
+
+      <div class="download-content">
+        <aside class="download-notice">
+          <strong>A work in progress, not a finished appliance.</strong>
+          AudioX is still experimental. Start with a Stable release when available,
+          use Nightly to try newer changes, and keep a backup before updating.
+          <a href="https://github.com/wk1093/audiox">Explore the project or contribute on GitHub.</a>
+        </aside>
+      </div>
     </section>
 
-    <section class="download-guide">
-      <article class="card">
-        <span class="eyebrow">01 / Fresh install</span>
-        <h2>Start with an SD image</h2>
-        <p>Download the <code>.img.xz</code> for your Pi. Flash it with Raspberry Pi Imager's
-          <strong>Use custom</strong> option, or choose AudioX in the AudioX Imager fork.</p>
-        <p class="small">Flashing erases the selected drive. Back up your files first.</p>
-      </article>
-      <article class="card">
-        <span class="eyebrow">02 / Existing device</span>
-        <h2>Update without reflashing</h2>
-        <p>In the AudioX Web UI, open <strong>System &gt; Firmware Update</strong>.
-          Check for a release, or download the matching <code>.axu</code> here and select it for manual installation.</p>
-        <p class="small">Your browser needs internet for online downloads. Your Pi does not.
-          Installation validates the archive and reboots the device.</p>
-      </article>
+    <section id="page-download" class="site-page" aria-labelledby="download-heading">
+      <section class="download-hero">
+        <span class="eyebrow">Built for sound. Made for Raspberry Pi.</span>
+        <h1 id="download-heading">Your next AudioX build.</h1>
+        <p>Flash a fresh SD card or update the AudioX device you already have.
+          Choose your release channel, then pick the image for your hardware.</p>
+        <div class="channel-picker" role="group" aria-label="Release channel">
+          <button id="channel-stable" class="tab-btn active" type="button" aria-pressed="true">Stable</button>
+          <button id="channel-nightly" class="tab-btn" type="button" aria-pressed="false">Nightly</button>
+        </div>
+        <p id="channel-description" class="small">Manually published releases. The recommended starting point.</p>
+      </section>
+
+      <section class="download-content" aria-labelledby="release-heading">
+        <div class="release-heading">
+          <div>
+            <h2 id="release-heading">Latest stable release</h2>
+            <p id="release-meta" class="small" aria-live="polite">Loading release information...</p>
+          </div>
+          <a id="release-link" class="download-secondary" hidden>Release notes &amp; assets</a>
+        </div>
+        <p id="download-error" class="download-notice" role="alert" hidden></p>
+        <div id="download-cards" class="download-grid"></div>
+        <noscript><p class="download-notice">Enable JavaScript to view downloads, or browse <a href="https://github.com/wk1093/audiox/releases">GitHub Releases</a>.</p></noscript>
+      </section>
+
+      <section class="download-guide">
+        <article class="card">
+          <span class="eyebrow">01 / Fresh install</span>
+          <h2>Start with an SD image</h2>
+          <p>Download the <code>.img.xz</code> for your Pi. Flash it with Raspberry Pi Imager's
+            <strong>Use custom</strong> option, or choose AudioX in the AudioX Imager fork.</p>
+          <p class="small">Flashing erases the selected drive. Back up your files first.</p>
+        </article>
+        <article class="card">
+          <span class="eyebrow">02 / Existing device</span>
+          <h2>Update without reflashing</h2>
+          <p>In the AudioX Web UI, open <strong>System &gt; Firmware Update</strong>.
+            Check for a release, or download the matching <code>.axu</code> here and select it for manual installation.</p>
+          <p class="small">Your browser needs internet for online downloads. Your Pi does not.
+            Installation validates the archive and reboots the device.</p>
+        </article>
+      </section>
     </section>
 
     <footer class="download-footer">

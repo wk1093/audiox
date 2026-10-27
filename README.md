@@ -137,7 +137,7 @@ On the Web UI's **System > Firmware Update** card, select Stable or Nightly and 
 
 **One-time repository setup:** under **Settings > Pages > Build and deployment**, set **Source** to **GitHub Actions**. Allow the `github-pages` deployment environment to deploy from `main`. After a successful release publication, the **Deploy browser update mirror** job calls **Deploy AudioX Downloads**, downloads only the latest stable/nightly AXUs from GitHub Releases, verifies their sizes and available GitHub digests, and deploys a Pages site at `https://wk1093.github.io/audiox/`. The caller stable workflow grants Pages/OIDC permissions to the reusable build workflow as well.
 
-The public download site shares the device Web UI's stylesheet, colors, and logos. It offers Stable/Nightly selection, separate Pi 4/Pi 5 cards, SD images for fresh installs, AXU updates, SHA-256 checksums, and release-history links. SD images link directly to GitHub Releases; AXUs download from Pages. The site includes `updates.json` and up to four latest board/channel archives, not the complete release history. Older downloads remain in GitHub Releases under the existing retention policy.
+The public site shares the device Web UI's stylesheet, colors, logos, and single-HTML navigation. **Home** introduces AudioX and its routing, effects, MIDI/soundboard, and configuration features. **Download** offers Stable/Nightly selection, separate Pi 4/Pi 5 cards, SD images for fresh installs, AXU updates, SHA-256 checksums, and release-history links. Link directly to the Download tab with `https://wk1093.github.io/audiox/#download`; browser Back/Forward and refresh preserve the selected page. SD images link directly to GitHub Releases; AXUs download from Pages. The site includes `updates.json` and up to four latest board/channel archives, not the complete release history. Older downloads remain in GitHub Releases under the existing retention policy.
 
 Site sources live in `site/`; `scripts/mirror-updates.sh` assembles the deployable site and catalog. Changes to the site or mirror script deploy independently without creating a nightly image build. Shared device styles/logos also redeploy the site (and still trigger normal firmware builds). Run **Deploy AudioX Downloads** manually from Actions to retry a deployment or refresh the site without rebuilding firmware.
 
@@ -146,6 +146,35 @@ GitHub release-storage downloads do not provide the cross-origin headers needed 
 The **browser/computer needs internet access; the Pi does not**. The browser buffers the archive (up to 256 MiB), checks its length and AXU magic, then sends it to the existing `PUT /api/update` handler with upload progress. That handler still validates the archive's CRCs, hardware metadata, and boot configuration before installation and reboot. No GitHub token is stored in the browser or device. GitHub API rate limits, offline browsers, unavailable mirrors, and upload failures are reported in the update status. Manual `.axu` upload remains available. Older runtimes that expose only a Pi 4/5 Model B model string are supported, but need an initial manual update to obtain this new UI.
 
 Run `node --test tests/web_updates_test.js` for browser-side selection, mirror/version checks, downloads, confirmation, and upload tests; `bash tests/imager_publish_test.sh` also exercises AXU publishing and mirror generation without contacting GitHub.
+
+### Configuration backup and restore
+
+Open **System > Configuration Backup** in the device Web UI:
+
+1. Save any pending UI edits. Click **Backup Configuration** and wait for the browser to finish downloading `audiox-backup.axb` before reflashing. The download streams to disk rather than buffering the sound library in JavaScript. Errors are displayed in the download tab.
+2. Flash the new image and reconnect to its Web UI. Select the `.axb` file and click **Restore Configuration**.
+3. Confirm replacement, wait for upload and validation, then let the device reboot. Reload the page after it returns.
+
+The full backup contains these persistent files under `/audiox`:
+
+| Contents | Files |
+| --- | --- |
+| Audio, USB audio format, UI settings, and saved pending configuration | `config.txt`, `config.staging.txt` (when present) |
+| Routing, effect nodes, and routing helper state | `routing.txt` |
+| MIDI note/action/CC mappings, lighting, sampler settings, sound modes, effect state | `midi_map.txt` |
+| Effect parameters and output volumes | `fx_params.txt`, `volumes.txt` |
+| Bluetooth device names and pairing keys | `bluetooth/paired.txt` |
+| All soundboard audio, including subdirectories and empty folders | `sfx/` |
+
+Restore **replaces**, rather than merges, this configuration and sound library. Files missing from the backup are removed from the corresponding managed locations so defaults or stale MIDI/effect settings do not leak into the restored setup. Firmware, boot-partition files, logs, staged firmware updates, and boot-recovery state are not included or overwritten. The new image must support the saved configuration and attached hardware; moving Bluetooth pairings to a different Pi may require pairing again. Keep backups private: they contain Bluetooth keys and are not encrypted.
+
+The device validates the archive format, full CRC32 checksum, paths, types, sizes, duplicates, and required entries before publishing a pending restore. It applies the staged files at the next boot, before configuration readers or audio/Bluetooth worker threads start. Interrupted installation resumes on the next boot; old files are kept until all replacements are installed. Invalid or incomplete uploads leave the live configuration unchanged. Do not edit configuration, upload sounds, or start a firmware update while a native backup download is in progress.
+
+Limits: **4 GiB** per archive, **8,192** entries, at most **16** path components, and **1 MiB** per settings file. Symlinks and special files are rejected instead of following them outside the sound library. Device storage must accommodate the temporary archive and extracted contents alongside the existing setup; restore requires at least twice the upload size plus 16 MiB free. A backup download also temporarily needs enough free device storage for the archive. Transfers report progress to the main-loop watchdog.
+
+API: `GET /api/config/backup` returns an attachment; `PUT /api/config/restore` accepts raw `.axb` bytes and returns `202 Accepted` once validated and staged, then requests a reboot. If automatic reboot fails, reboot manually. The uncompressed `.axb` v1 format uses magic `AXBACKUP`, little-endian version and entry count, path/type/size entries, and a final CRC32 over all preceding bytes. It is separate from firmware `.axu` archives.
+
+Run `make test-config-backup` for native round-trip, streaming HTTP, corruption/path validation, and interrupted-restore tests, and `node --test tests/web_backup_test.js tests/web_updates_test.js` for browser backup/restore and firmware-updater regression tests.
 
 ### Build configuration
 

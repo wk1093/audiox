@@ -4,6 +4,8 @@
 #include "system.hpp"
 #include "init.hpp"
 #include "update_archive.hpp"
+#include "config/backup.hpp"
+#include "watchdog_heartbeat.hpp"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -132,6 +134,7 @@ static int writeAllToFd(int fd, const void *buf, size_t len) {
     const char *p = (const char *)buf;
     size_t written = 0;
     while (written < len) {
+        audioxWatchdogHeartbeat();
         ssize_t nw = write(fd, p + written, len - written);
         if (nw < 0) {
             if (errno == EINTR) {
@@ -164,6 +167,7 @@ static int streamRequestBodyToFd(int cfd,
 
     char buf[16384];
     while (written < content_length) {
+        audioxWatchdogHeartbeat();
         size_t want = content_length - written;
         if (want > sizeof(buf)) {
             want = sizeof(buf);
@@ -1007,6 +1011,100 @@ static int handleRootfsUpload(HttpServer *server,
     return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
 }
 
+static int handleConfigBackup(HttpServer *server, int cfd, const char *method,
+                              const char *path, const char *initial, size_t initialLen,
+                              size_t contentLength) {
+    bool restoring = strcmp(path, "/api/config/restore") == 0;
+    if (strcmp(method, restoring ? "PUT" : "GET")) {
+        static const char message[] = "method not allowed\n";
+        return server->sendResponse(cfd, "405 Method Not Allowed", "text/plain", message, sizeof(message) - 1);
+    }
+    if (restoring && (contentLength < 20 || contentLength > audiox::backup::maxArchiveSize)) {
+        static const char message[] = "backup must be between 20 bytes and 4 GiB\n";
+        return server->sendResponse(cfd, "413 Payload Too Large", "text/plain", message, sizeof(message) - 1);
+    }
+    if (restoring) {
+        struct statvfs storage;
+        if (statvfs(ROOT_MOUNT_POINT, &storage) < 0) {
+            return sendErrnoResponse(server, cfd, "500 Internal Server Error", "check restore storage", errno);
+        }
+        uint64_t freeBytes = (uint64_t)storage.f_bavail * storage.f_frsize;
+        if (freeBytes < (uint64_t)contentLength * 2 + 16 * 1024 * 1024) {
+            static const char message[] = "insufficient storage for backup upload, extracted files and restore metadata; no settings changed\n";
+            return server->sendResponse(cfd, "507 Insufficient Storage", "text/plain", message, sizeof(message) - 1);
+        }
+    }
+    char temp[] = ROOT_MOUNT_POINT "/.backup-transfer-XXXXXX";
+    int fd = mkstemp(temp);
+    if (fd < 0) return sendErrnoResponse(server, cfd, "500 Internal Server Error", "create backup transfer", errno);
+    if (unlink(temp) < 0) {
+        int saved = errno;
+        close(fd);
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "unlink backup transfer", saved);
+    }
+    char error[256] = {};
+    int rc;
+    if (restoring) {
+        rc = streamRequestBodyToFd(cfd, fd, initial, initialLen, contentLength);
+        if (rc) {
+            int saved = errno;
+            close(fd);
+            if (rc < 0) return sendErrnoResponse(server, cfd, "500 Internal Server Error", "receive backup", saved);
+            static const char message[] = "incomplete backup upload; no settings changed\n";
+            return server->sendResponse(cfd, "400 Bad Request", "text/plain", message, sizeof(message) - 1);
+        }
+        rc = audiox::backup::stage(ROOT_MOUNT_POINT, fd, contentLength, error, sizeof(error));
+    } else {
+        rc = audiox::backup::create(ROOT_MOUNT_POINT, fd, error, sizeof(error));
+    }
+    if (rc < 0) {
+        close(fd);
+        printf("[CONFIG] [ERR] %s failed: %s\n", restoring ? "restore" : "backup", error);
+        return server->sendResponse(cfd, restoring ? "400 Bad Request" : "500 Internal Server Error",
+                                    "text/plain; charset=utf-8", error, strlen(error));
+    }
+    if (restoring) {
+        close(fd);
+        static const char message[] = "Backup validated and staged; rebooting to restore settings and sounds.\n";
+        rc = server->sendResponse(cfd, "202 Accepted", "text/plain; charset=utf-8", message, sizeof(message) - 1);
+        sync();
+        sleep(1);
+        if (reboot(RB_AUTOBOOT) < 0) {
+            printf("[CONFIG] [ERR] restore staged, but reboot failed: %s; reboot manually\n", strerror(errno));
+        }
+        return rc;
+    }
+    off_t size = lseek(fd, 0, SEEK_END);
+    if (size < 0) {
+        int saved = errno;
+        close(fd);
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "size backup", saved);
+    }
+    rc = server->sendResponse(cfd, "200 OK", "application/octet-stream", nullptr, (size_t)size, "audiox-backup.axb");
+    char buf[65536];
+    off_t pos = 0;
+    while (rc == 0 && pos < size) {
+        audioxWatchdogHeartbeat();
+        size_t want = (uint64_t)(size - pos) > sizeof(buf) ? sizeof(buf) : (size_t)(size - pos);
+        if (audioxUpdateReadAt(fd, buf, want, pos) < 0) {
+            rc = -1;
+            break;
+        }
+        size_t sent = 0;
+        while (sent < want) {
+            audioxWatchdogHeartbeat();
+            ssize_t n = send(cfd, buf + sent, want - sent, MSG_NOSIGNAL);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) { rc = -1; break; }
+            sent += (size_t)n;
+        }
+        pos += (off_t)want;
+    }
+    if (rc < 0) printf("[CONFIG] [ERR] backup download interrupted: %s\n", strerror(errno));
+    close(fd);
+    return rc;
+}
+
 static ssize_t findHeaderEnd(const char *buf, size_t len) {
     if (!buf || len < 4) {
         return -1;
@@ -1153,6 +1251,15 @@ static void handleClient(HttpServer *server, int cfd) {
 
     size_t body_off = (size_t)header_end;
     size_t initial_body_len = have > body_off ? have - body_off : 0;
+
+    if (strcmp(path, "/api/config/backup") == 0 || strcmp(path, "/api/config/restore") == 0) {
+        if (setSocketTimeouts(cfd, 10000, 10000) < 0) {
+            (void)sendErrnoResponse(server, cfd, "500 Internal Server Error", "set backup transfer timeout", errno);
+            return;
+        }
+        (void)handleConfigBackup(server, cfd, method, path, req + body_off, initial_body_len, (size_t)content_length);
+        return;
+    }
 
     if (strcmp(path, HTTP_BOOT_LOADER_PATH) == 0 ||
         strcmp(path, HTTP_BOOT_KERNEL_PATH) == 0) {
@@ -1380,28 +1487,37 @@ int HttpServer::sendResponse(int cfd,
                              const char *status,
                              const char *content_type,
                              const void *body_data,
-                             size_t body_size) const {
+                             size_t body_size,
+                             const char *download_name) const {
     if (cfd < 0 || !status || !content_type) {
         return -1;
     }
 
-    char hdr[256];
+    char disposition[128] = {};
+    if (download_name) {
+        int n = snprintf(disposition, sizeof(disposition),
+                         "Content-Disposition: attachment; filename=\"%s\"\r\nCache-Control: no-store\r\n", download_name);
+        if (n <= 0 || (size_t)n >= sizeof(disposition)) return -1;
+    }
+    char hdr[512];
     int hlen = snprintf(hdr,
                         sizeof(hdr),
                         "HTTP/1.1 %s\r\n"
                         "Content-Type: %s\r\n"
                         "Content-Length: %zu\r\n"
+                        "%s"
                         "Connection: close\r\n\r\n",
                         status,
                         content_type,
-                        body_size);
+                        body_size,
+                        disposition);
     if (hlen <= 0 || (size_t)hlen >= sizeof(hdr)) {
         return -1;
     }
 
     size_t sent = 0;
     while (sent < (size_t)hlen) {
-        ssize_t n = send(cfd, hdr + sent, (size_t)hlen - sent, 0);
+        ssize_t n = send(cfd, hdr + sent, (size_t)hlen - sent, MSG_NOSIGNAL);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
@@ -1417,7 +1533,7 @@ int HttpServer::sendResponse(int cfd,
     const char *body_bytes = (const char *)body_data;
     size_t body_sent = 0;
     while (body_bytes && body_sent < body_size) {
-        ssize_t n = send(cfd, body_bytes + body_sent, body_size - body_sent, 0);
+        ssize_t n = send(cfd, body_bytes + body_sent, body_size - body_sent, MSG_NOSIGNAL);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;

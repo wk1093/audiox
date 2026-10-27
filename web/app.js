@@ -2969,6 +2969,7 @@ document.getElementById('btn-system-shutdown').addEventListener('click', async (
 });
 
 AudioxUpdates.init({ setStatus });
+AudioxBackup.init({ setStatus });
 
 if (logsSourceEl && logsLevelEl && logsTextEl && logsLimitEl && logsViewEl && logsSummaryEl) {
   document.getElementById('btn-logs-refresh').addEventListener('click', loadLogs);

@@ -357,6 +357,20 @@
         </section>
 
         <section class="card stack">
+          <h2>Configuration Backup</h2>
+          <p class="small">Save all AudioX settings, routing, MIDI/lighting, effects, volumes, Bluetooth pairings, and soundboard audio in one .axb file. Save any pending UI edits first. Backups contain Bluetooth keys; keep them private.</p>
+          <button id="btn-config-backup" class="primary">Backup Configuration</button>
+          <div class="cfg-row">
+            <label for="backup_file">Backup Archive</label>
+            <input id="backup_file" type="file" accept=".axb,application/octet-stream">
+          </div>
+          <p class="small">Restore after reflashing to recover your setup. Restore replaces settings and sounds, then reboots. Firmware and boot files are not changed. Maximum backup size: 4 GiB; free device storage must fit the upload and extracted files.</p>
+          <progress id="backup-progress" class="update-progress" max="100" value="0" hidden></progress>
+          <div id="backup-status" class="small" role="status" aria-live="polite">No backup or restore requested.</div>
+          <button id="btn-config-restore" class="warn">Restore Configuration</button>
+        </section>
+
+        <section class="card stack">
           <h2>Firmware Update</h2>
           <p class="small">Check GitHub using this browser's internet connection. The Pi does not need internet access. Installation requires confirmation and reboots the device.</p>
           <div class="cfg-row">
@@ -385,6 +399,7 @@
   <script src="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/build/litegraph.js"></script>
   <script src="/effects.js"></script>
   <script src="/updates.js"></script>
+  <script src="/backup.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

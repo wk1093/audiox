@@ -20,11 +20,11 @@ function renderDownloads() {
   }
   document.getElementById('release-heading').textContent = `Latest ${channel} release`;
   document.getElementById('channel-description').textContent = channel === 'stable'
-    ? 'Manually published releases. The recommended starting point.'
-    : 'Fresh from main. Experimental builds may contain bugs; use with care.';
+    ? 'Manually published releases. Recommended for most users.'
+    : 'Recent builds from main. These are experimental and may have bugs.';
   if (!release) {
-    document.getElementById('release-meta').textContent = 'No published downloads for this channel yet.';
-    error.textContent = 'This channel will appear after its first AXU-enabled release is published and deployed. Previous images are available in GitHub Releases.';
+    document.getElementById('release-meta').textContent = 'No downloads have been published for this channel yet.';
+    error.textContent = 'This channel will appear when an AXU-enabled release is published. Older releases are listed on GitHub.';
     error.hidden = false;
     return;
   }
@@ -77,7 +77,7 @@ async function loadDownloads() {
     document.getElementById('download-cards').replaceChildren();
     document.getElementById('release-meta').textContent = 'Downloads are temporarily unavailable.';
     const notice = document.getElementById('download-error');
-    notice.textContent = `${error.message}. Retry later or use the Release history link above.`;
+    notice.textContent = `${error.message}. Try again later, or use the Release history link above.`;
     notice.hidden = false;
   }
 }

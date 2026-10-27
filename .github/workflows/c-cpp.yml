@@ -42,12 +42,23 @@ jobs:
       - name: Build SD Card Image (.img)
         run: |
           make image
+        
+      - name: Build Update Archive (.axu)
+        run: |
+          make update_archive
 
       - name: Upload SD Card Image Artifact
         uses: actions/upload-artifact@v4
         with:
           name: audiox-img
           path: out/audiox.img
+          retention-days: 7
+
+      - name: Upload Update Archive Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-archive
+          path: out/audiox-update.axu
           retention-days: 7
 
       - name: Upload Bootloader Initramfs Artifact

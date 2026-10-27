@@ -3,7 +3,7 @@
 
   const repository = 'wk1093/audiox';
   const api = `https://api.github.com/repos/${repository}`;
-  const mirror = 'https://wk1093.github.io/audiox/';
+  const mirror = 'https://wklab.net/audiox/';
   const maxArchiveSize = 256 * 1024 * 1024;
 
   function deviceBoard(info) {

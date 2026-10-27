@@ -6,7 +6,7 @@ const bytes = Buffer.from('AXUPDATEtestdata!');
 const asset = { id: 123, name: 'audiox-update-pi4.axu', size: bytes.length, state: 'uploaded' };
 const release = { tag_name: 'v1.9.2', draft: false, prerelease: false, assets: [asset] };
 const response = (data, status = 200) => new Response(JSON.stringify(data), { status });
-const mirrorUrl = 'https://wk1093.github.io/audiox/updates/v1.9.2/audiox-update-pi4.axu';
+const mirrorUrl = 'https://wklab.net/audiox/updates/v1.9.2/audiox-update-pi4.axu';
 
 test('board detection uses hardware field and supports older Pi Model B responses', () => {
   assert.equal(updates.deviceBoard({ board: 'pi4' }), 'pi4');

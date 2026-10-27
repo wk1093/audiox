@@ -86,36 +86,159 @@ static int appendFile(FILE *out, const InputFile &input) {
     return 0;
 }
 
+static int readSmallFile(const char *path, char *buf, size_t buf_sz, size_t *len_out) {
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        fprintf(stderr, "failed to open %s: %s\n", path, strerror(errno));
+        return -1;
+    }
+    size_t len = fread(buf, 1, buf_sz, file);
+    int failed = ferror(file);
+    fclose(file);
+    if (failed) {
+        fprintf(stderr, "failed to read %s\n", path);
+        return -1;
+    }
+    *len_out = len;
+    return 0;
+}
+
+static int writeMetadataFile(const char *path, const char *text) {
+    FILE *file = fopen(path, "wb");
+    if (!file) {
+        fprintf(stderr, "failed to create %s: %s\n", path, strerror(errno));
+        return -1;
+    }
+    int failed = writeAll(file, text, strlen(text));
+    if (fclose(file) != 0) {
+        failed = -1;
+    }
+    if (failed) {
+        fprintf(stderr, "failed to write %s\n", path);
+        unlink(path);
+    }
+    return failed;
+}
+
+static void usage(const char *argv0) {
+    fprintf(stderr,
+            "usage: %s --board <pi4|pi5> [--kernel-name <name>] [--version <v>] [--kernel-version <kv>]\n"
+            "          <output> <config.txt> <bootloader> <kernel> <program>\n"
+            "  --kernel-name defaults to the file name of <kernel>\n",
+            argv0);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
-    if (argc != 6) {
-        fprintf(stderr, "usage: %s <output> <config.txt> <bootloader> <kernel> <program>\n", argv[0]);
+    const char *board = NULL;
+    const char *kernel_name = NULL;
+    const char *version = NULL;
+    const char *kernel_version = NULL;
+    int argi = 1;
+    while (argi < argc && strncmp(argv[argi], "--", 2) == 0) {
+        const char *opt = argv[argi];
+        if (argi + 1 >= argc) {
+            usage(argv[0]);
+            return 2;
+        }
+        const char *value = argv[argi + 1];
+        if (strcmp(opt, "--board") == 0) {
+            board = value;
+        } else if (strcmp(opt, "--kernel-name") == 0) {
+            kernel_name = value;
+        } else if (strcmp(opt, "--version") == 0) {
+            version = value;
+        } else if (strcmp(opt, "--kernel-version") == 0) {
+            kernel_version = value;
+        } else {
+            fprintf(stderr, "unknown option: %s\n", opt);
+            usage(argv[0]);
+            return 2;
+        }
+        argi += 2;
+    }
+    if (argc - argi != 5 || !board) {
+        usage(argv[0]);
         return 2;
+    }
+    const char *output = argv[argi];
+    const char *config_path = argv[argi + 1];
+    const char *kernel_path = argv[argi + 3];
+    if (!kernel_name) {
+        const char *slash = strrchr(kernel_path, '/');
+        kernel_name = slash ? slash + 1 : kernel_path;
+    }
+
+    char metadata[AUDIOX_UPDATE_METADATA_MAX];
+    int meta_len = snprintf(metadata, sizeof(metadata), "board=%s\nkernel=%s\n", board, kernel_name);
+    if (meta_len > 0 && version && version[0]) {
+        meta_len += snprintf(metadata + meta_len, sizeof(metadata) - (size_t)meta_len, "version=%s\n", version);
+    }
+    if (meta_len > 0 && (size_t)meta_len < sizeof(metadata) && kernel_version && kernel_version[0]) {
+        meta_len += snprintf(metadata + meta_len, sizeof(metadata) - (size_t)meta_len, "kernel_version=%s\n",
+                             kernel_version);
+    }
+    if (meta_len <= 0 || (size_t)meta_len >= sizeof(metadata)) {
+        fprintf(stderr, "metadata is too large\n");
+        return 1;
+    }
+    AudioxUpdateMetadata parsed;
+    const char *meta_error = audioxUpdateParseMetadata(metadata, (size_t)meta_len, &parsed);
+    if (meta_error) {
+        fprintf(stderr, "invalid metadata (%s):\n%s", meta_error, metadata);
+        return 1;
+    }
+
+    // The archive's config.txt decides which kernel the firmware boots, so it must match.
+    static char config_text[AUDIOX_UPDATE_CONFIG_MAX + 1];
+    size_t config_len = 0;
+    if (readSmallFile(config_path, config_text, sizeof(config_text), &config_len) < 0) {
+        return 1;
+    }
+    char config_kernel[AUDIOX_UPDATE_VALUE_MAX];
+    audioxConfigKernelName(config_text, config_len, config_kernel, sizeof(config_kernel));
+    if (strcmp(config_kernel, parsed.kernel) != 0) {
+        fprintf(stderr, "%s boots %s but the archive kernel is named %s\n", config_path, config_kernel, parsed.kernel);
+        return 1;
+    }
+
+    char meta_path[4096];
+    int n = snprintf(meta_path, sizeof(meta_path), "%s.metadata", output);
+    if (n <= 0 || (size_t)n >= sizeof(meta_path)) {
+        fprintf(stderr, "output path is too long\n");
+        return 1;
+    }
+    if (writeMetadataFile(meta_path, metadata) < 0) {
+        return 1;
     }
 
     InputFile inputs[AUDIOX_UPDATE_ENTRY_COUNT] = {
-        {AUDIOX_UPDATE_CONFIG, argv[2], 0, 0},
-        {AUDIOX_UPDATE_BOOTLOADER, argv[3], 0, 0},
-        {AUDIOX_UPDATE_KERNEL, argv[4], 0, 0},
-        {AUDIOX_UPDATE_PROGRAM, argv[5], 0, 0},
+        {AUDIOX_UPDATE_METADATA, meta_path, 0, 0},
+        {AUDIOX_UPDATE_CONFIG, config_path, 0, 0},
+        {AUDIOX_UPDATE_BOOTLOADER, argv[argi + 2], 0, 0},
+        {AUDIOX_UPDATE_KERNEL, kernel_path, 0, 0},
+        {AUDIOX_UPDATE_PROGRAM, argv[argi + 4], 0, 0},
     };
     for (InputFile &input : inputs) {
         if (scanFile(input) < 0) {
+            unlink(meta_path);
             return 1;
         }
     }
 
     char temp_path[4096];
-    int n = snprintf(temp_path, sizeof(temp_path), "%s.tmp", argv[1]);
+    n = snprintf(temp_path, sizeof(temp_path), "%s.tmp", output);
     if (n <= 0 || (size_t)n >= sizeof(temp_path)) {
         fprintf(stderr, "output path is too long\n");
+        unlink(meta_path);
         return 1;
     }
 
     FILE *out = fopen(temp_path, "wb");
     if (!out) {
         fprintf(stderr, "failed to create %s: %s\n", temp_path, strerror(errno));
+        unlink(meta_path);
         return 1;
     }
 
@@ -129,6 +252,7 @@ int main(int argc, char **argv) {
             failed = 1;
         }
     }
+    unlink(meta_path);
     if (fflush(out) != 0 || fsync(fileno(out)) != 0) {
         failed = 1;
     }
@@ -140,12 +264,12 @@ int main(int argc, char **argv) {
         unlink(temp_path);
         return 1;
     }
-    if (rename(temp_path, argv[1]) != 0) {
-        fprintf(stderr, "failed to finalize %s: %s\n", argv[1], strerror(errno));
+    if (rename(temp_path, output) != 0) {
+        fprintf(stderr, "failed to finalize %s: %s\n", output, strerror(errno));
         unlink(temp_path);
         return 1;
     }
 
-    printf("Created update archive %s\n", argv[1]);
+    printf("Created update archive %s (board=%s, kernel=%s)\n", output, parsed.board, parsed.kernel);
     return 0;
 }

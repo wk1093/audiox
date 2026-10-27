@@ -29,10 +29,10 @@ Once I believe this is stable enough for general use, I will release v2.0.0
 - Runs a basic HTTP server on port 80 for web tooling
 - Serves a static page from `/etc/www/index.html`
 - Accepts firmware updates with `PUT /api/initram`, stages a new `program.cpio.gz`, reboots into the bootloader, promotes the staged image to the boot partition, and reboots again
-- Accepts complete update archives with `PUT /api/update`; the device validates and unpacks the archive, installs `config.txt`, the bootloader, and `kernel8.img`, then stages `program.cpio.gz` and reboots
+- Accepts complete update archives with `PUT /api/update`; the device validates and unpacks the archive, checks that it was built for this board, installs the kernel under the file name recorded in the archive, the bootloader, and then `config.txt`, then stages `program.cpio.gz` and reboots
 - Streams boot-partition files over HTTP:
 	- `GET`/`PUT /api/boot/loader` reads or replaces `/boot/initramfs.cpio.gz`
-	- `GET`/`PUT /api/boot/kernel` reads or replaces `/boot/kernel8.img`
+	- `GET`/`PUT /api/boot/kernel` reads or replaces the kernel; `?name=kernel_2712.img` selects the file (`kernel*.img`), otherwise the kernel named by `kernel=` in `/boot/config.txt` (default `kernel8.img`)
 	- Boot uploads are limited to 150 MiB and replace the destination only after a complete upload
 - Exposes basic rootfs file APIs over HTTP:
 	- `GET /api/rootfs/<path>` -> reads `/audiox/<path>`
@@ -70,9 +70,9 @@ Useful targets:
 - `make show_alsa` - print ALSA dependency mode and resolved paths/flags
 - `make alsa` - prepare static `libasound.a` into `out/alsa-sysroot`
 - `make upload_bootloader` - build and upload `out/initramfs.cpio.gz` to `/api/boot/loader`
-- `make upload_kernel` - stage firmware and upload `out/bootfiles/kernel8.img` to `/api/boot/kernel`
+- `make upload_kernel` - stage firmware and upload the configured kernel (for example `out/bootfiles/kernel8.img`) to `/api/boot/kernel?name=<kernel>`
 - `make dev` - sync firmware, build matching kernel modules and images, upload kernel and bootloader, then upload the runtime to trigger installation and reboot
-- `make update_archive` - build `out/audiox-update.axu` containing boot config, bootloader, kernel, and runtime
+- `make update_archive` - build `out/audiox-update.axu` containing build metadata, boot config, bootloader, kernel, and runtime
 - `make upload_update` - build the update archive and upload it to `/api/update`; devices running an older runtime need one `make dev` first
 - The System page can also upload an `.axu` update image
 - `make qemu` - boot in QEMU (aarch64) // doesn't work because qemu raspi support is very minimal (no gui, no USB, no audio)
@@ -81,7 +81,7 @@ Useful targets:
 
 The standalone bootloader and kernel upload targets directly replace files on the device's boot partition and do not reboot it. `make dev` performs these uploads in order before staging the runtime update.
 
-Update archives (`.axu`) use a little-endian binary format: an 8-byte `AXUPDATE` magic, `u32` version `1`, and `u32` entry count `4`, followed by four entries. Each entry is `u32 type`, `u32 crc32`, `u64 size`, then its payload. Types are `1` for `config.txt`, `2` for `initramfs.cpio.gz`, `3` for `kernel8.img`, and `4` for `program.cpio.gz`. The device stores the complete archive and validates every entry before replacing any boot file.
+Update archives (`.axu`) use a little-endian binary format: an 8-byte `AXUPDATE` magic, a `u32` version (`2`), and a `u32` entry count (`5`), followed by the entries in any order. Each entry is a `u32 type`, `u32 crc32` and `u64 size`, followed by its payload. Entry types: `1` is `config.txt`, `2` is `initramfs.cpio.gz`, `3` is the kernel, `4` is `program.cpio.gz`, and `5` is metadata. Metadata is `key=value` text. `board` (`pi4` or `pi5`) and `kernel` (the boot partition file name, matching `kernel*.img`) are required; `version` and `kernel_version` are optional, and unknown keys are ignored. The device stores the complete archive and validates every entry before replacing any boot file. It rejects archives built for a different board (detected from the device-tree SoC), and archives whose `config.txt` `kernel=` line doesn't name the archive kernel. It writes the kernel first and `config.txt` last, so the firmware only switches kernels once the new file is in place. Version `1` archives (four entries, no metadata) are still accepted; their kernel is installed as `kernel8.img`.
 
 ### Desktop audio engine bench
 
@@ -95,7 +95,23 @@ The Pi runtime defaults to the direct graph-processing loop (`AUDIOX_USE_SHARED_
 
 ### Build configuration
 
-Use `make menuconfig` to edit `.config`, or `make defconfig` to regenerate it from the defaults in `Kconfig`. The build-time audio engine sample rate is set with `CONFIG_SAMPLE_RATE` in `.config`; rebuild the runtime after changing it. The Web UI does not expose the runtime USB sample-rate field, but preserves its value when saving the other `/audiox/config.txt` settings.
+Use `make menuconfig` to edit `.config`. Configuration targets:
+
+- `make defconfig` / `make pi4_defconfig` - regenerate `.config` with the Raspberry Pi 4 defaults
+- `make pi5_defconfig` - regenerate `.config` with the Raspberry Pi 5 defaults (untested on hardware)
+- `make olddefconfig` - keep existing choices and fill in defaults for new options (also run automatically when `Kconfig` changes)
+
+`Kconfig` is the single source of truth. The board is a `choice` (`BOARD_PI4` / `BOARD_PI5`), and per-board defaults use standard `default VALUE if BOARD_PI5` lines, where the first matching default wins. A non-standard `values` keyword lists the allowed values of a string or int option, and menuconfig shows these as a selector. In menuconfig, Left/Right cycles values, Enter edits, `R` resets to the selected board's defaults, and `s` saves. Changing the board also moves every option that still has its old default to the new board's default. Options covered:
+
+- Board: kernel image (`kernel8.img`, `kernel_2712.img`, `kernel8_rt.img`), device-tree blobs, GPU firmware files, and the USB gadget controller
+- Boot: display and DSI overlays, `start_cd`, mini-UART Bluetooth, `arm_boost`, and the kernel command line
+- Firmware: the Raspberry Pi firmware git ref, Bluetooth firmware name, and SHA-256
+- Network: device IP (also the default `PI_HOST` for upload targets)
+- Audio and development options
+
+`config.txt` and `cmdline.txt` are generated from these options as `out/dev-config.txt` and `out/dev-cmdline.txt`, and shared by `make export`, `make boot_config`, update archives, and `make image`. The selected kernel keeps its firmware file name on the boot partition, and `config.txt` points `kernel=` at it. Update archives record the board and kernel name in their metadata, and `make upload_kernel` and `make dev` pass the name to `/api/boot/kernel`. After switching boards, run `make fetch_deps` to restage `out/bootfiles` before building.
+
+The build-time audio engine sample rate is set with `CONFIG_SAMPLE_RATE` in `.config`; rebuild the runtime after changing it. The Web UI does not expose the runtime USB sample-rate field, but preserves its value when saving the other `/audiox/config.txt` settings.
 
 At boot, `/init` is a small PID 1 watchdog that launches the application from `/sbin/audiox-main`. The app reports a heartbeat once per second from its main loop; if it exits or stops heartbeating, the watchdog restarts it with capped backoff. Startup has a two-minute grace period. The realtime audio thread is not involved in heartbeat reporting.
 
@@ -170,7 +186,7 @@ make FFMPEG_CROSS_LIB_DIR=/path/to/aarch64/sysroot/lib initramfs
 
 Every update path (`/api/update`, `/api/initram`, `/api/boot/loader`, `/api/boot/kernel`, `/api/boot/config.txt`, and therefore `make dev` and `make upload_update`) is protected by an automatic rollback. State lives on the config partition under `/audiox/system/`:
 
-1. Before a running image changes any boot file, it copies the current `config.txt`, `initramfs.cpio.gz`, `kernel8.img`, and `program.cpio.gz` plus its `/etc/audiox-version` into `boot-backup/`, then writes `boot-trial` (`attempts=0`). If a backup already exists it is kept, because it is the last confirmed-good set.
+1. Before a running image changes any boot file, it copies the current `config.txt`, `initramfs.cpio.gz`, the kernel that `config.txt` boots (for example `kernel8.img`), and `program.cpio.gz` plus its `/etc/audiox-version` into `boot-backup/`, then writes `boot-trial` (`attempts=0`). If a backup already exists it is kept, because it is the last confirmed-good set.
 2. On each later boot (after any staged runtime install), the bootloader increments `attempts` and tells the PID 1 watchdog it is a trial boot.
 3. During a trial boot the watchdog reboots instead of restarting the runtime when it exits, crashes, or misses its heartbeat, and appends the reason to `boot-trial.log`. Kernel panics reboot through `panic=10` on the kernel command line.
 4. Once the runtime has stayed healthy for 60 seconds, it deletes `boot-trial`, `boot-trial.log`, and `boot-backup/`, so a later one-off failure cannot revert a confirmed image.
@@ -184,7 +200,7 @@ Limitations: rollback relies on the new bootloader and kernel getting far enough
 
 - Module seeds live in `depmod.txt`: use `base:` for early boot/UI-critical modules and `normal:` (or no prefix) for the rest
 - Bootloader-only storage/filesystem module seeds live in `bootmod.txt`
-- Default boot graphics stay on FKMS (`vc4-fkms-v3d-pi4`); framebuffer rendering stages into an off-screen buffer before presenting to reduce visual tearing without switching the display stack
+- Default Pi 4 boot graphics stay on FKMS (`vc4-fkms-v3d-pi4`; the Pi 5 defaults to `vc4-kms-v3d-pi5` because it has no FKMS); framebuffer rendering stages into an off-screen buffer before presenting to reduce visual tearing without switching the display stack
 - v1.1 adds UI revamp with 4-page design (Routing, Config, Soundboard, System), per-card MIDI assignment with automatic polling, system info endpoint, improved Flexbox layout for routing page, and DELETE file API
 - v1.0.2 was the previous stable release with real-time audio processing, touchscreen UI, and HTTP control
 

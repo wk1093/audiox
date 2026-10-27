@@ -29,7 +29,8 @@
 #define HTTP_BOOT_LOADER_PATH "/api/boot/loader"
 #define HTTP_BOOT_LOADER_FILE "/boot/initramfs.cpio.gz"
 #define HTTP_BOOT_KERNEL_PATH "/api/boot/kernel"
-#define HTTP_BOOT_KERNEL_FILE "/boot/kernel8.img"
+#define HTTP_BOOT_DIR "/boot"
+#define HTTP_BOOT_KERNEL_TEMP_FILE HTTP_BOOT_DIR "/audiox-kernel.update"
 #define HTTP_BOOT_UPLOAD_MAX (150u * 1024u * 1024u)
 #define HTTP_BOOT_CONFIG_FILE "/boot/config.txt"
 #define HTTP_UPDATE_PATH "/api/update"
@@ -195,19 +196,89 @@ static int mountBootPartition(void) {
     return 0;
 }
 
+// Kernel file the installed config.txt boots; the boot partition must already be mounted.
+static void currentBootKernelName(char *out, size_t out_sz) {
+    char text[16384];
+    size_t len = 0;
+    int fd = open(HTTP_BOOT_CONFIG_FILE, O_RDONLY);
+    if (fd >= 0) {
+        ssize_t nr = read(fd, text, sizeof(text));
+        if (nr > 0) {
+            len = (size_t)nr;
+        }
+        close(fd);
+    }
+    audioxConfigKernelName(text, len, out, out_sz);
+}
+
+// Board family of the running hardware from the device-tree SoC, falling back to the build target.
+static const char *detectBoard(void) {
+    char compat[512];
+    int fd = open("/proc/device-tree/compatible", O_RDONLY);
+    if (fd >= 0) {
+        ssize_t nr = read(fd, compat, sizeof(compat) - 1);
+        close(fd);
+        if (nr > 0) {
+            for (ssize_t i = 0; i < nr; ++i) {
+                if (compat[i] == '\0') {
+                    compat[i] = '\n';
+                }
+            }
+            compat[nr] = '\0';
+            if (strstr(compat, "brcm,bcm2712")) {
+                return "pi5";
+            }
+            if (strstr(compat, "brcm,bcm2711")) {
+                return "pi4";
+            }
+        }
+    }
+#if defined(AUDIOX_BOARD)
+    return AUDIOX_BOARD;
+#else
+    return "";
+#endif
+}
+
+// Extracts a validated kernel file name from a "name=" query parameter.
+static bool queryKernelName(const char *query, char *out, size_t out_sz) {
+    if (!query) {
+        return false;
+    }
+    const char *p = query;
+    while (p && *p) {
+        if (strncmp(p, "name=", 5) == 0) {
+            const char *v = p + 5;
+            size_t len = strcspn(v, "&");
+            if (len >= out_sz) {
+                return false;
+            }
+            memcpy(out, v, len);
+            out[len] = '\0';
+            return true;
+        }
+        p = strchr(p, '&');
+        if (p) {
+            ++p;
+        }
+    }
+    return false;
+}
+
 static int handleBootFile(HttpServer *server,
                           int cfd,
                           const char *method,
                           const char *path,
+                          const char *query,
                           size_t content_length,
                           const char *initial_body,
                           size_t initial_body_len) {
+    char kernel_path[sizeof(HTTP_BOOT_DIR) + AUDIOX_UPDATE_VALUE_MAX + 1];
     const char *file_path = NULL;
+    const bool is_kernel = strcmp(path, HTTP_BOOT_KERNEL_PATH) == 0;
     if (strcmp(path, HTTP_BOOT_LOADER_PATH) == 0) {
         file_path = HTTP_BOOT_LOADER_FILE;
-    } else if (strcmp(path, HTTP_BOOT_KERNEL_PATH) == 0) {
-        file_path = HTTP_BOOT_KERNEL_FILE;
-    } else {
+    } else if (!is_kernel) {
         return -1;
     }
 
@@ -218,6 +289,21 @@ static int handleBootFile(HttpServer *server,
     if (mountBootPartition() < 0) {
         static const char err[] = "boot partition unavailable\n";
         return server->sendResponse(cfd, "503 Service Unavailable", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+    }
+
+    if (is_kernel) {
+        // ?name= selects the kernel file; otherwise the kernel the current config.txt boots.
+        char name[AUDIOX_UPDATE_VALUE_MAX];
+        if (query && strstr(query, "name=")) {
+            if (!queryKernelName(query, name, sizeof(name)) || !audioxUpdateValidKernelName(name)) {
+                static const char bad[] = "invalid kernel name (expected kernel*.img)\n";
+                return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+            }
+        } else {
+            currentBootKernelName(name, sizeof(name));
+        }
+        snprintf(kernel_path, sizeof(kernel_path), "%s/%s", HTTP_BOOT_DIR, name);
+        file_path = kernel_path;
     }
 
     if (strcmp(method, "GET") == 0) {
@@ -237,7 +323,7 @@ static int handleBootFile(HttpServer *server,
         return server->sendResponse(cfd, "413 Payload Too Large", "text/plain; charset=utf-8", too_large, sizeof(too_large) - 1);
     }
 
-    char temp_path[sizeof(HTTP_BOOT_LOADER_FILE) + sizeof(".part")];
+    char temp_path[sizeof(kernel_path) + sizeof(".part")];
     int path_len = snprintf(temp_path, sizeof(temp_path), "%s.part", file_path);
     if (path_len <= 0 || (size_t)path_len >= sizeof(temp_path)) {
         static const char err[] = "boot file path too long\n";
@@ -412,16 +498,24 @@ static const char *parseUpdateArchive(int fd, uint64_t archive_size, UpdateEntry
     if (memcmp(header, AUDIOX_UPDATE_MAGIC, AUDIOX_UPDATE_MAGIC_SIZE) != 0) {
         return "invalid update archive magic\n";
     }
-    if (audioxUpdateGetU32(header + 8) != AUDIOX_UPDATE_VERSION) {
+    const uint32_t version = audioxUpdateGetU32(header + 8);
+    uint32_t entry_count = 0;
+    uint32_t max_type = AUDIOX_UPDATE_PROGRAM;
+    if (version == AUDIOX_UPDATE_VERSION_V1) {
+        entry_count = AUDIOX_UPDATE_ENTRY_COUNT_V1;
+    } else if (version == AUDIOX_UPDATE_VERSION) {
+        entry_count = AUDIOX_UPDATE_ENTRY_COUNT;
+        max_type = AUDIOX_UPDATE_METADATA;
+    } else {
         return "unsupported update archive version\n";
     }
-    if (audioxUpdateGetU32(header + 12) != AUDIOX_UPDATE_ENTRY_COUNT) {
-        return "update archive must contain exactly four entries\n";
+    if (audioxUpdateGetU32(header + 12) != entry_count) {
+        return "update archive has the wrong number of entries\n";
     }
 
     uint32_t seen = 0;
     uint64_t offset = sizeof(header);
-    for (uint32_t i = 0; i < AUDIOX_UPDATE_ENTRY_COUNT; ++i) {
+    for (uint32_t i = 0; i < entry_count; ++i) {
         uint8_t entry_header[AUDIOX_UPDATE_ENTRY_HEADER_SIZE];
         if (archive_size - offset < sizeof(entry_header) ||
             readExactAt(fd, entry_header, sizeof(entry_header), (off_t)offset) < 0) {
@@ -431,7 +525,7 @@ static const char *parseUpdateArchive(int fd, uint64_t archive_size, UpdateEntry
 
         uint32_t type = audioxUpdateGetU32(entry_header);
         uint64_t size = audioxUpdateGetU64(entry_header + 8);
-        if (type < AUDIOX_UPDATE_CONFIG || type > AUDIOX_UPDATE_PROGRAM) {
+        if (type < AUDIOX_UPDATE_CONFIG || type > max_type) {
             return "unknown update archive entry type\n";
         }
         uint32_t bit = 1u << (type - 1u);
@@ -443,6 +537,9 @@ static const char *parseUpdateArchive(int fd, uint64_t archive_size, UpdateEntry
         }
         if (type == AUDIOX_UPDATE_CONFIG && size > AUDIOX_UPDATE_CONFIG_MAX) {
             return "boot config entry is too large\n";
+        }
+        if (type == AUDIOX_UPDATE_METADATA && size > AUDIOX_UPDATE_METADATA_MAX) {
+            return "metadata entry is too large\n";
         }
 
         UpdateEntry &entry = entries[type - 1u];
@@ -460,8 +557,61 @@ static const char *parseUpdateArchive(int fd, uint64_t archive_size, UpdateEntry
         offset += size;
     }
 
-    if (offset != archive_size || seen != 0x0fu) {
+    if (offset != archive_size || seen != (1u << entry_count) - 1u) {
         return "update archive has unexpected trailing data or missing entries\n";
+    }
+    return NULL;
+}
+
+static int readUpdateEntryText(int fd, const UpdateEntry &entry, char *buf, size_t buf_sz) {
+    if (entry.size >= buf_sz) {
+        errno = EFBIG;
+        return -1;
+    }
+    if (readExactAt(fd, buf, (size_t)entry.size, entry.offset) < 0) {
+        return -1;
+    }
+    buf[entry.size] = '\0';
+    return 0;
+}
+
+// Reads the metadata (v1 archives default to kernel8.img with no board), rejects archives built
+// for another board, and requires the archive's config.txt to boot the archive's kernel.
+static const char *checkUpdateMetadata(int fd, const UpdateEntry entries[AUDIOX_UPDATE_ENTRY_COUNT], AudioxUpdateMetadata *meta) {
+    const UpdateEntry &meta_entry = entries[AUDIOX_UPDATE_METADATA - 1u];
+    if (meta_entry.size == 0) {
+        memset(meta, 0, sizeof(*meta));
+        snprintf(meta->kernel, sizeof(meta->kernel), "%s", AUDIOX_UPDATE_DEFAULT_KERNEL);
+    } else {
+        char text[AUDIOX_UPDATE_METADATA_MAX + 1];
+        if (readUpdateEntryText(fd, meta_entry, text, sizeof(text)) < 0) {
+            return "failed to read update metadata\n";
+        }
+        if (audioxUpdateParseMetadata(text, (size_t)meta_entry.size, meta) != NULL) {
+            return "invalid update metadata\n";
+        }
+        const char *board = detectBoard();
+        if (board[0] && strcmp(board, meta->board) != 0) {
+            static char msg[128];
+            snprintf(msg, sizeof(msg), "update archive is for %s but this device is %s\n", meta->board, board);
+            return msg;
+        }
+    }
+
+    const UpdateEntry &config_entry = entries[AUDIOX_UPDATE_CONFIG - 1u];
+    char *config_text = (char *)malloc((size_t)config_entry.size + 1u);
+    if (!config_text) {
+        return "out of memory reading boot config\n";
+    }
+    if (readUpdateEntryText(fd, config_entry, config_text, (size_t)config_entry.size + 1u) < 0) {
+        free(config_text);
+        return "failed to read boot config entry\n";
+    }
+    char config_kernel[AUDIOX_UPDATE_VALUE_MAX];
+    audioxConfigKernelName(config_text, (size_t)config_entry.size, config_kernel, sizeof(config_kernel));
+    free(config_text);
+    if (strcmp(config_kernel, meta->kernel) != 0) {
+        return "update archive config.txt does not boot the archive kernel\n";
     }
     return NULL;
 }
@@ -511,7 +661,7 @@ static void cleanupUpdateFiles(void) {
     unlink(HTTP_STAGE_INITRAMFS_PART_PATH);
     unlink(HTTP_BOOT_CONFIG_FILE ".update");
     unlink(HTTP_BOOT_LOADER_FILE ".update");
-    unlink(HTTP_BOOT_KERNEL_FILE ".update");
+    unlink(HTTP_BOOT_KERNEL_TEMP_FILE);
 }
 
 static int handleUpdateUpload(HttpServer *server,
@@ -566,6 +716,17 @@ static int handleUpdateUpload(HttpServer *server,
         cleanupUpdateFiles();
         return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", parse_error, strlen(parse_error));
     }
+    AudioxUpdateMetadata meta;
+    const char *meta_error = checkUpdateMetadata(archive_fd, entries, &meta);
+    if (meta_error) {
+        close(archive_fd);
+        cleanupUpdateFiles();
+        return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", meta_error, strlen(meta_error));
+    }
+    printf("[HTTP] update archive: board=%s kernel=%s version=%s kernel_version=%s\n",
+           meta.board[0] ? meta.board : "unspecified", meta.kernel,
+           meta.version[0] ? meta.version : "unspecified",
+           meta.kernel_version[0] ? meta.kernel_version : "unspecified");
     if (mountBootPartition() < 0) {
         close(archive_fd);
         cleanupUpdateFiles();
@@ -573,15 +734,19 @@ static int handleUpdateUpload(HttpServer *server,
         return server->sendResponse(cfd, "503 Service Unavailable", "text/plain; charset=utf-8", err, sizeof(err) - 1);
     }
 
+    char kernel_path[sizeof(HTTP_BOOT_DIR) + AUDIOX_UPDATE_VALUE_MAX + 1];
+    snprintf(kernel_path, sizeof(kernel_path), "%s/%s", HTTP_BOOT_DIR, meta.kernel);
+
     struct UpdateTarget {
         uint32_t type;
         const char *temp_path;
         const char *final_path;
     };
-    static const UpdateTarget boot_targets[] = {
-        {AUDIOX_UPDATE_CONFIG, HTTP_BOOT_CONFIG_FILE ".update", HTTP_BOOT_CONFIG_FILE},
+    // config.txt goes last: it selects the kernel, so it only switches once that kernel exists.
+    const UpdateTarget boot_targets[] = {
+        {AUDIOX_UPDATE_KERNEL, HTTP_BOOT_KERNEL_TEMP_FILE, kernel_path},
         {AUDIOX_UPDATE_BOOTLOADER, HTTP_BOOT_LOADER_FILE ".update", HTTP_BOOT_LOADER_FILE},
-        {AUDIOX_UPDATE_KERNEL, HTTP_BOOT_KERNEL_FILE ".update", HTTP_BOOT_KERNEL_FILE},
+        {AUDIOX_UPDATE_CONFIG, HTTP_BOOT_CONFIG_FILE ".update", HTTP_BOOT_CONFIG_FILE},
     };
 
     if (writeUpdateEntry(archive_fd, entries[AUDIOX_UPDATE_PROGRAM - 1u], HTTP_STAGE_INITRAMFS_PART_PATH) < 0) {
@@ -1072,7 +1237,7 @@ static void handleClient(HttpServer *server, int cfd) {
 
     char *query = strchr(path, '?');
     if (query) {
-        *query = '\0';
+        *query++ = '\0';
     }
 
     ssize_t content_length = parseContentLength(req, (size_t)header_end);
@@ -1093,6 +1258,7 @@ static void handleClient(HttpServer *server, int cfd) {
                              cfd,
                              method,
                              path,
+                             query,
                              (size_t)content_length,
                              req + body_off,
                              initial_body_len);

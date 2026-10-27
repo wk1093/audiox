@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-FIRMWARE_GIT_URL="${1:?usage: sync_firmware.sh <firmware_git_url> <firmware_ref> <out_dir> <vc4_overlay> [dsi_overlay]>}"
-FIRMWARE_GIT_REF="${2:?usage: sync_firmware.sh <firmware_git_url> <firmware_ref> <out_dir> <vc4_overlay> [dsi_overlay]>}"
-OUT_DIR="${3:?usage: sync_firmware.sh <firmware_git_url> <firmware_ref> <out_dir> <vc4_overlay> [dsi_overlay]>}"
-VC4_OVERLAY="${4:?usage: sync_firmware.sh <firmware_git_url> <firmware_ref> <out_dir> <vc4_overlay> [dsi_overlay]>}"
-DSI_TOUCH_OVERLAY="${5:-}"
+USAGE="usage: sync_firmware.sh <firmware_git_url> <firmware_ref> <out_dir> <kernel_image> <dtbs> [firmware_files] [overlays]"
+FIRMWARE_GIT_URL="${1:?${USAGE}}"
+FIRMWARE_GIT_REF="${2:?${USAGE}}"
+OUT_DIR="${3:?${USAGE}}"
+KERNEL_IMAGE="${4:?${USAGE}}"
+BOARD_DTBS="${5:?${USAGE}}"
+BOARD_FIRMWARE_FILES="${6:-}"
+BOOT_OVERLAYS="${7:-}"
 
 FIRMWARE_DIR="${OUT_DIR}/firmware"
 BOOT_SRC_DIR="${FIRMWARE_DIR}/boot"
@@ -23,28 +26,30 @@ fi
 git -C "${FIRMWARE_DIR}" fetch --depth 1 origin "${FIRMWARE_GIT_REF}"
 git -C "${FIRMWARE_DIR}" checkout --detach FETCH_HEAD
 
+# Restage from scratch so files from a previously selected board are not exported.
+rm -rf "${BOOT_DST_DIR}"
 mkdir -p "${BOOT_DST_DIR}/overlays"
 
 copy_boot_file() {
     local rel_path="$1"
+    local dst_path="${2:-$1}"
     if [[ ! -f "${BOOT_SRC_DIR}/${rel_path}" ]]; then
         echo "[sync_firmware] ERROR: missing boot artifact ${rel_path}" >&2
         exit 1
     fi
-    install -m 0644 "${BOOT_SRC_DIR}/${rel_path}" "${BOOT_DST_DIR}/${rel_path}"
+    install -m 0644 "${BOOT_SRC_DIR}/${rel_path}" "${BOOT_DST_DIR}/${dst_path}"
 }
 
-copy_boot_file "kernel8.img"
-copy_boot_file "bootcode.bin"
-copy_boot_file "fixup.dat"
-copy_boot_file "start.elf"
-copy_boot_file "start_cd.elf"
-copy_boot_file "start4.elf"
-copy_boot_file "start4cd.elf"
-copy_boot_file "bcm2711-rpi-4-b.dtb"
-copy_boot_file "overlays/${VC4_OVERLAY}.dtbo"
-if [[ -n "${DSI_TOUCH_OVERLAY}" ]]; then
-    copy_boot_file "overlays/${DSI_TOUCH_OVERLAY}.dtbo"
-fi
+# The kernel keeps its firmware name; the generated config.txt points kernel= at it.
+copy_boot_file "${KERNEL_IMAGE}"
+for file in ${BOARD_FIRMWARE_FILES}; do
+    copy_boot_file "${file}"
+done
+for dtb in ${BOARD_DTBS}; do
+    copy_boot_file "${dtb}"
+done
+for overlay in ${BOOT_OVERLAYS}; do
+    copy_boot_file "overlays/${overlay}.dtbo"
+done
 
-echo "[sync_firmware] Boot files staged in ${BOOT_DST_DIR}"
+echo "[sync_firmware] Boot files for ${KERNEL_IMAGE} staged in ${BOOT_DST_DIR}"

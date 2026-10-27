@@ -1,11 +1,13 @@
 #!/bin/bash
-# Auto-detect the kernel version from the firmware repo's uname_string8 file.
+# Auto-detect the kernel version from the firmware repo's uname_string file
+# (uname_string8 by default, or the one matching the selected kernel image).
 # Falls back to a default if the file doesn't exist or can't be parsed.
 
 FIRMWARE_DIR="${1:-.}"
 DEFAULT_KV="${2:-6.18.37-v8+}"
+UNAME_NAME="${3:-uname_string8}"
 
-UNAME_FILE="$FIRMWARE_DIR/firmware/extra/uname_string8"
+UNAME_FILE="$FIRMWARE_DIR/firmware/extra/$UNAME_NAME"
 
 if [ -f "$UNAME_FILE" ]; then
     # Extract kernel version from "Linux version X.X.X-vX+ ..."

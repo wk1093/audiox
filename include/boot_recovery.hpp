@@ -51,6 +51,7 @@ static inline const char *bootRecoveryFileName(size_t index) {
     static const char *const names[] = {
         "initramfs.cpio.gz",
         "program.cpio.gz",
+        "cmdline.txt",
         "config.txt",
     };
     return index < sizeof(names) / sizeof(names[0]) ? names[index] : NULL;
@@ -304,7 +305,8 @@ static inline int bootRecoveryPrepareUpdate(const char *root_dir, const char *bo
             config_len = brReadSmallFile(config_path, config_text, sizeof(config_text));
         }
         audioxConfigKernelName(config_text, config_len > 0 ? (size_t)config_len : 0, kernel_name, sizeof(kernel_name));
-        const char *backup_names[] = {bootRecoveryFileName(0), bootRecoveryFileName(1), bootRecoveryFileName(2), kernel_name};
+        const char *backup_names[] = {bootRecoveryFileName(0), bootRecoveryFileName(1), bootRecoveryFileName(2),
+                                      bootRecoveryFileName(3), kernel_name};
         for (const char *name : backup_names) {
             char src[512];
             char dst[512];

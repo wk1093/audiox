@@ -40,6 +40,7 @@
 #define HTTP_ROUTING_RELOAD_PATH HTTP_API_PREFIX "routing/reload"
 #define HTTP_ROUTING_THINGS_PATH HTTP_API_PREFIX "routing/things"
 #define HTTP_BOOT_CONFIG_PATH HTTP_API_PREFIX "boot/config.txt"
+#define HTTP_BOOT_CMDLINE_PATH HTTP_API_PREFIX "boot/cmdline.txt"
 #define HTTP_ROUTING_HELPER_CREATE_PATH HTTP_API_PREFIX "routing/helper/create"
 #define HTTP_ROUTING_HELPER_DELETE_PATH HTTP_API_PREFIX "routing/helper/delete"
 #define HTTP_BLUETOOTH_DEVICES_PATH HTTP_API_PREFIX "bluetooth/devices"
@@ -87,6 +88,7 @@
 #define HTTP_AUDIO_RESCAN_PATH HTTP_API_PREFIX "audio/rescan"
 #define HTTP_FS_ROOT ROOT_MOUNT_POINT "/"
 #define HTTP_BOOT_CONFIG_FILE "/boot/config.txt"
+#define HTTP_BOOT_CMDLINE_FILE "/boot/cmdline.txt"
 
 namespace {
 
@@ -196,6 +198,57 @@ static int handleBootConfig(HttpServer *server,
 	close(fd);
 	if (syncRc < 0) {
 		static const char err[] = "failed to sync boot config\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	static const char ok[] = "{\"ok\":true}\n";
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
+}
+
+static int handleBootCmdline(HttpServer *server, int cfd, const char *method, const char *body, size_t body_len) {
+	if (!server || !method) {
+		return -1;
+	}
+	if (strcmp(method, "GET") != 0 && strcmp(method, "PUT") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+	if (mountBootConfig() != RET_OK) {
+		static const char err[] = "boot partition unavailable\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	if (strcmp(method, "GET") == 0) {
+		char cmdline[AUDIOX_UPDATE_CMDLINE_MAX];
+		ssize_t length = brReadSmallFile(HTTP_BOOT_CMDLINE_FILE, cmdline, sizeof(cmdline));
+		if (length < 0) {
+			static const char err[] = "cmdline unavailable\n";
+			return server->sendResponse(cfd, "404 Not Found", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+		}
+		return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", cmdline, (size_t)length);
+	}
+
+	const char *invalid = body ? audioxValidateCmdline(body, body_len) : "missing body";
+	if (invalid) {
+		char err[160];
+		int n = snprintf(err, sizeof(err), "invalid cmdline: %s\n", invalid);
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, n > 0 ? (size_t)n : 0);
+	}
+	if (prepareBootUpdateRecovery() != RET_OK) {
+		static const char err[] = "failed to back up boot files\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+
+	// The firmware reads cmdline.txt as a single line; always terminate it with one newline.
+	char text[AUDIOX_UPDATE_CMDLINE_MAX + 2];
+	size_t len = body_len;
+	while (len > 0 && (body[len - 1] == '\n' || body[len - 1] == '\r')) {
+		--len;
+	}
+	memcpy(text, body, len);
+	text[len] = '\n';
+	text[len + 1] = '\0';
+	if (brWriteFileAtomic("/boot", "cmdline.txt", text) < 0) {
+		static const char err[] = "failed to write cmdline\n";
 		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
 	}
 
@@ -3951,6 +4004,10 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_BOOT_CONFIG_PATH) == 0) {
 		return handleBootConfig(server, cfd, method, path, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_BOOT_CMDLINE_PATH) == 0) {
+		return handleBootCmdline(server, cfd, method, body, body_len);
 	}
 
 	if (strcmp(path, HTTP_ROUTING_THINGS_PATH) == 0) {

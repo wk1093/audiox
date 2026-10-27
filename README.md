@@ -29,10 +29,11 @@ Once I believe this is stable enough for general use, I will release v2.0.0
 - Runs a basic HTTP server on port 80 for web tooling
 - Serves a static page from `/etc/www/index.html`
 - Accepts firmware updates with `PUT /api/initram`, stages a new `program.cpio.gz`, reboots into the bootloader, promotes the staged image to the boot partition, and reboots again
-- Accepts complete update archives with `PUT /api/update`; the device validates and unpacks the archive, checks that it was built for this board, installs the kernel under the file name recorded in the archive, the bootloader, and then `config.txt`, then stages `program.cpio.gz` and reboots
+- Accepts complete update archives with `PUT /api/update`; the device validates and unpacks the archive, checks that it was built for this board, installs the kernel under the file name recorded in the archive, the bootloader, `cmdline.txt`, and then `config.txt`, then stages `program.cpio.gz` and reboots
 - Streams boot-partition files over HTTP:
 	- `GET`/`PUT /api/boot/loader` reads or replaces `/boot/initramfs.cpio.gz`
 	- `GET`/`PUT /api/boot/kernel` reads or replaces the kernel; `?name=kernel_2712.img` selects the file (`kernel*.img`), otherwise the kernel named by `kernel=` in `/boot/config.txt` (default `kernel8.img`)
+	- `GET`/`PUT /api/boot/cmdline.txt` reads or replaces the kernel command line; it must be a single line containing `rdinit=/init` (needed to boot the AudioX initramfs)
 	- Boot uploads are limited to 150 MiB and replace the destination only after a complete upload
 - Exposes basic rootfs file APIs over HTTP:
 	- `GET /api/rootfs/<path>` -> reads `/audiox/<path>`
@@ -71,8 +72,9 @@ Useful targets:
 - `make alsa` - prepare static `libasound.a` into `out/alsa-sysroot`
 - `make upload_bootloader` - build and upload `out/initramfs.cpio.gz` to `/api/boot/loader`
 - `make upload_kernel` - stage firmware and upload the configured kernel (for example `out/bootfiles/kernel8.img`) to `/api/boot/kernel?name=<kernel>`
-- `make dev` - sync firmware, build matching kernel modules and images, upload kernel and bootloader, then upload the runtime to trigger installation and reboot
-- `make update_archive` - build `out/audiox-update.axu` containing build metadata, boot config, bootloader, kernel, and runtime
+- `make upload_cmdline` - upload `out/dev-cmdline.txt` to `/api/boot/cmdline.txt`
+- `make dev` - sync firmware, build matching kernel modules and images, upload kernel, bootloader, `cmdline.txt` and `config.txt`, then upload the runtime to trigger installation and reboot
+- `make update_archive` - build `out/audiox-update.axu` containing build metadata, boot config, kernel command line, bootloader, kernel, and runtime
 - `make upload_update` - build the update archive and upload it to `/api/update`; devices running an older runtime need one `make dev` first
 - The System page can also upload an `.axu` update image
 - `make qemu` - boot in QEMU (aarch64) // doesn't work because qemu raspi support is very minimal (no gui, no USB, no audio)
@@ -81,7 +83,15 @@ Useful targets:
 
 The standalone bootloader and kernel upload targets directly replace files on the device's boot partition and do not reboot it. `make dev` performs these uploads in order before staging the runtime update.
 
-Update archives (`.axu`) use a little-endian binary format: an 8-byte `AXUPDATE` magic, a `u32` version (`2`), and a `u32` entry count (`5`), followed by the entries in any order. Each entry is a `u32 type`, `u32 crc32` and `u64 size`, followed by its payload. Entry types: `1` is `config.txt`, `2` is `initramfs.cpio.gz`, `3` is the kernel, `4` is `program.cpio.gz`, and `5` is metadata. Metadata is `key=value` text. `board` (`pi4` or `pi5`) and `kernel` (the boot partition file name, matching `kernel*.img`) are required; `version` and `kernel_version` are optional, and unknown keys are ignored. The device stores the complete archive and validates every entry before replacing any boot file. It rejects archives built for a different board (detected from the device-tree SoC), and archives whose `config.txt` `kernel=` line doesn't name the archive kernel. It writes the kernel first and `config.txt` last, so the firmware only switches kernels once the new file is in place. Version `1` archives (four entries, no metadata) are still accepted; their kernel is installed as `kernel8.img`.
+Update archives (`.axu`) use a little-endian binary format: an 8-byte `AXUPDATE` magic, a `u32` version (`2`), and a `u32` entry count (1 to 64), followed by the entries in any order. Each entry is a `u32 type`, `u32 crc32` and `u64 size`, followed by its payload. Entry types: `1` is `config.txt`, `2` is `initramfs.cpio.gz`, `3` is the kernel, `4` is `program.cpio.gz`, `5` is metadata, and `6` is `cmdline.txt` (optional; when present it must be a single line containing `rdinit=/init`). Metadata is `key=value` text. `board` (`pi4` or `pi5`) and `kernel` (the boot partition file name, matching `kernel*.img`) are required; `version` and `kernel_version` are optional, and unknown keys are ignored. The device stores the complete archive and validates every entry before replacing any boot file. It rejects archives built for a different board (detected from the device-tree SoC), and archives whose `config.txt` `kernel=` line doesn't name the archive kernel. It writes the kernel first and `config.txt` last, so the firmware only switches kernels once the new file is in place. Version `1` archives (four entries, no metadata) are still accepted; their kernel is installed as `kernel8.img`.
+
+The version 2 format is designed so that newer archives keep installing on older v2 devices:
+
+- Devices skip entry types they don't know, after checking their CRC. If a type has bit 31 set (`0x80000000`), the device must understand it, so an older device rejects the archive instead.
+- Devices ignore unknown metadata keys.
+- Absent optional entries (currently only `cmdline.txt`) leave the device's existing file in place.
+
+To extend the format, add new entry types or metadata keys, and never change the meaning of an existing one. Bump the header version only for changes that can't be expressed this way; older devices then refuse the archive cleanly instead of installing it incorrectly. Devices also cap uploads at 256 MiB, so archives must stay under that. Firmware from before this rule (1.9.0 and earlier) accepts only exactly five entries, so update those devices once with `make dev` or a five-entry archive (packed without `--cmdline`).
 
 ### Desktop audio engine bench
 
@@ -184,9 +194,9 @@ make FFMPEG_CROSS_LIB_DIR=/path/to/aarch64/sysroot/lib initramfs
 
 ## Update rollback
 
-Every update path (`/api/update`, `/api/initram`, `/api/boot/loader`, `/api/boot/kernel`, `/api/boot/config.txt`, and therefore `make dev` and `make upload_update`) is protected by an automatic rollback. State lives on the config partition under `/audiox/system/`:
+Every update path (`/api/update`, `/api/initram`, `/api/boot/loader`, `/api/boot/kernel`, `/api/boot/config.txt`, `/api/boot/cmdline.txt`, and therefore `make dev` and `make upload_update`) is protected by an automatic rollback. State lives on the config partition under `/audiox/system/`:
 
-1. Before a running image changes any boot file, it copies the current `config.txt`, `initramfs.cpio.gz`, the kernel that `config.txt` boots (for example `kernel8.img`), and `program.cpio.gz` plus its `/etc/audiox-version` into `boot-backup/`, then writes `boot-trial` (`attempts=0`). If a backup already exists it is kept, because it is the last confirmed-good set.
+1. Before a running image changes any boot file, it copies the current `config.txt`, `cmdline.txt`, `initramfs.cpio.gz`, the kernel that `config.txt` boots (for example `kernel8.img`), and `program.cpio.gz` plus its `/etc/audiox-version` into `boot-backup/`, then writes `boot-trial` (`attempts=0`). If a backup already exists it is kept, because it is the last confirmed-good set.
 2. On each later boot (after any staged runtime install), the bootloader increments `attempts` and tells the PID 1 watchdog it is a trial boot.
 3. During a trial boot the watchdog reboots instead of restarting the runtime when it exits, crashes, or misses its heartbeat, and appends the reason to `boot-trial.log`. Kernel panics reboot through `panic=10` on the kernel command line.
 4. Once the runtime has stayed healthy for 60 seconds, it deletes `boot-trial`, `boot-trial.log`, and `boot-backup/`, so a later one-off failure cannot revert a confirmed image.

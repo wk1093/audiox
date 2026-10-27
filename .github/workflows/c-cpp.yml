@@ -8,7 +8,16 @@ on:
 
 jobs:
   build:
+    name: Build AudioX (${{ matrix.board }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: pi4
+            config: defconfig
+          - board: pi5
+            config: pi5_defconfig
 
     steps:
       - name: Checkout repository
@@ -29,7 +38,11 @@ jobs:
             dosfstools \
             mtools \
             libarchive-tools \
+            libncurses-dev \
             pkg-config
+
+      - name: Configure ${{ matrix.board }} defaults
+        run: make ${{ matrix.config }}
 
       - name: Build Initramfs targets
         run: |
@@ -50,27 +63,27 @@ jobs:
       - name: Upload SD Card Image Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: audiox-img
+          name: audiox-img-${{ matrix.board }}
           path: out/audiox.img
           retention-days: 7
 
       - name: Upload Update Archive Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: update-archive
+          name: update-archive-${{ matrix.board }}
           path: out/audiox-update.axu
           retention-days: 7
 
       - name: Upload Bootloader Initramfs Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bootloader-initramfs
+          name: bootloader-initramfs-${{ matrix.board }}
           path: out/initramfs.cpio.gz
           retention-days: 7
 
       - name: Upload Runtime Initramfs Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: program-initramfs
+          name: program-initramfs-${{ matrix.board }}
           path: out/program.cpio.gz
           retention-days: 7

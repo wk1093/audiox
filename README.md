@@ -111,6 +111,8 @@ Use `make menuconfig` to edit `.config`. Configuration targets:
 - `make pi5_defconfig` - regenerate `.config` with the Raspberry Pi 5 defaults (untested on hardware)
 - `make olddefconfig` - keep existing choices and fill in defaults for new options (also run automatically when `Kconfig` changes)
 
+The GitHub Actions build workflow runs separate Pi 4 (`make defconfig`) and Pi 5 (`make pi5_defconfig`) builds. Each uploads an SD card image, update archive, bootloader initramfs, and runtime initramfs, with artifact names suffixed by `-pi4` or `-pi5`. Pi 5 builds remain untested on hardware.
+
 `Kconfig` is the single source of truth. The board is a `choice` (`BOARD_PI4` / `BOARD_PI5`), and per-board defaults use standard `default VALUE if BOARD_PI5` lines, where the first matching default wins. A non-standard `values` keyword lists the allowed values of a string or int option, and menuconfig shows these as a selector. In menuconfig, Left/Right cycles values, Enter edits, `R` resets to the selected board's defaults, and `s` saves. Changing the board also moves every option that still has its old default to the new board's default. Options covered:
 
 - Board: kernel image (`kernel8.img`, `kernel_2712.img`, `kernel8_rt.img`), device-tree blobs, GPU firmware files, and the USB gadget controller

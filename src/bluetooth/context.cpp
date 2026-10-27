@@ -242,12 +242,9 @@ BluetoothContext::BluetoothContext(Audiox *context)
             outputPacket(),
             outputPacketLength(0),
             outputStatsNextMs(0),
-            outputPacketsSinceStats(0),
             outputDroppedAtStats(0),
             outputFramesPerPacket(0),
             outputMediaMtu(BT_A2DP_DEFAULT_MEDIA_MTU),
-            outputSendWouldBlock(0),
-            outputWouldBlockAtStats(0),
             outputRealtimeScheduling(false),
             outputTarget(),
       pairKeyStored(false),
@@ -1378,11 +1375,9 @@ void BluetoothContext::handleOutputMediaWritable() {
     ssize_t sent = send(outputMediaFd, outputPacket, outputPacketLength, MSG_NOSIGNAL);
     if (sent == (ssize_t)outputPacketLength) {
         outputPacketLength = 0;
-        ++outputPacketsSinceStats;
         return;
     }
     if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        ++outputSendWouldBlock;
         return;
     }
     disconnectOutput(sent < 0 ? strerror(errno) : "short A2DP media write");
@@ -1394,24 +1389,9 @@ void BluetoothContext::pumpOutputAudio() {
     }
     const uint64_t nowMs = bt::monotonicMs();
     if (nowMs >= outputStatsNextMs) {
-        const uint32_t queuedFrames = app->audio->getBluetoothOutputAvailable();
-        const float ratio = app->audio->bluetoothOutputRateRatio;
         const uint32_t dropped = app->audio->bluetoothOutputDropped.load(std::memory_order_relaxed);
         const uint32_t droppedThisSecond = dropped - outputDroppedAtStats;
-                const uint32_t wouldBlockThisSecond = outputSendWouldBlock - outputWouldBlockAtStats;
-                 printf("[BT] [INFO] A2DP output: queued=%u frames rate_adjust=%+.0f ppm mtu=%u frames/packet=%u sent=%u/s send_eagain=%u dropped=%u bitpool=%u frame_length=%zu\n",
-               queuedFrames,
-               (double)((ratio - 1.0f) * 1000000.0f),
-                             (unsigned)outputMediaMtu,
-             (unsigned)outputFramesPerPacket,
-               outputPacketsSinceStats,
-                             wouldBlockThisSecond,
-             droppedThisSecond,
-             sbcEncoderInitialized ? (unsigned)sbcEncoder.bitpool : 0U,
-             sbcEncoderInitialized ? sbc_get_frame_length(&sbcEncoder) : 0U);
-        outputPacketsSinceStats = 0;
         outputDroppedAtStats = dropped;
-                outputWouldBlockAtStats = outputSendWouldBlock;
         outputStatsNextMs = nowMs + 1000ULL;
         if (droppedThisSecond > SAMPLE_RATE / 20U) {
             disconnectOutput("PCM output queue is overrunning; stopping glitchy stream");
@@ -1505,7 +1485,6 @@ void BluetoothContext::disconnectOutput(const char *reason) {
     outputOpened = false;
     outputConnected.store(0, std::memory_order_release);
     outputPacketLength = 0;
-    outputPacketsSinceStats = 0;
     outputStatsNextMs = 0;
     if (reason && reason[0]) {
         printf("[BT] [INFO] A2DP output disconnected: %s\n", reason);

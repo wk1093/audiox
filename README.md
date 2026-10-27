@@ -99,9 +99,11 @@ Build and run the host audio testbench with `make audio-bench` and `make run-aud
 
 The Cut effect passes audio when bypassed and outputs silence when enabled. Its `Channels` setting changes matching input/output port counts; since this changes routing topology, it is not MIDI-CC-mappable, but its mute state can be mapped to a MIDI note or toggled from the Web UI. Like other effects, its instance, mute state, and channel count persist across reboots.
 
-Run `make test-soundboard-config` to check Cut persistence and missing-sound MIDI cleanup, including controller LED output. This host test requires ALSA development files and uses an isolated temporary configuration directory.
+Run `make test-soundboard-config` to check Cut persistence, missing-sound MIDI cleanup (including controller LED output), tab/space-indented configuration parsing, and touchscreen polling with and without an input device. Configuration keys and values accept leading spaces and tabs. Touchscreen polling waits for a valid device rather than repeatedly logging invalid-descriptor errors when no touchscreen is connected. This host test requires ALSA development files and uses an isolated temporary configuration directory and synthetic touch events; no touchscreen hardware is required.
 
 The Pi runtime defaults to the direct graph-processing loop (`AUDIOX_USE_SHARED_GRAPH_PROCESSOR=0`) to avoid per-block adapter dispatch, stack graph-node setup, and shared processor code in the firmware binary. Set `AUDIOX_USE_SHARED_GRAPH_PROCESSOR=1` to compile the callback-based graph path for target-side comparison; the desktop engine uses the shared path. `processing.o` is rebuilt when the mode changes. Capture stream ownership, device attachment/remapping, and source-specific ring/SRC state live in a separate fixed-capacity ALSA capture backend. PCM I/O remains on the direct Pi path.
+
+Bluetooth streaming logs connection events, warnings, and errors without emitting the former per-second A2DP queue/rate/packet debug statistics. The periodic PCM-overrun check remains active and still disconnects a glitching output stream.
 
 ### Imager publishing
 

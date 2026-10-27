@@ -1,12 +1,14 @@
 #include "audio/context.hpp"
 #include "config/context.hpp"
 #include "midi/context.hpp"
+#include "touch/context.hpp"
 
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <linux/input.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -56,7 +58,58 @@ int main() {
     touch("sfx/remove.wav");
 
     Audiox app;
+    TouchContext touchscreen(nullptr);
+    touchscreen.app = &app;
+    errno = EDOM;
+    touchscreen.poll();
+    assert(errno == EDOM);
+    assert(!touchscreen.state.is_pressed);
+
+    int input[2];
+    assert(pipe(input) == 0);
+    assert(fcntl(input[0], F_SETFL, O_NONBLOCK) == 0);
+    touchscreen.fd = input[0];
+    const input_event events[] = {
+        {{}, EV_ABS, ABS_X, 123},
+        {{}, EV_ABS, ABS_Y, 456},
+        {{}, EV_KEY, BTN_TOUCH, 1},
+    };
+    assert(write(input[1], events, sizeof(events)) == (ssize_t)sizeof(events));
+    touchscreen.poll();
+    assert(touchscreen.state.is_pressed);
+    assert(touchscreen.state.x == 123 && touchscreen.state.y == 456);
+    const input_event release = {{}, EV_KEY, BTN_TOUCH, 0};
+    assert(write(input[1], &release, sizeof(release)) == (ssize_t)sizeof(release));
+    touchscreen.poll();
+    assert(!touchscreen.state.is_pressed);
+    close(input[0]);
+    close(input[1]);
+    touchscreen.fd = -1;
+
     ConfigStore config(&app);
+    FILE *fixture = fopen("config.txt", "w");
+    assert(fixture);
+    assert(fputs("\t usb_sample_rate\t =\t 44100\n"
+                 " \t soundboard_mode \t=\t hold\t\n"
+                 "\t framebuffer_view=\t soundboard\n", fixture) >= 0);
+    assert(fclose(fixture) == 0);
+    ConfigData indented = config.readConfigFile();
+    assert(indented.sampleRate == 44100);
+    assert(indented.soundboardMode == SOUNDBOARD_MODE_HOLD);
+    assert(indented.framebufferSoundboard == 1);
+    assert(indented.playbackChannels == 2 && indented.captureChannels == 2);
+
+    fixture = fopen("midi_map.txt", "w");
+    assert(fixture);
+    assert(fputs("\t note_map\t=\t 38,\t keep.wav\t\n"
+                 " \t sound_mode =\t keep.wav,\t hold\t\n", fixture) >= 0);
+    assert(fclose(fixture) == 0);
+    MidiMapData indentedMidi = config.readMidiMapFile();
+    assert(indentedMidi.mappingCount == 1 && indentedMidi.mappings[0].note == 38);
+    assert(strcmp(indentedMidi.mappings[0].sfxPath, "keep.wav") == 0);
+    assert(indentedMidi.soundModeCount == 1);
+    assert(indentedMidi.soundModes[0].mode == SOUNDBOARD_MODE_HOLD);
+
     MidiMapData data = {};
     data.globalLight = {2, 12, 24, 5};
     data.mappingCount = 4;

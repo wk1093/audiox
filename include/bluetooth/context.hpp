@@ -82,12 +82,9 @@ struct BluetoothContext {
     uint8_t outputPacket[1024];
     size_t outputPacketLength;
     uint64_t outputStatsNextMs;
-    uint32_t outputPacketsSinceStats;
     uint32_t outputDroppedAtStats;
     uint8_t outputFramesPerPacket;
     uint16_t outputMediaMtu;
-    uint32_t outputSendWouldBlock;
-    uint32_t outputWouldBlockAtStats;
     bool outputRealtimeScheduling;
 
     BluetoothContext(Audiox *context);

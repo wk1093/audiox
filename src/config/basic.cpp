@@ -54,7 +54,7 @@ static inline void normalizeConfig(ConfigData *cfg) {
 }
 
 static inline char *trimLeft(char *s) {
-    while (s && *s == ' ') {
+    while (s && (*s == ' ' || *s == '\t')) {
         ++s;
     }
     return s;

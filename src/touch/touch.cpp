@@ -157,7 +157,7 @@ TouchContext::TouchContext(Audiox *context) : app(context) {
 }
 
 void TouchContext::poll() {
-    if (!app) {
+    if (!app || !isReady()) {
         return;
     }
 

@@ -11,7 +11,7 @@
 namespace {
 
 static inline char *trimLeft(char *s) {
-    while (s && *s == ' ') {
+    while (s && (*s == ' ' || *s == '\t')) {
         ++s;
     }
     return s;

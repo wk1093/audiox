@@ -63,7 +63,7 @@ RUNTIME_LIBS += $(SBC_STATIC_LIB)
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 9
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.2
+AUDIOX_VERSION_PRERELEASE ?= beta.3
 AUDIOX_VERSION_BUILD ?=
 AUDIOX_VERSION_BASE = $(AUDIOX_VERSION_MAJOR).$(AUDIOX_VERSION_MINOR).$(AUDIOX_VERSION_PATCH)
 AUDIOX_VERSION_STRING = $(AUDIOX_VERSION_BASE)$(if $(AUDIOX_VERSION_PRERELEASE),-$(AUDIOX_VERSION_PRERELEASE))$(if $(AUDIOX_VERSION_BUILD),+$(AUDIOX_VERSION_BUILD))
@@ -123,6 +123,9 @@ FFMPEG_RUNTIME_LIBS ?= ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 libr
 FFMPEG_STAGE_DIR ?= $(OUT_DIR)/ffmpeg_stage
 CONFIG_MENU_BIN = $(OUT_DIR)/host/audiox-menuconfig
 CONFIG_MENU_SRC = $(SCRIPTS_DIR)/audiox-menuconfig.cpp
+UPDATE_PACK_BIN = $(OUT_DIR)/host/audiox-update-pack
+UPDATE_PACK_SRC = $(SCRIPTS_DIR)/audiox-update-pack.cpp
+UPDATE_ARCHIVE ?= $(OUT_DIR)/audiox-update.axu
 AUDIO_BENCH_BIN = $(OUT_DIR)/host/audiox-audio-bench
 AUDIO_ENGINE_TEST_BIN = $(OUT_DIR)/host/audiox-audio-engine-test
 AUDIO_GRAPH_MODE_STAMP = $(OUT_DIR)/.audiox_graph_mode_$(AUDIOX_USE_SHARED_GRAPH_PROCESSOR)
@@ -183,11 +186,13 @@ BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
 .DEFAULT_GOAL := all
 
-.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg upload_bootloader upload_kernel stage_ffmpeg bluetooth_firmware config menuconfig defconfig print-config audio-bench run-audio-bench test-audio-engine test-watchdog
+.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg upload_bootloader upload_kernel update_archive upload_update boot_config stage_ffmpeg bluetooth_firmware config menuconfig defconfig print-config audio-bench run-audio-bench test-audio-engine test-watchdog
 
 all: initramfs
 
 config: menuconfig
+
+archive: update_archive
 
 menuconfig: $(CONFIG_MENU_BIN)
 	@$(CONFIG_MENU_BIN) "$(AUDIOX_CONFIG_FILE)" "$(CURDIR)/Kconfig"
@@ -671,13 +676,41 @@ $(BOOT_CONFIG_FILE):
 		> "$@"
 	@if [ -n "$(DSI_TOUCH_OVERLAY)" ]; then echo "dtoverlay=$(DSI_TOUCH_OVERLAY)" >> "$@"; fi
 
-dev: $(BOOT_CONFIG_FILE)
-	@$(MAKE) fetch_deps
-	@$(MAKE) initramfs
+boot_config: $(BOOT_CONFIG_FILE)
 	@grep -q '^dtoverlay=miniuart-bt$$' "$(BOOT_CONFIG_FILE)" || echo 'dtoverlay=miniuart-bt' >> "$(BOOT_CONFIG_FILE)"
 	@grep -q '^core_freq=250$$' "$(BOOT_CONFIG_FILE)" || echo 'core_freq=250' >> "$(BOOT_CONFIG_FILE)"
 	@grep -q '^core_freq_min=250$$' "$(BOOT_CONFIG_FILE)" || echo 'core_freq_min=250' >> "$(BOOT_CONFIG_FILE)"
 	@grep -q '^arm_boost=1$$' "$(BOOT_CONFIG_FILE)" || echo 'arm_boost=1' >> "$(BOOT_CONFIG_FILE)"
+
+$(UPDATE_PACK_BIN): $(UPDATE_PACK_SRC) include/update_archive.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" "$<"
+
+update_archive: $(UPDATE_PACK_BIN)
+	@$(MAKE) fetch_deps
+	@$(MAKE) initramfs
+	@$(MAKE) boot_config
+	@"$(UPDATE_PACK_BIN)" "$(UPDATE_ARCHIVE)" "$(BOOT_CONFIG_FILE)" "$(INITRAMFS)" "$(OUT_DIR)/bootfiles/kernel8.img" "$(PROGRAM_INITRAMFS)"
+
+upload_update: update_archive
+	@status=$$(curl --silent --show-error --max-time 5 --output /dev/null --write-out "%{http_code}" "http://$(PI_HOST):$(PI_PORT)/api/update") || exit 1; \
+	if [ "$$status" = "404" ]; then \
+		echo "Device runtime does not support /api/update yet. Run 'make dev' once to install a runtime with the update endpoint."; \
+		exit 1; \
+	fi
+	@echo "Uploading update archive to http://$(PI_HOST):$(PI_PORT)/api/update ..."
+	@status=$$(curl --silent --show-error --output "$(OUT_DIR)/upload-update.response" --write-out "%{http_code}" -X PUT --data-binary @"$(UPDATE_ARCHIVE)" "http://$(PI_HOST):$(PI_PORT)/api/update") || { cat "$(OUT_DIR)/upload-update.response"; exit 1; }; \
+	cat "$(OUT_DIR)/upload-update.response"; \
+	if [ "$$status" -lt 200 ] || [ "$$status" -ge 300 ]; then \
+		echo "Update upload failed with HTTP $$status"; \
+		exit 1; \
+	fi
+	@echo "Update upload complete. Device will install the staged runtime and reboot."
+
+dev: $(BOOT_CONFIG_FILE)
+	@$(MAKE) fetch_deps
+	@$(MAKE) initramfs
+	@$(MAKE) boot_config
 	@echo "Uploading kernel to http://$(PI_HOST):$(PI_PORT)/api/boot/kernel ..."
 	@status=$$(curl --silent --show-error --output "$(OUT_DIR)/dev-kernel.response" --write-out "%{http_code}" -X PUT --data-binary @"$(OUT_DIR)/bootfiles/kernel8.img" "http://$(PI_HOST):$(PI_PORT)/api/boot/kernel") || { cat "$(OUT_DIR)/dev-kernel.response"; exit 1; }; \
 	cat "$(OUT_DIR)/dev-kernel.response"; \

@@ -43,6 +43,8 @@ Once I believe this is stable enough for general use, I will release v2.0.0
 	- `POST /api/system/sync` - flushes filesystem
 	- `POST /api/system/restart` - reboots
 	- `POST /api/system/shutdown` - powers off
+	- `GET`/`DELETE /api/system/boot-failure` - reads or dismisses the last automatic-revert report (`204` when there is none)
+- Automatically reverts updates that fail to boot (see [Update rollback](#update-rollback))
 - Exposes a web soundboard with per-card MIDI assignment and automatic polling
 - Supports MIDI note-to-SFX mappings stored in `/audiox/midi_map.txt` and targeting files in `/audiox/sfx/`
 - Removing a sound clears its MIDI note assignments, per-sound lights, and playback-mode overrides and refreshes controller LEDs. Startup and soundboard reload also purge references to missing files.
@@ -163,6 +165,20 @@ Override example:
 ```bash
 make FFMPEG_CROSS_LIB_DIR=/path/to/aarch64/sysroot/lib initramfs
 ```
+
+## Update rollback
+
+Every update path (`/api/update`, `/api/initram`, `/api/boot/loader`, `/api/boot/kernel`, `/api/boot/config.txt`, and therefore `make dev` and `make upload_update`) is protected by an automatic rollback. State lives on the config partition under `/audiox/system/`:
+
+1. Before a running image changes any boot file, it copies the current `config.txt`, `initramfs.cpio.gz`, `kernel8.img`, and `program.cpio.gz` plus its `/etc/audiox-version` into `boot-backup/`, then writes `boot-trial` (`attempts=0`). If a backup already exists it is kept, because it is the last confirmed-good set.
+2. On each later boot (after any staged runtime install), the bootloader increments `attempts` and tells the PID 1 watchdog it is a trial boot.
+3. During a trial boot the watchdog reboots instead of restarting the runtime when it exits, crashes, or misses its heartbeat, and appends the reason to `boot-trial.log`. Kernel panics reboot through `panic=10` on the kernel command line.
+4. Once the runtime has stayed healthy for 60 seconds, it deletes `boot-trial`, `boot-trial.log`, and `boot-backup/`, so a later one-off failure cannot revert a confirmed image.
+5. If a boot starts with 3 attempts already used, the bootloader writes `last-boot-failure.txt` (failed and restored versions, attempts, restored files, trial events, and the tail of `stdout.log`/`stderr.log`), copies the backup back to `/boot`, clears the trial state, and reboots.
+
+The web UI shows a persistent banner while `last-boot-failure.txt` exists; dismissing it deletes the report.
+
+Limitations: rollback relies on the new bootloader and kernel getting far enough to run the bootloader and to reboot. A kernel or bootloader that hangs before that cannot recover itself. `panic=10` is only written by `make export` and `make image`, so existing cards need it added to `cmdline.txt` by hand. The first update to a firmware with rollback support is not protected, because the old runtime does not create a backup.
 
 ## Notes
 

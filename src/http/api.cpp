@@ -5,6 +5,7 @@
 #include "bluetooth/context.hpp"
 #include "config/context.hpp"
 #include "init.hpp"
+#include "boot_recovery.hpp"
 #include "midi/context.hpp"
 
 #include <ctype.h>
@@ -50,6 +51,7 @@
 #define HTTP_SYSTEM_SYNC_PATH HTTP_API_PREFIX "system/sync"
 #define HTTP_SYSTEM_RESTART_PATH HTTP_API_PREFIX "system/restart"
 #define HTTP_SYSTEM_SHUTDOWN_PATH HTTP_API_PREFIX "system/shutdown"
+#define HTTP_SYSTEM_BOOT_FAILURE_PATH HTTP_API_PREFIX "system/boot-failure"
 #define HTTP_VERSION_PATH HTTP_API_PREFIX "version"
 #define HTTP_SYSTEM_INFO_PATH HTTP_API_PREFIX "system/info"
 #define HTTP_MIDI_LAST_NOTE_PATH HTTP_API_PREFIX "midi/last_note"
@@ -169,6 +171,10 @@ static int handleBootConfig(HttpServer *server,
 	if (!body || body_len == 0 || body_len >= HTTP_BODY_MAX) {
 		static const char err[] = "invalid boot config body\n";
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (prepareBootUpdateRecovery() != RET_OK) {
+		static const char err[] = "failed to back up boot files\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
 	}
 
 	int fd = open(HTTP_BOOT_CONFIG_FILE, O_WRONLY | O_TRUNC | O_CREAT, 0644);
@@ -3120,6 +3126,25 @@ static int handleSystemRestart(HttpServer *server,
 	return ret;
 }
 
+static int handleSystemBootFailure(HttpServer *server, int cfd, const char *method) {
+	if (strcmp(method, "GET") == 0) {
+		if (access(BOOT_RECOVERY_REPORT_PATH, R_OK) < 0) {
+			return server->sendResponse(cfd, "204 No Content", "text/plain; charset=utf-8", "", 0);
+		}
+		return server->sendFilePath(cfd, BOOT_RECOVERY_REPORT_PATH, "text/plain; charset=utf-8");
+	}
+	if (strcmp(method, "DELETE") == 0) {
+		if (unlink(BOOT_RECOVERY_REPORT_PATH) < 0 && errno != ENOENT) {
+			static const char err[] = "failed to dismiss boot failure report\n";
+			return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+		}
+		sync();
+		static const char ok[] = "{\"ok\":true}\n";
+		return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
+	}
+	return sendMethodNotAllowed(server, cfd);
+}
+
 static int handleSystemShutdown(HttpServer *server,
 								int cfd,
 								const char *method,
@@ -4002,6 +4027,10 @@ int handleApiRequest(HttpServer *server,
 			return sendNotImplemented(server, cfd, "system shutdown");
 		}
 		return rc;
+	}
+
+	if (strcmp(path, HTTP_SYSTEM_BOOT_FAILURE_PATH) == 0) {
+		return handleSystemBootFailure(server, cfd, method);
 	}
 
 	if (strcmp(path, HTTP_SYSTEM_INFO_PATH) == 0) {

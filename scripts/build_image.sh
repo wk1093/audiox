@@ -79,7 +79,7 @@ if [[ -n "${DSI_TOUCH_OVERLAY}" ]]; then
     sudo sh -c "echo 'dtoverlay=${DSI_TOUCH_OVERLAY}' >> '${MNT_BOOT}/config.txt'"
 fi
 sudo sh -c "echo 'dtoverlay=dwc2,dr_mode=peripheral' >> '${MNT_BOOT}/config.txt'"
-sudo sh -c "echo 'console=fbcon console=tty1 quiet loglevel=3 rdinit=/init' > '${MNT_BOOT}/cmdline.txt'"
+sudo sh -c "echo 'console=fbcon console=tty1 quiet loglevel=3 rdinit=/init panic=10' > '${MNT_BOOT}/cmdline.txt'"
 
 if [[ -n "${FFMPEG_BIN}" && -f "${FFMPEG_BIN}" ]]; then
     echo "Staging ffmpeg into STORAGE partition as /ffmpeg..."

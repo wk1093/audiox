@@ -63,7 +63,7 @@ RUNTIME_LIBS += $(SBC_STATIC_LIB)
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 9
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.3
+AUDIOX_VERSION_PRERELEASE ?= beta.4
 AUDIOX_VERSION_BUILD ?=
 AUDIOX_VERSION_BASE = $(AUDIOX_VERSION_MAJOR).$(AUDIOX_VERSION_MINOR).$(AUDIOX_VERSION_PATCH)
 AUDIOX_VERSION_STRING = $(AUDIOX_VERSION_BASE)$(if $(AUDIOX_VERSION_PRERELEASE),-$(AUDIOX_VERSION_PRERELEASE))$(if $(AUDIOX_VERSION_BUILD),+$(AUDIOX_VERSION_BUILD))
@@ -236,7 +236,7 @@ test-soundboard-config: $(OUT_DIR)/host/audiox-soundboard-config-test
 
 SOUNDBOARD_CONFIG_TEST_SRCS = tests/soundboard_config_test.cpp src/context.cpp \
 	src/config/basic.cpp src/config/midi_map.cpp \
-	src/midi/midi.cpp src/audio/setup.cpp src/http/server.cpp \
+	src/midi/midi.cpp src/audio/setup.cpp src/http/server.cpp src/init/recovery.cpp \
 	$(filter-out tools/audiox-audio-bench.cpp src/audio/engine.cpp src/audio/graph_processor.cpp,$(AUDIO_BENCH_SRCS))
 
 $(OUT_DIR)/host/audiox-soundboard-config-test: $(SOUNDBOARD_CONFIG_TEST_SRCS) src/http/api.cpp $(wildcard include/config/*.hpp include/midi/*.hpp include/audio/*.hpp include/audio/effects/*.hpp include/http/*.hpp) include/defs.hpp
@@ -245,6 +245,14 @@ $(OUT_DIR)/host/audiox-soundboard-config-test: $(SOUNDBOARD_CONFIG_TEST_SRCS) sr
 		-DROOT_MOUNT_POINT='"."' -ffunction-sections -fdata-sections \
 		-Wl,--gc-sections -o "$@" $(SOUNDBOARD_CONFIG_TEST_SRCS) \
 		$(shell pkg-config --cflags --libs alsa) -pthread -lm
+
+.PHONY: test-boot-recovery
+test-boot-recovery: $(OUT_DIR)/host/audiox-boot-recovery-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-boot-recovery-test: tests/boot_recovery_test.cpp include/boot_recovery.hpp include/defs.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" "$<"
 
 .PHONY: test-audio-pcm-recover
 test-audio-pcm-recover: $(OUT_DIR)/host/audiox-audio-pcm-recover-test
@@ -282,9 +290,9 @@ $(AUDIO_ENGINE_TEST_BIN): tests/audio_engine_test.cpp $(filter-out tools/audiox-
 		-DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) -o "$@" tests/audio_engine_test.cpp \
 		$(filter-out tools/audiox-audio-bench.cpp,$(AUDIO_BENCH_SRCS)) -pthread -lm
 
-$(WATCHDOG_HOST_BIN): $(WATCHDOG_SRC)
+$(WATCHDOG_HOST_BIN): $(WATCHDOG_SRC) include/boot_recovery.hpp
 	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -DAUDIOX_WATCHDOG_STARTUP_TIMEOUT_MS=3000 \
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -DAUDIOX_WATCHDOG_STARTUP_TIMEOUT_MS=3000 \
 		-DAUDIOX_WATCHDOG_HEARTBEAT_TIMEOUT_MS=1200 -o "$@" "$<"
 
 $(WATCHDOG_HUNG_CHILD_BIN): tests/watchdog_hung_child.cpp
@@ -499,6 +507,7 @@ rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(MODULE_LOAD_LIST) $(
 	cp $(MODULE_LOAD_LIST) $(ROOTFS_DIR)/etc/module-load.list
 	cp $(MODULE_LOAD_BASE_LIST) $(ROOTFS_DIR)/etc/module-load.base.list
 	cp $(MODULE_LOAD_NORMAL_LIST) $(ROOTFS_DIR)/etc/module-load.normal.list
+	@echo "$(AUDIOX_VERSION_STRING) (built $$(date -u +%Y-%m-%dT%H:%M:%SZ))" > "$(ROOTFS_DIR)/etc/audiox-version"
 	@if [ -f "$(BOOT_LOGO_PPM)" ]; then \
 		echo "Staging boot logo from $(BOOT_LOGO_PPM)..."; \
 		cp "$(BOOT_LOGO_PPM)" "$(ROOTFS_DIR)/etc/logo_boot.ppm"; \
@@ -654,7 +663,7 @@ export: initramfs
 		echo "dtoverlay=$(DSI_TOUCH_OVERLAY)" >> $(SD_MOUNT_BOOT)/config.txt; \
 	fi
 	@echo "dtoverlay=dwc2,dr_mode=peripheral" >> $(SD_MOUNT_BOOT)/config.txt
-	@echo "console=fbcon console=tty1 quiet loglevel=3 rdinit=/init fbcon=map:0" > $(SD_MOUNT_BOOT)/cmdline.txt
+	@echo "console=fbcon console=tty1 quiet loglevel=3 rdinit=/init fbcon=map:0 panic=10" > $(SD_MOUNT_BOOT)/cmdline.txt
 	sync
 	@echo "SD Card Flashed and ready for hardware execution!"
 

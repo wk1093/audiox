@@ -1,9 +1,11 @@
 #include "defs.hpp"
 #include "system.hpp"
+#include "boot_recovery.hpp"
 
 #include <errno.h>
 #include <sys/syscall.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/reboot.h>
@@ -254,6 +256,62 @@ static int applyStagedProgramUpdate() {
     return RET_OK;
 }
 
+static void readRuntimeVersion(char *out, size_t out_sz) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s%s", PROGRAM_RUNTIME_ROOT, AUDIOX_VERSION_FILE);
+    if (brReadSmallFile(path, out, out_sz) <= 0) {
+        snprintf(out, out_sz, "unknown");
+    }
+    brTrimLine(out);
+}
+
+// Counts boots of an unconfirmed update and restores the backup boot set once attempts run out.
+static int runBootTrial() {
+    if (mountPartition(CONFIG_DEVICE_PATH, ROOTFS_STAGING_MOUNT_POINT, "ext4") != RET_OK) {
+        return RET_WARN;
+    }
+
+    char version[128];
+    readRuntimeVersion(version, sizeof(version));
+    unsigned attempts = 0;
+    BootTrialAction action = bootRecoveryBeginBoot(ROOTFS_STAGING_MOUNT_POINT, version, &attempts);
+    if (action == BOOT_TRIAL_NONE) {
+        (void)umount(ROOTFS_STAGING_MOUNT_POINT);
+        return RET_OK;
+    }
+    if (action == BOOT_TRIAL_ATTEMPT) {
+        printf("[BOOT] trial boot %u/%u of runtime %s\n", attempts, (unsigned)BOOT_RECOVERY_MAX_ATTEMPTS, version);
+        sync();
+        (void)umount(ROOTFS_STAGING_MOUNT_POINT);
+        (void)setenv(BOOT_RECOVERY_TRIAL_ENV, "1", 1);
+        return RET_OK;
+    }
+
+    printf("[BOOT] [WARN] runtime %s failed %u trial boot(s); reverting to backup\n", version, attempts);
+    if (mountPartition(BOOT_DEVICE_PATH, BOOT_MOUNT_POINT, "vfat") != RET_OK) {
+        (void)umount(ROOTFS_STAGING_MOUNT_POINT);
+        return RET_WARN;
+    }
+    int rc = bootRecoveryRevert(ROOTFS_STAGING_MOUNT_POINT, BOOT_MOUNT_POINT, version, attempts);
+    sync();
+    (void)umount(BOOT_MOUNT_POINT);
+    (void)umount(ROOTFS_STAGING_MOUNT_POINT);
+    if (rc < 0) {
+        printf("[BOOT] [ERR] restoring backup boot files failed; will retry next boot\n");
+        return RET_WARN;
+    }
+    if (rc > 0) {
+        printf("[BOOT] [WARN] no backup boot set available; continuing with current image\n");
+        return RET_WARN;
+    }
+    printf("[BOOT] backup boot files restored, rebooting\n");
+    sync();
+    if (reboot(RB_AUTOBOOT) < 0) {
+        printf("[BOOT] [ERR] reboot failed: %s\n", strerror(errno));
+    }
+    return RET_WARN;
+}
+
 static int bootProgramRuntime() {
     char runtime_init[256];
     int n = snprintf(runtime_init, sizeof(runtime_init), "%s/init", PROGRAM_RUNTIME_ROOT);
@@ -312,6 +370,8 @@ int main() {
             sleep(60);
         }
     }
+
+    (void)runBootTrial();
 
     if (bootProgramRuntime() != RET_OK) {
         printf("[BOOT] [CRIT] failed to enter runtime\n");

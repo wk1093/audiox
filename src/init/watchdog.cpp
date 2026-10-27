@@ -6,10 +6,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/reboot.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "boot_recovery.hpp"
 
 namespace {
 
@@ -137,6 +141,37 @@ bool waitForRuntime(pid_t child, int heartbeatFd, uint64_t launchTime, const cha
     }
 }
 
+bool bootTrialStillPending() {
+    const char* trial = getenv(BOOT_RECOVERY_TRIAL_ENV);
+    if (!trial || strcmp(trial, "1") != 0) {
+        return false;
+    }
+    if (access(BOOT_RECOVERY_TRIAL_PATH, F_OK) == 0) {
+        return true;
+    }
+    // Without the config partition mounted the runtime cannot have confirmed the trial.
+    struct stat rootStat = {};
+    struct stat configStat = {};
+    if (stat("/", &rootStat) < 0 || stat(ROOT_MOUNT_POINT, &configStat) < 0) {
+        return true;
+    }
+    return rootStat.st_dev == configStat.st_dev;
+}
+
+void rebootFailedTrial(const char* reason) {
+    printf("[WATCHDOG] trial boot failed: %s; rebooting\n", reason);
+    struct stat configStat = {};
+    if (stat(BOOT_RECOVERY_STATE_DIR, &configStat) == 0) {
+        char line[256];
+        snprintf(line, sizeof(line), "[WATCHDOG] trial boot failed: %s\n", reason);
+        brAppendText(BOOT_RECOVERY_EVENTS_PATH, line);
+    }
+    sync();
+    if (reboot(RB_AUTOBOOT) < 0) {
+        perror("[WATCHDOG] reboot");
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -179,6 +214,9 @@ int main(int argc, char** argv) {
         while (waitpid(-1, &orphanStatus, WNOHANG) > 0) {
         }
         close(heartbeatFd);
+        if (bootTrialStillPending()) {
+            rebootFailedTrial(reason);
+        }
         ++restartCount;
         if (maximumRestarts != 0 && restartCount >= maximumRestarts) {
             return 0;

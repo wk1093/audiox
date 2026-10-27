@@ -100,6 +100,7 @@ int main() {
     fb.bootStatus("Setting up logging...");
     // this makes it write to audiox.log in the rootfs.
     HANDLE_ERROR(setupLogging(&mainContext)); // want this as soon as possible so errors are logged to rootfs
+    initBootRecovery();
     
     fb.bootStatus("Loading configuration...");
     ConfigStore config(&mainContext);
@@ -161,6 +162,7 @@ int main() {
             sendWatchdogHeartbeat(++watchdogSequence);
         }
         mainContext.eventLoop();
+        pollBootRecovery();
         touch.poll();
         fb.drawMain(&touch.state);
         http.poll();

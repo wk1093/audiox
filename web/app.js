@@ -3097,7 +3097,57 @@ document.getElementById('btn-light-refresh').addEventListener('click', async () 
   }
 });
 
+async function loadBootFailure() {
+  const bannerEl = document.getElementById('boot-failure-banner');
+  try {
+    const res = await fetch('/api/system/boot-failure', { cache: 'no-store' });
+    if (res.status !== 200) {
+      bannerEl.hidden = true;
+      return;
+    }
+    const report = await res.text();
+    const field = (name) => {
+      const match = report.match(new RegExp(`^${name}=(.*)$`, 'm'));
+      return match ? match[1] : 'unknown';
+    };
+    const reverted = field('reverted') === 'yes';
+    const summary = reverted
+      ? `${field('failed_version')} failed ${field('attempts')} boot attempt(s); restored ${field('restored_version')}.`
+      : `${field('failed_version')} failed ${field('attempts')} boot attempt(s); no backup was available.`;
+    document.getElementById('boot-failure-title').textContent = reverted
+      ? 'Last update failed to boot and was reverted.'
+      : 'Last update failed to boot.';
+    document.getElementById('boot-failure-summary').textContent = summary;
+    document.getElementById('boot-failure-report').textContent = report;
+    bannerEl.hidden = false;
+  } catch (err) {
+    bannerEl.hidden = true;
+  }
+}
+
+document.getElementById('btn-boot-failure-view').addEventListener('click', () => {
+  const reportEl = document.getElementById('boot-failure-report');
+  reportEl.hidden = !reportEl.hidden;
+  document.getElementById('btn-boot-failure-view').textContent = reportEl.hidden ? 'View report' : 'Hide report';
+});
+
+document.getElementById('btn-boot-failure-dismiss').addEventListener('click', async () => {
+  try {
+    const res = await fetch('/api/system/boot-failure', { method: 'DELETE' });
+    const txt = (await res.text()).trim();
+    if (!res.ok) {
+      setStatus(`dismiss failed: ${res.status} ${txt}`, 'warn');
+      return;
+    }
+    document.getElementById('boot-failure-banner').hidden = true;
+    setStatus('boot failure report dismissed', 'ok');
+  } catch (err) {
+    setStatus(`dismiss error: ${err}`, 'warn');
+  }
+});
+
 initializeGraphFromConfig();
 loadVersion();
+loadBootFailure();
 loadLightConfig();
 loadSamplerConfig();

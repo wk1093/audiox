@@ -8,7 +8,8 @@ PKG_FETCH ?= curl -fsSL
 AUDIOX_USE_SHARED_GRAPH_PROCESSOR ?= 0
 
 # Recursive source discovery for upcoming C++ port.
-CPP_SRCS := $(shell find src -type f -name '*.cpp' 2>/dev/null)
+# Sorted so build order does not depend on directory order of the checkout.
+CPP_SRCS := $(sort $(shell find src -type f -name '*.cpp' 2>/dev/null))
 BOOTLOADER_SRC := src/init/bootloader.cpp
 RUNTIME_MAIN_SRC := src/init/init.cpp
 WATCHDOG_SRC := src/init/watchdog.cpp
@@ -49,6 +50,7 @@ SBC_BUILD_DIR ?= $(OUT_DIR)/build/sbc-$(SBC_VERSION)-build
 SBC_SYSROOT ?= $(OUT_DIR)/sbc-sysroot
 SBC_STATIC_LIB ?= $(SBC_SYSROOT)/usr/lib/libsbc.a
 SBC_INCLUDE_DIR ?= $(SBC_SYSROOT)/usr/include
+SBC_HEADER = $(SBC_INCLUDE_DIR)/sbc/sbc.h
 
 # Static DHCP/DNS server for the USB network (see root/etc/dnsmasq.conf).
 DNSMASQ_VERSION ?= 2.93
@@ -478,16 +480,22 @@ alsa_source:
 	$(MAKE) -C "$(ALSA_BUILD_DIR)" DESTDIR="$(ALSA_SYSROOT)" install
 	@echo "ALSA static lib ready: $(ALSA_STATIC_LIB)"
 
-sbc: $(SBC_STATIC_LIB)
+sbc: $(SBC_STATIC_LIB) $(SBC_HEADER)
 
-$(SBC_STATIC_LIB):
+# `make install` writes the library before the headers, so track both; an
+# interrupted install then rebuilds instead of leaving sbc.h missing.
+$(SBC_STATIC_LIB) $(SBC_HEADER) &:
 	@mkdir -p "$(OUT_DIR)/build" "$(SBC_SYSROOT)"
 	@if [ ! -d "$(SBC_SRC_DIR)/.git" ]; then \
 		git clone --no-checkout "$(SBC_SOURCE_URL)" "$(SBC_SRC_DIR)"; \
 	fi
 	@git -C "$(SBC_SRC_DIR)" fetch --depth 1 origin "$(SBC_COMMIT)"
 	@git -C "$(SBC_SRC_DIR)" checkout --detach "$(SBC_COMMIT)"
-	@if [ ! -x "$(SBC_SRC_DIR)/configure" ]; then cd "$(SBC_SRC_DIR)" && ./bootstrap; fi
+	@# Upstream ./bootstrap symlinks build-aux into the host automake, which
+	@# breaks after automake upgrades; copy the files and redo it if dangling.
+	@if [ ! -x "$(SBC_SRC_DIR)/configure" ] || [ ! -e "$(SBC_SRC_DIR)/build-aux/install-sh" ]; then \
+		cd "$(SBC_SRC_DIR)" && rm -rf build-aux autom4te.cache && mkdir build-aux && autoreconf --force --install; \
+	fi
 	@mkdir -p "$(SBC_BUILD_DIR)"
 	cd "$(SBC_BUILD_DIR)" && "$(SBC_SRC_DIR)/configure" \
 		--host=aarch64-linux-gnu \
@@ -500,6 +508,8 @@ $(SBC_STATIC_LIB):
 		CC="$(CC)"
 	$(MAKE) -C "$(SBC_BUILD_DIR)" -j$$(nproc)
 	$(MAKE) -C "$(SBC_BUILD_DIR)" DESTDIR="$(SBC_SYSROOT)" install
+	@test -f "$(SBC_STATIC_LIB)" && test -f "$(SBC_HEADER)" || { echo "SBC install is missing $(SBC_STATIC_LIB) or $(SBC_HEADER)"; exit 1; }
+	@touch "$(SBC_STATIC_LIB)" "$(SBC_HEADER)"
 	@echo "Static SBC decoder ready: $(SBC_STATIC_LIB)"
 
 dnsmasq: $(DNSMASQ_BIN)
@@ -597,7 +607,9 @@ $(RUNTIME_OBJ_DIR)/%.o: src/%.cpp
 	@mkdir -p $(dir $@)
 	$(RUNTIME_COMPILER) $(RUNTIME_FLAGS) $(RUNTIME_DEFINES) $(DEPFLAGS) -c -o $@ $<
 
-$(RUNTIME_OBJ_DIR)/bluetooth/context.o: $(SBC_STATIC_LIB)
+# Runtime objects include ALSA and SBC headers (bluetooth/context.hpp pulls in
+# sbc/sbc.h), so the sysroots must exist before any of them compile.
+$(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ): | $(RUNTIME_DEPS) $(SBC_STATIC_LIB) $(SBC_HEADER)
 
 $(BOOTLOADER_ROOTFS_DIR)/init: $(BOOTLOADER_OBJS)
 	@echo "Compiling bootloader init..."

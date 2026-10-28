@@ -114,6 +114,7 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Convert the SVG icon text to path so that it doesn't rely on external fonts.
 
 ## Features and quality of life - v1.11
+- [ ] Improve webui, especially errors, don't show nasty JS stack traces, or html responses from api (json data) to the user.
 - [ ] See if we can increase bluetooth quality. Not just audio quality, but quality of life, needs better interface (not just UI, also auto-connect features, easier device management, and more reliable connections).
 - [ ] Investigate using LV2 plugins for effects, and if possible, make it so that the user can upload their own LV2 plugins to the device and use them in the audio engine. This would allow for a lot more flexibility and customization for users who want to use their own effects.
 - [ ] More advanced effects
@@ -127,10 +128,6 @@ The above last two features are mainly to improve my setup, but could probably b
 ## Release - v2.0+
 
 - [ ] IMPORTANT: Create a config versioning system, so that older configs can be upgraded if format is changed. This is important for 2.0+ because it is meant to be a more stable release, and we don't want to break people's configs when they update. This will also allow for more advanced features in the future, like being able to export and import configs between devices.
-- [ ] IMPORTANT: Verify windows functionality.
-  - [ ] Right now the network gadget is only tested on Linux, and it is possible that it won't work on windows.
-  - [ ] Verify that the Audio gadget works on Windows, I checked once, and it didn't show up with the right name ("Showed Sink/Source" instead of "AudioX").
-- [ ] Revisit temporary DHCP for better host plug-and-play on Linux
 - [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)
 - [ ] Add a "midi passthrough" feature that allows non-mapped midi messages to be passed through via a USB gadget to a connected host. This should be configurable via the WebUI, to also allow passing through messages that are mapped to soundboard clips, but the default is to only pass through non-mapped messages. This feature should also be able to be disabled entirely, which would fully remove the gadget entirely to save USB bandwidth (this is for people using like 6+ in/out audio channels to the gadget, where bandwidth could start to matter)
 - [ ] Look into dynamic sample size for the audio engine, so that if we notice Xruns or any other issues we can automatically increase the sample size when needed (or at least allow the user to change it via the WebUI). This is mainly for people with a lot of channels or effects that could cause issues.

@@ -67,6 +67,33 @@ static int validateAudioConfig(const ConfigData *cfg) {
     return RET_OK;
 }
 
+// Windows keys device instances and cached audio endpoint names on the USB
+// serial, so a per-board serial keeps boards distinct on one host.
+static void usbSerialNumber(char *out, size_t outSize) {
+    char raw[64] = {};
+    int fd = open(BOARD_SERIAL_PATH, O_RDONLY | O_CLOEXEC);
+    if (fd >= 0) {
+        ssize_t n = read(fd, raw, sizeof(raw) - 1);
+        close(fd);
+        raw[n > 0 ? n : 0] = '\0';
+    }
+
+    char board[32] = {};
+    size_t len = 0;
+    for (const char *p = raw; *p && len < sizeof(board) - 1; ++p) {
+        if ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F')) {
+            board[len++] = (*p >= 'a' && *p <= 'f') ? (char)(*p - 'a' + 'A') : *p;
+        }
+    }
+
+    if (len == 0) {
+        printf("[INIT] [WARN] board serial unavailable; using USB serial %s\n", AUDIOX_USB_SERIAL_FALLBACK);
+        snprintf(out, outSize, "%s\n", AUDIOX_USB_SERIAL_FALLBACK);
+        return;
+    }
+    snprintf(out, outSize, "%s%s\n", AUDIOX_USB_SERIAL_PREFIX, board);
+}
+
 static int applyAudioConfig(const ConfigData *cfg) {
     if (!cfg) {
         return RET_ERR;
@@ -83,7 +110,9 @@ static int applyAudioConfig(const ConfigData *cfg) {
     if (writeSysNode(GADGET_ROOT "/bcdUSB", "0x0200\n") != RET_OK) return RET_ERR;
 
     if (ensureDir(GADGET_ROOT "/strings/0x409", 0755) != RET_OK) return RET_ERR;
-    if (writeSysNode(GADGET_ROOT "/strings/0x409/serialnumber", "AUDIOX0001\n") != RET_OK) return RET_ERR;
+    char serialNumber[64];
+    usbSerialNumber(serialNumber, sizeof(serialNumber));
+    if (writeSysNode(GADGET_ROOT "/strings/0x409/serialnumber", serialNumber) != RET_OK) return RET_ERR;
     if (writeSysNode(GADGET_ROOT "/strings/0x409/manufacturer", "AudioX\n") != RET_OK) return RET_ERR;
     if (writeSysNode(GADGET_ROOT "/strings/0x409/product", "AudioX\n") != RET_OK) return RET_ERR;
 

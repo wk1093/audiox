@@ -101,10 +101,12 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] PID 1 watchdog supervises dnsmasq in its own process group with restart backoff; host tests and a namespace DHCP/DNS check pass.
   - [x] Built-in mDNS responder for `audiox.local` (host DNS such as Tailscale or a router `lan` domain can shadow the device's DNS); packet tests and a namespace check pass.
   - [x] Hardware check: Windows and Linux hosts get a lease and open `http://audiox.local/`, including after replug, gadget reload, and runtime restart.
-- [ ] TESTED: Bugs left
-  - [ ] Windows works mostly now, but device still shows up as "Source/Sink" instead of "AudioX"
+- [x] TESTED: Bugs left
+  - [x] Windows works mostly now, but device still shows up as "Source/Sink" instead of "AudioX"
     - [x] Set the UAC2 `function_name` (kernel default "Source/Sink") and terminal/volume strings to `AudioX ...` (`AUDIOX_USB_AUDIO_NAME`).
-    - [ ] Verify on Windows
+    - [x] Verified the host receives the AudioX strings (lsusb iFunction/iProduct/iInterface), but Windows still showed "Speakers (Source/Sink)" because it caches endpoint names per USB serial, even across a Device Manager uninstall.
+    - [x] USB serial is now `AUDIOX-<board serial>` (was the fixed `AUDIOX0001`), so Windows enumerates fresh devices and two boards no longer clash on one host.
+    - [x] Verify on Windows
   - [x] Windows also works with the DNS sometimes, but if tailscale is used, it won't (and probably if a home router uses .local). Maybe I should consider not using "audiox.local" and instead do some weird DNS on my actual real domain to somehow make it route to a local server, so someone could do "audiox.wklab.net" and it would route to THEIR local server, if they didn't have an audiox machine, it would just fail. Or maybe I could just fake it and have the mDNS responder respond with "audiox.wklab.net"? IDK if mDNS allows using a real domain instead of .local though...
     - Decision: keep `http://audiox.local/` as the primary URL and `http://172.31.73.1/` as the always-works fallback. Tailscale "Use Tailscale DNS" on Windows sends every name (including `.local`) to 100.100.100.100 via NRPT (tailscale/tailscale#15093), so no device-side name can bypass it except a public DNS record.
     - [x] Backup URL `http://audiox.wklab.net/` (public `A` record to `172.31.73.1`, also in the device's dnsmasq `host-record`); README documents the plain-HTTP browser warning. No shared TLS certificate: its private key would ship in every image and get revoked.

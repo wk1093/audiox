@@ -49,6 +49,11 @@
 #ifndef AUDIOX_USB_AUDIO_NAME
 #define AUDIOX_USB_AUDIO_NAME "AudioX"
 #endif
+// The USB serial is "AUDIOX-<board serial>"; this prefix must differ from the
+// old fixed "AUDIOX0001" so Windows drops endpoint names cached under it.
+#define AUDIOX_USB_SERIAL_PREFIX "AUDIOX-"
+#define AUDIOX_USB_SERIAL_FALLBACK "AUDIOX0002"
+#define BOARD_SERIAL_PATH "/sys/firmware/devicetree/base/serial-number"
 #define BOOT_DEVICE_PATH "/dev/mmcblk0p1"
 #define CONFIG_DEVICE_PATH "/dev/mmcblk0p2"
 #define BOOT_MOUNT_POINT "/mnt/boot"

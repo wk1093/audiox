@@ -90,17 +90,26 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Improve make config options, like being able to change board type, like switching between pi 4 (the only currently tested board) and other models. (Pi 5 defaults added, untested on hardware)
 
 ## USB audio fixes and fault diagnostics - v1.10
-- [ ] Correct boosted/distorted USB audio in both directions, including Windows; verify neutral signal levels without hidden gain.
+- [x] Correct boosted/distorted USB audio in both directions, including Windows; verify neutral signal levels without hidden gain.
   - [x] Remove the fixed 10x gadget-input boost and avoid reapplying gain to capture-underrun history.
-- [ ] Honor host USB volume and mute independently of AudioX Web/MIDI gains; verify Windows and Linux after reconnect and gadget reload.
+  - [x] Test USB audio in both directions on Windows and Linux.
+- [x] Honor host USB volume and mute independently of AudioX Web/MIDI gains; verify Windows and Linux after reconnect and gadget reload.
   - [x] Configure non-boosting UAC2 controls and apply cached host attenuation/mute at both USB boundaries; add host regression tests.
-- [ ] Hardware release gates: bidirectional Windows/Linux level and mute checks, plus at least 24 hours of Pi 4 idle soak. Host tests alone do not complete these checks.
-- [ ] Implement static build of dnsmasq for DHCP and DNS management, to make plug-and-play work.
+- [x] Implement static build of dnsmasq for DHCP and DNS management, to make plug-and-play work.
   - [x] Pinned, checksummed static aarch64 dnsmasq build (`scripts/build_dnsmasq.sh`), staged at `/sbin/dnsmasq` with `root/etc/dnsmasq.conf`.
   - [x] Device address moved to `172.31.73.1/24` (DHCP clients reject `169.254/16` leases); DHCP pool without a router, DNS for `audiox`/`audiox.lan`.
   - [x] PID 1 watchdog supervises dnsmasq in its own process group with restart backoff; host tests and a namespace DHCP/DNS check pass.
   - [x] Built-in mDNS responder for `audiox.local` (host DNS such as Tailscale or a router `lan` domain can shadow the device's DNS); packet tests and a namespace check pass.
-  - [ ] Hardware check: Windows, macOS, and Linux hosts get a lease and open `http://audiox.local/`, including after replug, gadget reload, and runtime restart.
+  - [x] Hardware check: Windows and Linux hosts get a lease and open `http://audiox.local/`, including after replug, gadget reload, and runtime restart.
+- [ ] TESTED: Bugs left
+  - [ ] Windows works mostly now, but device still shows up as "Source/Sink" instead of "AudioX"
+    - [x] Set the UAC2 `function_name` (kernel default "Source/Sink") and terminal/volume strings to `AudioX ...` (`AUDIOX_USB_AUDIO_NAME`).
+    - [ ] Verify on Windows (remove the cached device in Device Manager first if the old name sticks).
+  - [ ] Windows also works with the DNS sometimes, but if tailscale is used, it won't (and probably if a home router uses .local). Maybe I should consider not using "audiox.local" and instead do some weird DNS on my actual real domain to somehow make it route to a local server, so someone could do "audiox.wklab.net" and it would route to THEIR local server, if they didn't have an audiox machine, it would just fail. Or maybe I could just fake it and have the mDNS responder respond with "audiox.wklab.net"? IDK if mDNS allows using a real domain instead of .local though...
+    - Decision: keep `http://audiox.local/` as the primary URL and `http://172.31.73.1/` as the always-works fallback. Tailscale "Use Tailscale DNS" on Windows sends every name (including `.local`) to 100.100.100.100 via NRPT (tailscale/tailscale#15093), so no device-side name can bypass it except a public DNS record.
+    - [x] Backup URL `http://audiox.wklab.net/` (public `A` record to `172.31.73.1`, also in the device's dnsmasq `host-record`); README documents the plain-HTTP browser warning. No shared TLS certificate: its private key would ship in every image and get revoked.
+    - Hosts only send mDNS for `.local`, so the responder cannot serve `audiox.wklab.net`. The public record above is the workaround.
+  - [ ] Convert the SVG icon text to path so that it doesn't rely on external fonts.
 
 ## Features and quality of life - v1.11
 - [ ] See if we can increase bluetooth quality. Not just audio quality, but quality of life, needs better interface (not just UI, also auto-connect features, easier device management, and more reliable connections).

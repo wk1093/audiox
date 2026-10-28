@@ -11,6 +11,16 @@ if ! [[ "$CHANNEL" == stable && "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ||
     exit 1
 fi
 
+VERSION=""
+for BOARD in pi4 pi5; do
+    BOARD_VERSION="$(cat "$FILES/$BOARD.version" 2>/dev/null || true)"
+    if [[ -z "$BOARD_VERSION" || -n "$VERSION" && "$BOARD_VERSION" != "$VERSION" ]]; then
+        echo "Missing or mismatched firmware version: $FILES/$BOARD.version" >&2
+        exit 1
+    fi
+    VERSION="$BOARD_VERSION"
+done
+
 WORK="$(mktemp -d)"
 trap 'rm -r "$WORK"' EXIT
 
@@ -86,8 +96,8 @@ else
     gh release create "$RELEASE_TAG" "${FLAGS[@]}" --title "AudioX $RELEASE_TAG"
 fi
 
-printf 'Build commit: `%s`\n\n[Workflow run](%s/%s/actions/runs/%s)\n\n<!-- audiox-run-number: %s -->\n<!-- audiox-history: true -->\n' \
-    "$BUILD_COMMIT" "$GITHUB_SERVER_URL" "$GH_REPO" "$GITHUB_RUN_ID" \
+printf 'Version: `%s`\n\nBuild commit: `%s`\n\n[Workflow run](%s/%s/actions/runs/%s)\n\n<!-- audiox-run-number: %s -->\n<!-- audiox-history: true -->\n' \
+    "$VERSION" "$BUILD_COMMIT" "$GITHUB_SERVER_URL" "$GH_REPO" "$GITHUB_RUN_ID" \
     "$GITHUB_RUN_NUMBER" > "$WORK/notes.md"
 
 # Published versioned nightly assets are never overwritten, including on reruns.

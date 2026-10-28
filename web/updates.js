@@ -60,6 +60,11 @@
     return release;
   }
 
+  function releaseVersion(release) {
+    const match = /Version:\s*`([^`]+)`/.exec(release?.body || '');
+    return match ? match[1] : '';
+  }
+
   async function mirrorArchive(channel, release, board, asset, request = fetch) {
     const response = await request(`${mirror}updates.json`, {
       credentials: 'omit',
@@ -204,7 +209,7 @@
           : /^[a-f0-9]{40}$/i.test(release.target_commitish || '') &&
             info.version.endsWith(`+${release.target_commitish.slice(0, 12)}`);
         selected = { release, asset, board: info.board, installed };
-        summary.textContent = `Current: ${info.version} (${info.board}). Selected: ${release.tag_name}, ${(asset.size / 1048576).toFixed(1)} MiB.${installed ? ' Already installed.' : ''}`;
+        summary.textContent = `Current: ${info.version} (${info.board}). Selected: ${release.tag_name}${releaseVersion(release) ? ` (${releaseVersion(release)})` : ''}, ${(asset.size / 1048576).toFixed(1)} MiB.${installed ? ' Already installed.' : ''}`;
         link.href = `https://github.com/${repository}/releases/download/${encodeURIComponent(release.tag_name)}/${asset.name}`;
         link.hidden = false;
         if (!installed) selected.mirrorUrl = await mirrorArchive(channel.value, release, info.board, asset);
@@ -258,7 +263,7 @@
     });
   }
 
-  const exported = { deviceBoard, selectAsset, latestRelease, mirrorArchive, downloadArchive, init };
+  const exported = { deviceBoard, selectAsset, latestRelease, releaseVersion, mirrorArchive, downloadArchive, init };
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
   else root.AudioxUpdates = exported;
 })(globalThis);

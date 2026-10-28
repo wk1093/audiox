@@ -142,7 +142,7 @@ The device address on the USB NCM interface (`usb0`) is now `172.31.73.1/24` (`C
 
 - DHCP pool `172.31.73.10`-`172.31.73.250`, 12 h leases. The pool advertises the device as the DNS server and `lan` as the search domain.
 - No router option, so the host's default route and internet access are unchanged.
-- DNS answers `audiox`, `audiox.lan`, and `audiox.local` with `172.31.73.1`. Queries for other names are refused, not forwarded, so the host falls back to its other DNS servers.
+- DNS answers `audiox`, `audiox.lan`, `audiox.local`, and `audiox.wklab.net` with `172.31.73.1`. Queries for other names are refused, not forwarded, so the host falls back to its other DNS servers.
 
 Hosts often never ask the device's DNS server: VPN clients such as Tailscale, other adapters, or a router that also uses `lan` can answer first. The runtime therefore also runs a built-in mDNS responder (`src/http/mdns.cpp`). It answers `audiox.local` on `usb0` only, regardless of the host's DNS setup. It is supported out of the box by Windows 10 1709+, macOS, iOS, Android 12+, and Linux with nss-mdns/Avahi or systemd-resolved mDNS. The responder:
 
@@ -159,6 +159,11 @@ The PID 1 watchdog starts `/sbin/dnsmasq --keep-in-foreground --conf-file=/etc/d
 
 Host notes:
 - Use `http://audiox.local/`. `http://audiox/` also works on hosts that send DNS queries to the device, and `http://172.31.73.1/` always works once the host has a lease.
+- Backup URL: `http://audiox.wklab.net/`. Use it if `audiox.local` does not resolve, for example on Windows with Tailscale's "Use Tailscale DNS settings" enabled, which sends every name, `.local` included, to Tailscale's resolver. `audiox.wklab.net` has a public DNS record pointing to `172.31.73.1`, and the device's own DNS also answers it, so it works even without internet when the host asks the device's DNS.
+  - **Expect a browser security warning.** Because it is a public domain name served over plain HTTP, browsers mark it "Not secure", and Chrome's HTTPS-by-default mode shows a "connection is not secure" page first. Click through ("Continue to site") to open the web UI. `.local` names and the raw IP address do not get this warning.
+  - The warning is about the name, not the connection. `172.31.73.1` is a private address on the USB link, so traffic goes over the USB cable to the AudioX and never touches the internet. Only the DNS lookup goes out.
+  - It only reaches your AudioX while it is plugged in and has given the host a lease. Without that, the address points nowhere (or to whatever owns `172.31.73.1` on your own network, which is unlikely).
+  - Some routers block public names that point to private addresses ("DNS rebinding protection"). In that case use `http://172.31.73.1/` directly.
 - Hosts need a DHCP client on the AudioX interface (the default on Windows and on NetworkManager "Automatic (DHCP)" connections). Delete any old `audiox-usb0` link-local connection: `sudo nmcli connection delete audiox-usb0`.
 - Browsers may treat a bare `audiox` as a search term; include `http://`.
 - mDNS has been tested on the wire on Linux. Windows and macOS have not yet been tested on hardware.
@@ -171,9 +176,24 @@ Publishing runs entirely in GitHub Actions using the repository's `GITHUB_TOKEN`
 
 Automatic main-branch builds run only when image/build inputs change: `src/`, `include/`, `root/`, `web/`, the Makefile, Kconfig, module lists, logo assets, or the configuration/image/firmware build scripts listed in the workflow's `push.paths`. Documentation, workflows, Imager catalogs, publishing-only scripts, and tests alone do not trigger a nightly build or release. A mixed commit containing image inputs still builds. Pull-request builds and manually requested stable releases are unchanged. Add new image input locations to this filter when extending the build. This is input-based filtering, not binary deduplication: images embed the commit ID and contain generated filesystem/archive metadata, so identical source behavior does not imply identical image checksums.
 
-- **Nightly:** after both main-branch builds succeed, the workflow publishes a versioned `nightly-<workflow-run-number>` prerelease containing both images, checksums, and an `images.json` manifest. It keeps the **last 25 nightly builds**, newest first in Imager. Each build has its own download URLs; published versioned assets are never overwritten, including on reruns. After the updated catalog is public, older nightly releases and their tags are deleted. The rolling `nightly` prerelease still provides `audiox-latest-nightly-pi4.img.xz`, `audiox-latest-nightly-pi5.img.xz`, and `os_list.json` at fixed URLs, but its catalog points to the versioned images. The firmware version includes `-nightly` and the commit ID. Older workflow runs cannot overwrite a newer published nightly.
+- **Nightly:** after both main-branch builds succeed, the workflow publishes a versioned `nightly-<workflow-run-number>` prerelease containing both images, checksums, and an `images.json` manifest. It keeps the **last 25 nightly builds**, newest first in Imager. Each build has its own download URLs; published versioned assets are never overwritten, including on reruns. After the updated catalog is public, older nightly releases and their tags are deleted. The rolling `nightly` prerelease still provides `audiox-latest-nightly-pi4.img.xz`, `audiox-latest-nightly-pi5.img.xz`, and `os_list.json` at fixed URLs, but its catalog points to the versioned images. The firmware version keeps the Makefile's prerelease and adds a `nightly` identifier and the commit ID (see [Firmware versioning](#firmware-versioning)). Older workflow runs cannot overwrite a newer published nightly.
 - **Stable:** open **Actions > Release AudioX Stable > Run workflow**, select `main`, and enter a version such as `2.0.0` (no `v` prefix). The workflow creates `v2.0.0` at the main commit selected when the run starts, then calls the existing build workflow to build both boards, stage assets in a draft release, and automatically publish it as latest stable after all uploads succeed. Firmware versions are set from the tag; there is no further approval step. Existing tags are reused only if they point to the same commit, never moved. Stable assets are named `audiox-latest-pi4.img.xz` and `audiox-latest-pi5.img.xz`. **All stable releases** with Imager manifests appear in the Stable catalog; stable releases are never pruned or overwritten. If a job fails, use **Re-run failed jobs** to retry the same release. For an existing tag at an older commit, **Build AudioX OS Image > Run workflow** still accepts a `vX.Y.Z` tag directly. Merely pushing a tag does not publish a stable release.
 - **Pull requests:** build artifacts only; never publish releases.
+
+#### Firmware versioning
+
+Firmware versions follow [SemVer](https://semver.org/) and come from Makefile variables: `AUDIOX_VERSION_MAJOR`, `AUDIOX_VERSION_MINOR`, `AUDIOX_VERSION_PATCH`, `AUDIOX_VERSION_PRERELEASE` (for example `beta.3`, empty for a final release), `AUDIOX_VERSION_BUILD` (build metadata after `+`), and `AUDIOX_VERSION_NIGHTLY` (`0` or `1`). Run `make print-version` to see the result.
+
+`AUDIOX_VERSION_NIGHTLY=1` appends a `nightly` identifier to the prerelease and, unless `AUDIOX_VERSION_BUILD` is set, the 12-character git commit as build metadata:
+
+| `AUDIOX_VERSION_PRERELEASE` | Normal build | `AUDIOX_VERSION_NIGHTLY=1` |
+| --- | --- | --- |
+| `beta.3` | `1.10.0-beta.3` | `1.10.0-beta.3.nightly+<commit>` |
+| (empty) | `1.10.1` | `1.10.1-nightly+<commit>` |
+
+Nightly CI builds set `AUDIOX_VERSION_NIGHTLY=1` and keep the checked-in prerelease. Stable releases clear the prerelease and build metadata and take `X.Y.Z` from the tag. A nightly built after `beta.3` sorts after `1.10.0-beta.3` and before `1.10.0-beta.4` and `1.10.0`.
+
+`scripts/package-imager.sh` rejects versions that do not match the channel (`X.Y.Z` for stable, `X.Y.Z-[<prerelease>.]nightly+<commit>` for nightly). The Imager and download-site entry name shows the version without the nightly marker and commit, for example `AudioX 1.10.0-beta.3 Raspberry Pi 4 (nightly)`; the full version appears in the Imager description, the release notes (`Version: ...`), the download site, and the device's update check.
 
 Point the Imager fork's repository URL at:
 

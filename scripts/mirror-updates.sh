@@ -38,6 +38,7 @@ for CHANNEL in stable nightly; do
     gh release download "$TAG" --pattern images.json --output "$WORK/images.json" --clobber
     jq --arg repository "$GH_REPO" \
         '{tag: .tag_name, commit: .target_commitish,
+          version: ([(.body // "") | capture("Version: `(?<v>[^`]+)`") | .v] | first // null),
           date: ((.published_at // .created_at) | split("T")[0]),
           release_url: ("https://github.com/" + $repository + "/releases/tag/" + .tag_name),
           assets: {}}' "$WORK/release.json" > "$WORK/channel.json"

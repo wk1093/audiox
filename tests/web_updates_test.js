@@ -49,6 +49,14 @@ test('nightly lookup resolves the rolling index to version-specific release meta
   await assert.rejects(updates.latestRelease('nightly', async () => response({})), /No versioned nightly/);
 });
 
+test('release version is read from the published release notes when present', () => {
+  assert.equal(updates.releaseVersion({ body: 'Version: `1.10.0-beta.3.nightly+0123456789ab`\n\nBuild commit: `x`' }),
+    '1.10.0-beta.3.nightly+0123456789ab');
+  assert.equal(updates.releaseVersion({ body: 'Version: `1.10.1-nightly+0123456789ab`' }), '1.10.1-nightly+0123456789ab');
+  assert.equal(updates.releaseVersion({ body: 'Build commit: `x`' }), '');
+  assert.equal(updates.releaseVersion({}), '');
+});
+
 test('mirror lookup requires the exact GitHub version, board, size and path', async () => {
   const data = { stable: { tag: 'v1.9.2', assets: {
     pi4: { size: asset.size, url: 'updates/v1.9.2/audiox-update-pi4.axu' },

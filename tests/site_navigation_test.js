@@ -5,7 +5,7 @@ const vm = require('node:vm');
 
 const script = readFileSync(require.resolve('../site/downloads.js'), 'utf8');
 
-function site(hash = '', status = 200) {
+function site(hash = '', status = 200, catalog = {}) {
   const elements = new Map();
   const listeners = {};
   const document = {
@@ -33,7 +33,7 @@ function site(hash = '', status = 200) {
   };
   vm.runInNewContext(script, {
     document, window,
-    fetch: async () => ({ ok: status === 200, status, json: async () => ({}) }),
+    fetch: async () => ({ ok: status === 200, status, json: async () => catalog }),
   });
   return {
     document, elements,
@@ -82,4 +82,19 @@ test('a failed download catalog does not prevent Home or Download navigation', a
   assert.equal(ui.elements.get('download-error').hidden, false);
   ui.navigate('#home');
   assert.equal(ui.elements.get('page-download').hidden, true);
+});
+
+test('download metadata shows the firmware version when the catalog provides it', async () => {
+  const ui = site('#download', 200, {
+    stable: { tag: 'v1.9.2', date: '2026-10-01', release_url: 'https://example.invalid/v1.9.2', assets: {} },
+    nightly: {
+      tag: 'nightly-42', version: '1.10.0-beta.3.nightly+0123456789ab', date: '2026-10-27',
+      release_url: 'https://example.invalid/nightly-42', assets: {},
+    },
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(ui.elements.get('release-meta').textContent, 'v1.9.2 / 2026-10-01');
+  ui.elements.get('channel-nightly').listeners.click();
+  assert.equal(ui.elements.get('release-meta').textContent,
+    '1.10.0-beta.3.nightly+0123456789ab / nightly-42 / 2026-10-27');
 });

@@ -28,7 +28,7 @@ function renderDownloads() {
     error.hidden = false;
     return;
   }
-  document.getElementById('release-meta').textContent = `${release.tag} / ${release.date || 'date unavailable'}`;
+  document.getElementById('release-meta').textContent = [release.version, release.tag, release.date || 'date unavailable'].filter(Boolean).join(' / ');
   releaseLink.href = release.release_url;
   releaseLink.hidden = false;
   for (const board of ['pi4', 'pi5']) {

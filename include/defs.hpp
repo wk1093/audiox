@@ -46,6 +46,9 @@
 #define AUDIOX_USB_GADGET_UDC "fe980000.usb"
 #endif
 #define GADGET_UDC_NAME AUDIOX_USB_GADGET_UDC "\n"
+#ifndef AUDIOX_USB_AUDIO_NAME
+#define AUDIOX_USB_AUDIO_NAME "AudioX"
+#endif
 #define BOOT_DEVICE_PATH "/dev/mmcblk0p1"
 #define CONFIG_DEVICE_PATH "/dev/mmcblk0p2"
 #define BOOT_MOUNT_POINT "/mnt/boot"

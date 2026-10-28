@@ -171,7 +171,7 @@ echo "PASS: an older run cannot overwrite the latest nightly"
 # Failed publication must not prune; a retry must reuse the immutable assets.
 for board in pi4 pi5; do
     bash "$ROOT/scripts/package-imager.sh" "$WORK/audiox.img" "$WORK/package" \
-        "$board" nightly "$GH_REPO" nightly-28 2026-10-26 1.9.1-nightly+0123456789ab
+        "$board" nightly "$GH_REPO" nightly-28 2026-10-26 1.10.0-beta.3.nightly+0123456789ab
 done
 echo '' > "$MOCK/calls"
 if CHANNEL=nightly RELEASE_TAG=nightly-28 GITHUB_RUN_NUMBER=28 FAIL_CATALOG=1 \
@@ -186,6 +186,19 @@ CHANNEL=nightly RELEASE_TAG=nightly-28 GITHUB_RUN_NUMBER=28 \
 ! grep -q '^release upload nightly-28 ' "$MOCK/calls"
 grep -q '^release delete nightly-3 --yes --cleanup-tag$' "$MOCK/calls"
 echo "PASS: failed uploads do not prune history; retries preserve published nightly assets"
+jq -e '.[] | select(.tag_name == "nightly-28") |
+    .body | startswith("Version: `1.10.0-beta.3.nightly+0123456789ab`")' "$MOCK/releases.json" > /dev/null
+cp "$WORK/package/pi5.version" "$WORK/pi5.version.good"
+echo '1.10.0-beta.2.nightly+0123456789ab' > "$WORK/package/pi5.version"
+echo '' > "$MOCK/calls"
+if CHANNEL=nightly RELEASE_TAG=nightly-29 GITHUB_RUN_NUMBER=29 \
+    bash "$ROOT/scripts/publish-imager.sh" "$WORK/package" > "$WORK/failure.log" 2>&1; then
+    echo "Expected mismatched board versions to fail" >&2; exit 1
+fi
+grep -q 'mismatched firmware version' "$WORK/failure.log"
+! grep -q '^release ' "$MOCK/calls"
+mv "$WORK/pi5.version.good" "$WORK/package/pi5.version"
+echo "PASS: release notes carry the firmware version; mismatched board versions are rejected"
 
 for board in pi4 pi5; do
     bash "$ROOT/scripts/package-imager.sh" "$WORK/audiox.img" "$WORK/stable" \
@@ -215,6 +228,8 @@ echo "PASS: both AXU archives are published on stable releases"
 
 GH_REPO="$GH_REPO" bash "$ROOT/scripts/mirror-updates.sh" "$WORK/pages"
 jq -e '.stable.tag == "v2.0.0" and .nightly.tag == "nightly-28" and
+    .stable.version == "2.0.0" and .nightly.version == "1.10.0-beta.3.nightly+0123456789ab" and
+    (.nightly.assets.pi4.name == "AudioX 1.10.0-beta.3 Raspberry Pi 4 (nightly)") and
     (.stable.assets | keys == ["pi4", "pi5"]) and
     (.nightly.assets | keys == ["pi4", "pi5"])' "$WORK/pages/updates.json" > /dev/null
 for board in pi4 pi5; do

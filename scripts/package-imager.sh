@@ -10,7 +10,8 @@ REPOSITORY="${5:?${USAGE}}"
 TAG="${6:?${USAGE}}"
 RELEASE_DATE="${7:?${USAGE}}"
 VERSION="${8:?${USAGE}}"
-VERSION_BASE="${VERSION%%[-+]*}"
+SEMVER_CORE='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
+PRERELEASE_ID='[0-9A-Za-z-]+'
 
 case "$BOARD" in
     pi4) MODEL="4" ;;
@@ -22,15 +23,26 @@ case "$CHANNEL" in
     nightly) NAME="audiox-latest-nightly-$BOARD.img.xz" ;;
     *) echo "Unsupported channel: $CHANNEL" >&2; exit 1 ;;
 esac
+# Stable: X.Y.Z. Nightly: X.Y.Z-[<prerelease>.]nightly+<commit>, e.g. 1.10.0-beta.3.nightly+<commit>.
+if [[ "$CHANNEL" == stable && ! "$VERSION" =~ ^${SEMVER_CORE}$ ||
+      "$CHANNEL" == nightly && ! "$VERSION" =~ ^${SEMVER_CORE}-(${PRERELEASE_ID}\.)*nightly\+[0-9a-f]{7,40}$ ]]; then
+    echo "Version '$VERSION' does not match the $CHANNEL channel format." >&2
+    exit 1
+fi
+# The Imager/site name drops build metadata and the nightly marker; the channel is shown separately.
+DISPLAY_VERSION="${VERSION%%+*}"
+DISPLAY_VERSION="${DISPLAY_VERSION%.nightly}"
+DISPLAY_VERSION="${DISPLAY_VERSION%-nightly}"
 
 mkdir -p "$OUTPUT_DIR"
 xz -T2 -6 -c "$IMAGE" > "$OUTPUT_DIR/$NAME"
 EXTRACT_SHA256="$(sha256sum "$IMAGE" | cut -d ' ' -f 1)"
 DOWNLOAD_SHA256="$(sha256sum "$OUTPUT_DIR/$NAME" | cut -d ' ' -f 1)"
 printf '%s  %s\n' "$DOWNLOAD_SHA256" "$NAME" > "$OUTPUT_DIR/$NAME.sha256"
+printf '%s\n' "$VERSION" > "$OUTPUT_DIR/$BOARD.version"
 
 jq -n \
-    --arg name "AudioX $VERSION_BASE Raspberry Pi $MODEL ($CHANNEL)" \
+    --arg name "AudioX $DISPLAY_VERSION Raspberry Pi $MODEL ($CHANNEL)" \
     --arg description "AudioX $VERSION - $CHANNEL ($TAG), $RELEASE_DATE" \
     --arg url "https://github.com/$REPOSITORY/releases/download/$TAG/$NAME" \
     --arg website "https://github.com/$REPOSITORY" \

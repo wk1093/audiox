@@ -114,9 +114,12 @@ jobs:
             echo "AUDIOX_VERSION_MINOR=$VERSION_MINOR" >> "$GITHUB_ENV"
             echo "AUDIOX_VERSION_PATCH=$VERSION_PATCH" >> "$GITHUB_ENV"
             echo "AUDIOX_VERSION_PRERELEASE=" >> "$GITHUB_ENV"
+            echo "AUDIOX_VERSION_NIGHTLY=0" >> "$GITHUB_ENV"
             echo "AUDIOX_VERSION_BUILD=" >> "$GITHUB_ENV"
           else
-            echo "AUDIOX_VERSION_PRERELEASE=nightly" >> "$GITHUB_ENV"
+            # Keep the Makefile's prerelease: beta.3 -> X.Y.Z-beta.3.nightly+<commit>,
+            # none -> X.Y.Z-nightly+<commit>.
+            echo "AUDIOX_VERSION_NIGHTLY=1" >> "$GITHUB_ENV"
             echo "AUDIOX_VERSION_BUILD=${BUILD_COMMIT:0:12}" >> "$GITHUB_ENV"
           fi
 

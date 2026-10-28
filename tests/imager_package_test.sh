@@ -8,16 +8,19 @@ trap 'rm -r "$WORK"' EXIT
 printf 'AudioX test image\n' > "$WORK/audiox.img"
 EXTRACT_SHA256="$(sha256sum "$WORK/audiox.img" | cut -d ' ' -f 1)"
 
-for CHANNEL in stable nightly; do
-    OUTPUT="$WORK/$CHANNEL"
+# channel|version|expected display version in the Imager/site name
+for CASE in \
+    "stable|2.0.0|2.0.0" \
+    "nightly|1.9.1-nightly+0123456789ab|1.9.1" \
+    "nightly|1.10.0-beta.3.nightly+0123456789ab|1.10.0-beta.3"; do
+    IFS='|' read -r CHANNEL VERSION DISPLAY <<< "$CASE"
+    OUTPUT="$WORK/$CHANNEL-$DISPLAY"
     if [[ "$CHANNEL" == stable ]]; then
         TAG="v2.0.0"
         PREFIX="audiox-latest"
-        VERSION="2.0.0"
     else
         TAG="nightly-123"
         PREFIX="audiox-latest-nightly"
-        VERSION="1.9.1-nightly+0123456789ab"
     fi
     for BOARD in pi4 pi5; do
         bash "$ROOT/scripts/package-imager.sh" "$WORK/audiox.img" "$OUTPUT" \
@@ -25,10 +28,11 @@ for CHANNEL in stable nightly; do
         NAME="$PREFIX-$BOARD.img.xz"
         xz -dc "$OUTPUT/$NAME" | cmp "$WORK/audiox.img" -
         (cd "$OUTPUT" && sha256sum --check "$NAME.sha256")
+        [[ "$(cat "$OUTPUT/$BOARD.version")" == "$VERSION" ]]
         jq -e \
             --arg url "https://github.com/owner/repo/releases/download/$TAG/$NAME" \
             --arg device "$BOARD-64bit" \
-            --arg version "${VERSION%%[-+]*}" \
+            --arg version "$DISPLAY" \
             --arg full_version "$VERSION" \
             --arg channel "$CHANNEL" \
             --arg model "${BOARD#pi}" \
@@ -47,7 +51,7 @@ for CHANNEL in stable nightly; do
              .release_date == "2026-10-26"' \
             "$OUTPUT/$BOARD.json" > /dev/null
         if [[ "$BOARD" == pi4 ]]; then
-            jq -e --arg name "AudioX ${VERSION%%[-+]*} Raspberry Pi 4 ($CHANNEL)" \
+            jq -e --arg name "AudioX $DISPLAY Raspberry Pi 4 ($CHANNEL)" \
                 '.name == $name' "$OUTPUT/$BOARD.json" > /dev/null
         fi
         jq -e --arg device "$BOARD-64bit" \
@@ -73,6 +77,22 @@ if bash "$ROOT/scripts/package-imager.sh" "$WORK/audiox.img" "$WORK/invalid-chan
 fi
 grep -q "Unsupported channel" "$WORK/error.log"
 test ! -e "$WORK/invalid-channel"
+
+for CASE in \
+    "stable|1.10.0-beta.3" \
+    "stable|1.10.0+0123456789ab" \
+    "nightly|1.10.0-beta.3+0123456789ab" \
+    "nightly|1.10.0-beta.3.nightly" \
+    "nightly|1.10.0-nightly+not-a-commit"; do
+    IFS='|' read -r CHANNEL VERSION <<< "$CASE"
+    if bash "$ROOT/scripts/package-imager.sh" "$WORK/audiox.img" "$WORK/invalid-version" \
+        pi4 "$CHANNEL" owner/repo nightly-123 2026-10-26 "$VERSION" > "$WORK/error.log" 2>&1; then
+        echo "Expected $CHANNEL version $VERSION to fail" >&2
+        exit 1
+    fi
+    grep -q "does not match the $CHANNEL channel format" "$WORK/error.log"
+    test ! -e "$WORK/invalid-version"
+done
 
 jq -e '.os_list | map(.subitems_url) == [
     "https://github.com/wk1093/audiox/releases/latest/download/os_list.json",

@@ -67,13 +67,26 @@ RUNTIME_LIBS += $(SBC_STATIC_LIB)
 # SemVer version information.
 # Override on the command line with e.g.:
 #   make AUDIOX_VERSION_MAJOR=1 AUDIOX_VERSION_MINOR=8 AUDIOX_VERSION_PATCH=0 AUDIOX_VERSION_PRERELEASE=beta.2
+# Nightly builds set AUDIOX_VERSION_NIGHTLY=1, which appends a "nightly" identifier to the
+# prerelease and the commit as build metadata:
+#   PRERELEASE=beta.3 -> 1.10.0-beta.3.nightly+<commit>
+#   PRERELEASE=       -> 1.10.1-nightly+<commit>
+# AUDIOX_VERSION_BUILD defaults to the 12-character git commit for nightly builds.
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 10
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.2
+AUDIOX_VERSION_PRERELEASE ?= beta.4
+AUDIOX_VERSION_NIGHTLY ?= 0
+ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
+$(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
+endif
+ifeq ($(origin AUDIOX_VERSION_BUILD)$(AUDIOX_VERSION_NIGHTLY),undefined1)
+AUDIOX_VERSION_BUILD := $(shell git -C "$(CURDIR)" rev-parse --short=12 HEAD 2>/dev/null)
+endif
 AUDIOX_VERSION_BUILD ?=
 AUDIOX_VERSION_BASE = $(AUDIOX_VERSION_MAJOR).$(AUDIOX_VERSION_MINOR).$(AUDIOX_VERSION_PATCH)
-AUDIOX_VERSION_STRING = $(AUDIOX_VERSION_BASE)$(if $(AUDIOX_VERSION_PRERELEASE),-$(AUDIOX_VERSION_PRERELEASE))$(if $(AUDIOX_VERSION_BUILD),+$(AUDIOX_VERSION_BUILD))
+AUDIOX_VERSION_FULL_PRERELEASE = $(if $(filter 1,$(AUDIOX_VERSION_NIGHTLY)),$(if $(AUDIOX_VERSION_PRERELEASE),$(AUDIOX_VERSION_PRERELEASE).nightly,nightly),$(AUDIOX_VERSION_PRERELEASE))
+AUDIOX_VERSION_STRING = $(AUDIOX_VERSION_BASE)$(if $(AUDIOX_VERSION_FULL_PRERELEASE),-$(AUDIOX_VERSION_FULL_PRERELEASE))$(if $(AUDIOX_VERSION_BUILD),+$(AUDIOX_VERSION_BUILD))
 
 # Kernel-style configuration.
 AUDIOX_CONFIG_FILE ?= $(CURDIR)/.config
@@ -135,6 +148,8 @@ DEP_FILE = $(CURDIR)/depmod.txt
 BOOT_LOGO_PPM ?= $(CURDIR)/logo_boot.ppm
 WEB_LOGO_SVG ?= $(CURDIR)/logo.svg
 WEB_LOGO_PNG ?= $(CURDIR)/logo.png
+WEB_FAVICON_SVG ?= $(CURDIR)/logo_small.svg
+WEB_FAVICON_PNG ?= $(CURDIR)/logo_small.png
 WEB_INDEX_HTML ?= $(CURDIR)/web/index.html
 FFMPEG_BIN ?= $(CURDIR)/third_party/ffmpeg/ffmpeg
 FFMPEG_URL ?= https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-31-14-10/ffmpeg-n8.1.2-34-g9b6c8969e0-linuxarm64-gpl-8.1.tar.xz
@@ -205,7 +220,7 @@ RUNTIME_DEFINES = \
 	-DAUDIOX_VERSION_MAJOR=$(AUDIOX_VERSION_MAJOR) \
 	-DAUDIOX_VERSION_MINOR=$(AUDIOX_VERSION_MINOR) \
 	-DAUDIOX_VERSION_PATCH=$(AUDIOX_VERSION_PATCH) \
-	-DAUDIOX_VERSION_PRERELEASE='"$(AUDIOX_VERSION_PRERELEASE)"' \
+	-DAUDIOX_VERSION_PRERELEASE='"$(AUDIOX_VERSION_FULL_PRERELEASE)"' \
 	-DAUDIOX_VERSION_BUILD='"$(AUDIOX_VERSION_BUILD)"' \
 	-DAUDIOX_VERSION_STRING='"$(AUDIOX_VERSION_STRING)"' \
 	-DAUDIOX_USB_GADGET_UDC='"$(AUDIOX_USB_GADGET_UDC)"' \
@@ -227,7 +242,7 @@ BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
 .DEFAULT_GOAL := all
 
-.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg upload_bootloader upload_kernel upload_cmdline update_archive upload_update boot_config stage_ffmpeg bluetooth_firmware dnsmasq check_dnsmasq_conf test-dnsmasq-config config menuconfig defconfig pi4_defconfig pi5_defconfig olddefconfig print-config audio-bench run-audio-bench test-audio-engine test-watchdog
+.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg upload_bootloader upload_kernel upload_cmdline update_archive upload_update boot_config stage_ffmpeg bluetooth_firmware dnsmasq check_dnsmasq_conf test-dnsmasq-config config menuconfig defconfig pi4_defconfig pi5_defconfig olddefconfig print-config print-version audio-bench run-audio-bench test-audio-engine test-watchdog
 
 all: initramfs
 
@@ -401,6 +416,9 @@ fetch_boot_modules: fetch_deps
 show_modules: fetch_modules
 	@cat $(OUT_DIR)/module-load.summary.txt
 
+print-version:
+	@printf '%s\n' "$(AUDIOX_VERSION_STRING)"
+
 show_kernel:
 	@echo "Detected kernel version: $(KV)"
 	@if [ -f "$(OUT_DIR)/firmware/extra/uname_string8" ]; then \
@@ -490,7 +508,7 @@ $(DNSMASQ_BIN): scripts/build_dnsmasq.sh
 check_dnsmasq_conf:
 	@ip="$(AUDIOX_DEVICE_IP)"; net="$${ip%.*}"; conf="$(DNSMASQ_CONF)"; \
 	test -f "$$conf" || { echo "Error: missing $$conf"; exit 1; }; \
-	grep -qx "host-record=audiox,audiox.lan,audiox.local,$$ip" "$$conf" && \
+	grep -qx "host-record=audiox,audiox.lan,audiox.local,audiox.wklab.net,$$ip" "$$conf" && \
 	grep -qx "dhcp-option=option:dns-server,$$ip" "$$conf" && \
 	grep -q "^dhcp-range=$$net\.[0-9]*,$$net\.[0-9]*,255\.255\.255\.0," "$$conf" || { \
 		echo "Error: $$conf does not match CONFIG_DEVICE_IP=$$ip"; \
@@ -668,6 +686,18 @@ rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(MODULE_LOAD_LIST) $(
 	@if [ -f "$(WEB_LOGO_PNG)" ]; then \
 		echo "Staging web logo png from $(WEB_LOGO_PNG)..."; \
 		cp "$(WEB_LOGO_PNG)" "$(ROOTFS_DIR)/etc/www/logo.png"; \
+	fi
+	@if [ -f "$(WEB_FAVICON_SVG)" ]; then \
+		echo "Staging web favicon svg from $(WEB_FAVICON_SVG)..."; \
+		cp "$(WEB_FAVICON_SVG)" "$(ROOTFS_DIR)/etc/www/logo_small.svg"; \
+	else \
+		echo "Warning: web favicon svg not found at $(WEB_FAVICON_SVG)"; \
+	fi
+	@if [ -f "$(WEB_FAVICON_PNG)" ]; then \
+		echo "Staging web favicon png from $(WEB_FAVICON_PNG)..."; \
+		cp "$(WEB_FAVICON_PNG)" "$(ROOTFS_DIR)/etc/www/logo_small.png"; \
+	else \
+		echo "Warning: web favicon png not found at $(WEB_FAVICON_PNG)"; \
 	fi
 	@if [ "$(ENABLE_ALSA)" = "1" ]; then \
 		if [ -f "$(ALSA_CONF_DIR)/alsa.conf" ]; then \

@@ -100,6 +100,29 @@ static int applyAudioConfig(const ConfigData *cfg) {
     if (writeSysNodeU32(GADGET_UAC2_FUNC "/p_ssize", cfg->sampleSize) != RET_OK) return RET_ERR;
     if (writeSysNodeU32(GADGET_UAC2_FUNC "/c_ssize", cfg->sampleSize) != RET_OK) return RET_ERR;
 
+    // Windows names the audio endpoints from these strings; the kernel default
+    // function_name is "Source/Sink". p_* is device-to-host (host capture).
+    struct NameSetting { const char *attr; const char *value; };
+    static const NameSetting names[] = {
+        {"function_name", AUDIOX_USB_AUDIO_NAME "\n"},
+        {"if_ctrl_name", AUDIOX_USB_AUDIO_NAME " Control\n"},
+        {"p_it_name", AUDIOX_USB_AUDIO_NAME " Capture\n"},
+        {"p_ot_name", AUDIOX_USB_AUDIO_NAME " Capture\n"},
+        {"p_it_ch_name", AUDIOX_USB_AUDIO_NAME " Capture Channels\n"},
+        {"p_fu_vol_name", AUDIOX_USB_AUDIO_NAME " Capture Volume\n"},
+        {"c_it_name", AUDIOX_USB_AUDIO_NAME " Playback\n"},
+        {"c_ot_name", AUDIOX_USB_AUDIO_NAME " Playback\n"},
+        {"c_it_ch_name", AUDIOX_USB_AUDIO_NAME " Playback Channels\n"},
+        {"c_fu_vol_name", AUDIOX_USB_AUDIO_NAME " Playback Volume\n"},
+    };
+    for (const NameSetting &name : names) {
+        char path[256];
+        snprintf(path, sizeof(path), GADGET_UAC2_FUNC "/%s", name.attr);
+        if (writeSysNode(path, name.value) != RET_OK) {
+            printf("[INIT] [WARN] setting USB audio string %s failed: %s\n", path, strerror(errno));
+        }
+    }
+
     static const char *directions[] = {"p", "c"};
     for (const char *direction : directions) {
         char path[256];

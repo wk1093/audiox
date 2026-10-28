@@ -491,12 +491,23 @@ uint8_t AudioContext::getSoundboardMode() const {
 
 void AudioContext::poll() {
     uint64_t now = audioMonotonicMs();
-    if (now < nextHotplugScanMs) {
-        return;
+    if (now >= nextHotplugScanMs) {
+        nextHotplugScanMs = now + 1000ULL;
+        (void)rescanDevices();
     }
-
-    nextHotplugScanMs = now + 1000ULL;
-    (void)rescanDevices();
+    int card = -1;
+    unsigned device = 0;
+    {
+        std::lock_guard<std::mutex> lock(devicesMutex);
+        for (const auto &entry : devices) {
+            if (entry.second.isGadget) {
+                card = static_cast<int>(entry.second.cardIndex);
+                device = entry.second.deviceIndex;
+                break;
+            }
+        }
+    }
+    gadgetVolume.poll(card, device, now);
 }
 
 int AudioContext::forceRescan() {

@@ -2,6 +2,8 @@
 #include "context.hpp"
 #include "config/context.hpp"
 #include "system.hpp"
+#include "audio/gadget_volume.hpp"
+#include "audio/context.hpp"
 
 #include <stdio.h>
 #include <fcntl.h>
@@ -98,6 +100,27 @@ static int applyAudioConfig(const ConfigData *cfg) {
     if (writeSysNodeU32(GADGET_UAC2_FUNC "/p_ssize", cfg->sampleSize) != RET_OK) return RET_ERR;
     if (writeSysNodeU32(GADGET_UAC2_FUNC "/c_ssize", cfg->sampleSize) != RET_OK) return RET_ERR;
 
+    static const char *directions[] = {"p", "c"};
+    for (const char *direction : directions) {
+        char path[256];
+        struct Setting { const char *name; int value; };
+        const Setting settings[] = {
+            {"mute_present", 1}, {"volume_present", 1},
+            {"volume_min", audiox::usb::kVolumeMin},
+            {"volume_max", audiox::usb::kVolumeMax},
+            {"volume_res", audiox::usb::kVolumeResolution},
+        };
+        for (const Setting &setting : settings) {
+            snprintf(path, sizeof(path), GADGET_UAC2_FUNC "/%s_%s", direction, setting.name);
+            char value[32];
+            snprintf(value, sizeof(value), "%d\n", setting.value);
+            if (writeSysNode(path, value) != RET_OK) {
+                printf("[INIT] [ERR] configuring USB audio control %s failed: %s\n", path, strerror(errno));
+                return RET_ERR;
+            }
+        }
+    }
+
     if (symlink(GADGET_UAC2_FUNC, GADGET_CONFIG_LINK) < 0 && errno != EEXIST) {
         printf("[INIT] [ERR] Symlink layout assignment failed: %s\n", strerror(errno));
         return RET_ERR;
@@ -193,6 +216,9 @@ int reloadAudioGadget(void *_context) {
     int valid = validateAudioConfig(&nextCfg);
     if (valid != RET_OK) {
         return valid;
+    }
+    if (context->audio) {
+        context->audio->gadgetVolume.reset();
     }
 
     ConfigData prevCfg;

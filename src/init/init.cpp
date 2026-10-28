@@ -16,8 +16,10 @@
 #include "midi/context.hpp"
 #include "http/context.hpp"
 #include "http/network.hpp"
+#include "http/mdns.hpp"
 #include "bluetooth/context.hpp"
 #include "watchdog_heartbeat.hpp"
+#include "diagnostics.hpp"
 
 #define HANDLE_ERROR(func) \
     do { \
@@ -124,6 +126,7 @@ int main() {
     HANDLE_ERROR(bluetooth.start());
 
     HANDLE_ERROR(http.startSocket());
+    audiox::mdns::Responder mdns(USB_NET_IFACE, AUDIOX_MDNS_HOSTNAME);
 
     fb.bootStatus("Starting main event loop...");
     sleep(1);
@@ -140,10 +143,12 @@ int main() {
             audioxWatchdogHeartbeat();
         }
         mainContext.eventLoop();
+        audiox::diagnostics::pollKernelLog();
         pollBootRecovery();
         touch.poll();
         fb.drawMain(&touch.state);
         http.poll();
+        mdns.poll();
         audio.poll(); // no audio processing, only hotplug/talking to config for device/routing settings.
         midi.poll();
         if (!fb.isReady()) {

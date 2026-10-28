@@ -422,14 +422,14 @@ static bool resolveThingCardDevice(AudioContext *ctx,
     return false;
 }
 
-static bool isGadgetCaptureDevice(AudioContext *ctx, uint32_t card, uint32_t device) {
+static bool isGadgetDevice(AudioContext *ctx, uint32_t card, uint32_t device) {
     if (!ctx) {
         return false;
     }
     std::lock_guard<std::mutex> lock(ctx->devicesMutex);
     for (const auto& entry : ctx->devices) {
         const AudioDeviceInfo& info = entry.second;
-        if (info.cardIndex == card && info.deviceIndex == device && info.hasCapture) {
+        if (info.cardIndex == card && info.deviceIndex == device) {
             return info.isGadget != 0;
         }
     }
@@ -620,7 +620,7 @@ bool AlsaCaptureBackend::attachSource(AudioContext *ctx,
     stream.nodeIndex = nodeIndex;
     stream.card = card;
     stream.device = device;
-    stream.isGadget = isGadgetCaptureDevice(ctx, card, device) ? 1U : 0U;
+    stream.isGadget = isGadgetDevice(ctx, card, device) ? 1U : 0U;
     stream.sampleRate = SAMPLE_RATE;
     stream.channels = static_cast<uint8_t>(thing.outputs == 0
         ? 1U : (thing.outputs > kMaxChannelsPerThing ? kMaxChannelsPerThing : thing.outputs));
@@ -969,6 +969,22 @@ static void serviceCaptureIo(AlsaCaptureBackend *backend) {
     }
 }
 
+static void preparePlaybackBlock(RuntimeGraph::AlsaPlaybackStream &stream,
+                                 float *const *inputs, uint8_t inputChannels, float gain) {
+    for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+        for (uint8_t channel = 0; channel < stream.channels; ++channel) {
+            uint8_t sourceChannel = channel < inputChannels ? channel : inputChannels - 1;
+            float sample = inputs[sourceChannel][frame] * gain;
+            const size_t index = static_cast<size_t>(frame) * stream.channels + channel;
+            if (stream.format == SND_PCM_FORMAT_S32_LE) {
+                stream.pendingBlock32[index] = audiox::pcm::toS32(sample);
+            } else {
+                stream.pendingBlock[index] = audiox::pcm::toS16(sample);
+            }
+        }
+    }
+}
+
 template <bool SingleSink>
 static void servicePlaybackIoImpl(AudioContext *ctx, RuntimeGraph *rt, uint16_t onlyNode) {
     if (!ctx || !rt) {
@@ -1011,18 +1027,9 @@ static void servicePlaybackIoImpl(AudioContext *ctx, RuntimeGraph *rt, uint16_t 
                 continue;
             }
 
-            for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
-                for (uint8_t ch = 0; ch < s.channels; ++ch) {
-                    uint8_t srcCh = (ch < inChannels) ? ch : (uint8_t)(inChannels - 1);
-                    float v = rt->inputs[s.nodeIndex][srcCh][frame];
-                    const size_t sampleIndex = static_cast<size_t>(frame) * s.channels + ch;
-                    if (s.format == SND_PCM_FORMAT_S32_LE) {
-                        s.pendingBlock32[sampleIndex] = audiox::pcm::toS32(v);
-                    } else {
-                        s.pendingBlock[sampleIndex] = audiox::pcm::toS16(v);
-                    }
-                }
-            }
+            const float gain = s.isGadget
+                ? ctx->gadgetVolume.playbackGain.load(std::memory_order_relaxed) : 1.0f;
+            preparePlaybackBlock(s, rt->inputs[s.nodeIndex], inChannels, gain);
 
             s.pendingFrames = BUFFER_FRAMES;
             s.pendingOffsetFrames = 0;
@@ -1621,6 +1628,34 @@ static void processNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex,
 }
 #endif
 
+static void renderCaptureSource(AlsaCaptureStream &stream, float *const *outputs,
+                                uint8_t outChannels, float gain) {
+    const float fillRatio = static_cast<float>(stream.ring.count()) / kCaptureRingFrames;
+    const float srcRatio = adaptiveSrcStep(&stream.src, fillRatio);
+    for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+        if (stream.ring.count() == 0) {
+            for (uint8_t channel = 0; channel < outChannels; ++channel) {
+                const uint8_t sourceChannel = channel < stream.channels ? channel : 0;
+                outputs[channel][frame] = stream.ring.lastSample(sourceChannel) * gain;
+            }
+        } else {
+            const uint32_t aFrame = stream.ring.tail();
+            const uint32_t bFrame = stream.ring.count() > 1
+                ? stream.ring.readFrameIndex(1U) : aFrame;
+            for (uint8_t channel = 0; channel < outChannels; ++channel) {
+                const uint8_t sourceChannel = channel < stream.channels ? channel : stream.channels - 1U;
+                const float a = static_cast<float>(captureRingSample(stream, aFrame, sourceChannel)) / 32768.0f;
+                const float b = static_cast<float>(captureRingSample(stream, bFrame, sourceChannel)) / 32768.0f;
+                const float sample = a + (b - a) * stream.ring.readFraction();
+                outputs[channel][frame] = sample * gain;
+                // Retain the unscaled sample so underruns cannot compound host gain.
+                stream.ring.setLastSample(sourceChannel, sample);
+            }
+            stream.ring.consume(srcRatio);
+        }
+    }
+}
+
 #if AUDIOX_USE_SHARED_GRAPH_PROCESSOR
 static void renderSourceNode(AudioContext *ctx,
                              RuntimeGraph *rt,
@@ -1717,40 +1752,9 @@ static void renderSourceNode(AudioContext *ctx,
     const int16_t captureIdx = captureBackend ? captureBackend->nodeToStream[nodeIndex] : -1;
     if (captureBackend && captureIdx >= 0 && (uint16_t)captureIdx < captureBackend->count) {
         AlsaCaptureStream &s = captureBackend->streams[(uint16_t)captureIdx];
-        float fillRatio = (float)s.ring.count() / (float)kCaptureRingFrames;
-        float srcRatio = adaptiveSrcStep(&s.src, fillRatio);
-
-        const float gainMultiplier = s.isGadget ? USB_GADGET_IN_GAIN : 1.0f;
-
-        for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
-            if (s.ring.count() == 0) {
-                for (uint8_t ch = 0; ch < outChannels; ++ch) {
-                    uint8_t srcCh = (ch < s.channels) ? ch : 0;
-                    float out = s.ring.lastSample(srcCh) * gainMultiplier;
-                    if (out > 1.0f) out = 1.0f;
-                    if (out < -1.0f) out = -1.0f;
-                    rt->outputs[nodeIndex][ch][frame] = out;
-                }
-            } else {
-                uint32_t aFrame = s.ring.tail();
-                uint32_t bFrame = s.ring.count() > 1
-                    ? s.ring.readFrameIndex(1U)
-                    : aFrame;
-
-                for (uint8_t ch = 0; ch < outChannels; ++ch) {
-                    uint8_t srcCh = (ch < s.channels) ? ch : (uint8_t)(s.channels - 1U);
-                    float a = (float)captureRingSample(s, aFrame, srcCh) / 32768.0f;
-                    float b = (float)captureRingSample(s, bFrame, srcCh) / 32768.0f;
-                    float out = (a + ((b - a) * s.ring.readFraction())) * gainMultiplier;
-                    if (out > 1.0f) out = 1.0f;
-                    if (out < -1.0f) out = -1.0f;
-                    rt->outputs[nodeIndex][ch][frame] = out;
-                    s.ring.setLastSample(srcCh, out);
-                }
-
-                s.ring.consume(srcRatio);
-            }
-        }
+        const float gain = s.isGadget
+            ? ctx->gadgetVolume.captureGain.load(std::memory_order_relaxed) : 1.0f;
+        renderCaptureSource(s, rt->outputs[nodeIndex], outChannels, gain);
         return;
     }
 
@@ -2048,6 +2052,7 @@ static void rebuildRuntimeGraph(AudioContext *ctx,
                     s.nodeIndex = i;
                     s.card = card;
                     s.device = device;
+                    s.isGadget = isGadgetDevice(ctx, card, device) ? 1U : 0U;
                     s.sampleRate = SAMPLE_RATE;
                     s.channels = (thing.inputs == 0) ? 1U : ((thing.inputs > kMaxChannelsPerThing) ? kMaxChannelsPerThing : thing.inputs);
                     snprintf(s.path, sizeof(s.path), "hw:%u,%u", (unsigned)card, (unsigned)device);

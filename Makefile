@@ -50,6 +50,13 @@ SBC_SYSROOT ?= $(OUT_DIR)/sbc-sysroot
 SBC_STATIC_LIB ?= $(SBC_SYSROOT)/usr/lib/libsbc.a
 SBC_INCLUDE_DIR ?= $(SBC_SYSROOT)/usr/include
 
+# Static DHCP/DNS server for the USB network (see root/etc/dnsmasq.conf).
+DNSMASQ_VERSION ?= 2.93
+DNSMASQ_SHA256 ?= 0c00d4e5c97c8306e5fb932b348b34269c9c29a0e7df0e8e82958b407092bc19
+DNSMASQ_BIN ?= $(OUT_DIR)/dnsmasq-$(DNSMASQ_VERSION)/dnsmasq
+DNSMASQ_CONF ?= $(CURDIR)/root/etc/dnsmasq.conf
+DNSMASQ_TEST_RUNNER ?= $(shell command -v qemu-aarch64 2>/dev/null)
+
 ifeq ($(ENABLE_ALSA),1)
 RUNTIME_FLAGS += -I$(ALSA_INCLUDE_DIR)
 RUNTIME_LIBS += -L$(ALSA_LIB_DIR) -lasound -ldl
@@ -61,9 +68,9 @@ RUNTIME_LIBS += $(SBC_STATIC_LIB)
 # Override on the command line with e.g.:
 #   make AUDIOX_VERSION_MAJOR=1 AUDIOX_VERSION_MINOR=8 AUDIOX_VERSION_PATCH=0 AUDIOX_VERSION_PRERELEASE=beta.2
 AUDIOX_VERSION_MAJOR ?= 1
-AUDIOX_VERSION_MINOR ?= 9
-AUDIOX_VERSION_PATCH ?= 4
-AUDIOX_VERSION_PRERELEASE ?=
+AUDIOX_VERSION_MINOR ?= 10
+AUDIOX_VERSION_PATCH ?= 0
+AUDIOX_VERSION_PRERELEASE ?= beta.2
 AUDIOX_VERSION_BUILD ?=
 AUDIOX_VERSION_BASE = $(AUDIOX_VERSION_MAJOR).$(AUDIOX_VERSION_MINOR).$(AUDIOX_VERSION_PATCH)
 AUDIOX_VERSION_STRING = $(AUDIOX_VERSION_BASE)$(if $(AUDIOX_VERSION_PRERELEASE),-$(AUDIOX_VERSION_PRERELEASE))$(if $(AUDIOX_VERSION_BUILD),+$(AUDIOX_VERSION_BUILD))
@@ -220,7 +227,7 @@ BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
 .DEFAULT_GOAL := all
 
-.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg upload_bootloader upload_kernel upload_cmdline update_archive upload_update boot_config stage_ffmpeg bluetooth_firmware config menuconfig defconfig pi4_defconfig pi5_defconfig olddefconfig print-config audio-bench run-audio-bench test-audio-engine test-watchdog
+.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg upload_bootloader upload_kernel upload_cmdline update_archive upload_update boot_config stage_ffmpeg bluetooth_firmware dnsmasq check_dnsmasq_conf test-dnsmasq-config config menuconfig defconfig pi4_defconfig pi5_defconfig olddefconfig print-config audio-bench run-audio-bench test-audio-engine test-watchdog
 
 all: initramfs
 
@@ -276,7 +283,7 @@ test-soundboard-config: $(OUT_DIR)/host/audiox-soundboard-config-test
 
 SOUNDBOARD_CONFIG_TEST_SRCS = tests/soundboard_config_test.cpp src/context.cpp \
 	src/config/basic.cpp src/config/midi_map.cpp src/config/backup.cpp \
-	src/midi/midi.cpp src/audio/setup.cpp src/http/server.cpp src/init/recovery.cpp src/touch/touch.cpp \
+	src/midi/midi.cpp src/audio/setup.cpp src/audio/gadget_volume.cpp src/http/server.cpp src/init/recovery.cpp src/touch/touch.cpp \
 	$(filter-out tools/audiox-audio-bench.cpp src/audio/engine.cpp src/audio/graph_processor.cpp,$(AUDIO_BENCH_SRCS))
 
 $(OUT_DIR)/host/audiox-soundboard-config-test: $(SOUNDBOARD_CONFIG_TEST_SRCS) src/http/api.cpp $(wildcard include/config/*.hpp include/midi/*.hpp include/audio/*.hpp include/audio/effects/*.hpp include/http/*.hpp include/touch/*.hpp) include/defs.hpp include/watchdog_heartbeat.hpp
@@ -313,17 +320,44 @@ $(OUT_DIR)/host/audiox-config-backup-http-test: tests/config_backup_http_test.cp
 test-audio-pcm-recover: $(OUT_DIR)/host/audiox-audio-pcm-recover-test
 	@"$<"
 
+.PHONY: test-gadget-volume test-diagnostics test-mdns
+test-mdns: $(OUT_DIR)/host/audiox-mdns-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-mdns-test: tests/mdns_test.cpp src/http/mdns.cpp include/http/mdns.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -fsanitize=address,undefined -Iinclude -o "$@" tests/mdns_test.cpp src/http/mdns.cpp
+
+test-gadget-volume: $(OUT_DIR)/host/audiox-gadget-volume-test-0 $(OUT_DIR)/host/audiox-gadget-volume-test-1
+	@"$(OUT_DIR)/host/audiox-gadget-volume-test-0"
+	@"$(OUT_DIR)/host/audiox-gadget-volume-test-1"
+
+$(OUT_DIR)/host/audiox-gadget-volume-test-%: tests/gadget_volume_test.cpp src/audio/processing.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp $(wildcard include/audio/*.hpp include/audio/*.h) $(AUDIOX_CONFIG_FILE)
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-function -Wno-format-truncation -Wno-unused-parameter \
+		-Iinclude -DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) -DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) -DAUDIOX_USE_SHARED_GRAPH_PROCESSOR=$* \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections -o "$@" \
+		tests/gadget_volume_test.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp $(shell pkg-config --cflags --libs alsa) -pthread -lm
+
+test-diagnostics: $(OUT_DIR)/host/audiox-diagnostics-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-diagnostics-test: tests/diagnostics_test.cpp src/init/diagnostics.cpp include/diagnostics.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/diagnostics_test.cpp
+
 $(OUT_DIR)/host/audiox-audio-pcm-recover-test: tests/audio_pcm_recover_test.cpp include/audio/alsa_pcm.h include/defs.hpp
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-parameter -Iinclude $(shell pkg-config --cflags alsa) -o "$@" "$<" $(shell pkg-config --libs alsa)
 
 test-watchdog: $(WATCHDOG_HOST_BIN)
 test-watchdog: $(WATCHDOG_HOST_BIN) $(WATCHDOG_HUNG_CHILD_BIN)
-	@"$(WATCHDOG_HOST_BIN)" /bin/false 2 > "$(OUT_DIR)/watchdog-crash-test.log" 2>&1
+	@"$(WATCHDOG_HOST_BIN)" /bin/false 2 "" > "$(OUT_DIR)/watchdog-crash-test.log" 2>&1
 	@grep -q "main process exited" "$(OUT_DIR)/watchdog-crash-test.log"
-	@"$(WATCHDOG_HOST_BIN)" "$(WATCHDOG_HUNG_CHILD_BIN)" 1 > "$(OUT_DIR)/watchdog-hang-test.log" 2>&1
+	@"$(WATCHDOG_HOST_BIN)" "$(WATCHDOG_HUNG_CHILD_BIN)" 1 "" > "$(OUT_DIR)/watchdog-hang-test.log" 2>&1
 	@grep -q "main-loop heartbeat timed out" "$(OUT_DIR)/watchdog-hang-test.log"
 	@echo "watchdog exit and heartbeat-timeout tests passed"
+	@bash tests/watchdog_service_test.sh "$(WATCHDOG_HOST_BIN)" "$(WATCHDOG_HUNG_CHILD_BIN)" "$(OUT_DIR)/watchdog-service-test"
 
 BENCH_INPUT ?=
 BENCH_ALSA_DEVICE ?= default
@@ -447,6 +481,34 @@ $(SBC_STATIC_LIB):
 	$(MAKE) -C "$(SBC_BUILD_DIR)" DESTDIR="$(SBC_SYSROOT)" install
 	@echo "Static SBC decoder ready: $(SBC_STATIC_LIB)"
 
+dnsmasq: $(DNSMASQ_BIN)
+
+$(DNSMASQ_BIN): scripts/build_dnsmasq.sh
+	@"$(CURDIR)/scripts/build_dnsmasq.sh" "$(DNSMASQ_VERSION)" "$(DNSMASQ_SHA256)" "$(OUT_DIR)" "$@" "$(CC)" "$(PKG_FETCH)"
+
+# The static dnsmasq.conf must agree with CONFIG_DEVICE_IP (a /24 on usb0).
+check_dnsmasq_conf:
+	@ip="$(AUDIOX_DEVICE_IP)"; net="$${ip%.*}"; conf="$(DNSMASQ_CONF)"; \
+	test -f "$$conf" || { echo "Error: missing $$conf"; exit 1; }; \
+	grep -qx "host-record=audiox,audiox.lan,audiox.local,$$ip" "$$conf" && \
+	grep -qx "dhcp-option=option:dns-server,$$ip" "$$conf" && \
+	grep -q "^dhcp-range=$$net\.[0-9]*,$$net\.[0-9]*,255\.255\.255\.0," "$$conf" || { \
+		echo "Error: $$conf does not match CONFIG_DEVICE_IP=$$ip"; \
+		echo "Update host-record, dns-server, and the /24 dhcp-range in $$conf."; \
+		exit 1; \
+	}
+
+test-dnsmasq-config: $(DNSMASQ_BIN) check_dnsmasq_conf
+	@if [ -n "$(DNSMASQ_TEST_RUNNER)" ]; then \
+		"$(DNSMASQ_TEST_RUNNER)" "$(DNSMASQ_BIN)" --test -C "$(DNSMASQ_CONF)"; \
+	elif command -v dnsmasq >/dev/null 2>&1; then \
+		echo "qemu-aarch64 not found; checking syntax with host dnsmasq"; \
+		dnsmasq --test -C "$(DNSMASQ_CONF)"; \
+	else \
+		echo "Error: need qemu-aarch64 or host dnsmasq to check $(DNSMASQ_CONF)"; \
+		exit 1; \
+	fi
+
 ffmpeg:
 	@if [ -x "$(FFMPEG_BIN)" ]; then \
 		echo "Using existing ffmpeg at $(FFMPEG_BIN)"; \
@@ -544,7 +606,7 @@ bootloader_rootfs: $(BOOTLOADER_ROOTFS_DIR)/init $(BOOT_MODULE_LOAD_LIST) $(BOOT
 	cp -r "$(OUT_DIR)/bootmodules_staging/$(KV)" $(BOOTLOADER_ROOTFS_DIR)/lib/modules/
 	cp $(BOOT_MODULE_LOAD_BASE_LIST) $(BOOTLOADER_ROOTFS_DIR)/etc/bootmodule-load.list
 
-rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB)
+rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB) $(DNSMASQ_BIN) check_dnsmasq_conf
 	@echo "Creating runtime rootfs structure..."
 	mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/sbin $(ROOTFS_DIR)/etc
 	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev
@@ -570,6 +632,11 @@ rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(MODULE_LOAD_LIST) $(
 	@echo "Staging kernel objects into target lib tree..."
 	@mkdir -p "$(ROOTFS_DIR)/usr/share/licenses/audiox/libsbc"
 	cp "$(SBC_SRC_DIR)/COPYING.LIB" "$(ROOTFS_DIR)/usr/share/licenses/audiox/libsbc/COPYING.LIB"
+	@echo "Staging static dnsmasq $(DNSMASQ_VERSION)..."
+	install -m 0755 "$(DNSMASQ_BIN)" "$(ROOTFS_DIR)/sbin/dnsmasq"
+	@mkdir -p "$(ROOTFS_DIR)/usr/share/licenses/audiox/dnsmasq"
+	cp "$(dir $(DNSMASQ_BIN))COPYING" "$(dir $(DNSMASQ_BIN))COPYING-v3" \
+		"$(ROOTFS_DIR)/usr/share/licenses/audiox/dnsmasq/"
 	rm -rf $(ROOTFS_DIR)/lib/modules/*
 	cp -r "$(OUT_DIR)/modules_staging/$(KV)" $(ROOTFS_DIR)/lib/modules/
 	cp $(MODULE_LOAD_LIST) $(ROOTFS_DIR)/etc/module-load.list

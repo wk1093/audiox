@@ -16,15 +16,39 @@ BOOT_DST_DIR="${OUT_DIR}/bootfiles"
 
 mkdir -p "${OUT_DIR}"
 
-if [[ ! -d "${FIRMWARE_DIR}/.git" ]]; then
-    echo "[sync_firmware] Cloning firmware repository..."
-    git clone --depth 1 --branch master "${FIRMWARE_GIT_URL}" "${FIRMWARE_DIR}"
-else
-    echo "[sync_firmware] Updating firmware repository..."
-fi
+# Records "<tag> <commit>" after a tag checkout so later runs can skip the network.
+SYNCED_TAG_FILE="${FIRMWARE_DIR}/.git/audiox-synced-tag"
 
-git -C "${FIRMWARE_DIR}" fetch --depth 1 origin "${FIRMWARE_GIT_REF}"
-git -C "${FIRMWARE_DIR}" checkout --detach FETCH_HEAD
+# Commit hashes and tags are immutable, so a matching checkout needs no fetch.
+# Branches are always fetched so they keep tracking upstream.
+ref_already_checked_out() {
+    [[ -d "${FIRMWARE_DIR}/.git" ]] || return 1
+    local head
+    head="$(git -C "${FIRMWARE_DIR}" rev-parse -q --verify HEAD 2>/dev/null)" || return 1
+    if [[ "${FIRMWARE_GIT_REF}" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+        [[ "${head}" == "${FIRMWARE_GIT_REF,,}"* ]]
+        return
+    fi
+    [[ -f "${SYNCED_TAG_FILE}" && "$(cat "${SYNCED_TAG_FILE}")" == "${FIRMWARE_GIT_REF} ${head}" ]]
+}
+
+if ref_already_checked_out; then
+    echo "[sync_firmware] ${FIRMWARE_GIT_REF} already checked out; skipping fetch"
+else
+    if [[ ! -d "${FIRMWARE_DIR}/.git" ]]; then
+        echo "[sync_firmware] Cloning firmware repository..."
+        git clone --depth 1 --branch master "${FIRMWARE_GIT_URL}" "${FIRMWARE_DIR}"
+    else
+        echo "[sync_firmware] Updating firmware repository..."
+    fi
+
+    rm -f "${SYNCED_TAG_FILE}"
+    git -C "${FIRMWARE_DIR}" fetch --depth 1 origin "${FIRMWARE_GIT_REF}"
+    git -C "${FIRMWARE_DIR}" checkout --detach FETCH_HEAD
+    if grep -qF "tag '${FIRMWARE_GIT_REF}' of " "${FIRMWARE_DIR}/.git/FETCH_HEAD"; then
+        echo "${FIRMWARE_GIT_REF} $(git -C "${FIRMWARE_DIR}" rev-parse HEAD)" > "${SYNCED_TAG_FILE}"
+    fi
+fi
 
 # Restage from scratch so files from a previously selected board are not exported.
 rm -rf "${BOOT_DST_DIR}"

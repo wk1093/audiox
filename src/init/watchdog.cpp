@@ -37,10 +37,124 @@ uint64_t monotonicMilliseconds() {
         static_cast<uint64_t>(now.tv_nsec) / 1000000U;
 }
 
-void sleepSeconds(unsigned seconds) {
-    timespec remaining = {static_cast<time_t>(seconds), 0};
-    while (nanosleep(&remaining, &remaining) < 0 && errno == EINTR) {
+unsigned nextBackoff(unsigned delaySeconds) {
+    if (delaySeconds >= kMaximumRestartDelaySeconds) {
+        return kMaximumRestartDelaySeconds;
     }
+    delaySeconds *= 2;
+    return delaySeconds > kMaximumRestartDelaySeconds ? kMaximumRestartDelaySeconds : delaySeconds;
+}
+
+// Long-lived helper daemon (dnsmasq) supervised independently of the runtime.
+// It runs in its own process group so runtime-group kills never reach it.
+struct Service {
+    const char* name = "dnsmasq";
+    const char* path = nullptr;
+    const char* configPath = nullptr;
+    bool enabled = false;
+    pid_t pid = -1;
+    uint64_t startedMs = 0;
+    uint64_t nextStartMs = 0;
+    unsigned restartDelaySeconds = 1;
+};
+
+void startService(Service* service, uint64_t now) {
+    char configArgument[512];
+    snprintf(configArgument, sizeof(configArgument), "--conf-file=%s", service->configPath);
+
+    const pid_t child = fork();
+    if (child < 0) {
+        perror("[WATCHDOG] fork service");
+        service->nextStartMs = now + service->restartDelaySeconds * 1000U;
+        service->restartDelaySeconds = nextBackoff(service->restartDelaySeconds);
+        return;
+    }
+    if (child == 0) {
+        (void)setpgid(0, 0);
+        execl(service->path, service->path, "--keep-in-foreground", configArgument,
+              static_cast<char*>(nullptr));
+        dprintf(STDERR_FILENO, "[WATCHDOG] exec %s failed: %s\n", service->path, strerror(errno));
+        _exit(127);
+    }
+    (void)setpgid(child, child);
+    service->pid = child;
+    service->startedMs = now;
+    printf("[WATCHDOG] started %s pid=%d\n", service->name, static_cast<int>(child));
+}
+
+void handleServiceExit(Service* service, int status, uint64_t now) {
+    if (WIFEXITED(status)) {
+        printf("[WATCHDOG] %s pid=%d exited with status %d\n", service->name,
+               static_cast<int>(service->pid), WEXITSTATUS(status));
+    } else {
+        printf("[WATCHDOG] %s pid=%d terminated by signal %d\n", service->name,
+               static_cast<int>(service->pid), WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+    }
+    service->pid = -1;
+    if (now - service->startedMs >= 60000U) {
+        service->restartDelaySeconds = 1;
+    }
+    service->nextStartMs = now + service->restartDelaySeconds * 1000U;
+    printf("[WATCHDOG] restarting %s in %u second(s)\n", service->name, service->restartDelaySeconds);
+    service->restartDelaySeconds = nextBackoff(service->restartDelaySeconds);
+}
+
+void superviseService(Service* service) {
+    if (!service || !service->enabled) {
+        return;
+    }
+    const uint64_t now = monotonicMilliseconds();
+    if (service->pid > 0) {
+        int status = 0;
+        const pid_t result = waitpid(service->pid, &status, WNOHANG);
+        if (result == service->pid) {
+            handleServiceExit(service, status, now);
+        } else if (result < 0 && errno == ECHILD) {
+            service->pid = -1;
+            service->nextStartMs = now;
+        }
+        return;
+    }
+    if (now >= service->nextStartMs) {
+        startService(service, now);
+    }
+}
+
+void reapOrphans(Service* service) {
+    int status = 0;
+    pid_t reaped = 0;
+    while ((reaped = waitpid(-1, &status, WNOHANG)) > 0) {
+        if (service && reaped == service->pid) {
+            handleServiceExit(service, status, monotonicMilliseconds());
+        }
+    }
+}
+
+void sleepSupervising(unsigned seconds, Service* service) {
+    const uint64_t deadline = monotonicMilliseconds() + seconds * 1000U;
+    for (;;) {
+        superviseService(service);
+        const uint64_t now = monotonicMilliseconds();
+        if (now >= deadline) {
+            return;
+        }
+        const uint64_t remainingMs = deadline - now;
+        const uint64_t stepMs = remainingMs < 500U ? remainingMs : 500U;
+        timespec step = {static_cast<time_t>(stepMs / 1000U), static_cast<long>((stepMs % 1000U) * 1000000U)};
+        while (nanosleep(&step, &step) < 0 && errno == EINTR) {
+        }
+    }
+}
+
+void stopService(Service* service) {
+    if (!service || service->pid <= 0) {
+        return;
+    }
+    (void)kill(-service->pid, SIGTERM);
+    int status = 0;
+    while (waitpid(service->pid, &status, 0) < 0 && errno == EINTR) {
+    }
+    service->pid = -1;
 }
 
 pid_t startRuntime(const char* runtimePath, int* heartbeatReadFd) {
@@ -83,6 +197,7 @@ pid_t startRuntime(const char* runtimePath, int* heartbeatReadFd) {
 
     close(heartbeatPipe[1]);
     (void)setpgid(child, child);
+    (void)fcntl(heartbeatPipe[0], F_SETFD, FD_CLOEXEC);
     const int flags = fcntl(heartbeatPipe[0], F_GETFL, 0);
     if (flags >= 0) {
         (void)fcntl(heartbeatPipe[0], F_SETFL, flags | O_NONBLOCK);
@@ -101,7 +216,7 @@ void drainHeartbeats(int fd, uint64_t* lastSequence, uint64_t* lastProgressMs) {
     }
 }
 
-bool waitForRuntime(pid_t child, int heartbeatFd, uint64_t launchTime, const char** reason) {
+bool waitForRuntime(pid_t child, int heartbeatFd, uint64_t launchTime, Service* service, const char** reason) {
     uint64_t lastSequence = 0;
     uint64_t lastProgressTime = launchTime;
     bool receivedHeartbeat = false;
@@ -116,6 +231,7 @@ bool waitForRuntime(pid_t child, int heartbeatFd, uint64_t launchTime, const cha
         } else if (pollResult < 0 && errno != EINTR) {
             perror("[WATCHDOG] poll");
         }
+        superviseService(service);
 
         int status = 0;
         const pid_t result = waitpid(child, &status, WNOHANG);
@@ -182,24 +298,33 @@ int main(int argc, char** argv) {
     unsigned restartDelaySeconds = 1;
     unsigned restartCount = 0;
 
+    // An empty service path disables it (used by host tests).
+    Service dnsmasq;
+    dnsmasq.path = argc > 3 ? argv[3] : "/sbin/dnsmasq";
+    dnsmasq.configPath = argc > 4 ? argv[4] : "/etc/dnsmasq.conf";
+    if (dnsmasq.path[0] == '\0') {
+        printf("[WATCHDOG] dnsmasq disabled\n");
+    } else if (access(dnsmasq.path, X_OK) != 0 || access(dnsmasq.configPath, R_OK) != 0) {
+        printf("[WATCHDOG] dnsmasq unavailable (%s, %s); USB DHCP/DNS disabled\n",
+               dnsmasq.path, dnsmasq.configPath);
+    } else {
+        dnsmasq.enabled = true;
+        superviseService(&dnsmasq);
+    }
+
     for (;;) {
         int heartbeatFd = -1;
         const uint64_t launchTime = monotonicMilliseconds();
         const pid_t child = startRuntime(runtimePath, &heartbeatFd);
         if (child < 0) {
-            sleepSeconds(restartDelaySeconds);
-            if (restartDelaySeconds < kMaximumRestartDelaySeconds) {
-                restartDelaySeconds *= 2;
-                if (restartDelaySeconds > kMaximumRestartDelaySeconds) {
-                    restartDelaySeconds = kMaximumRestartDelaySeconds;
-                }
-            }
+            sleepSupervising(restartDelaySeconds, &dnsmasq);
+            restartDelaySeconds = nextBackoff(restartDelaySeconds);
             continue;
         }
 
         printf("[WATCHDOG] started main process pid=%d\n", static_cast<int>(child));
         const char* reason = "unknown failure";
-        const bool childExited = waitForRuntime(child, heartbeatFd, launchTime, &reason);
+        const bool childExited = waitForRuntime(child, heartbeatFd, launchTime, &dnsmasq, &reason);
         if (!childExited) {
             printf("[WATCHDOG] %s; killing pid=%d\n", reason, static_cast<int>(child));
             (void)kill(-child, SIGKILL);
@@ -210,28 +335,24 @@ int main(int argc, char** argv) {
             printf("[WATCHDOG] %s (pid=%d); restarting\n", reason, static_cast<int>(child));
             (void)kill(-child, SIGKILL);
         }
-        int orphanStatus = 0;
-        while (waitpid(-1, &orphanStatus, WNOHANG) > 0) {
-        }
+        reapOrphans(&dnsmasq);
         close(heartbeatFd);
         if (bootTrialStillPending()) {
             rebootFailedTrial(reason);
         }
         ++restartCount;
         if (maximumRestarts != 0 && restartCount >= maximumRestarts) {
+            stopService(&dnsmasq);
             return 0;
         }
 
         const uint64_t runTime = monotonicMilliseconds() - launchTime;
         if (runTime >= 60000U) {
             restartDelaySeconds = 1;
-        } else if (restartDelaySeconds < kMaximumRestartDelaySeconds) {
-            restartDelaySeconds *= 2;
-            if (restartDelaySeconds > kMaximumRestartDelaySeconds) {
-                restartDelaySeconds = kMaximumRestartDelaySeconds;
-            }
+        } else {
+            restartDelaySeconds = nextBackoff(restartDelaySeconds);
         }
         printf("[WATCHDOG] next start in %u second(s)\n", restartDelaySeconds);
-        sleepSeconds(restartDelaySeconds);
+        sleepSupervising(restartDelaySeconds, &dnsmasq);
     }
 }

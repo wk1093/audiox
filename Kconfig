@@ -134,10 +134,12 @@ menu "Network"
 
 config DEVICE_IP
 	string "Device USB network address"
-	default "169.254.1.2"
+	default "172.31.73.1"
 	help
 	  IPv4 address the device assigns to its USB network interface
-	  (netmask 255.255.0.0). Also the default PI_HOST for uploads.
+	  (netmask 255.255.255.0). Also the default PI_HOST for uploads.
+	  The DHCP pool and audiox host record in root/etc/dnsmasq.conf
+	  must use the same address and /24 subnet; the build checks this.
 
 endmenu
 

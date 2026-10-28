@@ -14,6 +14,7 @@
 #include <mutex>
 
 #include "audio/effects/slot.hpp"
+#include "audio/gadget_volume.hpp"
 
 #define AUDIO_GRAPH_MAX_THINGS 64
 #define AUDIO_GRAPH_MAX_EDGES 128
@@ -150,6 +151,7 @@ struct AudioContext {
     pthread_t processingThread;
     int processingThreadStarted;
     std::atomic<int> processingThreadRun;
+    audiox::usb::GadgetVolume gadgetVolume;
 
     uint64_t nextHotplugScanMs;
     AudioHandle nextHandle;

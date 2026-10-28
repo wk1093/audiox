@@ -21,7 +21,7 @@ Once I believe this is stable enough for general use, I will release v2.0.0
 - Uses a two-stage ramfs layout: `initramfs.cpio.gz` bootloader plus `program.cpio.gz` runtime
 - Bootloader stages its own storage/filesystem modules from `bootmod.txt`
 - Configures a USB audio gadget through ConfigFS with bidirectional capture/playback
-- Configures a USB NCM network gadget (`usb0`) for host<->Pi control traffic
+- Configures a USB NCM network gadget (`usb0`) for host<->Pi control traffic, with DHCP, DNS, and mDNS so the host can open `http://audiox.local/`
 - Dedicates a real-time audio thread (SCHED_FIFO) for low-latency capture/playback processing
 - Routes audio between capture devices, effects, and playback sinks with live-metering
 - Polls touch + MIDI input and renders a responsive framebuffer UI with CPU/RAM metrics
@@ -104,6 +104,64 @@ Run `make test-soundboard-config` to check Cut persistence, missing-sound MIDI c
 The Pi runtime defaults to the direct graph-processing loop (`AUDIOX_USE_SHARED_GRAPH_PROCESSOR=0`) to avoid per-block adapter dispatch, stack graph-node setup, and shared processor code in the firmware binary. Set `AUDIOX_USE_SHARED_GRAPH_PROCESSOR=1` to compile the callback-based graph path for target-side comparison; the desktop engine uses the shared path. `processing.o` is rebuilt when the mode changes. Capture stream ownership, device attachment/remapping, and source-specific ring/SRC state live in a separate fixed-capacity ALSA capture backend. PCM I/O remains on the direct Pi path.
 
 Bluetooth streaming logs connection events, warnings, and errors without emitting the former per-second A2DP queue/rate/packet debug statistics. The periodic PCM-overrun check remains active and still disconnects a glitching output stream.
+
+### USB audio levels and host volume (1.10)
+
+USB audio uses neutral input scaling; the old fixed 10x input boost has been removed. Existing saved Web/MIDI gains are not rewritten, so setups that compensated for that boost may need their gains adjusted. No limiter or automatic makeup gain is added.
+
+The UAC2 gadget explicitly advertises master volume from -96 to 0 dB in 1 dB steps, plus mute, in both directions. The shipped kernel exposes these host settings as `PCM Capture/Playback Volume` and `Switch` ALSA controls but does not scale the samples itself. AudioX polls them every 50 ms outside the realtime thread and applies attenuation once at each USB boundary. Gadget **capture** is Windows/Linux playback into AudioX; gadget **playback** is AudioX recording into the host. These host settings remain independent of Web/MIDI gains. If the gadget ALSA device disappears, is reloaded, or its controls cannot be read, USB audio defaults to silence until valid settings are read; failures and recovery are logged. No control handles are retained between polls, so card renumbering cannot reuse an old handle. A cable disconnect alone can leave the gadget ALSA device and its kernel-maintained settings present.
+
+Run `make test-gadget-volume` for host control, mute, reconnect, signed PCM, and capture-underrun regression checks. Before a stable release, test both directions on Windows and Linux with a single unity-gain route, effects disabled, host volume at 0/25/50/100%, and mute. At unity, a -12 dBFS test tone should stay within 0.5 dB of its input level without clipped samples. Check again after reconnect, reboot, gadget reload, and supported format changes. Windows percentages need not map linearly to amplitude. These hardware checks are still pending; host tests alone do not establish Windows compatibility.
+
+### Kernel fault diagnostics (1.10)
+
+At each runtime start (including a watchdog restart), AudioX saves up to the last 1 MiB of each previous runtime log as `stdout.log.previous` and `stderr.log.previous`, then starts fresh logs. An empty old log does not erase the previous nonempty evidence. Current stdout/stderr logs retain their existing unbounded behavior; the retained previous copies are bounded.
+
+A nonblocking `/dev/kmsg` reader captures the initial kernel backlog and later messages to `kernel.log`, retaining one `kernel.log.previous` generation. Each kernel file is limited to 256 KiB; the collector reads at most 32 records per 100 ms and syncs dirty data every 10 seconds, rather than syncing each message. Its header records the boot ID and runtime/kernel identity so process restarts can be distinguished from reboots. Capture errors are reported but do not prevent audio startup. A kernel ring-buffer overrun is reported and capture continues.
+
+If the kernel supports mounting pstore and already has a working persistent-storage backend, its existing crash records are copied non-destructively into `pstore.log` (up to 256 KiB, with one previous generation). No reserved-memory region, ramoops backend, kernel update, or panic policy is enabled by this feature. An empty/unsupported pstore does not prove panic capture works. Runtime/kernel/pstore log files are not included in configuration backups.
+
+Download evidence before further restarts or log rotation:
+
+```bash
+curl --fail http://audiox.local/api/rootfs/kernel.log -o kernel.log
+curl --fail http://audiox.local/api/rootfs/kernel.log.previous -o kernel.log.previous
+curl --fail http://audiox.local/api/rootfs/stdout.log.previous -o stdout.log.previous
+curl --fail http://audiox.local/api/rootfs/stderr.log.previous -o stderr.log.previous
+# Only present when persistent crash records have been collected:
+curl --fail http://audiox.local/api/rootfs/pstore.log -o pstore.log
+```
+
+Ordinary kernel logging can lose the final panic messages, especially during a hard hang or power loss. Without a verified persistent backend, capture the serial console to another machine: use a 3.3 V UART adapter (never RS-232/5 V), connect ground and the Pi's UART TX to the adapter RX, and do not connect its power pin. With the device off, configure the appropriate UART console (normally `console=serial0,115200`) in the boot command line, then record the adapter at 115200 baud through boot and the fault. Confirm the selected UART/pins for the board and Bluetooth overlay before wiring; existing `enable_uart=1` alone does not route kernel output to serial. Do not induce a panic on a device with unsaved state.
+
+Run `make test-diagnostics` for retention, rotation, size limits, partial/interrupted writes, storage failures, and optional crash-record collection. The rare idle Pi 4 faults reported on 1.7/1.8 have not been reproduced or declared fixed. A trace-driven investigation and at least 24 hours of Pi 4 idle soak remain release checks.
+
+### USB network, DHCP, DNS, and mDNS (1.10)
+
+The device address on the USB NCM interface (`usb0`) is now `172.31.73.1/24` (`CONFIG_DEVICE_IP`). It replaces the link-local `169.254.1.2/16`, because DHCP clients do not accept leases in `169.254.0.0/16`. A static [dnsmasq](https://thekelleys.org.uk/dnsmasq/doc.html) runs on the device and serves only `usb0`:
+
+- DHCP pool `172.31.73.10`-`172.31.73.250`, 12 h leases. The pool advertises the device as the DNS server and `lan` as the search domain.
+- No router option, so the host's default route and internet access are unchanged.
+- DNS answers `audiox`, `audiox.lan`, and `audiox.local` with `172.31.73.1`. Queries for other names are refused, not forwarded, so the host falls back to its other DNS servers.
+
+Hosts often never ask the device's DNS server: VPN clients such as Tailscale, other adapters, or a router that also uses `lan` can answer first. The runtime therefore also runs a built-in mDNS responder (`src/http/mdns.cpp`). It answers `audiox.local` on `usb0` only, regardless of the host's DNS setup. It is supported out of the box by Windows 10 1709+, macOS, iOS, Android 12+, and Linux with nss-mdns/Avahi or systemd-resolved mDNS. The responder:
+
+- Answers A queries for `audiox.local` with the current `usb0` IPv4 address, and reverse PTR queries for that address. It sends an NSEC record for other types (for example AAAA), so hosts do not wait for an IPv6 answer.
+- Handles standard multicast queries, unicast-response (QU) queries, and legacy unicast queries such as `dig -p 5353 @224.0.0.251 audiox.local`.
+- Announces itself when `usb0` gets its address and whenever a host is plugged in. It follows interface and address changes and pauses while `usb0` is down.
+- Does not probe for name conflicts, because the USB link only connects to one host. The hostname is `AUDIOX_MDNS_HOSTNAME` (default `audiox`) in `include/defs.hpp`.
+
+Run `make test-mdns` for packet-level tests (query types, legacy/QU modes, name compression, malformed and random packets) under AddressSanitizer/UBSan.
+
+The PID 1 watchdog starts `/sbin/dnsmasq --keep-in-foreground --conf-file=/etc/dnsmasq.conf` in its own process group before the runtime. It restarts dnsmasq with backoff if it exits, and runtime restarts do not affect it. dnsmasq uses `bind-dynamic`, so it picks up `usb0` whenever the gadget appears or is rebound. Its log goes to the console. If the binary or config is missing, the watchdog logs it and continues without DHCP and DNS.
+
+`make` downloads dnsmasq (`DNSMASQ_VERSION`, pinned by `DNSMASQ_SHA256`), then builds a static aarch64 binary with `scripts/build_dnsmasq.sh`. The image includes the binary at `/sbin/dnsmasq` and its licenses in `/usr/share/licenses/audiox/dnsmasq/`. The config is `root/etc/dnsmasq.conf`; the build copies it with the rest of `root/`. If you change `CONFIG_DEVICE_IP`, update the config to match; the build fails if they disagree. Run `make test-dnsmasq-config` to check consistency and syntax with the target binary (through `qemu-aarch64` when available). Run `make test-watchdog` to check service supervision.
+
+Host notes:
+- Use `http://audiox.local/`. `http://audiox/` also works on hosts that send DNS queries to the device, and `http://172.31.73.1/` always works once the host has a lease.
+- Hosts need a DHCP client on the AudioX interface (the default on Windows and on NetworkManager "Automatic (DHCP)" connections). Delete any old `audiox-usb0` link-local connection: `sudo nmcli connection delete audiox-usb0`.
+- Browsers may treat a bare `audiox` as a search term; include `http://`.
+- mDNS has been tested on the wire on Linux. Windows and macOS have not yet been tested on hardware.
 
 ### Imager publishing
 
@@ -287,46 +345,39 @@ Limitations: rollback relies on the new bootloader and kernel getting far enough
 - v1.1 adds UI revamp with 4-page design (Routing, Config, Soundboard, System), per-card MIDI assignment with automatic polling, system info endpoint, improved Flexbox layout for routing page, and DELETE file API
 - v1.0.2 was the previous stable release with real-time audio processing, touchscreen UI, and HTTP control
 
-Network currently requires this on linux host (sometimes, only tested on one machine):
-Either this on every time you plugin the Pi:
+The USB network is plug-and-play: the host gets an address over DHCP and can open `http://audiox.local/`. See [USB network, DHCP, DNS, and mDNS](#usb-network-dhcp-dns-and-mdns-110). If the host has no working DHCP client on the interface, set a static address manually (the interface name varies by host):
 ```bash
-sudo ip addr add 169.254.0.1/16 dev usb0
+sudo ip addr add 172.31.73.2/24 dev usb0
 sudo ip link set usb0 up
 ```
 
-Or this once:
-```bash
-sudo nmcli connection add type ethernet ifname usb0 con-name audiox-usb0 ipv4.method link-local ipv6.method ignore connection.autoconnect yes
-sudo nmcli connection up audiox-usb0
-```
-
-Quick endpoint examples (replace IP if needed):
+Quick endpoint examples (`http://172.31.73.1/` also works):
 ```bash
 # static web page
-curl http://169.254.1.2/
+curl http://audiox.local/
 
 # upload a new runtime image; the Pi reboots into the bootloader, installs it, then reboots again
-curl --fail --show-error -X PUT --data-binary @out/program.cpio.gz http://169.254.1.2/api/initram
+curl --fail --show-error -X PUT --data-binary @out/program.cpio.gz http://audiox.local/api/initram
 
 # get device info (version, kernel, uptime, memory, load)
-curl http://169.254.1.2/api/system/info
+curl http://audiox.local/api/system/info
 
 # read/write/delete config files via HTTP API
-curl http://169.254.1.2/api/rootfs/config.txt
-curl -X PUT --data-binary @config.txt http://169.254.1.2/api/rootfs/config.txt
-curl -X DELETE http://169.254.1.2/api/rootfs/sfx/myfile.wav
+curl http://audiox.local/api/rootfs/config.txt
+curl -X PUT --data-binary @config.txt http://audiox.local/api/rootfs/config.txt
+curl -X DELETE http://audiox.local/api/rootfs/sfx/myfile.wav
 
 # trigger soundboard slot 0 from web/API
-curl http://169.254.1.2/api/soundboard/trigger/0
+curl http://audiox.local/api/soundboard/trigger/0
 
 # write staging audio config and reload (promotes to config.txt on success)
-cat <<'EOF' | curl -X PUT --data-binary @- http://169.254.1.2/api/rootfs/config.staging.txt
+cat <<'EOF' | curl -X PUT --data-binary @- http://audiox.local/api/rootfs/config.staging.txt
 usb_playback_channels=4
 usb_capture_channels=2
 usb_sample_rate=48000
 usb_sample_size=2
 EOF
-curl -X POST http://169.254.1.2/api/config/reload
+curl -X POST http://audiox.local/api/config/reload
 ```
 
 MIDI mapping entries in `/audiox/config.txt`:

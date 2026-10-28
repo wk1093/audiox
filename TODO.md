@@ -89,10 +89,21 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Somehow be able to update the bootloader itself. This could be done by having the main initram update the bootloader, since the bootloader updates the main initram, but they can't edit themselves. So maybe just update the bootloader first from the main initramfs right when the update is triggered, and then reboot into the new bootloader to update the main initramfs. Or I could make them two separate processes, where you could choose to update one or the other. That is probably better since the bootloader won't be updated as often, and we won't have to require a larger update file. The update file will eventually be a custom format that is kinda like a tar, it contains a bit of metadata, and then two separate files (or just one). The update metadata will contain a version number, and then it will also tell the program if it is a bootloader update, initram update, or both.
 - [x] Improve make config options, like being able to change board type, like switching between pi 4 (the only currently tested board) and other models. (Pi 5 defaults added, untested on hardware)
 
-# Quick Fixes and features - v1.10+
+## USB audio fixes and fault diagnostics - v1.10
+- [ ] Correct boosted/distorted USB audio in both directions, including Windows; verify neutral signal levels without hidden gain.
+  - [x] Remove the fixed 10x gadget-input boost and avoid reapplying gain to capture-underrun history.
+- [ ] Honor host USB volume and mute independently of AudioX Web/MIDI gains; verify Windows and Linux after reconnect and gadget reload.
+  - [x] Configure non-boosting UAC2 controls and apply cached host attenuation/mute at both USB boundaries; add host regression tests.
+- [ ] Hardware release gates: bidirectional Windows/Linux level and mute checks, plus at least 24 hours of Pi 4 idle soak. Host tests alone do not complete these checks.
+- [ ] Implement static build of dnsmasq for DHCP and DNS management, to make plug-and-play work.
+  - [x] Pinned, checksummed static aarch64 dnsmasq build (`scripts/build_dnsmasq.sh`), staged at `/sbin/dnsmasq` with `root/etc/dnsmasq.conf`.
+  - [x] Device address moved to `172.31.73.1/24` (DHCP clients reject `169.254/16` leases); DHCP pool without a router, DNS for `audiox`/`audiox.lan`.
+  - [x] PID 1 watchdog supervises dnsmasq in its own process group with restart backoff; host tests and a namespace DHCP/DNS check pass.
+  - [x] Built-in mDNS responder for `audiox.local` (host DNS such as Tailscale or a router `lan` domain can shadow the device's DNS); packet tests and a namespace check pass.
+  - [ ] Hardware check: Windows, macOS, and Linux hosts get a lease and open `http://audiox.local/`, including after replug, gadget reload, and runtime restart.
+
+## Features and quality of life - v1.11
 - [ ] See if we can increase bluetooth quality. Not just audio quality, but quality of life, needs better interface (not just UI, also auto-connect features, easier device management, and more reliable connections).
-- [ ] Windows volume changing doesn't work properly (volume seems to be locked at 100% even when windows volume is changed, and it is really boosted and distorted even if the volume on the device is reduced). Windows probably does something weird with the gadget that I didn't handle.
-- [ ] Investigate occasional kernel faults
 - [ ] Investigate using LV2 plugins for effects, and if possible, make it so that the user can upload their own LV2 plugins to the device and use them in the audio engine. This would allow for a lot more flexibility and customization for users who want to use their own effects.
 - [ ] More advanced effects
   - [ ] Noise gate

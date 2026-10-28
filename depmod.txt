@@ -2,6 +2,10 @@
 # Keep this list short: transitive dependencies are resolved automatically.
 # Prefix boot-critical seeds with 'base:' to include them in early-load list.
 # Use 'normal:' (or no prefix) for modules loaded after boot UI appears.
+# Add a board filter to limit a seed to some boards (pi4, pi5):
+#   base(pi5): drivers/foo        only on Pi 5
+#   normal(pi4,pi5): drivers/bar  on Pi 4 and Pi 5
+#   normal(!pi5): drivers/baz     on every board except Pi 5
 
 # Audio / UAC2 gadget
 normal: sound/soc/snd-soc-core

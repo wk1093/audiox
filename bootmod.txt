@@ -1,5 +1,6 @@
 # Seed modules for the tiny bootloader initramfs.
 # Keep this list focused on storage and filesystems needed to promote staged runtime updates.
+# Same syntax as depmod.txt, including board filters such as 'base(pi5): drivers/foo'.
 
 # MMC / SD card host drivers commonly used on Raspberry Pi boards
 base: drivers/mmc/host/sdhci

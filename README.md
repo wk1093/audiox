@@ -361,6 +361,7 @@ Limitations: rollback relies on the new bootloader and kernel getting far enough
 
 - Module seeds live in `depmod.txt`: use `base:` for early boot/UI-critical modules and `normal:` (or no prefix) for the rest
 - Bootloader-only storage/filesystem module seeds live in `bootmod.txt`
+- Both lists accept board filters for seeds that differ between boards: `base(pi5): drivers/foo` (Pi 5 only), `normal(pi4,pi5): drivers/bar`, or `normal(!pi5): drivers/baz` (all boards except Pi 5). Unfiltered seeds apply to every board. The board comes from the active config, unknown boards or prefixes fail the build, and skipped seeds are listed in `out/module-load.summary.txt`. Run `make test-resolve-modules` to test the parser
 - Default Pi 4 boot graphics stay on FKMS (`vc4-fkms-v3d-pi4`; the Pi 5 defaults to `vc4-kms-v3d-pi5` because it has no FKMS); framebuffer rendering stages into an off-screen buffer before presenting to reduce visual tearing without switching the display stack
 - v1.1 adds UI revamp with 4-page design (Routing, Config, Soundboard, System), per-card MIDI assignment with automatic polling, system info endpoint, improved Flexbox layout for routing page, and DELETE file API
 - v1.0.2 was the previous stable release with real-time audio processing, touchscreen UI, and HTTP control

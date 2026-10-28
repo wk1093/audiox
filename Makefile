@@ -75,7 +75,7 @@ RUNTIME_LIBS += $(SBC_STATIC_LIB)
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 10
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.4
+AUDIOX_VERSION_PRERELEASE ?= beta.5
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
 $(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
@@ -242,7 +242,7 @@ BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
 .DEFAULT_GOAL := all
 
-.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg upload_bootloader upload_kernel upload_cmdline update_archive upload_update boot_config stage_ffmpeg bluetooth_firmware dnsmasq check_dnsmasq_conf test-dnsmasq-config config menuconfig defconfig pi4_defconfig pi5_defconfig olddefconfig print-config print-version audio-bench run-audio-bench test-audio-engine test-watchdog
+.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg upload_bootloader upload_kernel upload_cmdline update_archive upload_update boot_config stage_ffmpeg bluetooth_firmware dnsmasq check_dnsmasq_conf test-dnsmasq-config config menuconfig defconfig pi4_defconfig pi5_defconfig olddefconfig print-config print-version audio-bench run-audio-bench test-audio-engine test-watchdog test-resolve-modules
 
 all: initramfs
 
@@ -374,6 +374,9 @@ test-watchdog: $(WATCHDOG_HOST_BIN) $(WATCHDOG_HUNG_CHILD_BIN)
 	@echo "watchdog exit and heartbeat-timeout tests passed"
 	@bash tests/watchdog_service_test.sh "$(WATCHDOG_HOST_BIN)" "$(WATCHDOG_HUNG_CHILD_BIN)" "$(OUT_DIR)/watchdog-service-test"
 
+test-resolve-modules:
+	@bash tests/resolve_modules_test.sh
+
 BENCH_INPUT ?=
 BENCH_ALSA_DEVICE ?= default
 BENCH_PORT ?= 8765
@@ -408,10 +411,10 @@ fetch_deps:
 	@$(SCRIPTS_DIR)/sync_firmware.sh "$(FIRMWARE_GIT_URL)" "$(FIRMWARE_GIT_REF)" "$(OUT_DIR)" "$(KERNEL_IMAGE)" "$(BOARD_DTBS)" "$(BOARD_FIRMWARE_FILES)" "$(BOOT_OVERLAYS)"
 
 fetch_modules: fetch_deps
-	@$(SCRIPTS_DIR)/resolve_modules.sh "$(KV)" "$(OUT_DIR)" "$(DEP_FILE)"
+	@$(SCRIPTS_DIR)/resolve_modules.sh "$(KV)" "$(OUT_DIR)" "$(DEP_FILE)" "module-load" "modules_staging" "$(AUDIOX_BOARD)"
 
 fetch_boot_modules: fetch_deps
-	@$(SCRIPTS_DIR)/resolve_modules.sh "$(KV)" "$(OUT_DIR)" "$(BOOT_DEP_FILE)" "bootmodule-load" "bootmodules_staging"
+	@$(SCRIPTS_DIR)/resolve_modules.sh "$(KV)" "$(OUT_DIR)" "$(BOOT_DEP_FILE)" "bootmodule-load" "bootmodules_staging" "$(AUDIOX_BOARD)"
 
 show_modules: fetch_modules
 	@cat $(OUT_DIR)/module-load.summary.txt

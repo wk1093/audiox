@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-KV="${1:?usage: resolve_modules.sh <kernel_version> <out_dir> <dep_file> [list_prefix] [stage_dir_name]>}"
-OUT_DIR="${2:?usage: resolve_modules.sh <kernel_version> <out_dir> <dep_file> [list_prefix] [stage_dir_name]>}"
-DEP_FILE="${3:?usage: resolve_modules.sh <kernel_version> <out_dir> <dep_file> [list_prefix] [stage_dir_name]>}"
+KV="${1:?usage: resolve_modules.sh <kernel_version> <out_dir> <dep_file> [list_prefix] [stage_dir_name] [board]}"
+OUT_DIR="${2:?usage: resolve_modules.sh <kernel_version> <out_dir> <dep_file> [list_prefix] [stage_dir_name] [board]}"
+DEP_FILE="${3:?usage: resolve_modules.sh <kernel_version> <out_dir> <dep_file> [list_prefix] [stage_dir_name] [board]}"
 LIST_PREFIX="${4:-module-load}"
 STAGE_DIR_NAME="${5:-modules_staging}"
+BOARD="${6:-}"
+KNOWN_BOARDS=(pi4 pi5)
+
+if [[ -n "${BOARD}" && " ${KNOWN_BOARDS[*]} " != *" ${BOARD} "* ]]; then
+    echo "[resolve_modules] ERROR: unknown board '${BOARD}' (known: ${KNOWN_BOARDS[*]})" >&2
+    exit 1
+fi
 
 FIRMWARE_DIR="${OUT_DIR}/firmware"
 MOD_TREE_DIR="${FIRMWARE_DIR}/modules/${KV}"
@@ -214,23 +221,72 @@ visit_module() {
     ORDER+=("${rel}")
 }
 
-while IFS= read -r raw_line; do
+# Seed line syntax: [<class>[(<boards>)]:] <module>
+#   class: base | normal (default normal)
+#   boards: comma-separated board names; "!name" excludes a board. With any
+#   positive name the seed applies only to the listed boards.
+#   e.g. "base(pi5): drivers/foo", "normal(!pi5): drivers/bar"
+SEED_RE='^(base|normal)(\(([^()]*)\))?:[[:space:]]*(.*)$'
+SKIPPED_SEEDS=()
+
+# Returns 0 if the board list applies to ${BOARD}; exits on malformed lists.
+board_matches() {
+    local list="$1" line_no="$2" item name
+    local has_positive=0 positive_match=0
+    IFS=',' read -r -a items <<< "${list}"
+    if [[ "${#items[@]}" -eq 0 ]]; then
+        echo "[resolve_modules] ERROR: ${DEP_FILE}:${line_no}: empty board list" >&2
+        exit 1
+    fi
+    for item in "${items[@]}"; do
+        item="${item//[[:space:]]/}"
+        name="${item#!}"
+        if [[ -z "${name}" || " ${KNOWN_BOARDS[*]} " != *" ${name} "* ]]; then
+            echo "[resolve_modules] ERROR: ${DEP_FILE}:${line_no}: unknown board '${item}' (known: ${KNOWN_BOARDS[*]})" >&2
+            exit 1
+        fi
+        if [[ -z "${BOARD}" ]]; then
+            echo "[resolve_modules] ERROR: ${DEP_FILE}:${line_no}: board-specific seed but no board given" >&2
+            exit 1
+        fi
+        if [[ "${item}" == !* ]]; then
+            [[ "${name}" == "${BOARD}" ]] && return 1
+        else
+            has_positive=1
+            [[ "${name}" == "${BOARD}" ]] && positive_match=1
+        fi
+    done
+    (( ! has_positive || positive_match ))
+}
+
+line_no=0
+while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
+    line_no=$((line_no + 1))
     line="${raw_line%%#*}"
     line="${line#${line%%[![:space:]]*}}"
     line="${line%${line##*[![:space:]]}}"
     [[ -z "${line}" ]] && continue
 
     seed_class="normal"
-    if [[ "${line}" == base:* ]]; then
-        seed_class="base"
-        line="${line#base:}"
-        line="${line#${line%%[![:space:]]*}}"
-    elif [[ "${line}" == normal:* ]]; then
-        line="${line#normal:}"
-        line="${line#${line%%[![:space:]]*}}"
+    if [[ "${line}" =~ ${SEED_RE} ]]; then
+        seed_class="${BASH_REMATCH[1]}"
+        board_list="${BASH_REMATCH[3]}"
+        has_board_list="${BASH_REMATCH[2]}"
+        line="${BASH_REMATCH[4]}"
+        if [[ -n "${has_board_list}" ]] && ! board_matches "${board_list}" "${line_no}"; then
+            SKIPPED_SEEDS+=("${raw_line#${raw_line%%[![:space:]]*}}")
+            continue
+        fi
+    elif [[ "${line}" == *:* ]]; then
+        echo "[resolve_modules] ERROR: ${DEP_FILE}:${line_no}: unrecognized seed prefix in '${line}'" >&2
+        echo "[resolve_modules] Use base:, normal:, base(<boards>):, or normal(<boards>):" >&2
+        exit 1
     fi
 
-    [[ -z "${line}" ]] && continue
+    if [[ -z "${line}" ]]; then
+        echo "[resolve_modules] ERROR: ${DEP_FILE}:${line_no}: missing module path" >&2
+        exit 1
+    fi
 
     normalized_seed="$(normalize_rel "${line}")"
     if [[ -n "${IS_SEED[${normalized_seed}]:-}" ]]; then
@@ -293,6 +349,7 @@ done
 
 {
     echo "Kernel Version: ${KV}"
+    echo "Board: ${BOARD:-(any)}"
     echo "Seed Count: ${#SEEDS[@]}"
     echo "Base Seed Count: ${#BASE_SEEDS[@]}"
     echo "Normal Seed Count: ${#NORMAL_SEEDS[@]}"
@@ -307,6 +364,11 @@ done
     echo
     echo "Normal Seed Modules:"
     for seed in "${NORMAL_SEEDS[@]}"; do
+        echo "  ${seed}"
+    done
+    echo
+    echo "Skipped Seeds (other boards):"
+    for seed in "${SKIPPED_SEEDS[@]}"; do
         echo "  ${seed}"
     done
     echo

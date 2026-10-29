@@ -127,8 +127,9 @@
   }
 
   class EffectsManager {
-    constructor(setStatus) {
+    constructor(setStatus, onLayoutChange = () => {}) {
       this.setStatus = typeof setStatus === 'function' ? setStatus : (() => {});
+      this.onLayoutChange = onLayoutChange;
       this.effectsById = new Map();
       this.nodeById = new Map();
       this.panelEl = null;
@@ -155,8 +156,9 @@
       if (!this.panelStatusEl) {
         return;
       }
-      this.panelStatusEl.textContent = String(text || '');
+      this.panelStatusEl.textContent = AudioxUI.formatMessage(text);
       this.panelStatusEl.className = `small ${kind}`.trim();
+      if (kind === 'warn') this.setStatus(text, kind);
     }
 
     renderPanel() {
@@ -400,10 +402,13 @@
       if (!res.ok) {
         throw new Error(`effects load failed: ${res.status} ${txt.trim()}`);
       }
-      const data = parseJson(txt) || {};
+      const data = JSON.parse(txt);
+      if (!data || !Array.isArray(data.effects)) {
+        throw new Error('Effects data is not available. Refresh the page and try again.');
+      }
+      AudioxUI.resolve('effects-load');
       this.effectsById.clear();
-      const effects = Array.isArray(data.effects) ? data.effects : [];
-      for (const fx of effects) {
+      for (const fx of data.effects) {
         const id = normalizeEffectId(fx?.id);
         if (!id) continue;
         this.effectsById.set(id, fx);
@@ -419,6 +424,7 @@
         return;
       }
       this.refreshAllNodes();
+      this.onLayoutChange();
       this.renderPanel();
     }
 
@@ -820,8 +826,8 @@
   }
 
   window.AudioxEffects = {
-    createManager(setStatus) {
-      return new EffectsManager(setStatus);
+    createManager(setStatus, onLayoutChange) {
+      return new EffectsManager(setStatus, onLayoutChange);
     },
   };
 })();

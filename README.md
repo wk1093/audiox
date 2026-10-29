@@ -50,7 +50,20 @@ Once I believe this is stable enough for general use, I will release v2.0.0
 - Supports MIDI note-to-SFX mappings stored in `/audiox/midi_map.txt` and targeting files in `/audiox/sfx/`
 - Removing a sound clears its MIDI note assignments, per-sound lights, and playback-mode overrides and refreshes controller LEDs. Startup and soundboard reload also purge references to missing files.
 - Preprocesses uploaded soundboard files under `/audiox/sfx/` through `ffmpeg` into 48kHz stereo PCM16 WAV so MP3/OGG/etc work with the current WAV-only loader
-- Web UI with 4 main pages: Routing (graph + metrics), Config (audio settings), Soundboard (cards + upload/assign/remove), System (device stats)
+- Web UI pages for Routing, Bluetooth, Effects, Volume, Soundboard, MIDI, Config, and System
+- Compact navigation keeps tabs alongside the logo, with horizontally scrolling tabs on narrow screens. Routing fills the remaining viewport, with internally scrolling route details (a Details toggle on smaller screens), Fit and Fullscreen controls, and an Arrange action that groups inputs, routing helpers, effects, and outputs in left-to-right columns. Nodes stack vertically within each column. Dragging a node keeps the manual layout until Arrange is chosen again. Click a wire to delete it; Alt is not required.
+- Bluetooth separates saved and nearby devices, shows connection state, and offers Pair, Connect, Disconnect, and Forget actions. Add device scans for nearby devices; disconnect active Bluetooth audio first.
+- Soundboard starts in Play mode with playback controls only. Edit puts Add Sound above the cards and reveals replacement, removal, playback-mode, and MIDI assignment controls. Drag cards to reorder them with a mouse, or drag their names on touchscreens (the rest of the card remains available for scrolling); alternatively focus a sound name, press Space, use arrow keys, and press Enter to save (Escape cancels). Playback buttons and other card controls do not start a drag. Hold sounds support mouse/touch and Space/Enter press and release.
+- Soundboard order is saved on the device as `sound_order=<filename>` entries in `midi_map.txt`, survives restarts, and is included in configuration backups. Web and framebuffer use the same ordered list (up to 64 sounds); the display refreshes within about two seconds, without rearranging pads while a touch is held. New sounds append alphabetically after saved entries; deleting a sound removes its saved position. Without a saved order, both use filename order.
+  - `GET /api/soundboard/order` returns the ordered WAV filenames, one per line.
+  - `POST /api/soundboard/order` saves a complete newline-separated list and returns the saved list. Duplicates are rejected; a changed file list returns `409` so the user can refresh rather than overwrite stale data.
+  - Shared ordering requires the updated firmware. When previewing against older firmware, sounds remain available but ordering controls are disabled with an explanatory notification.
+- Styled popup notifications replace the header status bar. Connection warnings disappear automatically when the device is reachable again; polling errors clear when their next read succeeds. Other errors remain until resolved or dismissed. API errors are summarized without raw HTML, JSON, or JavaScript stack traces.
+- Restart, shutdown, firmware installation, and backup restore use keyboard-accessible confirmation dialogs. Longer actions show a loading modal with progress. Restart, installation, and restore check device readiness about once a second and reload the UI only after the device uptime confirms a new boot; a temporary network interruption alone does not count as a restart. "Stop waiting" closes the reconnect wait without cancelling the device action.
+- Configuration backup/restore lives on Config; device information, actions, logs, and firmware updates live on System.
+- System logs use bounded backend queries rather than downloading complete log files. `GET /api/system/logs?limit=600&source=both&level=all&text=` accepts `limit` (1–5000), `source` (`both`, `stdout`, `stderr`), minimum `level` (`all`, `debug`, `info`, `warn`, `error`), and a case-insensitive `text` filter (up to 160 UTF-8 bytes). C++ reads backwards only as far as needed, up to 2 MiB per source, with a 512 KiB response cap and 2048-byte display limit per line. Filters still search the complete scanned line. JSON includes stable row IDs and explicit `has_more`, `scan_limited`, `bytes_read`, and `missing_sources` metadata. The two files have no shared timestamps: each source stays in file order, stdout is shown before stderr, and both get a share of the requested limit.
+  - Live logs pause while selecting text or scrolling back; Resume live logs follows new entries again. Unchanged rows retain their DOM nodes, and stale filter responses cannot overwrite newer results. Older firmware shows an upgrade notice instead of falling back to whole-file polling.
+- Repeated audio dropouts generate a friendly warning on any web page: 5 ALSA X-runs within 30 seconds, excluding the first 30 seconds after runtime startup or an actual ALSA/Bluetooth audio-device change. Warnings have a 2-minute cooldown. Detection counts recovery events directly, not the rate-limited log messages, and uses bounded atomic state without allocations in the audio path. `/api/system/info` exposes `audio_health` with total `xruns`, `warning_id`, and `warning_active`; new events are offered to visible web clients for 30 seconds and deduplicated across page reloads in the same browser tab.
 
 ## Build
 
@@ -124,6 +137,8 @@ Build and run the host audio testbench with `make audio-bench` and `make run-aud
 The Cut effect passes audio when bypassed and outputs silence when enabled. Its `Channels` setting changes matching input/output port counts; since this changes routing topology, it is not MIDI-CC-mappable, but its mute state can be mapped to a MIDI note or toggled from the Web UI. Like other effects, its instance, mute state, and channel count persist across reboots.
 
 Run `make test-soundboard-config` to check Cut persistence, missing-sound MIDI cleanup (including controller LED output), tab/space-indented configuration parsing, and touchscreen polling with and without an input device. Configuration keys and values accept leading spaces and tabs. Touchscreen polling waits for a valid device rather than repeatedly logging invalid-descriptor errors when no touchscreen is connected. This host test requires ALSA development files and uses an isolated temporary configuration directory and synthetic touch events; no touchscreen hardware is required.
+
+Run `make test-audio-runtime` to check soundboard sample generation, routing to a sink, natural clip completion, and clearing the playing state used by MIDI lights. Runtime startup and watchdog objects track header dependencies as well as worker objects, so incremental builds rebuild stack-allocated contexts when their layouts change.
 
 The Pi runtime defaults to the direct graph-processing loop (`AUDIOX_USE_SHARED_GRAPH_PROCESSOR=0`) to avoid per-block adapter dispatch, stack graph-node setup, and shared processor code in the firmware binary. Set `AUDIOX_USE_SHARED_GRAPH_PROCESSOR=1` to compile the callback-based graph path for target-side comparison; the desktop engine uses the shared path. `processing.o` is rebuilt when the mode changes. Capture stream ownership, device attachment/remapping, and source-specific ring/SRC state live in a separate fixed-capacity ALSA capture backend. PCM I/O remains on the direct Pi path.
 
@@ -251,11 +266,11 @@ Run `node --test tests/web_updates_test.js` for browser-side selection, mirror/v
 
 ### Configuration backup and restore
 
-Open **System > Configuration Backup** in the device Web UI:
+Open **Config > Configuration Backup** in the device Web UI:
 
 1. Save any pending UI edits. Click **Backup Configuration** and wait for the browser to finish downloading `audiox-backup.axb` before reflashing. The download streams to disk rather than buffering the sound library in JavaScript. Errors are displayed in the download tab.
 2. Flash the new image and reconnect to its Web UI. Select the `.axb` file and click **Restore Configuration**.
-3. Confirm replacement, wait for upload and validation, then let the device reboot. Reload the page after it returns.
+3. Confirm replacement and keep the page open during upload and validation. The loading dialog waits for the device to reboot and reconnect, then reloads the UI automatically.
 
 The full backup contains these persistent files under `/audiox`:
 
@@ -263,7 +278,7 @@ The full backup contains these persistent files under `/audiox`:
 | --- | --- |
 | Audio, USB audio format, UI settings, and saved pending configuration | `config.txt`, `config.staging.txt` (when present) |
 | Routing, effect nodes, and routing helper state | `routing.txt` |
-| MIDI note/action/CC mappings, lighting, sampler settings, sound modes, effect state | `midi_map.txt` |
+| MIDI note/action/CC mappings, lighting, sampler settings, sound modes/order, effect state | `midi_map.txt` |
 | Effect parameters and output volumes | `fx_params.txt`, `volumes.txt` |
 | Bluetooth device names and pairing keys | `bluetooth/paired.txt` |
 | All soundboard audio, including subdirectories and empty folders | `sfx/` |

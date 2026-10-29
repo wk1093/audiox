@@ -84,9 +84,9 @@ RUNTIME_LIBS += $(SBC_STATIC_LIB)
 #   PRERELEASE=       -> 1.10.1-nightly+<commit>
 # AUDIOX_VERSION_BUILD defaults to the 12-character git commit for nightly builds.
 AUDIOX_VERSION_MAJOR ?= 1
-AUDIOX_VERSION_MINOR ?= 10
-AUDIOX_VERSION_PATCH ?= 1
-AUDIOX_VERSION_PRERELEASE ?= 
+AUDIOX_VERSION_MINOR ?= 11
+AUDIOX_VERSION_PATCH ?= 0
+AUDIOX_VERSION_PRERELEASE ?= beta.2
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
 $(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
@@ -291,7 +291,7 @@ WATCHDOG_OBJ := $(patsubst src/%.cpp,$(RUNTIME_OBJ_DIR)/%.o,$(WATCHDOG_SRC))
 WATCHDOG_HOST_BIN := $(OUT_DIR)/host/audiox-watchdog-test
 WATCHDOG_HUNG_CHILD_BIN := $(OUT_DIR)/host/audiox-watchdog-hung-child
 BOOTLOADER_OBJS := $(patsubst src/%.cpp,$(BOOTLOADER_OBJ_DIR)/%.o,$(BOOTLOADER_SRCS))
-RUNTIME_DEPS_FILES := $(RUNTIME_OBJS:.o=.d)
+RUNTIME_DEPS_FILES := $(RUNTIME_OBJS:.o=.d) $(RUNTIME_MAIN_OBJ:.o=.d) $(WATCHDOG_OBJ:.o=.d)
 BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
 
@@ -353,10 +353,10 @@ test-soundboard-config: $(OUT_DIR)/host/audiox-soundboard-config-test
 
 SOUNDBOARD_CONFIG_TEST_SRCS = tests/soundboard_config_test.cpp src/context.cpp \
 	src/config/basic.cpp src/config/midi_map.cpp src/config/backup.cpp \
-	src/midi/midi.cpp src/audio/setup.cpp src/audio/gadget_volume.cpp src/http/server.cpp src/init/recovery.cpp src/touch/touch.cpp \
+	src/midi/midi.cpp src/audio/setup.cpp src/audio/gadget_volume.cpp src/http/server.cpp src/http/logs.cpp src/init/recovery.cpp src/touch/touch.cpp \
 	$(filter-out tools/audiox-audio-bench.cpp src/audio/engine.cpp src/audio/graph_processor.cpp,$(AUDIO_BENCH_SRCS))
 
-$(OUT_DIR)/host/audiox-soundboard-config-test: $(SOUNDBOARD_CONFIG_TEST_SRCS) src/http/api.cpp $(wildcard include/config/*.hpp include/midi/*.hpp include/audio/*.hpp include/audio/effects/*.hpp include/http/*.hpp include/touch/*.hpp) include/defs.hpp include/watchdog_heartbeat.hpp
+$(OUT_DIR)/host/audiox-soundboard-config-test: $(SOUNDBOARD_CONFIG_TEST_SRCS) src/http/api.cpp src/framebuffer/ui.cpp $(wildcard include/config/*.hpp include/midi/*.hpp include/audio/*.hpp include/audio/effects/*.hpp include/http/*.hpp include/touch/*.hpp include/framebuffer/*.hpp) include/defs.hpp include/watchdog_heartbeat.hpp
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-format-truncation -Wno-unused-parameter -Iinclude \
 		-DROOT_MOUNT_POINT='"."' -ffunction-sections -fdata-sections \
@@ -390,6 +390,14 @@ $(OUT_DIR)/host/audiox-config-backup-http-test: tests/config_backup_http_test.cp
 test-audio-pcm-recover: $(OUT_DIR)/host/audiox-audio-pcm-recover-test
 	@"$<"
 
+.PHONY: test-system-logs
+test-system-logs: $(OUT_DIR)/host/audiox-system-logs-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-system-logs-test: tests/system_logs_test.cpp src/http/logs.cpp include/http/logs.hpp include/http/context.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -DROOT_MOUNT_POINT='"."' -o "$@" "$<"
+
 .PHONY: test-gadget-volume test-diagnostics test-mdns
 .PHONY: test-system
 test-system: $(OUT_DIR)/host/audiox-system-test
@@ -420,6 +428,19 @@ test-gadget-volume: $(OUT_DIR)/host/audiox-gadget-volume-test-0 $(OUT_DIR)/host/
 	@"$(OUT_DIR)/host/audiox-gadget-volume-test-0"
 	@"$(OUT_DIR)/host/audiox-gadget-volume-test-1"
 
+.PHONY: test-audio-runtime
+test-audio-runtime: $(OUT_DIR)/host/audiox-audio-runtime-test-0 $(OUT_DIR)/host/audiox-audio-runtime-test-1
+	@"$(OUT_DIR)/host/audiox-audio-runtime-test-0"
+	@"$(OUT_DIR)/host/audiox-audio-runtime-test-1"
+
+$(OUT_DIR)/host/audiox-audio-runtime-test-%: tests/audio_runtime_test.cpp src/audio/processing.cpp src/audio/graph_processor.cpp src/audio/processing_fx.cpp src/audio/gadget_volume.cpp $(wildcard src/audio/effects/*.cpp include/audio/*.hpp include/audio/*.h) $(AUDIOX_CONFIG_FILE)
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-function -Wno-format-truncation -Wno-unused-parameter \
+		-Iinclude -DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) -DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) -DAUDIOX_USE_SHARED_GRAPH_PROCESSOR=$* \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections -o "$@" \
+		tests/audio_runtime_test.cpp src/audio/graph_processor.cpp src/audio/processing_fx.cpp src/audio/gadget_volume.cpp \
+		$(wildcard src/audio/effects/*.cpp) $(shell pkg-config --cflags --libs alsa) -pthread -lm
+
 $(OUT_DIR)/host/audiox-gadget-volume-test-%: tests/gadget_volume_test.cpp src/audio/processing.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp $(wildcard include/audio/*.hpp include/audio/*.h) $(AUDIOX_CONFIG_FILE)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-function -Wno-format-truncation -Wno-unused-parameter \
@@ -434,7 +455,7 @@ $(OUT_DIR)/host/audiox-diagnostics-test: tests/diagnostics_test.cpp src/init/dia
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/diagnostics_test.cpp
 
-$(OUT_DIR)/host/audiox-audio-pcm-recover-test: tests/audio_pcm_recover_test.cpp include/audio/alsa_pcm.h include/defs.hpp
+$(OUT_DIR)/host/audiox-audio-pcm-recover-test: tests/audio_pcm_recover_test.cpp include/audio/alsa_pcm.h include/audio/health.hpp include/defs.hpp
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-parameter -Iinclude $(shell pkg-config --cflags alsa) -o "$@" "$<" $(shell pkg-config --libs alsa)
 

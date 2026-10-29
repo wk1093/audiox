@@ -114,7 +114,8 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Convert the SVG icon text to path so that it doesn't rely on external fonts.
 
 ## Features and quality of life - v1.11
-- [ ] Improve webui, especially errors, don't show nasty JS stack traces, or html responses from api (json data) to the user.
+- [x] Improve webui, especially errors, don't show nasty JS stack traces, or html responses from api (json data) to the user.
+  - Styled notifications and confirmation/loading dialogs, readable API errors, automatic reconnect/restart detection, and clearer Config/System layout.
 - [ ] See if we can increase bluetooth quality. Not just audio quality, but quality of life, needs better interface (not just UI, also auto-connect features, easier device management, and more reliable connections).
 - [ ] Investigate using LV2 plugins for effects, and if possible, make it so that the user can upload their own LV2 plugins to the device and use them in the audio engine. This would allow for a lot more flexibility and customization for users who want to use their own effects.
 - [ ] More advanced effects

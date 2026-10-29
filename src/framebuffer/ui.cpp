@@ -545,39 +545,20 @@ static inline void updateScrollArea(ScrollAreaState &state, TouchState *touch, i
     state.offset = clampInt(state.offset, 0, maxOffset);
 }
 
-static void refreshSoundboardFiles(FramebufferContext *fb, uint64_t nowMs) {
+static void refreshSoundboardFiles(ConfigStore *config, uint64_t nowMs) {
     SoundboardUiState &ui = soundboardUi;
     if (ui.lastFilesMs && nowMs - ui.lastFilesMs < 2000) return;
     ui.lastFilesMs = nowMs;
 
-    DIR *dir = opendir(SFX_ROOT_DIR);
-    if (!dir) return;
     char files[AUDIO_SFX_SLOT_COUNT][MIDI_SFX_PATH_MAX] = {};
-    int count = 0;
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != nullptr && count < AUDIO_SFX_SLOT_COUNT) {
-        size_t len = strlen(entry->d_name);
-        if (len < 5 || len >= MIDI_SFX_PATH_MAX || strcmp(entry->d_name + len - 4, ".wav") != 0) continue;
-        if (entry->d_type != DT_REG && entry->d_type != DT_UNKNOWN) continue;
-        snprintf(files[count++], MIDI_SFX_PATH_MAX, "%s", entry->d_name);
-    }
-    closedir(dir);
-    for (int i = 1; i < count; ++i) {
-        char name[MIDI_SFX_PATH_MAX];
-        memcpy(name, files[i], sizeof(name));
-        int pos = i;
-        while (pos > 0 && strcmp(files[pos - 1], name) > 0) {
-            memcpy(files[pos], files[pos - 1], sizeof(name));
-            --pos;
-        }
-        memcpy(files[pos], name, sizeof(name));
-    }
+    uint32_t count = 0;
+    if (config->listSoundboardFiles(files, AUDIO_SFX_SLOT_COUNT, &count) != RET_OK) return;
 
     if (ui.wasDown) return;
     ui.count = count;
     memcpy(ui.files, files, sizeof(files));
-    MidiMapData map = fb->app->config->readMidiMapFile();
-    for (int i = 0; i < count; ++i) {
+    MidiMapData map = config->readMidiMapFile();
+    for (uint32_t i = 0; i < count; ++i) {
         ui.modes[i] = SOUNDBOARD_MODE_PLAY;
         for (uint32_t j = 0; j < map.soundModeCount && j < MIDI_SOUND_MODES_MAX; ++j) {
             if (strcmp(ui.files[i], map.soundModes[j].sfxPath) == 0) {
@@ -868,7 +849,7 @@ void FramebufferContext::drawMain(TouchState *touchState) {
         soundboardUi.visible = visible;
     }
     if (soundboardUi.visible) {
-        if (app && app->config) refreshSoundboardFiles(this, viewNowMs);
+        if (app && app->config) refreshSoundboardFiles(app->config, viewNowMs);
         drawSoundboard(this, touchState);
         return;
     }

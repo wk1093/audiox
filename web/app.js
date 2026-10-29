@@ -1,4 +1,3 @@
-const statusEl = document.getElementById('status');
 const edgeListEl = document.getElementById('edge-list');
 const graphWrapEl = document.getElementById('graph-wrap');
 const graphCanvasEl = document.getElementById('graph-canvas');
@@ -38,6 +37,10 @@ const state = {
   positions: {},
   selectedNodeId: null,
   selectedEdgeIdx: -1,
+  autoArrange: true,
+  soundboardEditing: false,
+  soundboardOrderSupported: false,
+  soundboardOrderSaving: false,
   edgeDeleteEnabled: true,
   activeTab: 'routing',
   mappingPollTimer: null,
@@ -70,147 +73,28 @@ const state = {
   volCcLastSeq: 0,
   systemPollTimer: null,
   systemPollInFlight: false,
-  logsStdoutText: '',
-  logsStderrText: '',
-  logsLastRefreshMs: 0,
 };
 
-function escapeHtml(text) {
-  return String(text || '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
-}
+const soundboardOrder = AudioxSoundboardOrder.attach(sbGridEl, {
+  enabled: () => state.soundboardEditing && state.soundboardOrderSupported &&
+    !state.soundboardOrderSaving && !AudioxUI.isBusy(),
+  save: saveSoundboardOrder,
+  status: document.getElementById('sb-order-status'),
+});
 
-function detectLogLevel(line) {
-  const s = String(line || '').toLowerCase();
-  if (s.includes('error') || s.includes('[err]') || s.includes('fatal')) {
-    return 'error';
-  }
-  if (s.includes('warn') || s.includes('[wrn]')) {
-    return 'warn';
-  }
-  if (s.includes('debug') || s.includes('[dbg]')) {
-    return 'debug';
-  }
-  return 'info';
-}
-
-function levelAllowed(filter, level) {
-  const rank = { debug: 0, info: 1, warn: 2, error: 3 };
-  if (!filter || filter === 'all') {
-    return true;
-  }
-  if (!(level in rank)) {
-    return true;
-  }
-  if (!(filter in rank)) {
-    return true;
-  }
-  return rank[level] >= rank[filter];
-}
-
-function parseLogLines(text, source) {
-  if (!text) {
-    return [];
-  }
-  const lines = String(text).split(/\r?\n/);
-  const out = [];
-  for (const line of lines) {
-    if (!line) {
-      continue;
-    }
-    out.push({
-      source,
-      level: detectLogLevel(line),
-      line,
-    });
-  }
-  return out;
-}
-
-function currentLogLimit() {
-  const n = Number(logsLimitEl?.value || 600);
-  if (!Number.isFinite(n)) {
-    return 600;
-  }
-  return Math.max(50, Math.min(5000, Math.floor(n)));
-}
-
-function renderLogs() {
-  if (!logsViewEl || !logsSummaryEl) {
-    return;
-  }
-
-  const sourceFilter = logsSourceEl?.value || 'both';
-  const levelFilter = logsLevelEl?.value || 'all';
-  const textFilter = String(logsTextEl?.value || '').trim().toLowerCase();
-  const limit = currentLogLimit();
-
-  let rows = [];
-  if (sourceFilter === 'both' || sourceFilter === 'stdout') {
-    rows = rows.concat(parseLogLines(state.logsStdoutText, 'stdout'));
-  }
-  if (sourceFilter === 'both' || sourceFilter === 'stderr') {
-    rows = rows.concat(parseLogLines(state.logsStderrText, 'stderr'));
-  }
-
-  let filtered = rows.filter((r) => levelAllowed(levelFilter, r.level));
-  if (textFilter) {
-    filtered = filtered.filter((r) => r.line.toLowerCase().includes(textFilter));
-  }
-
-  const total = filtered.length;
-  if (filtered.length > limit) {
-    filtered = filtered.slice(filtered.length - limit);
-  }
-
-  const parts = [];
-  for (const row of filtered) {
-    const safeLine = escapeHtml(row.line);
-    const safeSource = escapeHtml(row.source);
-    parts.push(`<div class="log-line log-level-${row.level}"><span class="log-src">[${safeSource}]</span> ${safeLine}</div>`);
-  }
-  logsViewEl.innerHTML = parts.join('');
-
-  const shown = filtered.length;
-  const dt = state.logsLastRefreshMs ? new Date(state.logsLastRefreshMs).toLocaleTimeString() : 'never';
-  logsSummaryEl.textContent = `showing ${shown}/${total} lines, refreshed ${dt}`;
-
-  logsViewEl.scrollTop = logsViewEl.scrollHeight;
-}
-
-async function fetchRootfsLog(path) {
-  const res = await fetch(path, { method: 'GET' });
-  const text = await res.text();
-  if (!res.ok) {
-    if (res.status === 404) {
-      return '';
-    }
-    throw new Error(`${path} ${res.status}: ${text.trim()}`);
-  }
-  return text;
-}
-
-async function loadLogs() {
-  if (!logsViewEl || !logsSummaryEl) {
-    return;
-  }
-  try {
-    const [stdoutText, stderrText] = await Promise.all([
-      fetchRootfsLog('/api/rootfs/stdout.log'),
-      fetchRootfsLog('/api/rootfs/stderr.log'),
-    ]);
-    state.logsStdoutText = stdoutText;
-    state.logsStderrText = stderrText;
-    state.logsLastRefreshMs = Date.now();
-    renderLogs();
-  } catch (err) {
-    setStatus(`log load error: ${err}`, 'warn');
-  }
-}
+const logViewer = AudioxLogs.create({
+  view: logsViewEl, summary: logsSummaryEl, source: logsSourceEl, level: logsLevelEl,
+  text: logsTextEl, limit: logsLimitEl,
+  follow: document.getElementById('btn-logs-follow'),
+  refresh: document.getElementById('btn-logs-refresh'),
+  clear: document.getElementById('btn-logs-clear-filter'),
+  notify: setStatus, resolve: AudioxUI.resolve,
+});
+const loadLogs = () => logViewer.load();
+const showAudioHealth = AudioxLogs.createHealthNotifier(setStatus);
 
 async function pollSystemIfNeeded() {
+  if (AudioxUI.isBusy()) return;
   if (state.activeTab !== 'system') {
     return;
   }
@@ -249,13 +133,23 @@ function stopSystemPolling() {
   state.systemPollTimer = null;
 }
 
-function setStatus(text, kind = '') {
-  statusEl.textContent = text;
-  statusEl.className = `status ${kind}`.trim();
+function setStatus(text, kind = '', key = '') {
+  if (kind === 'warn') console.warn('AudioX:', text);
+  AudioxUI.taskProgress(text);
+  AudioxUI.notify(text, kind, key);
+}
+
+async function runLoadingTask(title, action) {
+  try {
+    return await AudioxUI.runTask(title, action);
+  } catch (error) {
+    setStatus(error, 'warn');
+    return false;
+  }
 }
 
 const effectsManager = (window.AudioxEffects && typeof window.AudioxEffects.createManager === 'function')
-  ? window.AudioxEffects.createManager(setStatus)
+  ? window.AudioxEffects.createManager(setStatus, arrangeRoutingGraph)
   : null;
 
 if (effectsManager) {
@@ -266,6 +160,8 @@ function setActiveTab(tab) {
   state.activeTab = tab;
   document.querySelectorAll('.tab-btn').forEach((el) => {
     el.classList.toggle('active', el.dataset.tab === tab);
+    if (el.dataset.tab === tab) el.setAttribute('aria-current', 'page');
+    else el.removeAttribute('aria-current');
   });
   document.querySelectorAll('.page').forEach((el) => {
     el.classList.toggle('active', el.dataset.page === tab);
@@ -273,8 +169,9 @@ function setActiveTab(tab) {
   if (tab === 'routing') {
     ensureRoutingGraph();
     resizeRoutingCanvas();
-    state.graphCanvas.setDirty(true, true);
+    state.graphCanvas?.setDirty(true, true);
     updateZoomLabel();
+    requestAnimationFrame(() => { if (state.autoArrange) fitRoutingGraph(); });
   }
   if (tab === 'system') {
     loadSystemInfo();
@@ -295,7 +192,7 @@ function setActiveTab(tab) {
   }
   if (tab === 'effects' && effectsManager) {
     effectsManager.loadEffects().catch((err) => {
-      setStatus(String(err), 'warn');
+      setStatus(String(err), 'warn', 'effects-load');
     });
   }
 }
@@ -311,94 +208,143 @@ function renderBluetoothDevices(devices) {
   if (!bluetoothDevicesEl) {
     return;
   }
-  bluetoothDevicesEl.innerHTML = '';
-  if (!devices.length) {
-    bluetoothDevicesEl.textContent = 'No devices found.';
-    return;
-  }
-  for (const device of devices) {
-    const card = document.createElement('section');
-    card.className = 'card stack';
-    const name = document.createElement('strong');
-    name.textContent = device.name || device.address;
-    const address = document.createElement('div');
-    address.className = 'small';
-    address.textContent = `${device.address}${device.classic ? '' : ' (LE)'}${device.connected ? ' - connected' : device.paired ? ' - paired' : ''}`;
-    card.append(name, address);
-    if (!device.paired) {
-      const pair = document.createElement('button');
-      pair.textContent = 'Pair';
-      pair.disabled = bluetoothBusy;
-      pair.addEventListener('click', () => pairBluetoothDevice(device.address));
-      card.append(pair);
-    } else {
-      if (device.connected) {
-        const disconnect = document.createElement('button');
-        disconnect.textContent = 'Disconnect';
-        disconnect.disabled = bluetoothBusy;
-        disconnect.addEventListener('click', disconnectBluetoothDevice);
-        card.append(disconnect);
-      } else if (device.classic) {
-        const connect = document.createElement('button');
-        connect.textContent = 'Connect';
-        connect.disabled = bluetoothBusy;
-        connect.addEventListener('click', () => connectBluetoothDevice(device.address));
-        card.append(connect);
-      }
-      const forget = document.createElement('button');
-      forget.textContent = 'Forget';
-      forget.disabled = bluetoothBusy;
-      forget.addEventListener('click', () => unpairBluetoothDevice(device.address));
-      card.append(forget);
+  const focused = bluetoothDevicesEl.contains(document.activeElement)
+    ? document.activeElement.dataset.deviceAction : null;
+  bluetoothDevicesEl.replaceChildren();
+  for (const [title, members, emptyText] of [
+    ['My devices', devices.filter((device) => device.paired || device.connected), 'No saved devices. Choose Add device to find and pair an audio device.'],
+    ['Nearby devices', devices.filter((device) => !device.paired && !device.connected), 'No nearby devices found. Put your device in pairing mode, then choose Add device.'],
+  ]) {
+    const group = document.createElement('section');
+    group.className = 'bluetooth-group';
+    const heading = document.createElement('h2');
+    heading.textContent = title;
+    const list = document.createElement('div');
+    list.className = 'bluetooth-device-list';
+    group.append(heading, list);
+    bluetoothDevicesEl.append(group);
+    if (!members.length) {
+      const empty = document.createElement('div');
+      empty.className = 'bluetooth-empty';
+      empty.textContent = emptyText;
+      list.append(empty);
     }
-    bluetoothDevicesEl.append(card);
+    for (const device of members.sort((a, b) => Number(b.connected) - Number(a.connected) ||
+      String(a.name || a.address).localeCompare(String(b.name || b.address)))) {
+      const card = document.createElement('section');
+      card.className = `card bluetooth-device${device.connected ? ' connected' : ''}`;
+      const info = document.createElement('div');
+      info.className = 'bluetooth-device-info';
+      const name = document.createElement('strong');
+      name.textContent = device.name || device.address;
+      const status = document.createElement('span');
+      status.className = 'bluetooth-device-state';
+      status.textContent = device.connected ? 'Connected for audio' : device.paired ? 'Paired, not connected' : 'Ready to pair';
+      const address = document.createElement('div');
+      address.className = 'bluetooth-device-address';
+      address.textContent = `${device.address} · ${device.classic ? 'Bluetooth audio' : 'Bluetooth Low Energy'}`;
+      info.append(name, status, address);
+      const actions = document.createElement('div');
+      actions.className = 'bluetooth-device-actions';
+      card.append(info, actions);
+      const addAction = (label, action, style = 'flat') => {
+        const button = document.createElement('button');
+        button.textContent = label;
+        button.className = style;
+        button.disabled = bluetoothBusy;
+        button.dataset.deviceAction = `${device.address}:${label}`;
+        button.setAttribute('aria-label', `${label} ${device.name || device.address}`);
+        button.addEventListener('click', action);
+        actions.append(button);
+      };
+      if (!device.paired) {
+        addAction('Pair', () => pairBluetoothDevice(device.address), 'primary');
+      } else {
+        if (device.connected) {
+          addAction('Disconnect', disconnectBluetoothDevice);
+        } else if (device.classic) {
+          addAction('Connect', () => connectBluetoothDevice(device.address), 'primary');
+        }
+        addAction('Forget', async () => {
+          if (await AudioxUI.confirm(`Forget ${device.name || device.address}? You will need to pair it again to reconnect.`, {
+            title: 'Forget Bluetooth device?', label: 'Forget device',
+          })) await unpairBluetoothDevice(device.address);
+        });
+      }
+      list.append(card);
+    }
+  }
+  if (focused) {
+    Array.from(bluetoothDevicesEl.querySelectorAll('button'))
+      .find((button) => button.dataset.deviceAction === focused)?.focus();
   }
 }
 
 let bluetoothBusy = false;
 let bluetoothPollTimer = null;
+let bluetoothLoadInFlight = false;
+let bluetoothRequestInFlight = false;
 
 async function loadBluetoothDevices() {
-  if (!bluetoothStatusEl) {
+  if (!bluetoothStatusEl || bluetoothLoadInFlight || AudioxUI.isBusy()) {
     return;
   }
   if (bluetoothPollTimer) {
     clearTimeout(bluetoothPollTimer);
     bluetoothPollTimer = null;
   }
+  bluetoothLoadInFlight = true;
   try {
-    const res = await fetch('/api/bluetooth/devices', { method: 'GET' });
+    const res = await fetch('/api/bluetooth/devices', { method: 'GET', signal: AbortSignal.timeout(10000) });
     const data = await res.json();
     if (!res.ok || !data.ok) {
       throw new Error(data.error || `request failed: ${res.status}`);
     }
-    bluetoothBusy = Boolean(data.scanning || data.pairing || data.connecting);
+    bluetoothBusy = bluetoothRequestInFlight || Boolean(data.scanning || data.pairing || data.connecting);
     renderBluetoothDevices(Array.isArray(data.devices) ? data.devices : []);
     bluetoothStatusEl.textContent = data.message || (data.ready ? 'Ready' : 'Adapter not ready');
+    AudioxUI.resolve('bluetooth-load');
     const scanButton = document.getElementById('btn-bluetooth-scan');
     if (scanButton) {
-      scanButton.disabled = bluetoothBusy || Boolean(data.connected);
+      scanButton.disabled = bluetoothBusy || Boolean(data.connected) || !data.ready;
+      scanButton.textContent = data.scanning ? 'Scanning...' : 'Add device';
     }
-    if (bluetoothBusy && state.activeTab === 'bluetooth') {
-      bluetoothPollTimer = setTimeout(loadBluetoothDevices, 1000);
-    }
+    const hint = document.getElementById('bluetooth-scan-hint');
+    hint.hidden = !data.connected;
+    hint.textContent = 'Disconnect the current audio device before adding another device.';
   } catch (err) {
-    bluetoothStatusEl.textContent = String(err);
+    bluetoothStatusEl.textContent = AudioxUI.formatMessage(err);
+    setStatus(err, 'warn', 'bluetooth-load');
+  } finally {
+    bluetoothLoadInFlight = false;
+    if (state.activeTab === 'bluetooth') {
+      bluetoothPollTimer = setTimeout(loadBluetoothDevices, bluetoothBusy ? 1000 : 3000);
+    }
   }
 }
 
 async function bluetoothRequest(path, body) {
+  if (bluetoothBusy) return;
+  bluetoothRequestInFlight = true;
+  bluetoothBusy = true;
+  document.getElementById('btn-bluetooth-scan').disabled = true;
+  bluetoothDevicesEl.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+  bluetoothStatusEl.textContent = 'Working on your device request...';
   try {
     const res = await fetch(path, { method: 'POST', body });
-    const data = await res.json().catch(() => ({}));
+    const data = await res.json();
     if (!res.ok || !data.ok) {
       throw new Error(data.error || `request failed: ${res.status}`);
     }
+    AudioxUI.resolve('bluetooth-action');
   } catch (err) {
-    bluetoothStatusEl.textContent = String(err);
-    return;
+    bluetoothStatusEl.textContent = AudioxUI.formatMessage(err);
+    setStatus(err, 'warn', 'bluetooth-action');
+  } finally {
+    bluetoothRequestInFlight = false;
+    bluetoothBusy = false;
+    await loadBluetoothDevices();
   }
-  await loadBluetoothDevices();
 }
 
 function scanBluetoothDevices() {
@@ -426,7 +372,7 @@ function setRoutingZoom(nextScale) {
     return;
   }
 
-  const clamped = Math.max(0.35, Math.min(2.8, nextScale));
+  const clamped = Math.max(0.01, Math.min(2.8, nextScale));
   const center = [graphCanvasEl.width * 0.5, graphCanvasEl.height * 0.5];
   state.graphCanvas.setZoom(clamped, center);
   state.graphCanvas.setDirty(true, true);
@@ -844,8 +790,8 @@ function resizeRoutingCanvas() {
   }
 
   const rect = graphWrapEl.getBoundingClientRect();
-  const w = Math.max(320, Math.floor(rect.width));
-  const h = Math.max(260, Math.floor(rect.height));
+  const w = Math.max(1, Math.floor(rect.width));
+  const h = Math.max(1, Math.floor(rect.height));
 
   // Keep canvas backing store and CSS size in lockstep to avoid pointer offset drift.
   if (graphCanvasEl.width !== w) {
@@ -1212,10 +1158,10 @@ function ensureRoutingGraph() {
     if (!thingId) {
       return;
     }
-    state.positions[thingId] = {
-      x: Math.round(node.pos[0]),
-      y: Math.round(node.pos[1]),
-    };
+    state.autoArrange = false;
+    for (const [id, current] of state.nodeByThingId) {
+      state.positions[id] = { x: Math.round(current.pos[0]), y: Math.round(current.pos[1]) };
+    }
     state.graphCanvas.setDirty(true, true);
   };
 
@@ -1325,6 +1271,7 @@ function ensureRoutingGraph() {
     if (!pos || pos.length < 2) {
       return false;
     }
+    if (state.graph.getNodeOnPos(pos[0], pos[1])) return false;
 
     if (removeNearestLinkAt(pos[0], pos[1])) {
       ev.preventDefault();
@@ -1338,10 +1285,44 @@ function ensureRoutingGraph() {
   resizeRoutingCanvas();
 }
 
-function defaultNodePosition(idx) {
-  const col = idx % 3;
-  const row = Math.floor(idx / 3);
-  return { x: 30 + (col * 300), y: 20 + (row * 220) };
+function routingNodeBoxes() {
+  return Array.from(state.nodeByThingId, ([id, node]) => ({
+    id, kind: node.properties.nodeKind,
+    inputs: node.inputs?.length || 0, outputs: node.outputs?.length || 0,
+    width: node.size[0], height: node.size[1], x: node.pos[0], y: node.pos[1],
+  }));
+}
+
+function fitRoutingGraph() {
+  if (!state.graphCanvas) return;
+  resizeRoutingCanvas();
+  const view = AudioxRouting.fitNodes(routingNodeBoxes(), graphCanvasEl.width, graphCanvasEl.height);
+  if (!view) return;
+  state.graphCanvas.ds.scale = view.scale;
+  state.graphCanvas.ds.offset[0] = view.offset[0];
+  state.graphCanvas.ds.offset[1] = view.offset[1];
+  state.graphCanvas.setDirty(true, true);
+  updateZoomLabel();
+}
+
+function arrangeRoutingGraph() {
+  const boxes = routingNodeBoxes();
+  const positions = AudioxRouting.layoutNodes(boxes);
+  let newNodeY = Math.max(60, ...boxes.filter((node) => state.positions[node.id])
+    .map((node) => state.positions[node.id].y + node.height + 80));
+  for (const [id, node] of state.nodeByThingId) {
+    const pos = positions[id];
+    if (state.autoArrange) {
+      node.pos = [pos.x, pos.y];
+    } else if (!state.positions[id]) {
+      node.pos = [40, newNodeY];
+      state.positions[id] = { x: 40, y: newNodeY };
+      newNodeY += node.size[1] + 80;
+    } else {
+      node.pos = [state.positions[id].x, state.positions[id].y];
+    }
+  }
+  if (state.autoArrange && state.activeTab === 'routing') fitRoutingGraph();
 }
 
 function rebuildRoutingGraph() {
@@ -1358,13 +1339,7 @@ function rebuildRoutingGraph() {
     effectsManager.nodeById.clear();
   }
 
-  const known = {
-    usb_mic_in: { x: 20, y: 20 },
-    soundboard_out: { x: 20, y: 250 },
-    usb_gadget_out: { x: 680, y: 80 },
-  };
-
-  state.nodes.forEach((thing, idx) => {
+  state.nodes.forEach((thing) => {
     const node = window.LiteGraph.createNode('audiox/thing');
     if (!node) {
       return;
@@ -1389,7 +1364,7 @@ function rebuildRoutingGraph() {
       node.addOutput(`out ${ch + 1}`, 'audio');
     }
 
-    const pos = state.positions[thing.id] || known[thing.id] || defaultNodePosition(idx);
+    const pos = state.positions[thing.id] || { x: 40, y: 60 };
     node.pos = [pos.x, pos.y];
 
     node.onConnectInput = function(inputIndex, _outputType, _outputSlot, outputNode, outputIndex) {
@@ -1412,6 +1387,7 @@ function rebuildRoutingGraph() {
 
   state.internalGraphMutation = false;
   state.suspendGraphSync = false;
+  arrangeRoutingGraph();
   syncEdgesFromGraph();
   state.graphCanvas.setDirty(true, true);
 }
@@ -1486,6 +1462,7 @@ async function loadRoutingThingsWithOptions(options = {}) {
 }
 
 async function pollRoutingThingsIfNeeded() {
+  if (AudioxUI.isBusy()) return;
   if (state.activeTab !== 'routing') {
     return;
   }
@@ -1624,10 +1601,7 @@ async function loadVersion() {
 
 async function loadSystemInfo() {
   try {
-    const res = await fetch('/api/system/info', { method: 'GET' });
-    const txt = await res.text();
-    if (!res.ok) return;
-    const data = JSON.parse(txt);
+    const data = await AudioxUI.probeDevice();
 
     const vEl = document.getElementById('sysinfo-version');
     const kEl = document.getElementById('sysinfo-kernel');
@@ -1666,7 +1640,10 @@ async function loadSystemInfo() {
     if (fEl) {
       fEl.textContent = data.ffmpeg || '\u2014';
     }
-  } catch (err) {}
+    AudioxUI.resolve('system-info');
+  } catch (err) {
+    setStatus(`device info load error: ${err}`, 'warn', 'system-info');
+  }
 }
 
 async function loadConfig() {
@@ -1768,7 +1745,7 @@ async function reloadConfig() {
       return false;
     }
 
-    setStatus(txt.trim() || 'config reloaded', 'ok');
+    setStatus('config reloaded', 'ok');
     return true;
   } catch (err) {
     setStatus(`reload error: ${err}`, 'warn');
@@ -1797,9 +1774,9 @@ async function triggerSfx(fileName, action = 'trigger') {
       return;
     }
     if (action === 'release') {
-      setStatus(txt.trim() || `released ${fileName}`, 'ok');
+      setStatus(`released ${fileName}`, 'ok');
     } else {
-      setStatus(txt.trim() || `triggered ${fileName}`, 'ok');
+      setStatus(`triggered ${fileName}`, 'ok');
     }
   } catch (err) {
     setStatus(`request failed: ${err}`, 'warn');
@@ -1815,7 +1792,7 @@ async function triggerStopAll() {
       setStatus(`error: ${res.status} ${txt.trim()}`, 'warn');
       return;
     }
-    setStatus(txt.trim() || 'all clips stopped', 'ok');
+    setStatus('all clips stopped', 'ok');
   } catch (err) {
     setStatus(`request failed: ${err}`, 'warn');
   }
@@ -1887,18 +1864,35 @@ async function saveSoundboardModeForSfx(sfx, mode) {
 }
 
 async function runSystemAction(path, label) {
-  setStatus(`${label}...`);
   try {
-    const res = await fetch(path, { method: 'POST' });
-    const txt = (await res.text()).trim();
-    if (!res.ok) {
-      setStatus(`${label} failed: ${res.status} ${txt}`, 'warn');
-      return false;
+    await AudioxUI.runTask({
+      sync: 'Syncing filesystem', restart: 'Restarting AudioX', shutdown: 'Shutting down AudioX',
+    }[label], async () => {
+      AudioxUI.taskProgress(`${label} in progress...`);
+      let res;
+      try {
+        res = await fetch(path, { method: 'POST', signal: AbortSignal.timeout(15000) });
+      } catch (error) {
+        if (label !== 'restart' || !(error instanceof TypeError || error.name === 'TimeoutError')) throw error;
+        AudioxUI.taskProgress('Connection interrupted after the restart request. Checking whether AudioX restarts...');
+        return;
+      }
+      const txt = (await res.text()).trim();
+      if (!res.ok) throw new Error(`${label} failed: ${res.status} ${txt}`);
+    }, { restart: label === 'restart' });
+    if (label === 'shutdown') {
+      stopConnectionMonitor();
+      stopSystemPolling();
     }
-    setStatus(txt || `${label} ok`, 'ok');
+    const messages = {
+      sync: 'Filesystem synced. Saved files have been flushed to storage.',
+      restart: 'AudioX restarted and reconnected.',
+      shutdown: 'Shutdown requested. Wait for the device to power off before disconnecting it.',
+    };
+    setStatus(messages[label] || `${label} completed`, 'ok', `system-${label}`);
     return true;
   } catch (err) {
-    setStatus(`${label} error: ${err}`, 'warn');
+    setStatus(`${label} error: ${err}`, 'warn', `system-${label}`);
     return false;
   }
 }
@@ -1919,12 +1913,16 @@ function sanitizeSfxName(name) {
 
 async function listSfxFiles() {
   try {
-    const res = await fetch('/api/rootfs/sfx/', { method: 'GET' });
-    const txt = await res.text();
-    if (!res.ok) {
-      sfxListEl.textContent = 'failed to list sfx files';
-      return [];
+    let res = await fetch('/api/soundboard/order', { method: 'GET' });
+    state.soundboardOrderSupported = res.status !== 404;
+    if (!state.soundboardOrderSupported) {
+      setStatus('Update the device firmware to save a shared soundboard order. Showing the existing sound list for now.', 'warn', 'soundboard-order-support');
+      res = await fetch('/api/rootfs/sfx/', { method: 'GET' });
+    } else {
+      AudioxUI.resolve('soundboard-order-support');
     }
+    const txt = await res.text();
+    if (!res.ok) throw new Error(`Could not load sounds: ${res.status} ${txt}`);
 
     const files = [];
     for (const line of txt.split(/\r?\n/)) {
@@ -1934,12 +1932,50 @@ async function listSfxFiles() {
       files.push(t);
     }
 
-    files.sort((a, b) => a.localeCompare(b));
+    if (!state.soundboardOrderSupported) files.sort();
     state.sfxFiles = files;
     renderSoundboardGrid();
+    AudioxUI.resolve('soundboard-list');
     return files;
   } catch (err) {
+    setStatus(err, 'warn', 'soundboard-list');
     return [];
+  }
+}
+
+async function saveSoundboardOrder(files, file) {
+  if (state.soundboardOrderSaving) return;
+  if (!state.soundboardOrderSupported || files.length !== state.sfxFiles.length ||
+      new Set(files).size !== files.length || files.some((name) => !state.sfxFiles.includes(name))) {
+    setStatus('Refresh the soundboard before changing this sound position.', 'warn', 'soundboard-order');
+    return;
+  }
+  state.soundboardOrderSaving = true;
+  renderSoundboardGrid();
+  try {
+    await AudioxUI.runTask('Saving sound order', async () => {
+      const res = await fetch('/api/soundboard/order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: `${files.join('\n')}\n`,
+        signal: AbortSignal.timeout(10000),
+      });
+      const txt = await res.text();
+      if (!res.ok) throw new Error(`Could not save sound order: ${res.status} ${txt}`);
+      const saved = txt.trim().split(/\r?\n/);
+      if (saved.length !== files.length || saved.some((name, i) => name !== files[i])) {
+        throw new Error('The device returned an unexpected sound order. Refresh the soundboard to check it.');
+      }
+      state.sfxFiles = saved;
+      setStatus('Sound order saved for the website and device display.', 'ok', 'soundboard-order');
+    });
+  } catch (error) {
+    setStatus(error, 'warn', 'soundboard-order');
+  } finally {
+    state.soundboardOrderSaving = false;
+    renderSoundboardGrid();
+    const card = Array.from(sbGridEl.children).find((element) => element.dataset.file === file);
+    card?.querySelector('.sb-card-name')?.focus({ preventScroll: true });
   }
 }
 
@@ -1968,6 +2004,9 @@ async function reloadSoundboardBank() {
 }
 
 function renderSoundboardGrid() {
+  soundboardOrder.cancel();
+  sbGridEl.classList.toggle('can-reorder', state.soundboardEditing && state.soundboardOrderSupported &&
+    !state.soundboardOrderSaving);
   sbGridEl.innerHTML = '';
   if (!state.sfxFiles.length) {
     const empty = document.createElement('div');
@@ -1991,6 +2030,13 @@ function renderSoundboardGrid() {
     nameEl.className = 'sb-card-name';
     nameEl.title = file;
     nameEl.textContent = file;
+    nameEl.tabIndex = state.soundboardEditing && state.soundboardOrderSupported ? 0 : -1;
+    if (state.soundboardEditing && state.soundboardOrderSupported) {
+      nameEl.setAttribute('role', 'button');
+      nameEl.setAttribute('aria-label', `Reorder ${file}`);
+      nameEl.setAttribute('aria-pressed', 'false');
+    }
+    nameEl.setAttribute('aria-describedby', 'sb-order-status');
 
     const midiEl = document.createElement('div');
     midiEl.className = `sb-card-midi${hasMidi ? ' mapped' : ''}`;
@@ -1998,7 +2044,7 @@ function renderSoundboardGrid() {
       const noteSpan = document.createElement('span');
       noteSpan.textContent = `MIDI ${mappedNote}`;
       const clearBtn = document.createElement('button');
-      clearBtn.className = 'sb-midi-clear';
+      clearBtn.className = 'sb-midi-clear sb-edit-only';
       clearBtn.textContent = '\u00d7';
       clearBtn.title = 'Remove MIDI mapping';
       clearBtn.addEventListener('click', (ev) => {
@@ -2015,6 +2061,7 @@ function renderSoundboardGrid() {
     actionsEl.className = 'sb-card-actions';
 
     const modeSelect = document.createElement('select');
+    modeSelect.className = 'sb-edit-only';
     modeSelect.title = 'Playback mode for this sound';
     const optPlay = document.createElement('option');
     optPlay.value = 'play';
@@ -2030,7 +2077,8 @@ function renderSoundboardGrid() {
     });
 
     const playBtn = document.createElement('button');
-    playBtn.className = 'primary';
+    playBtn.className = 'primary sb-play';
+    playBtn.setAttribute('aria-label', `${mode === 'hold' ? 'Hold' : 'Play'} ${file}`);
     playBtn.textContent = (mode === 'hold') ? 'Hold' : '\u25b6 Play';
 
     let holdDown = false;
@@ -2053,6 +2101,20 @@ function renderSoundboardGrid() {
     playBtn.addEventListener('pointerup', releaseHold);
     playBtn.addEventListener('pointercancel', releaseHold);
     playBtn.addEventListener('pointerleave', releaseHold);
+    playBtn.addEventListener('keydown', (event) => {
+      if (mode !== 'hold' || ![' ', 'Enter'].includes(event.key)) return;
+      event.preventDefault();
+      if (!holdDown) {
+        holdDown = true;
+        triggerSfx(file, 'press');
+      }
+    });
+    playBtn.addEventListener('keyup', (event) => {
+      if (mode !== 'hold' || ![' ', 'Enter'].includes(event.key)) return;
+      event.preventDefault();
+      releaseHold();
+    });
+    playBtn.addEventListener('blur', releaseHold);
     playBtn.addEventListener('click', (ev) => {
       if (mode === 'hold') {
         ev.preventDefault();
@@ -2062,6 +2124,7 @@ function renderSoundboardGrid() {
     });
 
     const assignBtn = document.createElement('button');
+    assignBtn.className = 'sb-edit-only';
     assignBtn.textContent = isTarget ? 'Waiting\u2026' : 'Assign MIDI';
     if (isTarget) assignBtn.classList.add('primary');
     assignBtn.addEventListener('click', async () => {
@@ -2095,7 +2158,7 @@ function renderSoundboardGrid() {
     actionsEl.appendChild(assignBtn);
 
     const delBtn = document.createElement('button');
-    delBtn.className = 'warn';
+    delBtn.className = 'warn sb-edit-only';
     delBtn.textContent = 'Remove';
     delBtn.addEventListener('click', () => deleteSfxFile(file));
     actionsEl.appendChild(delBtn);
@@ -2109,11 +2172,12 @@ function renderSoundboardGrid() {
       if (!selected) {
         return;
       }
-      await replaceSfxFile(file, selected);
+      await runLoadingTask('Replacing sound', () => replaceSfxFile(file, selected));
       replaceInput.value = '';
     });
 
     const replaceBtn = document.createElement('button');
+    replaceBtn.className = 'sb-edit-only';
     replaceBtn.textContent = 'Replace';
     replaceBtn.addEventListener('click', () => {
       replaceInput.click();
@@ -2537,10 +2601,11 @@ async function initializeGraphFromConfig() {
     try {
       await effectsManager.loadEffects();
     } catch (err) {
-      setStatus(String(err), 'warn');
+      setStatus(String(err), 'warn', 'effects-load');
     }
   }
   await loadRoutingFile();
+  arrangeRoutingGraph();
   state.edgeDeleteEnabled = true;
   updateZoomLabel();
   startRoutingThingsPolling();
@@ -2554,17 +2619,17 @@ async function loadVolumes() {
       fetch('/api/audio/volumes', { method: 'GET' }),
       fetch('/api/midi/cc_volumes', { method: 'GET' }),
     ]);
-    if (vRes.ok) {
-      const data = JSON.parse(await vRes.text());
-      state.volumes = Array.isArray(data?.volumes) ? data.volumes : [];
+    if (!vRes.ok || !ccRes.ok) {
+      throw new Error(`Volume data load failed (${!vRes.ok ? vRes.status : ccRes.status}). Try refreshing the Volume page.`);
     }
-    if (ccRes.ok) {
-      const data = JSON.parse(await ccRes.text());
-      state.ccVolumes = Array.isArray(data?.mappings) ? data.mappings : [];
-    }
+    const volumes = await vRes.json();
+    const mappings = await ccRes.json();
+    state.volumes = Array.isArray(volumes?.volumes) ? volumes.volumes : [];
+    state.ccVolumes = Array.isArray(mappings?.mappings) ? mappings.mappings : [];
     renderVolGrid();
+    AudioxUI.resolve('volumes-load');
   } catch (err) {
-    setStatus(`volume load error: ${err}`, 'warn');
+    setStatus(`volume load error: ${err}`, 'warn', 'volumes-load');
   }
 }
 
@@ -2791,32 +2856,83 @@ tabsEl.querySelectorAll('.tab-btn').forEach((btn) => {
   });
 });
 
-document.getElementById('btn-load').addEventListener('click', async () => {
+document.getElementById('btn-load').addEventListener('click', () => runLoadingTask('Loading configuration', async () => {
   const cfg = await loadConfig();
   if (cfg) {
     await loadRoutingThings();
     await loadRoutingFile();
   }
-});
+}));
 
-document.getElementById('btn-save').addEventListener('click', async () => {
+document.getElementById('btn-save').addEventListener('click', () => runLoadingTask('Saving configuration', async () => {
   const ok = await saveConfig();
   if (ok) {
     await loadRoutingThings();
     await loadRoutingFile();
   }
-});
+}));
 
-document.getElementById('btn-reload').addEventListener('click', async () => {
+document.getElementById('btn-reload').addEventListener('click', () => runLoadingTask('Reloading configuration', async () => {
   const ok = await reloadConfig();
   if (ok) {
     await loadRoutingThings();
     await loadRoutingFile();
   }
+}));
+
+document.getElementById('btn-route-save').addEventListener('click', () => runLoadingTask('Saving routing', saveRouting));
+document.getElementById('btn-route-arrange').addEventListener('click', () => {
+  state.autoArrange = true;
+  state.positions = {};
+  arrangeRoutingGraph();
+});
+document.getElementById('btn-zoom-fit').addEventListener('click', fitRoutingGraph);
+document.getElementById('btn-route-details').addEventListener('click', (event) => {
+  const visible = document.querySelector('.routing-grid').classList.toggle('show-details');
+  event.currentTarget.setAttribute('aria-expanded', String(visible));
 });
 
-document.getElementById('btn-route-save').addEventListener('click', saveRouting);
-document.getElementById('btn-route-remove-selected').addEventListener('click', deleteSelectedEdge);
+const graphShellEl = document.querySelector('.graph-shell');
+const fullscreenButton = document.getElementById('btn-graph-fullscreen');
+let graphNativeFullscreen = false;
+function updateGraphFullscreen() {
+  if (graphNativeFullscreen && !document.fullscreenElement) {
+    graphShellEl.classList.remove('expanded');
+    graphNativeFullscreen = false;
+  }
+  const expanded = graphShellEl.classList.contains('expanded');
+  fullscreenButton.textContent = expanded ? 'Exit fullscreen' : 'Fullscreen';
+  fullscreenButton.setAttribute('aria-pressed', String(expanded));
+  requestAnimationFrame(() => { resizeRoutingCanvas(); fitRoutingGraph(); });
+}
+fullscreenButton.addEventListener('click', async () => {
+  try {
+    if (graphShellEl.classList.contains('expanded')) {
+      graphShellEl.classList.remove('expanded');
+      if (graphNativeFullscreen) await document.exitFullscreen();
+    } else {
+      if (document.fullscreenEnabled) {
+        // Fullscreen the document so notifications and modal dialogs remain visible.
+        await document.documentElement.requestFullscreen();
+        graphNativeFullscreen = true;
+      }
+      graphShellEl.classList.add('expanded');
+    }
+    updateGraphFullscreen();
+  } catch (error) {
+    graphShellEl.classList.add('expanded');
+    updateGraphFullscreen();
+    setStatus(`Browser fullscreen unavailable: ${error.message}. Using the expanded graph view instead.`, 'warn');
+  }
+});
+document.addEventListener('fullscreenchange', updateGraphFullscreen);
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !graphNativeFullscreen && graphShellEl.classList.contains('expanded')) {
+    graphShellEl.classList.remove('expanded');
+    updateGraphFullscreen();
+    fullscreenButton.focus();
+  }
+}, true);
 document.getElementById('btn-bluetooth-scan').addEventListener('click', scanBluetoothDevices);
 
 document.getElementById('btn-zoom-in').addEventListener('click', () => {
@@ -2850,6 +2966,7 @@ if (typeof ResizeObserver === 'function') {
       return;
     }
     resizeRoutingCanvas();
+    if (state.autoArrange && state.activeTab === 'routing') fitRoutingGraph();
     updateZoomLabel();
   });
   ro.observe(graphWrapEl);
@@ -2890,7 +3007,43 @@ document.addEventListener('keydown', (ev) => {
   }
 });
 
-document.getElementById('btn-upload-real').addEventListener('click', uploadSfxFile);
+document.getElementById('btn-upload-real').addEventListener('click', () => runLoadingTask('Uploading sound', uploadSfxFile));
+
+function setSoundboardEditing(editing) {
+  soundboardOrder.cancel();
+  state.soundboardEditing = editing;
+  document.getElementById('soundboard-layout').classList.toggle('play-mode', !editing);
+  sbGridEl.querySelectorAll('.sb-card-name').forEach((name) => {
+    name.tabIndex = editing && state.soundboardOrderSupported ? 0 : -1;
+    if (editing && state.soundboardOrderSupported) {
+      name.setAttribute('role', 'button');
+      name.setAttribute('aria-label', `Reorder ${name.textContent}`);
+      name.setAttribute('aria-pressed', 'false');
+    } else {
+      name.removeAttribute('role');
+      name.removeAttribute('aria-label');
+      name.removeAttribute('aria-pressed');
+    }
+  });
+  sbGridEl.classList.toggle('can-reorder', editing && state.soundboardOrderSupported);
+  for (const [id, active] of [['btn-sb-play-mode', !editing], ['btn-sb-edit-mode', editing]]) {
+    const button = document.getElementById(id);
+    button.setAttribute('aria-pressed', String(active));
+    button.classList.toggle('primary', active);
+    button.classList.toggle('flat', !active);
+  }
+  if (!editing && state.sfxFiles.includes(state.mappingAssignTarget)) {
+    state.mappingAssignTarget = null;
+    clearInterval(state.mappingPollTimer);
+    state.mappingPollTimer = null;
+    renderSoundboardGrid();
+  }
+  sbMappingStatusEl.textContent = editing
+    ? 'Manage sounds, playback modes, and MIDI assignments.'
+    : 'Tap a sound to play. Switch to Edit to manage sounds and MIDI.';
+}
+document.getElementById('btn-sb-play-mode').addEventListener('click', () => setSoundboardEditing(false));
+document.getElementById('btn-sb-edit-mode').addEventListener('click', () => setSoundboardEditing(true));
 
 document.getElementById('btn-upload-clear').addEventListener('click', () => {
   document.getElementById('upload_name').value = '';
@@ -2961,31 +3114,22 @@ document.getElementById('btn-system-sync').addEventListener('click', async () =>
 });
 
 document.getElementById('btn-system-restart').addEventListener('click', async () => {
+  if (!await AudioxUI.confirm('Restart AudioX? All audio will stop while the device reboots. Save any pending changes first.', {
+    title: 'Restart device?', label: 'Restart device',
+  })) return;
   await runSystemAction('/api/system/restart', 'restart');
 });
 
 document.getElementById('btn-system-shutdown').addEventListener('click', async () => {
+  if (!await AudioxUI.confirm('Shut down AudioX? All audio will stop. You will need physical access to power the device back on.', {
+    title: 'Shut down device?', label: 'Shut down',
+  })) return;
   await runSystemAction('/api/system/shutdown', 'shutdown');
 });
 
-AudioxUpdates.init({ setStatus });
-AudioxBackup.init({ setStatus });
+AudioxUpdates.init({ setStatus, ui: AudioxUI });
+AudioxBackup.init({ setStatus, ui: AudioxUI });
 
-if (logsSourceEl && logsLevelEl && logsTextEl && logsLimitEl && logsViewEl && logsSummaryEl) {
-  document.getElementById('btn-logs-refresh').addEventListener('click', loadLogs);
-  document.getElementById('btn-logs-clear-filter').addEventListener('click', () => {
-    logsSourceEl.value = 'both';
-    logsLevelEl.value = 'all';
-    logsTextEl.value = '';
-    logsLimitEl.value = '600';
-    renderLogs();
-  });
-
-  logsSourceEl.addEventListener('change', renderLogs);
-  logsLevelEl.addEventListener('change', renderLogs);
-  logsLimitEl.addEventListener('change', renderLogs);
-  logsTextEl.addEventListener('input', renderLogs);
-}
 
 async function loadLightConfig() {
   try {
@@ -3091,6 +3235,10 @@ document.getElementById('btn-boot-failure-dismiss').addEventListener('click', as
 });
 
 initializeGraphFromConfig();
+const stopConnectionMonitor = AudioxUI.startConnectionMonitor(() => {
+  if (state.activeTab === 'bluetooth') loadBluetoothDevices();
+  if (state.activeTab === 'system') pollSystemIfNeeded();
+}, showAudioHealth);
 loadVersion();
 loadBootFailure();
 loadLightConfig();

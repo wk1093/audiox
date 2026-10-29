@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   --bg-0: #08131d;
   --bg-1: #0e2231;
   --bg-2: #12334a;
@@ -20,6 +21,42 @@
   box-sizing: border-box;
 }
 
+@media (forced-colors: none) {
+  * {
+    scrollbar-color: var(--muted) var(--bg-0);
+  }
+
+  @supports selector(::-webkit-scrollbar) {
+    * {
+      scrollbar-color: auto;
+    }
+
+    ::-webkit-scrollbar {
+      width: 12px;
+      height: 12px;
+    }
+
+    ::-webkit-scrollbar-track,
+    ::-webkit-scrollbar-corner {
+      background: var(--bg-0);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      border: 2px solid var(--bg-0);
+      border-radius: 999px;
+      background: var(--muted);
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--accent);
+    }
+
+    ::-webkit-scrollbar-thumb:active {
+      background: var(--accent-2);
+    }
+  }
+}
+
 html,
 body {
   margin: 0;
@@ -38,7 +75,7 @@ body {
 
 .app {
   width: 95%;
-  margin: 18px auto;
+  margin: 12px auto;
   border: 1px solid var(--line);
   border-radius: 16px;
   background: var(--panel);
@@ -52,8 +89,8 @@ body {
   justify-content: space-between;
   align-items: center;
   flex-wrap: wrap;
-  gap: 14px;
-  padding: 14px 16px 12px;
+  gap: 10px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--line);
   background: linear-gradient(180deg, rgba(12, 31, 44, 0.93), rgba(10, 28, 40, 0.78));
 }
@@ -65,7 +102,7 @@ body {
 }
 
 .logo-img {
-  width: 170px;
+  width: 120px;
   max-width: 45vw;
   height: auto;
   display: block;
@@ -124,6 +161,22 @@ body {
   display: block;
 }
 
+body:has([data-page="routing"].active) .app {
+  height: calc(100dvh - 24px);
+  display: flex;
+  flex-direction: column;
+}
+
+.app-header { flex-shrink: 0; }
+
+.page[data-page="routing"].active {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  padding: 10px;
+  animation: none;
+}
+
 @keyframes page-in {
   from {
     opacity: 0;
@@ -160,6 +213,19 @@ button {
 
 button:hover {
   border-color: #6d98b4;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 button.primary {
@@ -201,13 +267,19 @@ select {
 .routing-grid {
   display: flex;
   gap: 12px;
-  align-items: flex-start;
+  align-items: stretch;
   min-width: 0;
+  width: 100%;
+  min-height: 0;
+  position: relative;
 }
 
 .graph-shell {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-width: 0;
+  min-height: 0;
   border: 1px solid var(--line);
   border-radius: 12px;
   overflow: hidden;
@@ -236,6 +308,14 @@ select {
   align-items: center;
 }
 
+.zoom-controls {
+  display: flex;
+  gap: 4px;
+  margin-left: 8px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
+}
+
 .graph-hint {
   color: var(--muted);
   font-size: 12px;
@@ -243,7 +323,8 @@ select {
 
 .graph-wrap {
   position: relative;
-  height: min(84vh, 1120px);
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
   touch-action: none;
   background: #0d1e2a;
@@ -399,11 +480,75 @@ select {
 
 .side-stack {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   align-content: start;
   min-width: 0;
-  overflow: hidden;
+  overflow: auto;
+  width: 260px;
+  flex-shrink: 0;
 }
+
+.graph-shell:fullscreen,
+.graph-shell.expanded {
+  width: 100%;
+  height: 100dvh;
+  border-radius: 0;
+  background: var(--bg-0);
+}
+
+.graph-shell.expanded {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+}
+
+.app:has(.graph-shell.expanded) { backdrop-filter: none; }
+
+#btn-route-details { display: none; }
+
+.bluetooth-layout {
+  max-width: 960px;
+  margin: 0 auto;
+  display: grid;
+  gap: 16px;
+}
+
+.bluetooth-header,
+.bluetooth-device {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.bluetooth-header p { margin: 8px 0 0; }
+.bluetooth-header button { flex-shrink: 0; }
+.bluetooth-groups { display: grid; gap: 20px; }
+.bluetooth-group h2 { margin: 0 0 10px; color: var(--muted); }
+.bluetooth-device-list { display: grid; gap: 8px; }
+.bluetooth-device { padding: 16px; }
+.bluetooth-device.connected { border-color: var(--ok); }
+.bluetooth-device-info { flex: 1; min-width: 0; display: grid; gap: 5px; }
+.bluetooth-device-info strong { overflow-wrap: anywhere; font-size: 14px; }
+.bluetooth-device-state { font-size: 12px; color: var(--muted); }
+.connected .bluetooth-device-state { color: var(--ok); }
+.bluetooth-device-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.bluetooth-device-address { font-size: 11px; color: var(--muted); }
+.bluetooth-empty { padding: 20px; border: 1px dashed var(--line); border-radius: 12px; color: var(--muted); font-size: 13px; }
+.sb-grid.can-reorder .sb-card-name { cursor: grab; user-select: none; touch-action: none; }
+.sb-grid.can-reorder .sb-card-name::after {
+  content: "drag";
+  float: right;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: normal;
+}
+.soundboard-layout:not(.play-mode) .sb-card.dragging {
+  opacity: 0.6;
+  outline: 2px solid var(--accent-2);
+}
+.sb-card-name:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 3px; }
 
 .metric-grid {
   display: grid;
@@ -435,6 +580,7 @@ select {
 
 .edge-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   max-height: 300px;
   overflow-y: auto;
@@ -477,6 +623,31 @@ select {
   max-width: 760px;
 }
 
+.config-layout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px;
+}
+
+.loading-dialog {
+  text-align: center;
+}
+
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  margin: 0 auto 20px;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: loading-spin 900ms linear infinite;
+}
+
+@keyframes loading-spin {
+  to { transform: rotate(360deg); }
+}
+
 .cfg-row {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
@@ -508,27 +679,95 @@ select {
   gap: 10px;
 }
 
-.status {
-  border: 1px solid #355b72;
-  border-radius: 10px;
-  background: #0d2230;
-  padding: 8px 10px;
+.notifications {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 1000;
+  display: grid;
+  gap: 10px;
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+  pointer-events: none;
+}
+
+.notification {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid var(--line-soft);
+  border-left: 4px solid var(--accent);
+  border-radius: 12px;
+  padding: 16px;
+  background: var(--panel-solid);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+  animation: page-in 180ms ease;
+}
+
+.notification.ok { border-left-color: var(--ok); }
+.notification.warn { border-left-color: var(--warn); }
+.notification strong { font-size: 13px; color: var(--accent); }
+.notification.ok strong { color: var(--ok); }
+.notification.warn strong { color: var(--warn); }
+
+.notification p {
+  margin: 6px 0 0;
   font-size: 13px;
-  color: var(--muted);
-  min-height: 1.2em;
-  min-width: 220px;
-  max-width: 520px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
-.status.ok {
-  color: var(--ok);
+.notification-dismiss {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 5px 8px;
 }
 
-.status.warn {
+.confirm-dialog {
+  width: min(480px, calc(100vw - 32px));
+  padding: 24px;
+  border: 1px solid var(--line-soft);
+  border-radius: 16px;
+  background: var(--panel-solid);
+  color: var(--text);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6);
+}
+
+.confirm-dialog::backdrop {
+  background: rgba(3, 12, 20, 0.78);
+  backdrop-filter: blur(4px);
+}
+
+.dialog-heading {
   color: var(--warn);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin-bottom: 12px;
+}
+
+.confirm-dialog h2 {
+  font-size: 22px;
+  text-transform: none;
+  letter-spacing: -0.02em;
+}
+
+.confirm-dialog p {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+  margin: 16px 0 24px;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .effects-layout {
@@ -607,6 +846,14 @@ select {
   flex-wrap: wrap;
   min-width: 0;
 }
+
+.mode-switch { display: flex; gap: 4px; }
+.play-mode .sb-edit-only { display: none; }
+.play-mode .sb-card { min-height: 140px; }
+.play-mode .sb-card-actions { grid-template-columns: 1fr; }
+.play-mode .sb-card-actions .sb-play { min-height: 64px; font-size: 18px; }
+.sb-play:active { background: #32623c; border-color: var(--ok); }
+.play-mode .sb-grid { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
 
 .sb-grid {
   display: grid;
@@ -694,6 +941,10 @@ select {
   gap: 12px;
   align-items: start;
 }
+
+.system-info { grid-column: 1; grid-row: 1; }
+.system-actions { grid-column: 2; grid-row: 1; }
+.system-logs { grid-column: 1; grid-row: 2; }
 
 .update-progress {
   width: 100%;
@@ -907,17 +1158,39 @@ select {
   font-weight: 600;
 }
 
-@media (max-width: 1280px) {
-  .routing-grid {
-    flex-direction: column;
-  }
+@media (max-width: 1200px) {
+  .brand-title { display: none; }
+  .brand { gap: 8px; }
+  .tabs { gap: 5px; }
+  .tab-btn { padding: 7px 9px; }
+}
+
+@media (max-width: 1000px) {
+  .app-header { flex-wrap: nowrap; }
+  .brand { flex-direction: column; align-items: flex-start; gap: 2px; flex-shrink: 0; }
+  .logo-img { width: 88px; }
+  .version { font-size: 10px; }
+  .tabs { min-width: 0; flex-wrap: nowrap; overflow-x: auto; }
+  .tab-btn { flex-shrink: 0; }
 
   .side-stack {
-    flex: 0 0 auto;
+    display: none;
   }
 
-  .graph-wrap {
-    height: 66vh;
+  #btn-route-details { display: inline-block; }
+
+  .routing-grid.show-details .side-stack {
+    display: grid;
+    position: absolute;
+    top: 54px;
+    right: 0;
+    bottom: 0;
+    z-index: 5;
+    width: min(300px, 90%);
+    padding: 8px;
+    background: var(--panel-solid);
+    border: 1px solid var(--line);
+    border-radius: 12px;
   }
 }
 
@@ -930,21 +1203,35 @@ select {
     border-right: none;
   }
 
+  body:has([data-page="routing"].active) .app { height: 100dvh; }
+
   .app-header {
-    padding: 12px;
+    padding: 8px;
   }
 
-  .status {
-    order: 3;
-    width: 100%;
-    max-width: 100%;
+  .notifications {
+    right: 16px;
+    bottom: 16px;
   }
 
   .tabs {
-    width: 100%;
+    width: auto;
+    max-width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
     margin-left: 0;
+    gap: 5px;
   }
 
+  .tab-btn { padding: 6px 9px; flex-shrink: 0; }
+  .brand-title { display: none; }
+  .logo-img { width: 88px; }
+  .graph-toolbar { padding: 6px; gap: 6px; }
+  .graph-actions { gap: 4px; }
+  .graph-actions button { padding: 6px 8px; font-size: 12px; }
+  .zoom-controls { margin-left: 0; padding-left: 6px; }
+  .bluetooth-device { flex-wrap: wrap; }
+  .bluetooth-device-actions { width: 100%; }
   .cfg-row {
     grid-template-columns: 1fr;
   }
@@ -955,12 +1242,31 @@ select {
     grid-template-columns: 1fr;
   }
 
-  .system-layout {
+  .system-layout,
+  .config-layout {
     grid-template-columns: 1fr;
+  }
+
+  .system-info,
+  .system-actions,
+  .system-logs {
+    grid-column: auto;
+    grid-row: auto;
   }
 
   .node {
     width: 236px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .page,
+    .notification {
+      animation: none;
+    }
+
+    .loading-spinner {
+      animation-duration: 3s;
+    }
   }
 
   .midi-action-row {

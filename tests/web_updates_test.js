@@ -94,7 +94,10 @@ function controller() {
     });
   }
   global.document = { getElementById: (id) => elements.get(id) };
-  global.window = { confirm: () => true };
+  const popup = {
+    ...require('../web/ui.js'), confirm: async () => true,
+    runTask: async (_title, action) => action(),
+  };
   const uploads = [];
   global.XMLHttpRequest = class {
     constructor() {
@@ -111,12 +114,12 @@ function controller() {
       this.events.load();
     }
   };
-  updates.init({ setStatus: () => {} });
-  return { elements, uploads, click: (id) => elements.get(id).listeners.click() };
+  updates.init({ setStatus: () => {}, ui: popup });
+  return { elements, uploads, popup, click: (id) => elements.get(id).listeners.click() };
 }
 
 test('controller checks, confirms, downloads and uploads without Pi internet; cancellation sends nothing', async () => {
-  const { elements, uploads, click } = controller();
+  const { elements, uploads, popup, click } = controller();
   const urls = [];
   global.fetch = async (url) => {
     urls.push(url);
@@ -130,10 +133,10 @@ test('controller checks, confirms, downloads and uploads without Pi internet; ca
   };
   await click('btn-update-check');
   assert.equal(elements.get('btn-update-online').disabled, false);
-  global.window.confirm = () => false;
+  popup.confirm = async () => false;
   await click('btn-update-online');
   assert.equal(uploads.length, 0);
-  global.window.confirm = () => true;
+  popup.confirm = async () => true;
   await click('btn-update-online');
   assert.equal(uploads.length, 1);
   assert.deepEqual(Buffer.from(await uploads[0].arrayBuffer()), bytes);

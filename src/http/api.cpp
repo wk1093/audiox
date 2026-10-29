@@ -1,6 +1,8 @@
 #include "http/context.hpp"
 #include "http/ffmpeg.hpp"
+#include "http/logs.hpp"
 #include "audio/context.hpp"
+#include "audio/health.hpp"
 #include "audio/effects/slot.hpp"
 #include "bluetooth/context.hpp"
 #include "config/context.hpp"
@@ -33,6 +35,7 @@
 #define HTTP_SOUNDBOARD_STOP_ALL_PATH HTTP_API_PREFIX "soundboard/stop_all"
 #define HTTP_SOUNDBOARD_MODE_PATH HTTP_API_PREFIX "soundboard/mode"
 #define HTTP_SOUNDBOARD_MODES_PATH HTTP_API_PREFIX "soundboard/modes"
+#define HTTP_SOUNDBOARD_ORDER_PATH HTTP_API_PREFIX "soundboard/order"
 #define HTTP_SOUNDBOARD_MODE_SET_PATH HTTP_API_PREFIX "soundboard/mode/set"
 #define HTTP_SOUNDBOARD_RELOAD_PATH HTTP_API_PREFIX "soundboard/reload"
 #define HTTP_FRAMEBUFFER_VIEW_PATH HTTP_API_PREFIX "framebuffer/view"
@@ -757,6 +760,68 @@ static int handleFramebufferView(HttpServer *server, int cfd, const char *method
 	}
 	const char *out = cfg.framebufferSoundboard ? "{\"view\":\"soundboard\"}\n" : "{\"view\":\"meters\"}\n";
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
+}
+
+static int handleSoundboardOrder(HttpServer *server, int cfd, const char *method,
+								 const char *body, size_t body_len) {
+	if (!server || !server->app || !server->app->config || !method) return -1;
+	if (strcmp(method, "GET") != 0 && strcmp(method, "POST") != 0) return sendMethodNotAllowed(server, cfd);
+	auto reply = [&](const char *status, const char *message) {
+		return server->sendResponse(cfd, status, "text/plain; charset=utf-8", message, strlen(message));
+	};
+	static_assert(SOUNDBOARD_ORDER_MAX == AUDIO_SFX_SLOT_COUNT, "Web and framebuffer soundboard capacities must match");
+	char files[SOUNDBOARD_ORDER_MAX][MIDI_SFX_PATH_MAX] = {};
+	uint32_t count = 0;
+	if (server->app->config->listSoundboardFiles(files, SOUNDBOARD_ORDER_MAX, &count) != RET_OK) {
+		return reply("500 Internal Server Error", "Could not read the soundboard files.\n");
+	}
+	if (strcmp(method, "POST") == 0) {
+		MidiMapData data = server->app->config->readMidiMapFile();
+		data.soundOrderCount = 0;
+		size_t offset = 0;
+		while (offset < body_len) {
+			const char *start = body + offset;
+			const char *newline = (const char *)memchr(start, '\n', body_len - offset);
+			const size_t len = newline ? (size_t)(newline - start) : body_len - offset;
+			if (!len || len >= MIDI_SFX_PATH_MAX || memchr(start, '\0', len) ||
+				data.soundOrderCount >= SOUNDBOARD_ORDER_MAX) {
+				return reply("400 Bad Request", "Invalid soundboard order.\n");
+			}
+			char name[MIDI_SFX_PATH_MAX] = {};
+			memcpy(name, start, len);
+			bool exists = false;
+			for (uint32_t i = 0; i < count; ++i) {
+				if (strcmp(files[i], name) == 0) exists = true;
+			}
+			if (!exists) return reply("409 Conflict", "Sound files changed. Refresh the soundboard before reordering.\n");
+			for (uint32_t i = 0; i < data.soundOrderCount; ++i) {
+				if (strcmp(data.soundOrder[i].sfxPath, name) == 0) {
+					return reply("400 Bad Request", "Soundboard order contains a duplicate sound.\n");
+				}
+			}
+			copy_bound(data.soundOrder[data.soundOrderCount++].sfxPath, MIDI_SFX_PATH_MAX, name);
+			offset += len + (newline ? 1 : 0);
+		}
+		if (data.soundOrderCount != count) {
+			return reply("409 Conflict", "Sound files changed. Refresh the soundboard before reordering.\n");
+		}
+		if (server->app->config->writeMidiMapFile(&data) != RET_OK) {
+			return reply("500 Internal Server Error", "Could not save the soundboard order.\n");
+		}
+		if (server->app->midi) server->app->midi->cachedMidiMap = data;
+		for (uint32_t i = 0; i < count; ++i) {
+			copy_bound(files[i], MIDI_SFX_PATH_MAX, data.soundOrder[i].sfxPath);
+		}
+	}
+	char out[SOUNDBOARD_ORDER_MAX * MIDI_SFX_PATH_MAX];
+	size_t length = 0;
+	for (uint32_t i = 0; i < count; ++i) {
+		const size_t len = strlen(files[i]);
+		memcpy(out + length, files[i], len);
+		length += len;
+		out[length++] = '\n';
+	}
+	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", out, length);
 }
 
 static int handleSoundboardModes(HttpServer *server,
@@ -3562,7 +3627,9 @@ static int handleSystemInfo(HttpServer *server,
 	char ffmpeg_version[256];
 	getFfmpegVersion(ffmpeg_version, sizeof(ffmpeg_version));
 
-	char out[768];
+	const uint64_t warningAt = audiox::audioHealth.warningAt();
+	const uint64_t now = audiox::healthMonotonicMs();
+	char out[1280];
 	int n = snprintf(out, sizeof(out),
 					 "{\"version\":\"%s\",\"kernel\":\"%s\","
 					 "\"board\":\"%s\","
@@ -3572,10 +3639,15 @@ static int handleSystemInfo(HttpServer *server,
 					 "\"mem_total_mb\":%ld,"
 					 "\"mem_avail_mb\":%ld,"
 					 "\"load1\":%.2f,"
-					 "\"ffmpeg\":\"%s\"}\n",
+					 "\"ffmpeg\":\"%s\","
+					 "\"audio_health\":{\"xruns\":%llu,\"warning_id\":\"%llu\","
+					 "\"warning_active\":%s}}\n",
 					 version_str, kernel_buf, audioxDetectBoard(), model_buf, cpu_freq_mhz,
 					 uptime_secs, mem_total_mb, mem_avail_mb, load1,
-					 ffmpeg_version);
+					 ffmpeg_version,
+					 (unsigned long long)audiox::audioHealth.total(),
+					 (unsigned long long)warningAt,
+					 audiox::audioHealth.warningActive(now) ? "true" : "false");
 	if (n < 0 || n >= (int)sizeof(out)) n = 0;
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
 }
@@ -3930,10 +4002,13 @@ int handleApiRequest(HttpServer *server,
 					 const char *method,
 					 const char *path,
 					 const char *body,
-					 size_t body_len) {
+					 size_t body_len,
+					 const char *query) {
 	if (!server || cfd < 0 || !method || !path) {
 		return -1;
 	}
+
+	if (strcmp(path, "/api/system/logs") == 0) return handleSystemLogs(server, cfd, method, query);
 
 	if (strncmp(path, HTTP_SOUNDBOARD_TRIGGER_PREFIX, strlen(HTTP_SOUNDBOARD_TRIGGER_PREFIX)) == 0) {
 		if (strcmp(method, "GET") != 0 && strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
@@ -3978,6 +4053,10 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_SOUNDBOARD_MODES_PATH) == 0) {
 		return handleSoundboardModes(server, cfd, method, path);
+	}
+
+	if (strcmp(path, HTTP_SOUNDBOARD_ORDER_PATH) == 0) {
+		return handleSoundboardOrder(server, cfd, method, body, body_len);
 	}
 
 	if (strcmp(path, HTTP_SOUNDBOARD_MODE_SET_PATH) == 0) {

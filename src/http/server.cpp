@@ -1230,10 +1230,11 @@ static void handleClient(HttpServer *server, int cfd) {
     }
 
     char method[8];
-    char path[256];
+    char path[2048];
     method[0] = '\0';
     path[0] = '\0';
-    if (sscanf(req, "%7s %255s", method, path) != 2) {
+    int targetEnd = 0;
+    if (sscanf(req, "%7s %2047s%n", method, path, &targetEnd) != 2 || req[targetEnd] != ' ') {
         static const char bad[] = "bad request line\n";
         (void)server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
         return;
@@ -1380,7 +1381,7 @@ static void handleClient(HttpServer *server, int cfd) {
     }
 
     if (strncmp(path, HTTP_API_PREFIX, strlen(HTTP_API_PREFIX)) == 0) {
-        if (handleApiRequest(server, cfd, method, path, body, body_len) == 0) {
+        if (handleApiRequest(server, cfd, method, path, body, body_len, query) == 0) {
             return;
         }
         static const char err[] = "api handler failed\n";

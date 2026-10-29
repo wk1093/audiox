@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include "../src/http/api.cpp"
+#include "../src/framebuffer/ui.cpp"
 
 namespace {
 
@@ -109,6 +110,10 @@ int main() {
     assert(strcmp(indentedMidi.mappings[0].sfxPath, "keep.wav") == 0);
     assert(indentedMidi.soundModeCount == 1);
     assert(indentedMidi.soundModes[0].mode == SOUNDBOARD_MODE_HOLD);
+    char ordered[SOUNDBOARD_ORDER_MAX][MIDI_SFX_PATH_MAX] = {};
+    uint32_t orderedCount = 0;
+    assert(config.listSoundboardFiles(ordered, SOUNDBOARD_ORDER_MAX, &orderedCount) == RET_OK);
+    assert(orderedCount == 2 && strcmp(ordered[0], "keep.wav") == 0);
 
     MidiMapData data = {};
     data.globalLight = {2, 12, 24, 5};
@@ -126,6 +131,10 @@ int main() {
     data.soundModes[0] = {"remove.wav", SOUNDBOARD_MODE_HOLD};
     data.soundModes[1] = {"keep.wav", SOUNDBOARD_MODE_PLAY};
     data.soundModes[2] = {"already-missing.wav", SOUNDBOARD_MODE_HOLD};
+    data.soundOrderCount = 3;
+    data.soundOrder[0] = {"keep.wav"};
+    data.soundOrder[1] = {"remove.wav"};
+    data.soundOrder[2] = {"already-missing.wav"};
     data.actionMappingCount = 1;
     data.actionMappings[0] = {39, MIDI_ACTION_STOP_ALL};
     data.effectStateCount = 2;
@@ -146,6 +155,7 @@ int main() {
         assert(midi.cachedMidiMap.mappingCount == 3);
         assert(midi.cachedMidiMap.soundLightCount == 2);
         assert(midi.cachedMidiMap.soundModeCount == 2);
+        assert(midi.cachedMidiMap.soundOrderCount == 2);
         int leds[2];
         assert(pipe(leds) == 0);
         midi.fd = leds[1];
@@ -158,6 +168,40 @@ int main() {
         midi.samplerSelectedValid = 1;
         strcpy(midi.samplerSelectedSfx, "remove.wav");
         HttpServer http(&app);
+        auto orderRequest = [&](const char *method, const char *body, const char *expected) {
+            int sockets[2];
+            assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+            assert(handleSoundboardOrder(&http, sockets[0], method, body, strlen(body)) == 0);
+            char reply[4096] = {};
+            assert(read(sockets[1], reply, sizeof(reply) - 1) > 0);
+            assert(strstr(reply, expected));
+            close(sockets[0]);
+            close(sockets[1]);
+        };
+        orderRequest("GET", "", "keep.wav\nremove.wav\n");
+        orderRequest("POST", "remove.wav\nkeep.wav\n", "200 OK");
+        orderRequest("GET", "", "remove.wav\nkeep.wav\n");
+        assert(strcmp(config.readMidiMapFile().soundOrder[0].sfxPath, "remove.wav") == 0);
+        assert(strcmp(midi.cachedMidiMap.soundOrder[0].sfxPath, "remove.wav") == 0);
+        refreshSoundboardFiles(&config, 1000);
+        assert(soundboardUi.count == 2 && strcmp(soundboardUi.files[0], "remove.wav") == 0);
+        orderRequest("POST", "keep.wav\nkeep.wav\n", "400 Bad Request");
+        orderRequest("POST", "keep.wav\n", "409 Conflict");
+        orderRequest("POST", "../keep.wav\nremove.wav\n", "409 Conflict");
+        orderRequest("POST", "\n", "400 Bad Request");
+        orderRequest("DELETE", "", "405 Method Not Allowed");
+        orderRequest("GET", "", "remove.wav\nkeep.wav\n");
+        touch("sfx/new.WAV");
+        assert(mkdir("sfx/not-a-file.wav", 0755) == 0);
+        orderRequest("GET", "", "remove.wav\nkeep.wav\nnew.WAV\n");
+        soundboardUi.wasDown = true;
+        refreshSoundboardFiles(&config, 4000);
+        assert(soundboardUi.count == 2);
+        soundboardUi.wasDown = false;
+        refreshSoundboardFiles(&config, 7000);
+        assert(soundboardUi.count == 3 && strcmp(soundboardUi.files[2], "new.WAV") == 0);
+        assert(unlink("sfx/new.WAV") == 0);
+        assert(rmdir("sfx/not-a-file.wav") == 0);
         int response[2];
         assert(socketpair(AF_UNIX, SOCK_STREAM, 0, response) == 0);
         assert(handleSystemInfo(&http, response[0], "GET", "/api/system/info") == 0);
@@ -187,6 +231,9 @@ int main() {
         assert(saved.mappingCount == 1 && saved.mappings[0].note == 38);
         assert(saved.soundLightCount == 1 && strcmp(saved.soundLights[0].sfxPath, "keep.wav") == 0);
         assert(saved.soundModeCount == 1 && strcmp(saved.soundModes[0].sfxPath, "keep.wav") == 0);
+        assert(saved.soundOrderCount == 1 && strcmp(saved.soundOrder[0].sfxPath, "keep.wav") == 0);
+        refreshSoundboardFiles(&config, 10000);
+        assert(soundboardUi.count == 1 && strcmp(soundboardUi.files[0], "keep.wav") == 0);
         assert(saved.actionMappingCount == 1 && saved.effectToggleMappingCount == 1);
         assert(saved.effectStateCount == 2 && saved.effectParamCount == 1);
         assert(saved.effectParams[0].value == 6);
@@ -239,5 +286,5 @@ int main() {
     assert(fchdir(cwd) == 0);
     close(cwd);
     assert(rmdir(temp) == 0);
-    puts("soundboard cleanup, MIDI lighting, and Cut persistence tests passed");
+    puts("soundboard ordering, framebuffer sync, cleanup, MIDI lighting, and Cut persistence tests passed");
 }

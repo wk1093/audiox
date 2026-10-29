@@ -117,7 +117,7 @@
     return blob;
   }
 
-  function init({ setStatus }) {
+  function init({ setStatus, ui }) {
     const element = (id) => document.getElementById(id);
     const channel = element('update-channel');
     const check = element('btn-update-check');
@@ -132,8 +132,8 @@
     let busy = false;
 
     function message(text, kind = '') {
-      status.textContent = text;
-      setStatus(text, kind);
+      status.textContent = ui.formatMessage(text);
+      setStatus(text, kind, 'update');
     }
     function controls(locked) {
       busy = locked;
@@ -182,7 +182,7 @@
         xhr.addEventListener('load', () => {
           const text = (xhr.responseText || '').trim();
           if (xhr.status >= 200 && xhr.status < 300) {
-            message(text || 'Update installed; rebooting.', 'ok');
+            message('Update installed. Waiting for the device to restart...');
             resolve();
           } else {
             reject(new Error(`Update failed: ${xhr.status} ${text}`));
@@ -201,19 +201,21 @@
       controls(true);
       message('Checking device and GitHub release...');
       try {
-        const info = await deviceInfo();
-        const release = await latestRelease(channel.value);
-        const asset = selectAsset(release, info.board);
-        const installed = channel.value === 'stable'
-          ? info.version === release.tag_name.slice(1)
-          : /^[a-f0-9]{40}$/i.test(release.target_commitish || '') &&
-            info.version.endsWith(`+${release.target_commitish.slice(0, 12)}`);
-        selected = { release, asset, board: info.board, installed };
-        summary.textContent = `Current: ${info.version} (${info.board}). Selected: ${release.tag_name}${releaseVersion(release) ? ` (${releaseVersion(release)})` : ''}, ${(asset.size / 1048576).toFixed(1)} MiB.${installed ? ' Already installed.' : ''}`;
-        link.href = `https://github.com/${repository}/releases/download/${encodeURIComponent(release.tag_name)}/${asset.name}`;
-        link.hidden = false;
-        if (!installed) selected.mirrorUrl = await mirrorArchive(channel.value, release, info.board, asset);
-        message(installed ? 'This release is already installed.' : 'Release found. Download and install when ready.', 'ok');
+        await ui.runTask('Checking firmware releases', async () => {
+          const info = await deviceInfo();
+          const release = await latestRelease(channel.value);
+          const asset = selectAsset(release, info.board);
+          const installed = channel.value === 'stable'
+            ? info.version === release.tag_name.slice(1)
+            : /^[a-f0-9]{40}$/i.test(release.target_commitish || '') &&
+              info.version.endsWith(`+${release.target_commitish.slice(0, 12)}`);
+          selected = { release, asset, board: info.board, installed };
+          summary.textContent = `Current: ${info.version} (${info.board}). Selected: ${release.tag_name}${releaseVersion(release) ? ` (${releaseVersion(release)})` : ''}, ${(asset.size / 1048576).toFixed(1)} MiB.${installed ? ' Already installed.' : ''}`;
+          link.href = `https://github.com/${repository}/releases/download/${encodeURIComponent(release.tag_name)}/${asset.name}`;
+          link.hidden = false;
+          if (!installed) selected.mirrorUrl = await mirrorArchive(channel.value, release, info.board, asset);
+          message(installed ? 'This release is already installed.' : 'Release found. Download and install when ready.', 'ok');
+        });
       } catch (error) {
         message(`Update check failed: ${error.message}`, 'warn');
       } finally {
@@ -223,25 +225,32 @@
     online.addEventListener('click', async () => {
       if (busy || !selected || selected.installed || !selected.mirrorUrl) return;
       const { release, asset, board, mirrorUrl } = selected;
-      if (!window.confirm(`Install ${release.tag_name} for ${board}? This may replace the installed version (including downgrades). The device will reboot. Keep this page open until upload finishes.`)) return;
       controls(true);
       let success = false;
       try {
-        // Check the connected hardware again in case the browser now points at another device.
-        if ((await deviceInfo()).board !== board) throw new Error('Connected Pi hardware changed; check releases again.');
-        progress.hidden = false;
-        progress.value = 0;
-        message(`Downloading ${asset.name} through this browser...`);
-        const blob = await downloadArchive(asset, mirrorUrl, (percent) => {
-          progress.value = percent;
-          message(`Downloading ${asset.name}: ${percent}%`);
-        });
-        await upload(blob, asset.name);
+        if (!await ui.confirm(`Install ${release.tag_name} for ${board}? This may replace the installed version (including downgrades). The device will reboot. Keep this page open until upload finishes.`, {
+          title: 'Install firmware?', label: 'Install and reboot',
+        })) return;
+        await ui.runTask('Installing firmware', async () => {
+          // Check the connected hardware again in case the browser now points at another device.
+          if ((await deviceInfo()).board !== board) throw new Error('Connected Pi hardware changed; check releases again.');
+          progress.hidden = false;
+          progress.value = 0;
+          message(`Downloading ${asset.name} through this browser...`);
+          const blob = await downloadArchive(asset, mirrorUrl, (percent) => {
+            progress.value = percent;
+            message(`Downloading ${asset.name}: ${percent}%`);
+          });
+          await upload(blob, asset.name);
+        }, { restart: true });
         success = true;
       } catch (error) {
         message(`Online update failed: ${error.message} If the browser blocks GitHub access, use the manual download link and file upload.`, 'warn');
       } finally {
-        if (!success) controls(false);
+        if (!success) {
+          controls(false);
+          if (document.activeElement?.matches('body, dialog:not([open]) *')) online.focus();
+        }
       }
     });
     manual.addEventListener('click', async () => {
@@ -249,16 +258,21 @@
       const archive = file.files[0];
       if (!archive) return message('Pick an update image first.', 'warn');
       if (archive.size < 16 || archive.size > maxArchiveSize) return message('Update archive must be between 16 bytes and 256 MiB.', 'warn');
-      if (!window.confirm(`Install ${archive.name}? The device will reboot after the update is installed.`)) return;
       controls(true);
       let success = false;
       try {
-        await upload(archive, archive.name);
+        if (!await ui.confirm(`Install ${archive.name}? The device will reboot after the update is installed.`, {
+          title: 'Install firmware?', label: 'Install and reboot',
+        })) return;
+        await ui.runTask('Installing firmware', () => upload(archive, archive.name), { restart: true });
         success = true;
       } catch (error) {
         message(error.message, 'warn');
       } finally {
-        if (!success) controls(false);
+        if (!success) {
+          controls(false);
+          if (document.activeElement?.matches('body, dialog:not([open]) *')) manual.focus();
+        }
       }
     });
   }

@@ -14,7 +14,7 @@
     }
   }
 
-  function init({ setStatus }) {
+  function init({ setStatus, ui }) {
     const backup = document.getElementById('btn-config-backup');
     const restore = document.getElementById('btn-config-restore');
     const file = document.getElementById('backup_file');
@@ -23,8 +23,8 @@
     let busy = false;
 
     function message(text, kind = '') {
-      status.textContent = text;
-      setStatus(text, kind);
+      status.textContent = ui.formatMessage(text);
+      setStatus(text, kind, 'backup');
     }
     backup.addEventListener('click', () => {
       if (busy) return;
@@ -35,43 +35,47 @@
     restore.addEventListener('click', async () => {
       if (busy) return;
       busy = true;
-      const controls = Array.from(document.querySelectorAll('button, input, select, textarea'))
+      const controls = Array.from(document.querySelectorAll('main button, main input, main select, main textarea'))
         .map((control) => ({ control, disabled: control.disabled }));
       for (const { control } of controls) control.disabled = true;
       let success = false;
       try {
         const archive = file.files[0];
         await validateFile(archive);
-        if (!window.confirm(`Restore ${archive.name}? This REPLACES all saved AudioX settings, routing, MIDI/effects, Bluetooth pairings, and soundboard files, then reboots. Files not in the backup are removed. Back up the current device first. Firmware and boot files are not changed.`)) return;
-        progress.hidden = false;
-        progress.value = 0;
-        message('Uploading backup. Keep this page open until validation finishes...');
-        await new Promise((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open('PUT', '/api/config/restore');
-          xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-          xhr.upload.addEventListener('progress', (event) => {
-            if (event.lengthComputable) {
-              progress.value = Math.round(event.loaded / event.total * 100);
-              message(`Uploading backup: ${progress.value}%`);
-            }
+        if (!await ui.confirm(`Restore ${archive.name}? This REPLACES all saved AudioX settings, routing, MIDI/effects, Bluetooth pairings, and soundboard files, then reboots. Files not in the backup are removed. Back up the current device first. Firmware and boot files are not changed.`, {
+          title: 'Replace configuration?', label: 'Restore and reboot',
+        })) return;
+        await ui.runTask('Restoring configuration', async () => {
+          progress.hidden = false;
+          progress.value = 0;
+          message('Uploading backup. Keep this page open until validation finishes...');
+          await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('PUT', '/api/config/restore');
+            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+            xhr.upload.addEventListener('progress', (event) => {
+              if (event.lengthComputable) {
+                progress.value = Math.round(event.loaded / event.total * 100);
+                message(`Uploading backup: ${progress.value}%`);
+              }
+            });
+            xhr.upload.addEventListener('load', () => {
+              progress.value = 100;
+              message('Upload complete. Validating and staging settings and sound files...');
+            });
+            xhr.addEventListener('load', () => {
+              if (xhr.status === 202) {
+                message('Backup validated and staged. Waiting for the device to restart...');
+                resolve();
+              } else {
+                reject(new Error(`Restore rejected (${xhr.status}): ${xhr.responseText.trim() || 'no response details'}`));
+              }
+            });
+            xhr.addEventListener('error', () => reject(new Error('Connection lost. The restore may already be staged; check the device and reboot before retrying.')));
+            xhr.addEventListener('abort', () => reject(new Error('Restore upload aborted.')));
+            xhr.send(archive);
           });
-          xhr.upload.addEventListener('load', () => {
-            progress.value = 100;
-            message('Upload complete. Validating and staging settings and sound files...');
-          });
-          xhr.addEventListener('load', () => {
-            if (xhr.status === 202) {
-              message(`${xhr.responseText.trim()} Wait for the device to restart, then reload this page. If it does not restart automatically, reboot it manually.`, 'ok');
-              resolve();
-            } else {
-              reject(new Error(`Restore rejected (${xhr.status}): ${xhr.responseText.trim() || 'no response details'}`));
-            }
-          });
-          xhr.addEventListener('error', () => reject(new Error('Connection lost. The restore may already be staged; check the device and reboot before retrying.')));
-          xhr.addEventListener('abort', () => reject(new Error('Restore upload aborted.')));
-          xhr.send(archive);
-        });
+        }, { restart: true });
         success = true;
       } catch (error) {
         message(`Backup restore failed: ${error.message}`, 'warn');
@@ -79,6 +83,7 @@
         if (!success) {
           for (const { control, disabled } of controls) control.disabled = disabled;
           busy = false;
+          if (document.activeElement?.matches('body, dialog:not([open]) *')) restore.focus();
         }
       }
     });

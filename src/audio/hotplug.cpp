@@ -608,6 +608,7 @@ int AudioContext::rescanDevices() {
     DIR *dir = opendir("/dev/snd");
     if (!dir) {
         std::lock_guard<std::mutex> lock(devicesMutex);
+        if (!devices.empty()) audiox::audioHealth.devicesChanged();
         devices.clear();
         pathToHandle.clear();
         deviceGeneration++;
@@ -765,6 +766,21 @@ int AudioContext::rescanDevices() {
 
     {
         std::lock_guard<std::mutex> lock(devicesMutex);
+        bool changed = next.size() != devices.size();
+        for (const auto &entry : next) {
+            const auto previous = devices.find(entry.first);
+            if (previous == devices.end() ||
+                strcmp(entry.second.devPath, previous->second.devPath) != 0 ||
+                strcmp(entry.second.stableCardId, previous->second.stableCardId) != 0 ||
+                entry.second.playbackChannels != previous->second.playbackChannels ||
+                entry.second.captureChannels != previous->second.captureChannels ||
+                entry.second.hasPlayback != previous->second.hasPlayback ||
+                entry.second.hasCapture != previous->second.hasCapture) {
+                changed = true;
+                break;
+            }
+        }
+        if (changed) audiox::audioHealth.devicesChanged();
         devices.swap(next);
         pathToHandle.swap(nextPath);
         deviceGeneration++;

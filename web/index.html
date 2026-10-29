@@ -24,8 +24,6 @@
         </div>
       </div>
 
-      <div id="status" class="status">idle</div>
-
       <section id="boot-failure-banner" class="boot-failure-banner" hidden>
         <div class="boot-failure-text">
           <strong id="boot-failure-title">Last update failed to boot and was reverted.</strong>
@@ -38,7 +36,7 @@
         <pre id="boot-failure-report" class="logs-view" hidden></pre>
       </section>
 
-      <nav class="tabs" id="tabs">
+      <nav class="tabs" id="tabs" aria-label="Main navigation">
         <button class="tab-btn active" data-tab="routing">Routing</button>
         <button class="tab-btn" data-tab="bluetooth">Bluetooth</button>
         <button class="tab-btn" data-tab="effects">Effects</button>
@@ -56,13 +54,18 @@
           <div class="graph-toolbar">
             <div class="graph-actions">
               <button id="btn-route-save" class="primary">Save Routing</button>
-              <button id="btn-route-remove-selected" class="flat">Remove Selected Route</button>
-              <button id="btn-zoom-out">-</button>
-              <button id="btn-zoom-reset">100%</button>
-              <button id="btn-zoom-in">+</button>
-              <span class="graph-hint" id="zoom-label">zoom 100%</span>
+              <button id="btn-route-arrange" class="flat" title="Arrange inputs, helpers, effects, and outputs in rows">Arrange</button>
+              <div class="zoom-controls" role="group" aria-label="Graph zoom">
+                <button id="btn-zoom-out" aria-label="Zoom out">-</button>
+                <button id="btn-zoom-reset" aria-label="Reset zoom">100%</button>
+                <button id="btn-zoom-in" aria-label="Zoom in">+</button>
+                <button id="btn-zoom-fit">Fit</button>
+              </div>
+              <span class="graph-hint" id="zoom-label" hidden>zoom 100%</span>
+              <button id="btn-route-details" class="flat" aria-expanded="false" aria-controls="routing-details">Details</button>
+              <button id="btn-graph-fullscreen" class="flat" aria-pressed="false">Fullscreen</button>
             </div>
-            <div class="graph-hint">Drag from output to input to route. Drag node headers to move. Alt+Click a route to delete it. Wheel or buttons to zoom.</div>
+            <div class="graph-hint">Drag output to input to connect. Click a wire to remove it. Drag headers to move nodes; scroll to zoom.</div>
           </div>
 
           <div class="graph-wrap" id="graph-wrap">
@@ -70,7 +73,7 @@
           </div>
         </section>
 
-        <aside class="side-stack">
+        <aside class="side-stack" id="routing-details">
           <section class="card">
             <h2>Routing Overview</h2>
             <div class="metric-grid" style="margin-top: 8px;">
@@ -103,13 +106,16 @@
     </section>
 
     <section class="page" data-page="bluetooth">
-      <div class="effects-layout">
-        <section class="card stack">
-          <h2>Bluetooth Devices</h2>
-          <div id="bluetooth-status" class="small">Scan for nearby devices, then pair and connect.</div>
-          <button id="btn-bluetooth-scan" class="primary">Scan</button>
+      <div class="bluetooth-layout">
+        <section class="card bluetooth-header">
+          <div>
+            <h2>Bluetooth</h2>
+            <p id="bluetooth-status" class="small" role="status">Connect your saved audio devices or discover a new one.</p>
+            <p id="bluetooth-scan-hint" class="small" hidden></p>
+          </div>
+          <button id="btn-bluetooth-scan" class="primary">Add device</button>
         </section>
-        <div id="bluetooth-devices" class="effects-map-grid"></div>
+        <div id="bluetooth-devices" class="bluetooth-groups"></div>
       </div>
     </section>
 
@@ -140,21 +146,23 @@
 
     <!-- Soundboard page (cleaned up) -->
     <section class="page" data-page="soundboard">
-      <div class="soundboard-layout">
+      <div class="soundboard-layout play-mode" id="soundboard-layout">
         <div class="sb-topbar card">
+          <div class="mode-switch" role="group" aria-label="Soundboard mode">
+            <button id="btn-sb-play-mode" class="primary" aria-pressed="true">Play</button>
+            <button id="btn-sb-edit-mode" class="flat" aria-pressed="false">Edit</button>
+          </div>
           <div class="sb-topbar-left">
-            <span class="small" id="sb-mapping-status">Click &ldquo;Assign MIDI&rdquo; on a sound card to map a button.</span>
+            <span class="small" id="sb-mapping-status">Tap a sound to play. Switch to Edit to manage sounds and MIDI.</span>
           </div>
           <div class="grid-2">
             <button id="btn-sb-stop-all" class="warn">Stop All</button>
-            <button id="btn-sb-refresh" class="flat">Refresh</button>
+            <button id="btn-sb-refresh" class="flat sb-edit-only">Refresh</button>
           </div>
           <button id="btn-fb-view" class="flat" type="button" aria-pressed="false">Show Soundboard on Display</button>
         </div>
 
-        <div id="sb-grid" class="sb-grid"></div>
-
-        <section class="card stack">
+        <section class="card stack sb-edit-only">
           <h2>Add Sound</h2>
           <div class="cfg-row" style="margin-top: 0;">
             <label for="upload_name">Filename</label>
@@ -169,6 +177,9 @@
             <button id="btn-upload-clear">Clear</button>
           </div>
         </section>
+
+        <p id="sb-order-status" class="small sb-edit-only" role="status">Drag sound cards to reorder them (on touch, drag the sound name). With a keyboard, focus a name and press Space, use arrow keys, then Enter to save. Changes also update the device display.</p>
+        <div id="sb-grid" class="sb-grid"></div>
       </div>
     </section>
 
@@ -253,32 +264,47 @@
     </section>
 
     <section class="page" data-page="config">
-      <div class="cfg-wrap card">
-        <h2>Audio Config</h2>
-        <div class="cfg-row">
-          <label for="usb_playback_channels">USB Playback Channels</label>
-          <input id="usb_playback_channels" type="number" min="1" max="16" step="1" value="2">
-        </div>
-        <div class="cfg-row">
-          <label for="usb_capture_channels">USB Capture Channels</label>
-          <input id="usb_capture_channels" type="number" min="1" max="16" step="1" value="2">
-        </div>
-        <div class="cfg-row">
-          <label for="usb_sample_size">USB Sample Size (bytes)</label>
-          <input id="usb_sample_size" type="number" min="1" max="4" step="1" value="2">
-        </div>
+      <div class="config-layout">
+        <div class="cfg-wrap card">
+          <h2>Audio Config</h2>
+          <div class="cfg-row">
+            <label for="usb_playback_channels">USB Playback Channels</label>
+            <input id="usb_playback_channels" type="number" min="1" max="16" step="1" value="2">
+          </div>
+          <div class="cfg-row">
+            <label for="usb_capture_channels">USB Capture Channels</label>
+            <input id="usb_capture_channels" type="number" min="1" max="16" step="1" value="2">
+          </div>
+          <div class="cfg-row">
+            <label for="usb_sample_size">USB Sample Size (bytes)</label>
+            <input id="usb_sample_size" type="number" min="1" max="4" step="1" value="2">
+          </div>
 
-        <div class="actions-3">
-          <button id="btn-load">Load Config</button>
-          <button id="btn-save" class="primary">Save Config</button>
-          <button id="btn-reload">Reload Config</button>
+          <div class="actions-3">
+            <button id="btn-load">Load Config</button>
+            <button id="btn-save" class="primary">Save Config</button>
+            <button id="btn-reload">Reload Config</button>
+          </div>
         </div>
+        <section class="card stack">
+          <h2>Configuration Backup</h2>
+          <p class="small">Save all AudioX settings, routing, MIDI/lighting, effects, volumes, Bluetooth pairings, and soundboard audio in one .axb file. Save any pending UI edits first. Backups contain Bluetooth keys; keep them private.</p>
+          <button id="btn-config-backup" class="primary">Backup Configuration</button>
+          <div class="cfg-row">
+            <label for="backup_file">Backup Archive</label>
+            <input id="backup_file" type="file" accept=".axb,application/octet-stream">
+          </div>
+          <p class="small">Restore after reflashing to recover your setup. Restore replaces settings and sounds, then reboots. Firmware and boot files are not changed. Maximum backup size: 4 GiB; free device storage must fit the upload and extracted files.</p>
+          <progress id="backup-progress" class="update-progress" max="100" value="0" hidden></progress>
+          <div id="backup-status" class="small" role="status" aria-live="polite">No backup or restore requested.</div>
+          <button id="btn-config-restore" class="warn">Restore Configuration</button>
+        </section>
       </div>
     </section>
 
     <section class="page" data-page="system">
       <div class="system-layout">
-        <section class="card">
+        <section class="card system-info">
           <h2>Device Info</h2>
           <div class="metric-grid" style="margin-top: 8px;">
             <div class="metric">
@@ -316,17 +342,19 @@
           </div>
         </section>
 
-        <section class="card stack">
+        <section class="card stack system-actions">
           <h2>Actions</h2>
+          <p class="small">Restart and shutdown interrupt all audio. Save your changes first.</p>
           <button id="btn-system-sync">Sync Filesystem</button>
           <button id="btn-system-restart" class="warn">Restart Device</button>
           <button id="btn-system-shutdown" class="warn">Shutdown Device</button>
         </section>
 
-        <section class="card stack">
+        <section class="card stack system-logs">
           <h2>Logs</h2>
           <div class="logs-toolbar">
             <button id="btn-logs-refresh" class="flat">Refresh Logs</button>
+            <button id="btn-logs-follow" class="flat" aria-pressed="true">Pause live logs</button>
             <button id="btn-logs-clear-filter" class="flat">Clear Filter</button>
           </div>
           <div class="cfg-row logs-filter-row">
@@ -349,28 +377,14 @@
           </div>
           <div class="cfg-row logs-filter-row">
             <label for="logs-text">Text Filter</label>
-            <input id="logs-text" type="text" placeholder="contains text...">
+            <input id="logs-text" type="text" maxlength="160" placeholder="contains text...">
           </div>
           <div class="cfg-row logs-filter-row">
             <label for="logs-limit">Max Lines</label>
-            <input id="logs-limit" type="number" min="50" max="5000" step="50" value="600">
+            <input id="logs-limit" type="number" min="1" max="5000" step="1" value="600">
           </div>
           <div class="small" id="logs-summary">No logs loaded yet.</div>
-          <pre id="logs-view" class="logs-view" aria-live="polite"></pre>
-        </section>
-
-        <section class="card stack">
-          <h2>Configuration Backup</h2>
-          <p class="small">Save all AudioX settings, routing, MIDI/lighting, effects, volumes, Bluetooth pairings, and soundboard audio in one .axb file. Save any pending UI edits first. Backups contain Bluetooth keys; keep them private.</p>
-          <button id="btn-config-backup" class="primary">Backup Configuration</button>
-          <div class="cfg-row">
-            <label for="backup_file">Backup Archive</label>
-            <input id="backup_file" type="file" accept=".axb,application/octet-stream">
-          </div>
-          <p class="small">Restore after reflashing to recover your setup. Restore replaces settings and sounds, then reboots. Firmware and boot files are not changed. Maximum backup size: 4 GiB; free device storage must fit the upload and extracted files.</p>
-          <progress id="backup-progress" class="update-progress" max="100" value="0" hidden></progress>
-          <div id="backup-status" class="small" role="status" aria-live="polite">No backup or restore requested.</div>
-          <button id="btn-config-restore" class="warn">Restore Configuration</button>
+          <pre id="logs-view" class="logs-view" tabindex="0" aria-label="Device logs"></pre>
         </section>
 
         <section class="card stack">
@@ -392,14 +406,36 @@
             <input id="update_file" type="file" accept=".axu,application/octet-stream">
           </div>
           <progress id="update-progress" class="update-progress" max="100" value="0" hidden></progress>
-          <div id="update-status" class="small">Upload an .axu image built with make update_archive. The device reboots after installing it.</div>
+          <div id="update-status" class="small" role="status" aria-live="polite">Upload an .axu image built with make update_archive. The device reboots after installing it.</div>
           <button id="btn-update-upload" class="warn">Install Update</button>
         </section>
       </div>
     </section>
   </main>
 
+  <div id="notifications" class="notifications" aria-label="Notifications"></div>
+  <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+    <div class="dialog-heading">Device action</div>
+    <h2 id="confirm-title">Confirm action</h2>
+    <p id="confirm-message"></p>
+    <div class="dialog-actions">
+      <button id="confirm-cancel" class="flat" autofocus>Cancel</button>
+      <button id="confirm-accept" class="warn">Continue</button>
+    </div>
+  </dialog>
+  <dialog id="loading-dialog" class="confirm-dialog loading-dialog" aria-labelledby="loading-title" aria-describedby="loading-message">
+    <div class="loading-spinner" aria-hidden="true"></div>
+    <h2 id="loading-title">Working</h2>
+    <p id="loading-message" role="status" aria-live="polite">Please wait...</p>
+    <p class="small">Keep this page open. Device changes can take a little while.</p>
+    <button id="loading-stop" class="flat" hidden>Stop waiting</button>
+  </dialog>
+
   <script src="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/build/litegraph.js"></script>
+  <script src="/ui.js"></script>
+  <script src="/routing.js"></script>
+  <script src="/soundboard-order.js"></script>
+  <script src="/logs.js"></script>
   <script src="/effects.js"></script>
   <script src="/updates.js"></script>
   <script src="/backup.js"></script>

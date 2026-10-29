@@ -1,6 +1,7 @@
 #pragma once
 
 #include "defs.hpp"
+#include "audio/health.hpp"
 
 #include <alsa/asoundlib.h>
 #include <atomic>
@@ -73,6 +74,7 @@ static inline void audio_pcm_install_error_handler() {
 }
 
 static inline void audio_pcm_track_underrun(const char *path, const char *op) {
+    audiox::audioHealth.recordXrun();
     static std::atomic<uint64_t> underrunCount{0};
     uint64_t count = underrunCount.fetch_add(1U, std::memory_order_relaxed) + 1U;
     if (!audio_pcm_should_log_underrun_count(count)) {

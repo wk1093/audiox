@@ -1,6 +1,7 @@
 #include "bluetooth/context.hpp"
 
 #include "audio/context.hpp"
+#include "audio/health.hpp"
 #include "defs.hpp"
 
 #include <errno.h>
@@ -1289,6 +1290,7 @@ void BluetoothContext::advanceOutputNegotiation(uint8_t signal,
         outputConnecting = false;
         outputConnectingStatus.store(0, std::memory_order_release);
         outputConnected.store(1, std::memory_order_release);
+        audiox::audioHealth.devicesChanged();
         if (app && app->audio) {
             app->audio->setBluetoothOutputActive(true);
         }
@@ -1483,7 +1485,7 @@ void BluetoothContext::disconnectOutput(const char *reason) {
     outputMediaConnecting = false;
     outputConfigured = false;
     outputOpened = false;
-    outputConnected.store(0, std::memory_order_release);
+    if (outputConnected.exchange(0, std::memory_order_acq_rel)) audiox::audioHealth.devicesChanged();
     outputPacketLength = 0;
     outputStatsNextMs = 0;
     if (reason && reason[0]) {

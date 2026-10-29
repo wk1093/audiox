@@ -13,7 +13,8 @@ int handleApiRequest(HttpServer *server,
                      const char *method,
                      const char *path,
                      const char *body,
-                     size_t body_len);
+                     size_t body_len,
+                     const char *query = nullptr);
 
 struct HttpServer {
     Audiox *app;

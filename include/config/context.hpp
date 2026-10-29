@@ -17,6 +17,7 @@
 #define MIDI_SFX_PATH_MAX 160
 #define MIDI_SOUND_LIGHTS_MAX MIDI_MAPPINGS_MAX
 #define MIDI_SOUND_MODES_MAX MIDI_MAPPINGS_MAX
+#define SOUNDBOARD_ORDER_MAX 64
 #define MIDI_ACTION_MAPPINGS_MAX MIDI_MAPPINGS_MAX
 #define MIDI_CC_VOLUME_MAPPINGS_MAX 16
 #define MIDI_EFFECT_STATES_MAX 16
@@ -133,6 +134,10 @@ struct MidiSoundMode {
     uint8_t mode;                    // SoundboardMode
 };
 
+struct SoundboardOrderEntry {
+    char sfxPath[MIDI_SFX_PATH_MAX];
+};
+
 struct MidiActionMapping {
     uint8_t note;
     uint8_t action; // MidiActionType
@@ -150,6 +155,8 @@ struct MidiMapData {
     MidiSoundLight soundLights[MIDI_SOUND_LIGHTS_MAX];
     uint32_t soundModeCount;
     MidiSoundMode soundModes[MIDI_SOUND_MODES_MAX];
+    uint32_t soundOrderCount;
+    SoundboardOrderEntry soundOrder[SOUNDBOARD_ORDER_MAX];
     uint32_t actionMappingCount;
     MidiActionMapping actionMappings[MIDI_ACTION_MAPPINGS_MAX];
     uint8_t samplerKeyboardEnabled;
@@ -182,6 +189,7 @@ struct ConfigStore {
     MidiMapData readMidiMapFile() const;
     int writeMidiMapFile(MidiMapData *data);
     int purgeMissingSoundMappings(MidiMapData *data);
+    int listSoundboardFiles(char (*files)[MIDI_SFX_PATH_MAX], uint32_t capacity, uint32_t *count) const;
 
     // volumes.txt: per-thing output gain values
     int readVolumesFile(VolumeEntry *out, uint32_t *count_out, uint32_t cap) const;

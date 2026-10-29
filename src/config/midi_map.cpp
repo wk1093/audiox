@@ -7,6 +7,10 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <algorithm>
+#include <string>
+#include <vector>
 
 namespace {
 
@@ -639,6 +643,10 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             (void)parseSoundLightLine(value, data.soundLights, &data.soundLightCount);
         } else if (strcmp(key, "sound_mode") == 0) {
             (void)parseSoundModeLine(value, data.soundModes, &data.soundModeCount);
+        } else if (strcmp(key, "sound_order") == 0) {
+            if (value[0] && strlen(value) < MIDI_SFX_PATH_MAX && data.soundOrderCount < SOUNDBOARD_ORDER_MAX) {
+                copyBounded(data.soundOrder[data.soundOrderCount++].sfxPath, MIDI_SFX_PATH_MAX, value);
+            }
         } else if (strcmp(key, "note_action") == 0) {
             (void)parseMidiActionLine(value, data.actionMappings, &data.actionMappingCount);
         } else if (strcmp(key, "sampler_keyboard_channel") == 0) {
@@ -785,6 +793,14 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         }
     }
 
+    for (uint32_t i = 0; i < data->soundOrderCount && i < SOUNDBOARD_ORDER_MAX; ++i) {
+        if (dprintf(fd, "sound_order=%s\n", data->soundOrder[i].sfxPath) < 0) {
+            printf("[CONFIG] [WARN] failed to write soundboard order: %s\n", strerror(errno));
+            close(fd);
+            return RET_ERR;
+        }
+    }
+
     uint32_t actionCount = data->actionMappingCount;
     if (actionCount > MIDI_ACTION_MAPPINGS_MAX) {
         actionCount = MIDI_ACTION_MAPPINGS_MAX;
@@ -902,7 +918,11 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         }
     }
 
-    close(fd);
+    const int closeResult = close(fd);
+    if (closeResult != 0) {
+        printf("[CONFIG] [WARN] failed to finalize %s: %s\n", path, strerror(errno));
+        return RET_ERR;
+    }
     return RET_OK;
 }
 
@@ -1086,12 +1106,63 @@ int ConfigStore::purgeMissingSoundMappings(MidiMapData *data) {
 
     if (purge(cleaned.mappings, cleaned.mappingCount) != RET_OK ||
         purge(cleaned.soundLights, cleaned.soundLightCount) != RET_OK ||
-        purge(cleaned.soundModes, cleaned.soundModeCount) != RET_OK) {
+        purge(cleaned.soundModes, cleaned.soundModeCount) != RET_OK ||
+        purge(cleaned.soundOrder, cleaned.soundOrderCount) != RET_OK) {
         return RET_ERR;
     }
     if (changed && writeMidiMapFile(&cleaned) != RET_OK) {
         return RET_ERR;
     }
     *data = cleaned;
+    return RET_OK;
+}
+
+int ConfigStore::listSoundboardFiles(char (*files)[MIDI_SFX_PATH_MAX], uint32_t capacity, uint32_t *count) const {
+    if (!files || !count || !capacity) return RET_ERR;
+    *count = 0;
+    DIR *dir = opendir(SFX_ROOT_DIR);
+    if (!dir) {
+        if (errno == ENOENT) return RET_OK;
+        printf("[CONFIG] [WARN] failed to open soundboard directory: %s\n", strerror(errno));
+        return RET_ERR;
+    }
+    std::vector<std::string> names;
+    int result = RET_OK;
+    for (;;) {
+        errno = 0;
+        const dirent *entry = readdir(dir);
+        if (!entry) {
+            if (errno) result = RET_ERR;
+            break;
+        }
+        const size_t len = strlen(entry->d_name);
+        if (len < 5 || len >= MIDI_SFX_PATH_MAX || strcasecmp(entry->d_name + len - 4, ".wav") != 0) continue;
+        struct stat st;
+        if (fstatat(dirfd(dir), entry->d_name, &st, 0) != 0) {
+            if (errno == ENOENT) continue;
+            result = RET_ERR;
+            break;
+        }
+        if (S_ISREG(st.st_mode)) names.emplace_back(entry->d_name);
+    }
+    if (result != RET_OK) printf("[CONFIG] [WARN] failed to list soundboard files: %s\n", strerror(errno));
+    if (closedir(dir) != 0) {
+        printf("[CONFIG] [WARN] failed to close soundboard directory: %s\n", strerror(errno));
+        result = RET_ERR;
+    }
+    if (result != RET_OK) return result;
+    std::sort(names.begin(), names.end());
+    const MidiMapData data = readMidiMapFile();
+    auto append = [&](const std::string &name) {
+        if (*count < capacity) copyBounded(files[(*count)++], MIDI_SFX_PATH_MAX, name.c_str());
+    };
+    for (uint32_t i = 0; i < data.soundOrderCount && i < SOUNDBOARD_ORDER_MAX; ++i) {
+        const auto found = std::find(names.begin(), names.end(), data.soundOrder[i].sfxPath);
+        if (found != names.end()) {
+            append(*found);
+            names.erase(found);
+        }
+    }
+    for (const auto &name : names) append(name);
     return RET_OK;
 }

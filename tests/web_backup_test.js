@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const backup = require('../web/backup.js');
+const ui = require('../web/ui.js');
 
 function archive() {
   const bytes = Buffer.alloc(20);
@@ -24,7 +25,8 @@ function controller() {
     querySelectorAll: () => Array.from(elements.values()),
   };
   const downloads = [], uploads = [];
-  global.window = { confirm: () => true, open: (...args) => downloads.push(args) };
+  const popup = { ...ui, confirm: async () => true, runTask: async (_title, action) => action() };
+  global.window = { open: (...args) => downloads.push(args) };
   let mode = 'success';
   global.XMLHttpRequest = class {
     constructor() {
@@ -54,9 +56,9 @@ function controller() {
       else this.events.load();
     }
   };
-  backup.init({ setStatus: () => {} });
+  backup.init({ setStatus: () => {}, ui: popup });
   return {
-    elements, downloads, uploads,
+    elements, downloads, uploads, popup,
     click: (id) => elements.get(id).listeners.click(),
     mode: (value) => { mode = value; },
   };
@@ -85,7 +87,7 @@ test('restore rejects missing, oversized, truncated and firmware files before up
 test('cancelled restore does not change settings or upload anything', async () => {
   const ui = controller();
   ui.elements.get('backup_file').files = [archive()];
-  global.window.confirm = (text) => {
+  ui.popup.confirm = async (text) => {
     assert.match(text, /REPLACES/);
     assert.match(text, /soundboard/);
     assert.match(text, /reboots/);

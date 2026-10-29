@@ -2,7 +2,7 @@
 # Keep this list short: transitive dependencies are resolved automatically.
 # Prefix boot-critical seeds with 'base:' to include them in early-load list.
 # Use 'normal:' (or no prefix) for modules loaded after boot UI appears.
-# Add a board filter to limit a seed to some boards (pi4, pi5):
+# Add a board filter to limit a seed to some boards (pi4, pi5, qemu):
 #   base(pi5): drivers/foo        only on Pi 5
 #   normal(pi4,pi5): drivers/bar  on Pi 4 and Pi 5
 #   normal(!pi5): drivers/baz     on every board except Pi 5
@@ -26,19 +26,21 @@ normal: net/bluetooth/bluetooth
 normal: drivers/bluetooth/btusb
 normal: drivers/bluetooth/hci_uart
 
-# Display stack (vc4/v3d + official DSI panel)
-base: drivers/gpu/drm/vc4/vc4
-base: drivers/gpu/drm/v3d/v3d
-base: drivers/gpu/drm/panel/panel-raspberrypi-touchscreen
+# Display stack (vc4/v3d + official DSI panel). Raspberry Pi hardware only;
+# the QEMU debug build (make debug) uses a virtio-gpu framebuffer instead.
+base(!qemu): drivers/gpu/drm/vc4/vc4
+base(!qemu): drivers/gpu/drm/v3d/v3d
+base(!qemu): drivers/gpu/drm/panel/panel-raspberrypi-touchscreen
+base(qemu): drivers/gpu/drm/virtio/virtio-gpu
 base: drivers/video/backlight/backlight
-base: drivers/regulator/rpi-panel-attiny-regulator
-base: drivers/regulator/rpi-panel-v2-regulator
+base(!qemu): drivers/regulator/rpi-panel-attiny-regulator
+base(!qemu): drivers/regulator/rpi-panel-v2-regulator
 
 # Touch / input buses
-base: drivers/i2c/busses/i2c-bcm2835
+base(!qemu): drivers/i2c/busses/i2c-bcm2835
 base: drivers/i2c/i2c-dev
-base: drivers/i2c/muxes/i2c-mux-pinctrl
-base: drivers/input/touchscreen/raspberrypi-ts
+base(!qemu): drivers/i2c/muxes/i2c-mux-pinctrl
+base(!qemu): drivers/input/touchscreen/raspberrypi-ts
 base: drivers/hid/i2c-hid/i2c-hid-of
 base: drivers/hid/hid-multitouch
 
@@ -51,3 +53,7 @@ base: drivers/input/touchscreen/edt-ft5x06
 normal: drivers/usb/gadget/function/u_ether
 normal: drivers/usb/gadget/function/usb_f_ncm
 
+# QEMU debug build (make debug): virtio NIC for USB/IP and port forwards, and
+# the virtual USB device controller that exports the gadget over USB/IP.
+normal(qemu): drivers/net/virtio_net
+normal(qemu): drivers/usb/usbip/usbip-vudc

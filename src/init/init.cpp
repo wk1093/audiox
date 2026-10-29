@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "defs.hpp"
 #include "context.hpp"
@@ -27,11 +28,11 @@
         if (ret == RET_ERR) { \
             printf("[INIT] [CRIT] %s failed with error code %d\n", #func, ret); \
             flushLogs(); \
-            if (!freopen("/dev/tty1", "w", stdout)) { \
-                printf("[INIT] [WARN] failed to redirect stdout to /dev/tty1: %s\n", strerror(errno)); \
+            if (!freopen(AUDIOX_FATAL_CONSOLE, "w", stdout)) { \
+                printf("[INIT] [WARN] failed to redirect stdout to %s: %s\n", AUDIOX_FATAL_CONSOLE, strerror(errno)); \
             } \
-            if (!freopen("/dev/tty1", "w", stderr)) { \
-                printf("[INIT] [WARN] failed to redirect stderr to /dev/tty1: %s\n", strerror(errno)); \
+            if (!freopen(AUDIOX_FATAL_CONSOLE, "w", stderr)) { \
+                printf("[INIT] [WARN] failed to redirect stderr to %s: %s\n", AUDIOX_FATAL_CONSOLE, strerror(errno)); \
             } \
             FILE *old = fopen("/audiox/stdout.log", "r"); \
             if (old) { \
@@ -51,6 +52,12 @@
             printf("[INIT] [WARN] %s returned unexpected code %d\n", #func, ret); \
         } \
     } while (0)
+
+static uint64_t monotonicMs() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000U + (uint64_t)ts.tv_nsec / 1000000U;
+}
 
 int main() {
     umask(0);
@@ -105,6 +112,11 @@ int main() {
     fb.bootStatus("Setting up network interface...");
     HANDLE_ERROR(setupNetworkInterface(&mainContext));
 
+#if AUDIOX_QEMU
+    fb.bootStatus("Setting up QEMU debug network and USB/IP...");
+    HANDLE_ERROR(setupQemuDebug(&mainContext));
+#endif
+
     // these constructors mostly just set up the context, and don't start anything
     // some will open the device files and do basic hardware initialization though.
     fb.bootStatus("Setting up touchscreen...");
@@ -132,14 +144,17 @@ int main() {
     sleep(1);
     mainContext.setReady();
     flushLogs();
-    int logFlushCounter = 0;
+    // Heartbeat on elapsed time, not iteration count: slow iterations (e.g. software
+    // framebuffer drawing in QEMU) would otherwise stretch the interval past the watchdog timeout.
+    uint64_t lastHeartbeatMs = monotonicMs();
     while (1) {
         // nothing in this loop is super high-importance, so I am going to add a small delay to give the kernel 
         // more of an opportunity to dedicate resources to audio processing.
         usleep(10000); // 10ms
-        if (++logFlushCounter >= 100) {
+        const uint64_t nowMs = monotonicMs();
+        if (nowMs - lastHeartbeatMs >= 1000) {
             flushLogs();
-            logFlushCounter = 0;
+            lastHeartbeatMs = nowMs;
             audioxWatchdogHeartbeat();
         }
         mainContext.eventLoop();

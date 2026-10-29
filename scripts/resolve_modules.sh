@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-KV="${1:?usage: resolve_modules.sh <kernel_version> <out_dir> <dep_file> [list_prefix] [stage_dir_name] [board]}"
-OUT_DIR="${2:?usage: resolve_modules.sh <kernel_version> <out_dir> <dep_file> [list_prefix] [stage_dir_name] [board]}"
-DEP_FILE="${3:?usage: resolve_modules.sh <kernel_version> <out_dir> <dep_file> [list_prefix] [stage_dir_name] [board]}"
+KV="${1:?usage: resolve_modules.sh <kernel_version> <out_dir> <dep_file> [list_prefix] [stage_dir_name] [board] [modules_root]}"
+OUT_DIR="${2:?usage: resolve_modules.sh <kernel_version> <out_dir> <dep_file> [list_prefix] [stage_dir_name] [board] [modules_root]}"
+DEP_FILE="${3:?usage: resolve_modules.sh <kernel_version> <out_dir> <dep_file> [list_prefix] [stage_dir_name] [board] [modules_root]}"
 LIST_PREFIX="${4:-module-load}"
 STAGE_DIR_NAME="${5:-modules_staging}"
 BOARD="${6:-}"
-KNOWN_BOARDS=(pi4 pi5)
+# Directory holding <kernel_version>/kernel/...; defaults to the Raspberry Pi firmware tree.
+MODULES_ROOT="${7:-${OUT_DIR}/firmware/modules}"
+KNOWN_BOARDS=(pi4 pi5 qemu)
 
 if [[ -n "${BOARD}" && " ${KNOWN_BOARDS[*]} " != *" ${BOARD} "* ]]; then
     echo "[resolve_modules] ERROR: unknown board '${BOARD}' (known: ${KNOWN_BOARDS[*]})" >&2
     exit 1
 fi
 
-FIRMWARE_DIR="${OUT_DIR}/firmware"
-MOD_TREE_DIR="${FIRMWARE_DIR}/modules/${KV}"
+MOD_TREE_DIR="${MODULES_ROOT}/${KV}"
 SRC_KERNEL_DIR="${MOD_TREE_DIR}/kernel"
 STAGE_BASE_DIR="${OUT_DIR}/${STAGE_DIR_NAME}/${KV}"
 STAGE_KERNEL_DIR="${STAGE_BASE_DIR}/kernel"
@@ -26,7 +27,7 @@ SUMMARY_FILE="${OUT_DIR}/${LIST_PREFIX}.summary.txt"
 
 if [[ ! -d "${SRC_KERNEL_DIR}" ]]; then
     echo "[resolve_modules] ERROR: module tree not found: ${SRC_KERNEL_DIR}" >&2
-    echo "[resolve_modules] Ensure firmware has ${KV} under modules/." >&2
+    echo "[resolve_modules] Ensure ${MODULES_ROOT} has ${KV}." >&2
     exit 1
 fi
 

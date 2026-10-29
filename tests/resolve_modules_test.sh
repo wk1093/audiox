@@ -68,4 +68,24 @@ expect_fail "missing module" "normal(pi4):" pi4
 expect_fail "no board given" "base(pi4): drivers/common" ""
 expect_fail "invalid board argument" "base: drivers/common" pi9
 
+# QEMU debug build: modules come from a separate tree (the Debian kernel) with
+# xz-compressed modules, passed as the optional modules root argument.
+QEMU_ROOT="$WORK/qemu-kernel/modules"
+for MOD in drivers/common drivers/qemuonly drivers/both; do
+    mkdir -p "$QEMU_ROOT/$KV/kernel/$(dirname "$MOD")"
+    printf 'fake module\n' | xz -c > "$QEMU_ROOT/$KV/kernel/$MOD.ko.xz"
+done
+cat > "$WORK/qemu-seeds.txt" <<'EOF'
+base: drivers/common
+base(!qemu): drivers/pi4only
+normal(qemu): drivers/qemuonly
+normal(pi4, qemu): drivers/both
+EOF
+bash "$ROOT/scripts/resolve_modules.sh" "$KV" "$WORK/out" "$WORK/qemu-seeds.txt" module-load modules_staging qemu "$QEMU_ROOT" >/dev/null
+expect_list module-load.base.list drivers/common
+expect_list module-load.normal.list drivers/qemuonly drivers/both
+[[ "$(cat "$WORK/out/modules_staging/$KV/kernel/drivers/qemuonly.ko")" == "fake module" ]]
+[[ ! -e "$WORK/out/modules_staging/$KV/kernel/drivers/pi4only.ko" ]]
+grep -q '^Board: qemu$' "$WORK/out/module-load.summary.txt"
+
 echo "resolve_modules tests passed"

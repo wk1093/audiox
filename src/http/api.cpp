@@ -130,7 +130,7 @@ static int mountBootConfig() {
 	if (mkdir("/boot", 0755) < 0 && errno != EEXIST) {
 		return RET_ERR;
 	}
-	if (mount("/dev/mmcblk0p1", "/boot", "vfat", MS_NOATIME, nullptr) < 0 && errno != EBUSY) {
+	if (mount(BOOT_DEVICE_PATH, "/boot", "vfat", MS_NOATIME, nullptr) < 0 && errno != EBUSY) {
 		return RET_ERR;
 	}
 	return RET_OK;

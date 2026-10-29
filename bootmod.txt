@@ -3,12 +3,20 @@
 # Same syntax as depmod.txt, including board filters such as 'base(pi5): drivers/foo'.
 
 # MMC / SD card host drivers commonly used on Raspberry Pi boards
-base: drivers/mmc/host/sdhci
-base: drivers/mmc/host/sdhci-iproc
-base: drivers/mmc/host/bcm2835
-base: drivers/mmc/host/bcm2835-mmc
+base(!qemu): drivers/mmc/host/sdhci
+base(!qemu): drivers/mmc/host/sdhci-iproc
+base(!qemu): drivers/mmc/host/bcm2835
+base(!qemu): drivers/mmc/host/bcm2835-mmc
 
 # Filesystems for boot and rootfs partitions
 base: fs/fat/fat
 base: fs/fat/vfat
 base: fs/ext4/ext4
+
+# QEMU debug build (make debug): virtio disk instead of the SD card, entropy,
+# the crc32c driver ext4 needs, and configfs. The Debian kernel builds these as
+# modules (configfs is mounted by the runtime before it loads its own modules).
+base(qemu): drivers/block/virtio_blk
+base(qemu): drivers/char/hw_random/virtio-rng
+base(qemu): crypto/crc32c_generic
+base(qemu): fs/configfs/configfs

@@ -18,6 +18,11 @@
 #define AUDIOX_BUFFER_FRAMES 128
 #endif
 
+// 1 for the QEMU debug build (make debug): virtio disk, usbip-vudc USB gadget.
+#ifndef AUDIOX_QEMU
+#define AUDIOX_QEMU 0
+#endif
+
 #define SAMPLE_RATE AUDIOX_SAMPLE_RATE
 
 #define FREQUENCY 440.0
@@ -36,14 +41,20 @@
 #define PROGRAM_RUNTIME_ROOT "/program"
 #define PROGRAM_INITRAMFS_NAME "program.cpio.gz"
 
+#ifndef GADGET_ROOT
 #define GADGET_ROOT "/sys/kernel/config/usb_gadget/g1"
+#endif
 #define GADGET_UAC2_FUNC GADGET_ROOT "/functions/uac2.usb0"
 #define GADGET_CONFIG_LINK GADGET_ROOT "/configs/c.1/uac2.usb0"
 #define GADGET_NETWORK_FUNC GADGET_ROOT "/functions/ncm.usb0"
 #define GADGET_NETWORK_LINK GADGET_ROOT "/configs/c.1/ncm.usb0"
 #define GADGET_UDC_NODE GADGET_ROOT "/UDC"
 #ifndef AUDIOX_USB_GADGET_UDC
+#if AUDIOX_QEMU
+#define AUDIOX_USB_GADGET_UDC "usbip-vudc.0"
+#else
 #define AUDIOX_USB_GADGET_UDC "fe980000.usb"
+#endif
 #endif
 #define GADGET_UDC_NAME AUDIOX_USB_GADGET_UDC "\n"
 #ifndef AUDIOX_USB_AUDIO_NAME
@@ -54,8 +65,30 @@
 #define AUDIOX_USB_SERIAL_PREFIX "AUDIOX-"
 #define AUDIOX_USB_SERIAL_FALLBACK "AUDIOX0002"
 #define BOARD_SERIAL_PATH "/sys/firmware/devicetree/base/serial-number"
+// Storage layout. Real hardware boots from the SD card; the QEMU debug build
+// (make debug, AUDIOX_QEMU=1) uses a virtio-blk disk with the same partitions.
+#ifndef BOOT_DEVICE_PATH
+#if AUDIOX_QEMU
+#define BOOT_DEVICE_PATH "/dev/vda1"
+#else
 #define BOOT_DEVICE_PATH "/dev/mmcblk0p1"
+#endif
+#endif
+#ifndef CONFIG_DEVICE_PATH
+#if AUDIOX_QEMU
+#define CONFIG_DEVICE_PATH "/dev/vda2"
+#else
 #define CONFIG_DEVICE_PATH "/dev/mmcblk0p2"
+#endif
+#endif
+// Where fatal boot errors are printed; the QEMU build has no display, only a serial console.
+#ifndef AUDIOX_FATAL_CONSOLE
+#if AUDIOX_QEMU
+#define AUDIOX_FATAL_CONSOLE "/dev/console"
+#else
+#define AUDIOX_FATAL_CONSOLE "/dev/tty1"
+#endif
+#endif
 #define BOOT_MOUNT_POINT "/mnt/boot"
 #define ROOTFS_STAGING_MOUNT_POINT "/mnt/rootfs"
 

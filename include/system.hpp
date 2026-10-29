@@ -35,12 +35,21 @@ static inline int writeSysNode(const char *path, const char *value) {
 
     int fd = open(path, O_WRONLY | O_TRUNC);
     if (fd < 0) {
+        int saved_errno = errno;
+        printf("[INIT] [ERR] open %s for writing failed: %s\n", path, strerror(saved_errno));
+        errno = saved_errno;
         return RET_ERR;
     }
 
-    ssize_t n = write(fd, value, strlen(value));
+    size_t length = strlen(value);
+    ssize_t n = write(fd, value, length);
+    int saved_errno = errno;
     close(fd);
-    if (n < 0 || (size_t)n != strlen(value)) {
+    if (n < 0 || (size_t)n != length) {
+        saved_errno = n < 0 ? saved_errno : EIO;
+        printf("[INIT] [ERR] write %s failed (%zd/%zu bytes): %s\n",
+               path, n, length, strerror(saved_errno));
+        errno = saved_errno;
         return RET_ERR;
     }
     return RET_OK;

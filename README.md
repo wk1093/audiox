@@ -78,6 +78,8 @@ Useful targets:
 - `make upload_update` - build the update archive and upload it to `/api/update`; devices running an older runtime need one `make dev` first
 - The System page can upload an `.axu` update image or check GitHub for a board-matched Stable/Nightly release and download/install it through the browser (see [Browser-driven updates](#browser-driven-updates))
 - `make qemu` - boot in QEMU (aarch64) // doesn't work because qemu raspi support is very minimal (no gui, no USB, no audio)
+- `make debug` - build the QEMU debug variant and boot it in a virtual machine (see [QEMU debug mode](#qemu-debug-mode))
+- `make debug_ui` - same as `make debug`, plus a window showing the touchscreen framebuffer
 - `make fancyexport` - wait for SD mount and export build artifacts
 - `make image` - create a flashable image file (WARNING: untested, may not work)
 
@@ -92,6 +94,28 @@ The version 2 format is designed so that newer archives keep installing on older
 - Absent optional entries (currently only `cmdline.txt`) leave the device's existing file in place.
 
 To extend the format, add new entry types or metadata keys, and never change the meaning of an existing one. Bump the header version only for changes that can't be expressed this way; older devices then refuse the archive cleanly instead of installing it incorrectly. Devices also cap uploads at 256 MiB, so archives must stay under that. Firmware from before this rule (1.9.0 and earlier) accepts only exactly five entries, so update those devices once with `make dev` or a five-entry archive (packed without `--cmdline`).
+
+### QEMU debug mode
+
+`make debug` builds the firmware with `AUDIOX_QEMU=1` into `out/qemu/` and boots it on a generic `virt` arm64 machine in this terminal (serial console; quit with `Ctrl-A X`). Only the device-specific parts change: the boot and storage partitions are `/dev/vda1` and `/dev/vda2` on a virtio disk instead of `/dev/mmcblk0p1`/`p2`, the USB gadget binds to the `usbip-vudc.0` virtual device controller instead of the dwc2 UDC (`fe980000.usb`), and fatal errors go to `/dev/console` instead of `/dev/tty1`. The normal build (`AUDIOX_QEMU=0`, the default) is unchanged. `include/defs.hpp` derives these from `AUDIOX_QEMU`; `BOOT_DEVICE_PATH` and `CONFIG_DEVICE_PATH` can also be overridden with `-D` flags.
+
+The Raspberry Pi kernel has no virtio drivers, so the VM runs the Debian arm64 kernel pinned by `QEMU_KERNEL_VERSION` (checksum-verified, extracted to `out/qemu-kernel/`), and modules are resolved from it. Seeds in `depmod.txt` and `bootmod.txt` use the `qemu` board filter, for example `base(!qemu):` for Pi-only hardware drivers. Toolchain dependencies (ALSA, SBC, dnsmasq, downloads) are shared with the normal build in `out/`.
+
+Once booted:
+
+- Web UI: <http://127.0.0.1:8080/> (QEMU forwards host port `QEMU_HTTP_PORT` to the guest's port 80).
+- USB device: the runtime exports the gadget over USB/IP on port `QEMU_USBIP_PORT` (3240). `make debug` attaches it automatically once it appears, and reattaches it whenever the VM drops the link (runtime restarts and audio setting changes rebind the gadget). The host then sees the AudioX USB audio interface and USB network adapter. Attaching needs the host `usbip` tool (Arch: `usbip`, Debian/Ubuntu: `usbip` or `linux-tools-generic`), the `vhci-hcd` kernel module, and `sudo`; `make debug` asks for the sudo password before booting. If you skip that, run `make debug-attach` in another terminal while the VM runs. Detach with `sudo usbip detach -p <port>` (see `usbip port`); while `make debug` runs it reattaches, so set `QEMU_USBIP_ATTACH=0` to keep it detached.
+- USB network: over USB/IP the host names the NCM interface after its virtual port (for example `enu1i3`, not `usb0`), so NetworkManager profiles bound to `usb0` don't apply. The attach step brings it up with an in-memory DHCP profile (`audiox-qemu-usbip`, no default route), making the web UI reachable at `http://<CONFIG_DEVICE_IP>/`. Without NetworkManager, run a DHCP client on that interface yourself.
+- USB audio does not pass audio in QEMU. The device enumerates and the host can open its streams, but UAC2 uses isochronous transfers, which the kernel's `usbip-vudc` doesn't implement (they fail with `-EXDEV`), so no samples move in either direction. Test audio on real hardware. While the host keeps a stream open, it retries isochronous transfers continuously, which costs host and VM CPU.
+- The display is a virtio-gpu framebuffer at the touchscreen's 800x480. `make debug` doesn't show it; `make debug_ui` opens it in a window (`QEMU_UI_DISPLAY=gtk` by default, or `sdl`). The serial console stays in the terminal either way.
+
+The disk image (`out/qemu/disk.img`, `QEMU_DISK_SIZE_MB`) is built without root using `mtools` and `mkfs.ext4 -d`. It persists between runs: settings and recordings on the storage partition are kept, and each `make debug` refreshes the boot files. Runtime updates installed from the web UI are not used, because QEMU always boots the freshly built initramfs. `make debug-reset-disk` deletes the disk; `make debug-clean` deletes `out/qemu/`.
+
+Host requirements: `qemu-system-aarch64`, `mtools`, `dosfstools`, `e2fsprogs`, `util-linux` (`sfdisk`), plus `binutils` (`ar`) and `xz` to unpack the kernel package. Useful variables: `QEMU_HTTP_PORT`, `QEMU_USBIP_PORT`, `QEMU_USBIP_ATTACH=0` (don't attach), `QEMU_UI_DISPLAY`, `QEMU_MEMORY`, `QEMU_SMP`, `QEMU_CMDLINE`, `QEMU_EXTRA_ARGS`. On an aarch64 host with `/dev/kvm`, the VM uses KVM.
+
+If gadget setup fails, include the `[INIT] [ERR] open ...` or `write ...` line preceding the fatal setup error when reporting it; it identifies the configfs attribute and kernel error. Runtime logs are stored on the storage partition as `stdout.log` and `stderr.log`; after a watchdog restart, check `stdout.log.previous` as well. `make test-system` checks the sysfs/configfs write helper's success and failure handling.
+
+The kernel gadget survives a runtime-only watchdog restart. Startup unbinds an existing gadget and removes its audio/network configuration links before reapplying settings, then binds it normally. This causes a USB disconnect/re-enumeration rather than failing on attributes still in use. In QEMU, `make debug` reattaches the host automatically after this; when attaching from another terminal, run `make debug-attach` again. `make test-gadget-setup` checks fresh startup and restart preparation.
 
 ### Desktop audio engine bench
 

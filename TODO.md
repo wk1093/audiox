@@ -132,6 +132,19 @@ The above last two features are mainly to improve my setup, but could probably b
 - [ ] Add a "midi passthrough" feature that allows non-mapped midi messages to be passed through via a USB gadget to a connected host. This should be configurable via the WebUI, to also allow passing through messages that are mapped to soundboard clips, but the default is to only pass through non-mapped messages. This feature should also be able to be disabled entirely, which would fully remove the gadget entirely to save USB bandwidth (this is for people using like 6+ in/out audio channels to the gadget, where bandwidth could start to matter)
 - [ ] Look into dynamic sample size for the audio engine, so that if we notice Xruns or any other issues we can automatically increase the sample size when needed (or at least allow the user to change it via the WebUI). This is mainly for people with a lot of channels or effects that could cause issues.
 
+## Future
+- [ ] Start adding better comments to Github releases, explaining the changes and features
+- [ ] Improve documentation for the project, including setup guides and usage examples
+  - [ ] Maybe use a subpage of the github pages site, like wklab.net/audiox/docs which could be docs built from md using a static site generator like Jekyll or MkDocs
+- [ ] Create a roadmap for future features and improvements
+- [ ] Explore integration with other audio software and hardware, such as DAWs and MIDI controllers
+- [ ] Hardware...
+  - [ ] Big one, this is probably the first hardware milestone: Power supply for pi (so we don't rely on user having a 1.5A or higher USB port on their computer), and screen, as well as a 3d printed case containing the power regulation, screen, pi, and cooling fan.
+  - [ ] Built-in audio interface taking advantage of Pi 5's improved I/O capabilities (or just reverting back to basic 2in/2out if a pi 4 is used), a bunch of 1/4in jacks or maybe mixed 1/4in and 3.5mm jacks for flexibility
+  - [ ] Design modular synth modules.
+
+
+
 ## Hardware stuff
 
 Design a spec for a modular synth type thing. It will be like a mini-eurorack, using 3.5mm jacks instead of 1/4 inch jacks, and it will be designed to be good, but budget friendly (single pcb for a module and some 3d printed parts). Basically everything will be CV, since you don't want to have to reach through cables to get to a knob. and there will be simple modules that is just an array of knobs and CV outputs. Eventually I might even make haptic software-controlled knobs, so that when a value is changed via software, the knob will move to that position. I could even use brushless and an absolute encoder so that the knob's boundaries and click positions are completely software controlled. This would allow for a lot of flexibility, and would be a really cool feature. But that is a long way off, and I will probably just make simple modules with knobs and CV outputs for now.

@@ -195,7 +195,7 @@ static int mountBootPartition(void) {
     if (mkdir("/boot", 0755) < 0 && errno != EEXIST) {
         return -1;
     }
-    if (mount("/dev/mmcblk0p1", "/boot", "vfat", MS_NOATIME, NULL) < 0 && errno != EBUSY) {
+    if (mount(BOOT_DEVICE_PATH, "/boot", "vfat", MS_NOATIME, NULL) < 0 && errno != EBUSY) {
         return -1;
     }
     return 0;

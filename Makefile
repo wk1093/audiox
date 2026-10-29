@@ -7,6 +7,15 @@ PKG_FETCH ?= curl -fsSL
 
 AUDIOX_USE_SHARED_GRAPH_PROCESSOR ?= 0
 
+# AUDIOX_QEMU=1 builds the QEMU debug variant (make debug): virtio disk
+# (/dev/vda) instead of the SD card, usbip-vudc instead of the dwc2 UDC, and a
+# generic arm64 kernel. Its build output goes to out/qemu; toolchain deps are
+# shared with the normal build in out/.
+AUDIOX_QEMU ?= 0
+ifeq ($(filter 0 1,$(AUDIOX_QEMU)),)
+$(error AUDIOX_QEMU must be 0 or 1, got '$(AUDIOX_QEMU)')
+endif
+
 # Recursive source discovery for upcoming C++ port.
 # Sorted so build order does not depend on directory order of the checkout.
 CPP_SRCS := $(sort $(shell find src -type f -name '*.cpp' 2>/dev/null))
@@ -29,7 +38,7 @@ BOOTLOADER_FLAGS := $(CXXFLAGS)
 # ALSA dependency strategy (build-only; runtime audio code remains unchanged).
 # Source build is the only supported mode.
 ENABLE_ALSA ?= 1
-ALSA_SYSROOT ?= $(OUT_DIR)/alsa-sysroot
+ALSA_SYSROOT ?= $(SHARED_OUT_DIR)/alsa-sysroot
 ALSA_PREFIX ?= /usr
 ALSA_LIB_DIR ?= $(ALSA_SYSROOT)$(ALSA_PREFIX)/lib
 ALSA_INCLUDE_DIR ?= $(ALSA_SYSROOT)$(ALSA_PREFIX)/include
@@ -38,16 +47,16 @@ ALSA_CONF_DIR ?= $(ALSA_SYSROOT)$(ALSA_PREFIX)/share/alsa
 
 ALSA_VERSION ?= 1.2.14
 ALSA_SOURCE_URL ?= https://www.alsa-project.org/files/pub/lib/alsa-lib-$(ALSA_VERSION).tar.bz2
-ALSA_SRC_TARBALL ?= $(OUT_DIR)/downloads/alsa-lib-$(ALSA_VERSION).tar.bz2
-ALSA_SRC_DIR ?= $(OUT_DIR)/build/alsa-lib-$(ALSA_VERSION)
-ALSA_BUILD_DIR ?= $(OUT_DIR)/build/alsa-lib-$(ALSA_VERSION)-build
+ALSA_SRC_TARBALL ?= $(SHARED_OUT_DIR)/downloads/alsa-lib-$(ALSA_VERSION).tar.bz2
+ALSA_SRC_DIR ?= $(SHARED_OUT_DIR)/build/alsa-lib-$(ALSA_VERSION)
+ALSA_BUILD_DIR ?= $(SHARED_OUT_DIR)/build/alsa-lib-$(ALSA_VERSION)-build
 
 SBC_VERSION ?= 2.2
 SBC_COMMIT ?= b3deb8a5dcfb42d8c10ba1f2f1ac9bd7bf7271cc
 SBC_SOURCE_URL ?= https://git.kernel.org/pub/scm/bluetooth/sbc.git
-SBC_SRC_DIR ?= $(OUT_DIR)/build/sbc-$(SBC_VERSION)-src
-SBC_BUILD_DIR ?= $(OUT_DIR)/build/sbc-$(SBC_VERSION)-build
-SBC_SYSROOT ?= $(OUT_DIR)/sbc-sysroot
+SBC_SRC_DIR ?= $(SHARED_OUT_DIR)/build/sbc-$(SBC_VERSION)-src
+SBC_BUILD_DIR ?= $(SHARED_OUT_DIR)/build/sbc-$(SBC_VERSION)-build
+SBC_SYSROOT ?= $(SHARED_OUT_DIR)/sbc-sysroot
 SBC_STATIC_LIB ?= $(SBC_SYSROOT)/usr/lib/libsbc.a
 SBC_INCLUDE_DIR ?= $(SBC_SYSROOT)/usr/include
 SBC_HEADER = $(SBC_INCLUDE_DIR)/sbc/sbc.h
@@ -55,7 +64,7 @@ SBC_HEADER = $(SBC_INCLUDE_DIR)/sbc/sbc.h
 # Static DHCP/DNS server for the USB network (see root/etc/dnsmasq.conf).
 DNSMASQ_VERSION ?= 2.93
 DNSMASQ_SHA256 ?= 0c00d4e5c97c8306e5fb932b348b34269c9c29a0e7df0e8e82958b407092bc19
-DNSMASQ_BIN ?= $(OUT_DIR)/dnsmasq-$(DNSMASQ_VERSION)/dnsmasq
+DNSMASQ_BIN ?= $(SHARED_OUT_DIR)/dnsmasq-$(DNSMASQ_VERSION)/dnsmasq
 DNSMASQ_CONF ?= $(CURDIR)/root/etc/dnsmasq.conf
 DNSMASQ_TEST_RUNNER ?= $(shell command -v qemu-aarch64 2>/dev/null)
 
@@ -76,8 +85,8 @@ RUNTIME_LIBS += $(SBC_STATIC_LIB)
 # AUDIOX_VERSION_BUILD defaults to the 12-character git commit for nightly builds.
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 10
-AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= 
+AUDIOX_VERSION_PATCH ?= 1
+AUDIOX_VERSION_PRERELEASE ?= beta.1
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
 $(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
@@ -129,6 +138,13 @@ KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+" 
 # Paths
 ARCH ?= aarch64
 OUT_DIR = $(CURDIR)/out
+QEMU_OUT_DIR ?= $(CURDIR)/out/qemu
+ifeq ($(AUDIOX_QEMU),1)
+SHARED_OUT_DIR := $(OUT_DIR)
+OUT_DIR = $(QEMU_OUT_DIR)
+else
+SHARED_OUT_DIR = $(OUT_DIR)
+endif
 BOOTLOADER_ROOTFS_DIR = $(OUT_DIR)/bootloader_rootfs
 ROOTFS_DIR = $(OUT_DIR)/program_rootfs
 PROGRAM_STAGE_DIR = $(OUT_DIR)/program_stage
@@ -156,13 +172,13 @@ WEB_INDEX_HTML ?= $(CURDIR)/web/index.html
 FFMPEG_BIN ?= $(CURDIR)/third_party/ffmpeg/ffmpeg
 FFMPEG_URL ?= https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-31-14-10/ffmpeg-n8.1.2-34-g9b6c8969e0-linuxarm64-gpl-8.1.tar.xz
 FFMPEG_ARCHIVE_SHA256 ?= 177e40c91564dec3840096f3bf1ffe696b94330585972462cfc739fa29fe0e1a
-FFMPEG_ARCHIVE ?= $(OUT_DIR)/downloads/ffmpeg.pkg
+FFMPEG_ARCHIVE ?= $(SHARED_OUT_DIR)/downloads/ffmpeg.pkg
 FFMPEG_CROSS_LIB_DIR ?= /usr/aarch64-linux-gnu/lib
 FFMPEG_RUNTIME_LIBS ?= ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 librt.so.1 libpthread.so.0 libgcc_s.so.1
 FFMPEG_STAGE_DIR ?= $(OUT_DIR)/ffmpeg_stage
-CONFIG_MENU_BIN = $(OUT_DIR)/host/audiox-menuconfig
+CONFIG_MENU_BIN = $(SHARED_OUT_DIR)/host/audiox-menuconfig
 CONFIG_MENU_SRC = $(SCRIPTS_DIR)/audiox-menuconfig.cpp
-UPDATE_PACK_BIN = $(OUT_DIR)/host/audiox-update-pack
+UPDATE_PACK_BIN = $(SHARED_OUT_DIR)/host/audiox-update-pack
 UPDATE_PACK_SRC = $(SCRIPTS_DIR)/audiox-update-pack.cpp
 UPDATE_ARCHIVE ?= $(OUT_DIR)/audiox-update.axu
 AUDIO_BENCH_BIN = $(OUT_DIR)/host/audiox-audio-bench
@@ -200,7 +216,7 @@ BOOT_CONFIG_LINES = \
 BT_FIRMWARE ?= $(call config_str,BT_FIRMWARE)
 BT_FIRMWARE_URL ?= https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/pios/trixie/debian/firmware/broadcom/$(BT_FIRMWARE).hcd
 BT_FIRMWARE_SHA256 ?= $(call config_str,BT_FIRMWARE_SHA256)
-BT_FIRMWARE_FILE ?= $(OUT_DIR)/downloads/$(BT_FIRMWARE).hcd
+BT_FIRMWARE_FILE ?= $(SHARED_OUT_DIR)/downloads/$(BT_FIRMWARE).hcd
 FIRMWARE_GIT_URL ?= https://github.com/raspberrypi/firmware.git
 FIRMWARE_GIT_REF ?= $(call config_str,FIRMWARE_GIT_REF)
 PI_HOST ?= $(AUDIOX_DEVICE_IP)
@@ -210,6 +226,42 @@ SD_MOUNT_BOOT ?= /run/media/$(USER)/bootfs
 
 IMG_FILE = $(OUT_DIR)/audiox.img
 IMG_SIZE_MB = 256
+
+# Kernel and module tree that resolve_modules.sh stages from, and the target
+# that provides them.
+MODULES_ROOT = $(OUT_DIR)/firmware/modules
+MODULES_SOURCE_TARGET = fetch_deps
+
+# QEMU debug VM (make debug). The Raspberry Pi kernel has no virtio drivers, so
+# the VM runs the generic Debian arm64 kernel, pinned here.
+QEMU_KERNEL_VERSION ?= 6.12.111+deb13-arm64
+QEMU_KERNEL_PKG_VERSION ?= 6.12.111-1
+QEMU_KERNEL_DEB ?= linux-image-$(QEMU_KERNEL_VERSION)-unsigned_$(QEMU_KERNEL_PKG_VERSION)_arm64.deb
+QEMU_KERNEL_SHA256 ?= 3ec4284e8705fd0049d053ddead61ceeeab3530140c5599aeb2d47ac0b4b7d0f
+QEMU_KERNEL_URLS ?= \
+	https://deb.debian.org/debian/pool/main/l/linux/$(QEMU_KERNEL_DEB) \
+	https://snapshot.debian.org/archive/debian/20261027T000000Z/pool/main/l/linux/$(QEMU_KERNEL_DEB)
+QEMU_KERNEL_DIR ?= $(SHARED_OUT_DIR)/qemu-kernel/$(QEMU_KERNEL_VERSION)
+QEMU_KERNEL_IMAGE = $(QEMU_KERNEL_DIR)/vmlinuz
+QEMU_DISK ?= $(QEMU_OUT_DIR)/disk.img
+QEMU_DISK_SIZE_MB ?= 512
+QEMU_MEMORY ?= 1024
+QEMU_SMP ?= 4
+QEMU_HTTP_PORT ?= 8080
+QEMU_USBIP_PORT ?= 3240
+QEMU_USBIP_ATTACH ?= 1
+QEMU_EXTRA_ARGS ?=
+# QEMU display backend for make debug_ui (gtk or sdl).
+QEMU_UI_DISPLAY ?= gtk
+QEMU_CMDLINE ?= console=ttyAMA0 rdinit=/init loglevel=4
+
+ifeq ($(AUDIOX_QEMU),1)
+AUDIOX_BOARD = qemu
+KV = $(QEMU_KERNEL_VERSION)
+MODULES_ROOT = $(QEMU_KERNEL_DIR)/modules
+MODULES_SOURCE_TARGET = qemu_kernel
+override AUDIOX_USB_GADGET_UDC = usbip-vudc.0
+endif
 
 DEPFLAGS = -MMD -MP
 
@@ -228,9 +280,10 @@ RUNTIME_DEFINES = \
 	-DAUDIOX_USB_GADGET_UDC='"$(AUDIOX_USB_GADGET_UDC)"' \
 	-DAUDIOX_USB_NET_SERVER_IP='"$(AUDIOX_DEVICE_IP)"' \
 	-DAUDIOX_BOARD='"$(AUDIOX_BOARD)"' \
+	-DAUDIOX_QEMU=$(AUDIOX_QEMU) \
 	-DDEBUG_SHELL=$(DEBUG_SHELL)
 
-BOOTLOADER_DEFINES = -DKERNEL_VERSION='"$(KV)"'
+BOOTLOADER_DEFINES = -DKERNEL_VERSION='"$(KV)"' -DAUDIOX_QEMU=$(AUDIOX_QEMU)
 
 RUNTIME_OBJS := $(patsubst src/%.cpp,$(RUNTIME_OBJ_DIR)/%.o,$(RUNTIME_CPP_SRCS))
 RUNTIME_MAIN_OBJ := $(patsubst src/%.cpp,$(RUNTIME_OBJ_DIR)/%.o,$(RUNTIME_MAIN_SRC))
@@ -244,7 +297,7 @@ BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
 .DEFAULT_GOAL := all
 
-.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg upload_bootloader upload_kernel upload_cmdline update_archive upload_update boot_config stage_ffmpeg bluetooth_firmware dnsmasq check_dnsmasq_conf test-dnsmasq-config config menuconfig defconfig pi4_defconfig pi5_defconfig olddefconfig print-config print-version audio-bench run-audio-bench test-audio-engine test-watchdog test-resolve-modules
+.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg upload_bootloader upload_kernel upload_cmdline update_archive upload_update boot_config stage_ffmpeg bluetooth_firmware dnsmasq check_dnsmasq_conf test-dnsmasq-config config menuconfig defconfig pi4_defconfig pi5_defconfig olddefconfig print-config print-version audio-bench run-audio-bench test-audio-engine test-watchdog test-resolve-modules debug debug_ui debug-attach debug-reset-disk debug-clean qemu_kernel qemu_disk qemu_debug qemu_require_debug_build
 
 all: initramfs
 
@@ -338,6 +391,24 @@ test-audio-pcm-recover: $(OUT_DIR)/host/audiox-audio-pcm-recover-test
 	@"$<"
 
 .PHONY: test-gadget-volume test-diagnostics test-mdns
+.PHONY: test-system
+test-system: $(OUT_DIR)/host/audiox-system-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-system-test: tests/system_test.cpp include/system.hpp include/defs.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" "$<"
+
+.PHONY: test-gadget-setup
+test-gadget-setup: $(OUT_DIR)/host/audiox-gadget-setup-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-gadget-setup-test: tests/gadget_setup_test.cpp src/init/gadget.cpp $(wildcard include/audio/*.hpp include/config/*.hpp) include/context.hpp include/init.hpp include/system.hpp include/defs.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-parameter -Iinclude \
+		-DGADGET_ROOT='"gadget"' -ffunction-sections -fdata-sections -Wl,--gc-sections \
+		-o "$@" "$<" $(shell pkg-config --cflags alsa)
+
 test-mdns: $(OUT_DIR)/host/audiox-mdns-test
 	@"$<"
 
@@ -412,11 +483,15 @@ fetch_deps:
 	@mkdir -p $(OUT_DIR)
 	@$(SCRIPTS_DIR)/sync_firmware.sh "$(FIRMWARE_GIT_URL)" "$(FIRMWARE_GIT_REF)" "$(OUT_DIR)" "$(KERNEL_IMAGE)" "$(BOARD_DTBS)" "$(BOARD_FIRMWARE_FILES)" "$(BOOT_OVERLAYS)"
 
-fetch_modules: fetch_deps
-	@$(SCRIPTS_DIR)/resolve_modules.sh "$(KV)" "$(OUT_DIR)" "$(DEP_FILE)" "module-load" "modules_staging" "$(AUDIOX_BOARD)"
+fetch_modules: $(MODULES_SOURCE_TARGET)
+	@$(SCRIPTS_DIR)/resolve_modules.sh "$(KV)" "$(OUT_DIR)" "$(DEP_FILE)" "module-load" "modules_staging" "$(AUDIOX_BOARD)" "$(MODULES_ROOT)"
 
-fetch_boot_modules: fetch_deps
-	@$(SCRIPTS_DIR)/resolve_modules.sh "$(KV)" "$(OUT_DIR)" "$(BOOT_DEP_FILE)" "bootmodule-load" "bootmodules_staging" "$(AUDIOX_BOARD)"
+fetch_boot_modules: $(MODULES_SOURCE_TARGET)
+	@$(SCRIPTS_DIR)/resolve_modules.sh "$(KV)" "$(OUT_DIR)" "$(BOOT_DEP_FILE)" "bootmodule-load" "bootmodules_staging" "$(AUDIOX_BOARD)" "$(MODULES_ROOT)"
+
+qemu_kernel:
+	@$(SCRIPTS_DIR)/fetch_qemu_kernel.sh "$(QEMU_KERNEL_DIR)" "$(QEMU_KERNEL_VERSION)" \
+		"$(SHARED_OUT_DIR)/downloads/$(QEMU_KERNEL_DEB)" "$(QEMU_KERNEL_SHA256)" $(QEMU_KERNEL_URLS)
 
 show_modules: fetch_modules
 	@cat $(OUT_DIR)/module-load.summary.txt
@@ -463,11 +538,11 @@ $(ALSA_STATIC_LIB):
 
 alsa_source:
 	@echo "Building static alsa-lib $(ALSA_VERSION) with cross toolchain..."
-	@mkdir -p "$(OUT_DIR)/downloads" "$(OUT_DIR)/build" "$(ALSA_SYSROOT)"
+	@mkdir -p "$(dir $(ALSA_SRC_TARBALL))" "$(dir $(ALSA_SRC_DIR))" "$(ALSA_SYSROOT)"
 	@[ -f "$(ALSA_SRC_TARBALL)" ] || $(PKG_FETCH) "$(ALSA_SOURCE_URL)" -o "$(ALSA_SRC_TARBALL)"
 	rm -rf "$(ALSA_SRC_DIR)" "$(ALSA_BUILD_DIR)"
 	mkdir -p "$(ALSA_SRC_DIR)" "$(ALSA_BUILD_DIR)"
-	tar -xjf "$(ALSA_SRC_TARBALL)" -C "$(OUT_DIR)/build"
+	tar -xjf "$(ALSA_SRC_TARBALL)" -C "$(dir $(ALSA_SRC_DIR))"
 	cd "$(ALSA_BUILD_DIR)" && \
 		"$(ALSA_SRC_DIR)/configure" \
 			--host=aarch64-linux-gnu \
@@ -485,7 +560,7 @@ sbc: $(SBC_STATIC_LIB) $(SBC_HEADER)
 # `make install` writes the library before the headers, so track both; an
 # interrupted install then rebuilds instead of leaving sbc.h missing.
 $(SBC_STATIC_LIB) $(SBC_HEADER) &:
-	@mkdir -p "$(OUT_DIR)/build" "$(SBC_SYSROOT)"
+	@mkdir -p "$(dir $(SBC_SRC_DIR))" "$(SBC_SYSROOT)"
 	@if [ ! -d "$(SBC_SRC_DIR)/.git" ]; then \
 		git clone --no-checkout "$(SBC_SOURCE_URL)" "$(SBC_SRC_DIR)"; \
 	fi
@@ -515,7 +590,7 @@ $(SBC_STATIC_LIB) $(SBC_HEADER) &:
 dnsmasq: $(DNSMASQ_BIN)
 
 $(DNSMASQ_BIN): scripts/build_dnsmasq.sh
-	@"$(CURDIR)/scripts/build_dnsmasq.sh" "$(DNSMASQ_VERSION)" "$(DNSMASQ_SHA256)" "$(OUT_DIR)" "$@" "$(CC)" "$(PKG_FETCH)"
+	@"$(CURDIR)/scripts/build_dnsmasq.sh" "$(DNSMASQ_VERSION)" "$(DNSMASQ_SHA256)" "$(SHARED_OUT_DIR)" "$@" "$(CC)" "$(PKG_FETCH)"
 
 # The static dnsmasq.conf must agree with CONFIG_DEVICE_IP (a /24 on usb0).
 check_dnsmasq_conf:
@@ -545,7 +620,7 @@ ffmpeg:
 		echo "Using existing ffmpeg at $(FFMPEG_BIN)"; \
 	elif [ -n "$(FFMPEG_URL)" ]; then \
 		echo "Fetching ffmpeg from $(FFMPEG_URL)..."; \
-		mkdir -p "$(dir $(FFMPEG_BIN))" "$(OUT_DIR)/downloads"; \
+		mkdir -p "$(dir $(FFMPEG_BIN))" "$(dir $(FFMPEG_ARCHIVE))"; \
 		tmpdir=$$(mktemp -d); \
 		if ! $(PKG_FETCH) "$(FFMPEG_URL)" -o "$(FFMPEG_ARCHIVE)"; then \
 			rm -rf "$$tmpdir"; \
@@ -766,6 +841,39 @@ qemu: $(COMBINED_INITRAMFS)
 		-initrd $(COMBINED_INITRAMFS) \
 		-append "console=fbcon console=tty1 quiet loglevel=3 rdinit=/init" \
 		-display sdl,gl=on
+
+# QEMU debug mode: boots the AUDIOX_QEMU=1 build on a generic arm64 VM with a
+# serial console (quit with Ctrl-A X), a persistent virtio disk, the web UI on
+# http://127.0.0.1:$(QEMU_HTTP_PORT)/ and the USB gadget exported over USB/IP.
+debug:
+	@$(MAKE) --no-print-directory AUDIOX_QEMU=1 qemu_debug
+
+# Same as debug, plus a window showing the 800x480 framebuffer.
+debug_ui:
+	@$(MAKE) --no-print-directory AUDIOX_QEMU=1 QEMU_EXTRA_ARGS="-display $(QEMU_UI_DISPLAY) $(QEMU_EXTRA_ARGS)" qemu_debug
+
+debug-attach:
+	@$(SCRIPTS_DIR)/qemu_usbip_attach.sh 127.0.0.1 "$(QEMU_USBIP_PORT)" usbip-vudc.0 30
+
+debug-reset-disk:
+	rm -f "$(QEMU_DISK)"
+
+debug-clean:
+	rm -rf "$(QEMU_OUT_DIR)"
+
+qemu_require_debug_build:
+	@if [ "$(AUDIOX_QEMU)" != "1" ]; then echo "This target needs AUDIOX_QEMU=1 (use make debug)."; exit 1; fi
+
+qemu_disk: qemu_require_debug_build initramfs $(BOOT_CONFIG_FILE) $(BOOT_CMDLINE_FILE)
+	@$(SCRIPTS_DIR)/build_qemu_disk.sh "$(QEMU_DISK)" "$(QEMU_DISK_SIZE_MB)" "$(INITRAMFS)" "$(PROGRAM_INITRAMFS)" \
+		"$(BOOT_CONFIG_FILE)" "$(BOOT_CMDLINE_FILE)" "$(FFMPEG_BIN)"
+
+qemu_debug: qemu_require_debug_build qemu_kernel qemu_disk $(COMBINED_INITRAMFS)
+	@QEMU_KERNEL="$(QEMU_KERNEL_IMAGE)" QEMU_INITRD="$(COMBINED_INITRAMFS)" QEMU_DISK="$(QEMU_DISK)" \
+		QEMU_CMDLINE="$(QEMU_CMDLINE)" QEMU_MEMORY="$(QEMU_MEMORY)" QEMU_SMP="$(QEMU_SMP)" \
+		QEMU_HTTP_PORT="$(QEMU_HTTP_PORT)" QEMU_USBIP_PORT="$(QEMU_USBIP_PORT)" \
+		QEMU_USBIP_ATTACH="$(QEMU_USBIP_ATTACH)" QEMU_EXTRA_ARGS="$(QEMU_EXTRA_ARGS)" AUDIOX_DEVICE_IP="$(AUDIOX_DEVICE_IP)" \
+		$(SCRIPTS_DIR)/qemu_debug.sh
 
 upload_ffmpeg: stage_ffmpeg
 	@if [ ! -f "$(FFMPEG_STAGE_DIR)/ffmpeg" ]; then \

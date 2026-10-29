@@ -39,6 +39,46 @@ static inline uint32_t usbAudioChannelsFromMask(uint32_t mask) {
 
 namespace {
 
+static int prepareUsbGadget() {
+    int fd = open(GADGET_UDC_NODE, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        if (errno == ENOENT) {
+            return RET_OK;
+        }
+        printf("[INIT] [ERR] reading USB gadget binding failed: %s\n", strerror(errno));
+        return RET_ERR;
+    }
+
+    char udc[128] = {};
+    ssize_t n;
+    do {
+        n = read(fd, udc, sizeof(udc) - 1);
+    } while (n < 0 && errno == EINTR);
+    int saved_errno = errno;
+    close(fd);
+    if (n < 0) {
+        printf("[INIT] [ERR] reading USB gadget binding failed: %s\n", strerror(saved_errno));
+        return RET_ERR;
+    }
+
+    // Configfs outlives the runtime; a watchdog restart must release both
+    // the controller and function references before changing their attributes.
+    if (strspn(udc, " \t\r\n") < static_cast<size_t>(n)) {
+        printf("[INIT] [INFO] unbinding existing USB gadget before setup\n");
+        if (writeSysNode(GADGET_UDC_NODE, "\n") != RET_OK) {
+            return RET_ERR;
+        }
+    }
+    for (const char *link : {GADGET_CONFIG_LINK, GADGET_NETWORK_LINK}) {
+        if (unlink(link) < 0 && errno != ENOENT) {
+            printf("[INIT] [ERR] unlink %s before USB gadget setup failed: %s\n",
+                   link, strerror(errno));
+            return RET_ERR;
+        }
+    }
+    return RET_OK;
+}
+
 static int validateAudioConfig(const ConfigData *cfg) {
     if (!cfg) {
         return RET_ERR;
@@ -244,6 +284,9 @@ int setupAudioGadget(void *_context) {
         return valid;
     }
 
+    if (prepareUsbGadget() != RET_OK) {
+        return RET_ERR;
+    }
     return applyAudioConfig(&cfg);
 }
 

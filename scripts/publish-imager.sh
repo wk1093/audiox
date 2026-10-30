@@ -94,7 +94,7 @@ else
     else
         FLAGS+=(--verify-tag)
     fi
-    gh release create "$RELEASE_TAG" "${FLAGS[@]}" --title "AudioX $RELEASE_TAG"
+    gh release create "$RELEASE_TAG" "${FLAGS[@]}" --title "AudioX v$VERSION"
 fi
 
 printf 'Version: `%s`\n\nBuild commit: `%s`\n\n[Workflow run](%s/%s/actions/runs/%s)\n\n<!-- audiox-run-number: %s -->\n<!-- audiox-history: true -->\n' \

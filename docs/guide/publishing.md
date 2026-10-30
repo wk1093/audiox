@@ -60,6 +60,11 @@ the workflow:
 2. Publishes the updated history catalog.
 3. Prunes releases and tags beyond the newest **25 nightly builds**.
 
+Release titles use the complete firmware version, for example
+`AudioX v1.10.0-beta.3.nightly+0123456789ab`, rather than the numbered tag.
+The numbered tags remain unchanged for update URLs and history ordering; the
+rolling release keeps its `AudioX Nightly` title.
+
 Run IDs avoid tag collisions with the previous push-triggered workflow's run
 numbers. Existing nightly tags remain usable and count toward the retention limit.
 Versioned published assets are not overwritten on reruns, and an older workflow

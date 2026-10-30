@@ -34,7 +34,7 @@ gh() {
     fi
     local operation="$2" tag="$3"
     shift 3
-    local draft=false prerelease=false target="" notes="" arg file
+    local draft=false prerelease=false target="" notes="" title="" arg file
     case "$operation" in
         create)
             while (( $# )); do
@@ -42,14 +42,15 @@ gh() {
                     --target) target="$2"; shift ;;
                     --draft) draft=true ;;
                     --prerelease) prerelease=true ;;
-                    --title) shift ;;
+                    --title) title="$2"; shift ;;
                 esac
                 shift
             done
             mkdir -p "$MOCK/assets/$tag"
-            jq --arg tag "$tag" --arg commit "$target" --argjson draft "$draft" --argjson prerelease "$prerelease" \
+            jq --arg tag "$tag" --arg commit "$target" --arg title "$title" \
+                --argjson draft "$draft" --argjson prerelease "$prerelease" \
                 '. + [{id: (length + 1000), tag_name: $tag, target_commitish: $commit,
-                draft: $draft, prerelease: $prerelease, body: "", assets: [],
+                draft: $draft, prerelease: $prerelease, name: $title, body: "", assets: [],
                 published_at: "2027-01-01", created_at: "2027-01-01"}]' \
                 "$MOCK/releases.json" > "$MOCK/new.json"
             mv "$MOCK/new.json" "$MOCK/releases.json"
@@ -144,6 +145,8 @@ gh release edit nightly --prerelease --notes-file "$WORK/notes"
 echo '' > "$MOCK/calls"
 
 CHANNEL=nightly RELEASE_TAG=nightly-27 bash "$ROOT/scripts/publish-imager.sh" "$WORK/package"
+jq -e '.[] | select(.tag_name == "nightly-27") |
+    .name == "AudioX v1.9.1-nightly+0123456789ab"' "$MOCK/releases.json" > /dev/null
 jq -e '[.[] | select(.tag_name | test("^nightly-[0-9]+$"))] | length == 25' "$MOCK/releases.json" > /dev/null
 jq -e '.os_list | length == 50 and
     (.[0].url | contains("/nightly-27/")) and (.[-1].url | contains("/nightly-3/"))' \
@@ -188,6 +191,9 @@ grep -q '^release delete nightly-3 --yes --cleanup-tag$' "$MOCK/calls"
 echo "PASS: failed uploads do not prune history; retries preserve published nightly assets"
 jq -e '.[] | select(.tag_name == "nightly-28") |
     .body | startswith("Version: `1.10.0-beta.3.nightly+0123456789ab`")' "$MOCK/releases.json" > /dev/null
+jq -e '.[] | select(.tag_name == "nightly-28") |
+    .name == "AudioX v1.10.0-beta.3.nightly+0123456789ab"' "$MOCK/releases.json" > /dev/null
+echo "PASS: nightly release titles include the complete firmware version, including prerelease and commit metadata"
 cp "$WORK/package/pi5.version" "$WORK/pi5.version.good"
 echo '1.10.0-beta.2.nightly+0123456789ab' > "$WORK/package/pi5.version"
 echo '' > "$MOCK/calls"

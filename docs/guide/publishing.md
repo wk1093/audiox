@@ -65,6 +65,15 @@ Release titles use the complete firmware version, for example
 The numbered tags remain unchanged for update URLs and history ordering; the
 rolling release keeps its `AudioX Nightly` title.
 
+Versioned releases include notes generated from commit subjects since the
+appropriate published baseline. Nightlies compare with the newest published
+versioned nightly or stable release; stable releases compare with the previous
+stable release, so changes already described in nightlies are included again
+in the next stable notes. Prefix user-facing commit subjects with `[feat]` or
+`[fix]` to group them under Features or Fixes. A commit can contain multiple
+markers, such as `[feat] Add MIDI mapping [fix] Preserve old settings`. Other
+subjects are retained under Other changes. Each entry links to its commit.
+
 Run IDs avoid tag collisions with the previous push-triggered workflow's run
 numbers. Existing nightly tags remain usable and count toward the retention limit.
 Versioned published assets are not overwritten on reruns, and an older workflow
@@ -152,6 +161,7 @@ The mirror must retain downloads while adding the generated docs under `docs/`.
 bash tests/imager_package_test.sh
 bash tests/imager_publish_test.sh
 bash tests/release_workflows_test.sh
+python3 tests/release_notes_test.py
 node --test tests/site_navigation_test.js tests/docs_site_test.js
 ```
 

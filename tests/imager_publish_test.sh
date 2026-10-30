@@ -4,7 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -r "$WORK"' EXIT
-export GH_REPO=owner/repo BUILD_COMMIT=0123456789abcdef0123456789abcdef01234567
+export GH_REPO=owner/repo SOURCE_REPO="$ROOT"
+export BUILD_COMMIT=0123456789abcdef0123456789abcdef01234567
+export NOTES_COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
 export GITHUB_RUN_NUMBER=27 GITHUB_RUN_ID=123 GITHUB_SERVER_URL=https://github.com
 export MOCK="$WORK/github"
 mkdir -p "$MOCK/assets" "$WORK/package"
@@ -189,8 +191,9 @@ CHANNEL=nightly RELEASE_TAG=nightly-28 GITHUB_RUN_NUMBER=28 \
 ! grep -q '^release upload nightly-28 ' "$MOCK/calls"
 grep -q '^release delete nightly-3 --yes --cleanup-tag$' "$MOCK/calls"
 echo "PASS: failed uploads do not prune history; retries preserve published nightly assets"
-jq -e '.[] | select(.tag_name == "nightly-28") |
-    .body | startswith("Version: `1.10.0-beta.3.nightly+0123456789ab`")' "$MOCK/releases.json" > /dev/null
+jq -e --arg version "1.10.0-beta.3.nightly+${BUILD_COMMIT:0:12}" \
+    '.[] | select(.tag_name == "nightly-28") |
+    .body | contains("Version: `" + $version + "`")' "$MOCK/releases.json" > /dev/null
 jq -e '.[] | select(.tag_name == "nightly-28") |
     .name == "AudioX v1.10.0-beta.3.nightly+0123456789ab"' "$MOCK/releases.json" > /dev/null
 echo "PASS: nightly release titles include the complete firmware version, including prerelease and commit metadata"

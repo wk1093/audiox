@@ -11,6 +11,7 @@ on:
       - 'scripts/**'
       - '!scripts/mirror-updates.sh'
       - '!scripts/prepare-release.sh'
+      - '!scripts/release-notes.py'
       - 'Makefile'
       - 'Kconfig'
       - 'bootmod.txt'
@@ -239,10 +240,19 @@ jobs:
       group: audiox-publish
       cancel-in-progress: false
     steps:
+      - name: Checkout release history
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+
       - name: Checkout publishing tools
         uses: actions/checkout@v4
         with:
           ref: ${{ github.workflow_sha }}
+          path: .publishing-tools
           sparse-checkout: scripts
           persist-credentials: false
 
@@ -260,9 +270,10 @@ jobs:
           CHANNEL: ${{ needs.prepare.outputs.channel }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           BUILD_COMMIT: ${{ needs.prepare.outputs.commit }}
+          SOURCE_REPO: ${{ github.workspace }}/source
           # Avoid collisions with the previous push workflow's nightly run numbers.
           PUBLISH_SEQUENCE: ${{ github.run_id }}
-        run: bash scripts/publish-imager.sh release
+        run: bash .publishing-tools/scripts/publish-imager.sh release
 
   update-mirror:
     name: Deploy browser update mirror

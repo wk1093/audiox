@@ -140,9 +140,7 @@ The above last two features are mainly to improve my setup, but could probably b
   - [ ] Limiter
   - [ ] Parametric EQ
   - [ ] Multi-band compressor
-- [ ] Start adding better comments to Github releases, explaining the changes and features, maybe some sort of automation with the workflows.
-  - Maybe start using [feat] and [fix] prefixes in commit messages, and then scan all commit messages between last release to automatically generate a changelog that is sorted by features and fixes. Nightly releases would compare between the last release either nightly or stable, a stable release would scan all commits since the last stable release (including duplicate changelogs from all intermediate nightlies)
-  - If two separate features are worked on in the same commit, you can just do "[feat] Feature A [feat] Feature B" or if there is also a fix: "[feat] Feature A [fix] Fix for X"
+- [x] Generate release notes from `[feat]` and `[fix]` commit markers, including multiple entries in one commit; nightly notes compare to the latest nightly or stable, and stable notes include all changes since the previous stable release.
 
 ## Release - v2.0+
 

@@ -8,6 +8,8 @@ trap 'echo "FAIL: line $LINENO: $BASH_COMMAND" >&2' ERR
 export GH_REPO=owner/repo GITHUB_RUN_ID=123456789
 FIXTURE=0
 
+python3 "$ROOT/tests/release_notes_test.py"
+
 gh() {
     printf '%s\n' "$*" >> "$MOCK/calls"
     if [[ "${MOCK_API_FAIL:-0}" == 1 ]]; then
@@ -180,6 +182,11 @@ grep -Fq 'tag: ${{ needs.prepare.outputs.tag }}' "$RELEASE"
 grep -Fq "if: needs.prepare.outputs.channel != '' && github.ref == 'refs/heads/main'" "$BUILD"
 grep -Fq 'PUBLISH_SEQUENCE: ${{ github.run_id }}' "$BUILD"
 grep -Fq 'tag=nightly-$GITHUB_RUN_ID' "$BUILD"
+grep -Fq 'name: Checkout release history' "$BUILD"
+grep -Fq 'path: source' "$BUILD"
+grep -Fq 'SOURCE_REPO: ${{ github.workspace }}/source' "$BUILD"
+grep -Fq '.publishing-tools/scripts/publish-imager.sh release' "$BUILD"
+grep -Fq '!scripts/release-notes.py' "$BUILD"
 for name in "Package Imager image" "Upload Imager publishing files"; do
     grep -F -A1 -- "- name: $name" "$BUILD" |
         grep -Fq "if: needs.prepare.outputs.channel != ''"

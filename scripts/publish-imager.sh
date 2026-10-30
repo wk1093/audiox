@@ -2,9 +2,11 @@
 set -euo pipefail
 
 FILES="${1:?usage: publish-imager.sh <packaged_files_dir>}"
-: "${GH_REPO:?}" "${CHANNEL:?}" "${RELEASE_TAG:?}" "${BUILD_COMMIT:?}"
+: "${GH_REPO:?}" "${CHANNEL:?}" "${RELEASE_TAG:?}" "${BUILD_COMMIT:?}" "${SOURCE_REPO:?}"
 : "${GITHUB_RUN_NUMBER:?}" "${GITHUB_RUN_ID:?}" "${GITHUB_SERVER_URL:?}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PUBLISH_SEQUENCE="${PUBLISH_SEQUENCE:-$GITHUB_RUN_NUMBER}"
+NOTES_COMMIT="${NOTES_COMMIT:-$BUILD_COMMIT}"
 NIGHTLY_LIMIT=25
 if ! [[ "$CHANNEL" == stable && "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ||
         "$CHANNEL" == nightly && "$RELEASE_TAG" == "nightly-$PUBLISH_SEQUENCE" ]]; then
@@ -97,9 +99,19 @@ else
     gh release create "$RELEASE_TAG" "${FLAGS[@]}" --title "AudioX v$VERSION"
 fi
 
-printf 'Version: `%s`\n\nBuild commit: `%s`\n\n[Workflow run](%s/%s/actions/runs/%s)\n\n<!-- audiox-run-number: %s -->\n<!-- audiox-history: true -->\n' \
-    "$VERSION" "$BUILD_COMMIT" "$GITHUB_SERVER_URL" "$GH_REPO" "$GITHUB_RUN_ID" \
-    "$PUBLISH_SEQUENCE" > "$WORK/notes.md"
+python3 "$SCRIPT_DIR/release-notes.py" \
+    --source "$SOURCE_REPO" \
+    --releases "$WORK/releases.json" \
+    --channel "$CHANNEL" \
+    --current-tag "$RELEASE_TAG" \
+    --commit "$NOTES_COMMIT" \
+    --repository "$GH_REPO" > "$WORK/changes.md"
+{
+    cat "$WORK/changes.md"
+    printf '\n\n---\n\nVersion: `%s`\n\nBuild commit: `%s`\n\n[Workflow run](%s/%s/actions/runs/%s)\n\n<!-- audiox-run-number: %s -->\n<!-- audiox-history: true -->\n' \
+        "$VERSION" "$BUILD_COMMIT" "$GITHUB_SERVER_URL" "$GH_REPO" "$GITHUB_RUN_ID" \
+        "$PUBLISH_SEQUENCE"
+} > "$WORK/notes.md"
 
 # Published versioned nightly assets are never overwritten, including on reruns.
 if [[ -z "$CURRENT" ]] || jq -e .draft <<< "$CURRENT" > /dev/null; then

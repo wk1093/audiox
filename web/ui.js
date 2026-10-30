@@ -96,6 +96,32 @@
   let confirming = false;
   let busy = false;
   let taskKey = '';
+  const unsavedChanges = new Set();
+  function setUnsaved(key, dirty = true) {
+    if (dirty) unsavedChanges.add(key);
+    else unsavedChanges.delete(key);
+  }
+  function clearUnsaved() {
+    unsavedChanges.clear();
+  }
+  function hasUnsavedChanges(key) {
+    return key ? unsavedChanges.has(key) : unsavedChanges.size > 0;
+  }
+  function handleBeforeUnload(event) {
+    if (!hasUnsavedChanges()) return;
+    event.preventDefault();
+    event.returnValue = '';
+  }
+  if (typeof root.addEventListener === 'function') root.addEventListener('beforeunload', handleBeforeUnload);
+  if (typeof document !== 'undefined' && document.addEventListener) {
+    const markEditorDirty = (event) => {
+      const key = event.target?.dataset?.unsavedKey;
+      if (key) setUnsaved(key);
+    };
+    document.addEventListener('input', markEditorDirty);
+    document.addEventListener('change', markEditorDirty);
+  }
+
   async function confirmAction(message, { title = 'Confirm action', label = 'Continue' } = {}) {
     if (confirming || busy) return false;
     confirming = true;
@@ -273,6 +299,7 @@
 
   const exported = {
     formatMessage, notify, resolve: resolveNotice, confirm: confirmAction,
+    setUnsaved, clearUnsaved, hasUnsavedChanges, handleBeforeUnload,
     probeDevice, waitForRestart, runTask, taskProgress, startConnectionMonitor,
     isBusy: () => busy,
   };

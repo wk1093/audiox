@@ -90,6 +90,33 @@ test('custom confirmations default to cancel, restore focus and do not accumulat
   assert.equal(key.defaultPrevented, true);
 });
 
+test('beforeunload warns only while tracked changes remain unsaved', () => {
+  const event = { prevented: false, preventDefault() { this.prevented = true; } };
+  const { setUnsaved, clearUnsaved, hasUnsavedChanges, handleBeforeUnload } = require('../web/ui.js');
+  clearUnsaved();
+  assert.equal(hasUnsavedChanges(), false);
+  handleBeforeUnload(event);
+  assert.equal(event.prevented, false);
+
+  setUnsaved('routing');
+  assert.equal(hasUnsavedChanges(), true);
+  assert.equal(hasUnsavedChanges('routing'), true);
+  handleBeforeUnload(event);
+  assert.equal(event.prevented, true);
+  assert.equal(event.returnValue, '');
+
+  setUnsaved('routing', false);
+  assert.equal(hasUnsavedChanges(), false);
+  event.prevented = false;
+  delete event.returnValue;
+  handleBeforeUnload(event);
+  assert.equal(event.prevented, false);
+
+  setUnsaved('macro-editor');
+  clearUnsaved();
+  assert.equal(hasUnsavedChanges(), false);
+});
+
 test('notifications deduplicate, stay bounded, preserve errors and coalesce progress', async (t) => {
   const timers = new Map();
   let nextTimer = 0;

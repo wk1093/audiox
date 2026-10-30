@@ -669,6 +669,9 @@ async function deleteEffectThing(thingId) {
   if (!id || !isEffectThingId(id) || !effectsManager) {
     return false;
   }
+  if (!await AudioxUI.confirm(`Delete effect ${id}? Its settings and routing connections will be removed.`, {
+    title: 'Delete effect?', label: 'Delete effect',
+  })) return false;
 
   try {
     await effectsManager.deleteEffect(id);
@@ -805,6 +808,7 @@ function addEdgeFromConnection(srcNode, srcSlot, dstNode, dstSlot) {
   }
 
   state.edges.push(edge);
+  AudioxUI.setUnsaved('routing');
   syncEdgesFromGraph();
   renderEdgesList();
   setStatus('route added (not saved yet)', 'ok');
@@ -960,6 +964,7 @@ function removeNearestLinkAt(x, y) {
   }
 
   state.edges.splice(bestIdx, 1);
+  AudioxUI.setUnsaved('routing');
   syncEdgesFromGraph();
   setStatus('route removed (not saved yet)', 'ok');
   return true;
@@ -972,6 +977,7 @@ function removeEdgeByIndex(index) {
 
   state.edges.splice(index, 1);
 
+  AudioxUI.setUnsaved('routing');
   syncEdgesFromGraph();
   setStatus('route removed (not saved yet)', 'ok');
 }
@@ -1166,15 +1172,19 @@ function ensureRoutingGraph() {
     return [
       {
         content: 'Remove Node',
-        callback: () => {
+        callback: async () => {
           if (isRoutingHelperNode(node)) {
-            deleteRoutingHelper()
-              .then(async () => {
-                await loadRoutingThingsWithOptions({ silent: true, force: true });
-                await loadRoutingFile();
-                setStatus('routing helper deleted', 'ok');
-              })
-              .catch((err) => setStatus(String(err), 'warn'));
+            if (!await AudioxUI.confirm('Delete the routing helper? Any connections through it will be removed.', {
+              title: 'Delete routing helper?', label: 'Delete helper',
+            })) return;
+            try {
+              await deleteRoutingHelper();
+              await loadRoutingThingsWithOptions({ silent: true, force: true });
+              await loadRoutingFile();
+              setStatus('routing helper deleted', 'ok');
+            } catch (err) {
+              setStatus(String(err), 'warn');
+            }
             return;
           }
           if (isProtectedNode(node)) {
@@ -1573,6 +1583,7 @@ async function loadRoutingFile() {
     if (!res.ok) {
       state.edges = [];
       rebuildRoutingGraph();
+      AudioxUI.setUnsaved('routing', false);
       setStatus('routing file missing, starting empty', 'warn');
       return;
     }
@@ -1580,6 +1591,7 @@ async function loadRoutingFile() {
     state.edges = parseRoutingText(txt);
     state.selectedEdgeIdx = -1;
     rebuildRoutingGraph();
+    AudioxUI.setUnsaved('routing', false);
     setStatus('routing loaded', 'ok');
   } catch (err) {
     setStatus(`routing load error: ${err}`, 'warn');
@@ -1625,6 +1637,7 @@ async function saveRouting() {
     }
 
     setStatus('routing saved and reloaded', 'ok');
+    AudioxUI.setUnsaved('routing', false);
     return true;
   } catch (err) {
     setStatus(`routing save error: ${err}`, 'warn');
@@ -1707,6 +1720,7 @@ async function loadConfig() {
 
     const cfg = parseConfigText(txt);
     setFormFromConfig(cfg);
+    AudioxUI.setUnsaved('usb-config', false);
     setStatus('config loaded', 'ok');
     return cfg;
   } catch (err) {
@@ -1773,6 +1787,7 @@ async function saveConfig() {
     }
 
     setStatus('config saved', 'ok');
+    AudioxUI.setUnsaved('usb-config', false);
     return true;
   } catch (err) {
     setStatus(`config save error: ${err}`, 'warn');
@@ -1807,7 +1822,11 @@ function renderMidiChords(chords) {
     }
     const edit = document.createElement('button');
     edit.textContent = 'Edit';
-    edit.addEventListener('click', () => {
+    edit.addEventListener('click', async () => {
+      if (AudioxUI.hasUnsavedChanges('macro-editor') && !await AudioxUI.confirm(
+        'Discard unsaved macro changes and edit this saved macro?', {
+          title: 'Discard macro changes?', label: 'Discard and edit',
+        })) return;
       stopChordRecording();
       cancelChordLearn();
       editingMacroId = chord.id;
@@ -1822,12 +1841,18 @@ function renderMidiChords(chords) {
       document.getElementById('chord-pressed-velocity').value = chord.pressed_velocity ?? 0;
       updateChordMode();
       updateMacroBinding();
+      AudioxUI.setUnsaved('macro-editor', false);
       document.getElementById('btn-chord-save').textContent = 'Save Changes';
       document.getElementById('macro-name').focus();
     });
     const remove = document.createElement('button');
     remove.textContent = 'Remove';
-    remove.addEventListener('click', () => saveMidiChord('DELETE', chord, remove));
+    remove.addEventListener('click', async () => {
+      if (!await AudioxUI.confirm(`Delete the saved macro "${chord.name}"? This cannot be undone.`, {
+        title: 'Delete macro?', label: 'Delete macro',
+      })) return;
+      await saveMidiChord('DELETE', chord, remove);
+    });
     const run = document.createElement('button');
     run.textContent = 'Run';
     run.addEventListener('click', () => runMacro(chord.id, run));
@@ -1902,6 +1927,7 @@ function resetMacroEditor() {
   document.getElementById('chord-idle-velocity').value = '0';
   document.getElementById('chord-pressed-velocity').value = '0';
   document.getElementById('btn-chord-save').textContent = 'Save Macro';
+  AudioxUI.setUnsaved('macro-editor', false);
   updateChordMode();
   updateMacroBinding();
 }
@@ -1992,6 +2018,7 @@ document.getElementById('chord-keys').addEventListener('keydown', (event) => {
     return;
   }
   document.getElementById('chord-keys').value = keys;
+  AudioxUI.setUnsaved('macro-editor');
 });
 
 document.getElementById('chord-keys').addEventListener('keyup', (event) => {
@@ -2053,7 +2080,13 @@ document.getElementById('btn-chord-learn').addEventListener('click', async () =>
 
 document.getElementById('chord-mode').addEventListener('change', updateChordMode);
 document.getElementById('macro-midi-enabled').addEventListener('change', updateMacroBinding);
-document.getElementById('btn-macro-new').addEventListener('click', resetMacroEditor);
+document.getElementById('btn-macro-new').addEventListener('click', async () => {
+  if (AudioxUI.hasUnsavedChanges('macro-editor') && !await AudioxUI.confirm(
+    'Discard unsaved macro changes and start a new macro?', {
+      title: 'Discard macro changes?', label: 'Discard and start new',
+    })) return;
+  resetMacroEditor();
+});
 document.getElementById('btn-chord-load').addEventListener('click', loadMidiChords);
 document.getElementById('btn-chord-save').addEventListener('click', () => {
   if (chordRecording) {
@@ -2543,6 +2576,9 @@ function renderSoundboardGrid() {
 }
 
 async function deleteSfxFile(filename) {
+  if (!await AudioxUI.confirm(`Delete "${filename}" from the soundboard? This cannot be undone.`, {
+    title: 'Delete sound?', label: 'Delete sound',
+  })) return;
   setStatus(`deleting ${filename}...`);
   try {
     const res = await fetch(`/api/rootfs/sfx/${encodeURIComponent(filename)}`, {
@@ -2619,6 +2655,7 @@ async function uploadSfxFile() {
 
     await listSfxFiles();
     await reloadSoundboardBank();
+    AudioxUI.setUnsaved('sound-upload', false);
     setStatus(`uploaded ${targetName}`, 'ok');
   } catch (err) {
     setStatus(`upload error: ${err}`, 'warn');
@@ -2731,6 +2768,9 @@ async function deleteStopAllActionMapping() {
     setStatus('no stop-all MIDI mapping to remove', 'warn');
     return;
   }
+  if (!await AudioxUI.confirm('Remove the MIDI mapping for Stop All?', {
+    title: 'Remove MIDI mapping?', label: 'Remove mapping',
+  })) return;
 
   try {
     const res = await fetch('/api/midi/action/delete', {
@@ -2756,6 +2796,9 @@ async function deleteSamplerToggleActionMapping() {
     setStatus('no sampler-toggle MIDI mapping to remove', 'warn');
     return;
   }
+  if (!await AudioxUI.confirm('Remove the MIDI mapping for Sampler Toggle?', {
+    title: 'Remove MIDI mapping?', label: 'Remove mapping',
+  })) return;
 
   try {
     const res = await fetch('/api/midi/action/delete', {
@@ -2811,6 +2854,9 @@ async function deleteMapping(note) {
     setStatus('invalid midi note', 'warn');
     return;
   }
+  if (!await AudioxUI.confirm(`Remove the soundboard MIDI mapping for note ${note}?`, {
+    title: 'Remove MIDI mapping?', label: 'Remove mapping',
+  })) return;
 
   try {
     const res = await fetch('/api/midi/mapping/delete', {
@@ -2881,6 +2927,7 @@ async function pollMappingCapture() {
         }
         document.getElementById('chord-channel').value = data.last_channel;
         document.getElementById('chord-note').value = note;
+        AudioxUI.setUnsaved('macro-editor');
         statusEl2.textContent = `Selected channel ${data.last_channel}, note ${note}. Record a chord or enter a script, then save.`;
       } else if (target === '__action_stop_all__') {
         await saveStopAllActionMapping(note);
@@ -2920,6 +2967,7 @@ async function loadSamplerConfig() {
     if (enabledEl) enabledEl.value = state.samplerKeyboardEnabled ? '1' : '0';
     if (channelEl) channelEl.value = String(state.samplerKeyboardChannel);
     if (rootEl) rootEl.value = String(state.samplerRootNote);
+    AudioxUI.setUnsaved('sampler-config', false);
   } catch (_) {
   }
 }
@@ -2951,6 +2999,7 @@ async function saveSamplerConfig() {
       return;
     }
     await loadSamplerConfig();
+    AudioxUI.setUnsaved('sampler-config', false);
     setStatus('sampler config saved', 'ok');
   } catch (err) {
     setStatus(`sampler config save error: ${err}`, 'warn');
@@ -3198,6 +3247,9 @@ async function setCcVolumeMapping(cc, thingId) {
 }
 
 async function deleteCcVolumeMapping(cc) {
+  if (!await AudioxUI.confirm(`Remove the volume control mapping for MIDI CC ${cc}?`, {
+    title: 'Remove MIDI mapping?', label: 'Remove mapping',
+  })) return;
   try {
     const res = await fetch('/api/midi/cc_volume/delete', {
       method: 'POST',
@@ -3347,7 +3399,7 @@ if (typeof ResizeObserver === 'function') {
   ro.observe(graphWrapEl);
 }
 
-document.addEventListener('keydown', (ev) => {
+document.addEventListener('keydown', async (ev) => {
   if (ev.key === 'Delete') {
     if (state.activeTab !== 'routing') {
       return;
@@ -3375,6 +3427,9 @@ document.addEventListener('keydown', (ev) => {
       }
       return;
     }
+    if (!await AudioxUI.confirm('Remove this node from the routing graph?', {
+      title: 'Remove routing node?', label: 'Remove node',
+    })) return;
     state.graph.remove(node);
     syncEdgesFromGraph();
     state.graphCanvas.setDirty(true, true);
@@ -3423,6 +3478,7 @@ document.getElementById('btn-sb-edit-mode').addEventListener('click', () => setS
 document.getElementById('btn-upload-clear').addEventListener('click', () => {
   document.getElementById('upload_name').value = '';
   document.getElementById('upload_file').value = '';
+  AudioxUI.setUnsaved('sound-upload', false);
   setStatus('upload form cleared');
 });
 
@@ -3574,6 +3630,7 @@ async function loadLightConfig() {
     document.getElementById('light_mapped_vel').value = String(data.mapped_vel ?? 0);
     document.getElementById('light_stop_all_vel').value = String(data.stop_all_vel ?? 0);
     document.getElementById('light_playing_vel').value = String(data.playing_vel ?? 0);
+    AudioxUI.setUnsaved('light-config', false);
   } catch (err) {}
 }
 
@@ -3597,6 +3654,7 @@ async function saveLightConfig() {
       return;
     }
     setStatus('lighting config saved', 'ok');
+    AudioxUI.setUnsaved('light-config', false);
   } catch (err) {
     setStatus(`lighting save error: ${err}`, 'warn');
   }

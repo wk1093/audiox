@@ -173,11 +173,11 @@
           <h2>Add Sound</h2>
           <div class="cfg-row" style="margin-top: 0;">
             <label for="upload_name">Filename</label>
-            <input id="upload_name" type="text" placeholder="kick.wav">
+            <input id="upload_name" type="text" placeholder="kick.wav" data-unsaved-key="sound-upload">
           </div>
           <div class="cfg-row">
             <label for="upload_file">Audio File</label>
-            <input id="upload_file" type="file" accept="audio/*">
+            <input id="upload_file" type="file" accept="audio/*" data-unsaved-key="sound-upload">
           </div>
           <div class="grid-2">
             <button id="btn-upload-real" class="primary">Upload</button>
@@ -198,24 +198,24 @@
           <p class="small">Save up to 16 named macros and Run them here, optionally binding a MIDI pad. Only keyboard action plans need USB Keyboard enabled in Config and a connected USB host. Light/MIDI action plans need the selected controller connected. Sound, effects and volume actions do not need either device.</p>
           <div class="cfg-row">
             <label for="macro-name">Name (up to 63 UTF-8 bytes)</label>
-            <input id="macro-name" type="text" maxlength="63" autocomplete="off" placeholder="My automation">
+            <input id="macro-name" type="text" maxlength="63" autocomplete="off" placeholder="My automation" data-unsaved-key="macro-editor">
           </div>
-          <label><input id="macro-midi-enabled" type="checkbox"> Bind to a MIDI pad (optional)</label>
+          <label><input id="macro-midi-enabled" type="checkbox" data-unsaved-key="macro-editor"> Bind to a MIDI pad (optional)</label>
           <div id="macro-midi-binding" class="stack" hidden>
           <div class="cfg-row">
             <label for="chord-channel">MIDI Channel (0&ndash;15)</label>
-            <input id="chord-channel" type="number" min="0" max="15" value="0">
+            <input id="chord-channel" type="number" min="0" max="15" value="0" data-unsaved-key="macro-editor">
           </div>
           <div class="cfg-row">
             <label for="chord-note">Note (0&ndash;127)</label>
-            <input id="chord-note" type="number" min="0" max="127" value="60">
+            <input id="chord-note" type="number" min="0" max="127" value="60" data-unsaved-key="macro-editor">
           </div>
           <button id="btn-chord-learn" type="button" aria-pressed="false" disabled>Learn MIDI Pad</button>
           <p id="chord-learn-status" class="small" role="status">Choose a channel/note above, or learn the next pad you press.</p>
           </div>
           <div class="cfg-row">
             <label for="chord-mode">Macro Type</label>
-            <select id="chord-mode">
+            <select id="chord-mode" data-unsaved-key="macro-editor">
               <option value="chord">Keyboard chord</option>
               <option value="script">Lua sequence</option>
             </select>
@@ -223,7 +223,7 @@
           <div id="chord-capture-editor" class="stack">
           <div class="cfg-row">
             <label for="chord-keys">Keyboard Chord</label>
-            <input id="chord-keys" type="text" maxlength="63" placeholder="Click Record Chord, then press your shortcut" autocomplete="off" spellcheck="false" aria-describedby="chord-capture-status">
+            <input id="chord-keys" type="text" maxlength="63" placeholder="Click Record Chord, then press your shortcut" autocomplete="off" spellcheck="false" aria-describedby="chord-capture-status" data-unsaved-key="macro-editor">
           </div>
           <button id="btn-chord-record" type="button" aria-pressed="false">Record Chord</button>
           <p id="chord-capture-status" class="small" role="status">Click Record Chord, hold your modifiers, press the key(s), then release. You can also enter CTRL+SHIFT+F13 manually.</p>
@@ -231,7 +231,7 @@
           </div>
           <div id="chord-script-editor" class="stack" hidden>
             <label for="chord-script">Lua Sequence</label>
-            <textarea id="chord-script" rows="9" maxlength="2047" spellcheck="false" placeholder='state.count = (state.count or 0) + 1&#10;if event.velocity &gt; 80 then&#10;  press("SHIFT+A")&#10;  wait(200)&#10;  release()&#10;end&#10;type("Hello!", 80)'></textarea>
+            <textarea id="chord-script" rows="9" maxlength="2047" spellcheck="false" placeholder='state.count = (state.count or 0) + 1&#10;if event.velocity &gt; 80 then&#10;  press("SHIFT+A")&#10;  wait(200)&#10;  release()&#10;end&#10;type("Hello!", 80)' data-unsaved-key="macro-editor"></textarea>
             <p class="small">tap("CTRL+A"), press("SHIFT+A"), release(), type("Hello!", 80), wait(milliseconds), light(velocity). press replaces the held chord; release clears all keys. Taps/text release any previous hold first; sequence completion/cancellation releases everything automatically. type uses US-layout ASCII (including newline and tab); its optional interval is milliseconds between character presses (default 50, minimum 30). Host layout and Caps Lock must match.</p>
             <p class="small">Lua runs for each queued Run or MIDI note-on. event.source is "web" or "midi"; event.channel, event.note and event.velocity are numbers; event.pressed is true. Web runs use the configured channel/note and velocity 127. state persists across triggers (32 named scalar values). Edits, cancellation/failure and restart reset state; USB loss does not globally reset non-keyboard scripts. millis() and epoch() read original trigger-time snapshots. value_type() inspects values; type() types text.</p>
             <p class="small">sound.play("clip.wav", 1.0), sound.stop_all(), midi.note_on(0,60,100), midi.note_off(0,60), midi.cc(0,1,64), midi.program(0,5), and midi.send(status,...) queue device actions. Sound must already be preloaded; MIDI goes to the controller, not the USB host. log("message") writes to device logs. No files, shell, network, or module loading. <a href="https://wklab.net/audiox/docs/lua/" target="_blank" rel="noopener noreferrer">Lua guide, API reference and recipes</a> (requires internet on your browser).</p>
@@ -241,11 +241,11 @@
           <div class="grid-2">
             <div class="stack">
               <label for="chord-idle-velocity">Idle LED Velocity / Color</label>
-              <input id="chord-idle-velocity" type="number" min="0" max="127" value="0">
+              <input id="chord-idle-velocity" type="number" min="0" max="127" value="0" data-unsaved-key="macro-editor">
             </div>
             <div class="stack">
               <label for="chord-pressed-velocity">Pressed LED Velocity / Color</label>
-              <input id="chord-pressed-velocity" type="number" min="0" max="127" value="0">
+              <input id="chord-pressed-velocity" type="number" min="0" max="127" value="0" data-unsaved-key="macro-editor">
             </div>
           </div>
           <p class="small">Leave both velocities at 0 for web-only macros with no default lighting. 0 turns the LED off; 1&ndash;127 selects your controller's velocity/color. Uses the global lighting output channel. MIDI-bound macro colors override sound/action colors on the same note; Dim Lights still applies. Lua light() requires an enabled MIDI binding and the selected controller connected, even for web Run. Without a binding it reports a runtime error; it temporarily overrides the bound pad.</p>
@@ -293,18 +293,18 @@
           <p class="small" style="margin:0 0 8px;">Set a keyboard channel for pitched sampler playback and the root note for no pitch shift.</p>
           <div class="cfg-row">
             <label for="sampler_keyboard_enabled">Keyboard Channel Enabled</label>
-            <select id="sampler_keyboard_enabled">
+            <select id="sampler_keyboard_enabled" data-unsaved-key="sampler-config">
               <option value="1">Enabled</option>
               <option value="0">Disabled</option>
             </select>
           </div>
           <div class="cfg-row">
             <label for="sampler_keyboard_channel">Keyboard Channel (0&ndash;15)</label>
-            <input id="sampler_keyboard_channel" type="number" min="0" max="15" step="1" value="0">
+            <input id="sampler_keyboard_channel" type="number" min="0" max="15" step="1" value="0" data-unsaved-key="sampler-config">
           </div>
           <div class="cfg-row">
             <label for="sampler_root_note">Root Note (0&ndash;127)</label>
-            <input id="sampler_root_note" type="number" min="0" max="127" step="1" value="60">
+            <input id="sampler_root_note" type="number" min="0" max="127" step="1" value="60" data-unsaved-key="sampler-config">
           </div>
           <div class="grid-2">
             <button id="btn-sampler-config-save" class="primary">Save</button>
@@ -317,19 +317,19 @@
           <p class="small" style="margin:0 0 8px;">Sets LED colors on the MIDI controller per playback state. Velocity 0 = off.</p>
           <div class="cfg-row">
             <label for="light_channel">MIDI Channel (0&ndash;15)</label>
-            <input id="light_channel" type="number" min="0" max="15" step="1" value="0">
+            <input id="light_channel" type="number" min="0" max="15" step="1" value="0" data-unsaved-key="light-config">
           </div>
           <div class="cfg-row">
             <label for="light_mapped_vel">Mapped velocity (assigned, idle)</label>
-            <input id="light_mapped_vel" type="number" min="0" max="127" step="1" value="0">
+            <input id="light_mapped_vel" type="number" min="0" max="127" step="1" value="0" data-unsaved-key="light-config">
           </div>
           <div class="cfg-row">
             <label for="light_stop_all_vel">Stop All velocity (action button)</label>
-            <input id="light_stop_all_vel" type="number" min="0" max="127" step="1" value="0">
+            <input id="light_stop_all_vel" type="number" min="0" max="127" step="1" value="0" data-unsaved-key="light-config">
           </div>
           <div class="cfg-row">
             <label for="light_playing_vel">Playing velocity (clip running)</label>
-            <input id="light_playing_vel" type="number" min="0" max="127" step="1" value="0">
+            <input id="light_playing_vel" type="number" min="0" max="127" step="1" value="0" data-unsaved-key="light-config">
           </div>
           <div class="grid-2">
             <button id="btn-light-save" class="primary">Save Lighting</button>
@@ -347,20 +347,20 @@
           <h2>USB Config</h2>
           <div class="cfg-row">
             <label for="usb_playback_channels">USB Playback Channels</label>
-            <input id="usb_playback_channels" type="number" min="1" max="16" step="1" value="2">
+            <input id="usb_playback_channels" type="number" min="1" max="16" step="1" value="2" data-unsaved-key="usb-config">
           </div>
           <div class="cfg-row">
             <label for="usb_capture_channels">USB Capture Channels</label>
-            <input id="usb_capture_channels" type="number" min="1" max="16" step="1" value="2">
+            <input id="usb_capture_channels" type="number" min="1" max="16" step="1" value="2" data-unsaved-key="usb-config">
           </div>
           <div class="cfg-row">
             <label for="usb_sample_size">USB Sample Size (bytes)</label>
-            <input id="usb_sample_size" type="number" min="1" max="4" step="1" value="2">
+            <input id="usb_sample_size" type="number" min="1" max="4" step="1" value="2" data-unsaved-key="usb-config">
           </div>
 
           <div class="cfg-row">
             <label for="midi_passthrough">USB MIDI Passthrough</label>
-            <select id="midi_passthrough">
+            <select id="midi_passthrough" data-unsaved-key="usb-config">
               <option value="off">Disabled (no MIDI USB function)</option>
               <option value="unmapped">Unmapped messages only</option>
               <option value="all">All messages, including mapped</option>
@@ -368,7 +368,7 @@
           </div>
           <div class="cfg-row">
             <label for="keyboard_macros">USB Keyboard Chords</label>
-            <select id="keyboard_macros">
+            <select id="keyboard_macros" data-unsaved-key="usb-config">
               <option value="0">Disabled (no keyboard USB function)</option>
               <option value="1">Enabled</option>
             </select>
@@ -509,7 +509,7 @@
 
   <div id="notifications" class="notifications" aria-label="Notifications"></div>
   <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
-    <div class="dialog-heading">Device action</div>
+    <div class="dialog-heading">Confirm action</div>
     <h2 id="confirm-title">Confirm action</h2>
     <p id="confirm-message"></p>
     <div class="dialog-actions">

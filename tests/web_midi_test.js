@@ -20,10 +20,16 @@ test('USB settings default off and survive config load/save round trips', () => 
 
 function fixture() {
   const elements = new Map();
+  const confirmations = [];
+  let confirmResult = true;
   function element() {
     return {
       value: '', disabled: false, children: [],
-      addEventListener(name, callback) { this[name] = callback; },
+      addEventListener(name, callback) {
+        if (name === 'click') this.onClick = callback;
+        else this[name] = callback;
+      },
+      click(...args) { return this.onClick?.(...args); },
       append(...children) { this.children.push(...children); },
       appendChild(child) { this.children.push(child); },
       replaceChildren() { this.children = []; },
@@ -46,6 +52,11 @@ function fixture() {
   let note = { connected: true, last_seq: 10, last_note: 60, last_channel: 0 };
   const context = vm.createContext({
     document, window, state, TextEncoder, TextDecoder,
+    AudioxUI: {
+      confirm: async (...args) => { confirmations.push(args); return confirmResult; },
+      setUnsaved() {},
+      hasUnsavedChanges: () => false,
+    },
     setInterval: () => 1, clearInterval() {},
     renderSoundboardGrid() {},
     setStatus: (...args) => notices.push(args),
@@ -73,7 +84,9 @@ function fixture() {
     source.indexOf('async function loadSamplerConfig(')), context);
   return { context, get, calls, reads, notices, document, window, state,
     note: (value) => { note = value; }, fail: () => { fail = true; },
-    failLearn: () => { learnFailure = true; } };
+    failLearn: () => { learnFailure = true; },
+    confirmations,
+    setConfirmResult: (value) => { confirmResult = value; } };
 }
 
 test('named macro editor validates input, sends literal plus separators, and removes by stable id', async () => {
@@ -91,9 +104,14 @@ test('named macro editor validates input, sends literal plus separators, and rem
   assert.equal(f.calls.at(-1).body, 'name_hex=54657374206d6163726f&midi_enabled=1&channel=0&note=60&keys=CTRL+F13&idle_velocity=2&pressed_velocity=5&script_hex=');
   const row = f.get('chord-list').children[0];
   assert.equal(row.children[0].textContent, 'Test macro — Channel 0, note 60: CTRL+F13 (LED idle 2, pressed 5)');
-  row.children[1].children[0].click();
+  await row.children[1].children[0].click();
   assert.equal(f.get('chord-idle-velocity').value, 2);
   assert.equal(f.get('chord-pressed-velocity').value, 5);
+  f.setConfirmResult(false);
+  await row.children[1].children[1].click();
+  assert.equal(f.calls.at(-1).method, 'POST');
+  assert.match(f.confirmations.at(-1)[0], /Delete the saved macro/);
+  f.setConfirmResult(true);
   await row.children[1].children[1].click();
   assert.equal(f.calls.at(-1).method, 'DELETE');
   assert.equal(f.calls.at(-1).body, 'id=17');

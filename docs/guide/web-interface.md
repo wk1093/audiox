@@ -52,6 +52,13 @@ connections. Read the notification instead of repeatedly clicking a disabled
 control. Device polling warnings clear after the corresponding operation starts
 succeeding; other errors may need dismissal or a corrected action.
 
+Destructive actions such as deleting a sound, effect, macro, or MIDI mapping ask
+for confirmation before they are applied. If you have unsaved routing, USB
+configuration, macro-editor, MIDI settings, or a staged sound upload, the
+browser also asks before you close or reload the page. That browser warning is
+generic, and its wording is controlled by the browser. Save or clear the pending
+editor before leaving if you want to keep those changes.
+
 Restart, shutdown, firmware installation, and backup restore use confirmation
 dialogs. Read the operation name carefully: restoring a backup replaces your
 saved setup, while firmware installation changes the software.

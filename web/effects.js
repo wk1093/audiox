@@ -254,6 +254,9 @@
             if (ccNum < 0) {
               return;
             }
+            if (!await window.AudioxUI.confirm(`Remove the MIDI CC ${ccNum} mapping for ${effectId}.${row.name}?`, {
+              title: 'Remove MIDI mapping?', label: 'Remove mapping',
+            })) return;
             try {
               await this.deleteEffectCc(ccNum);
               this.setPanelStatus(`Cleared CC ${ccNum}`, 'ok');
@@ -292,6 +295,9 @@
           if (note < 0) {
             return;
           }
+          if (!await window.AudioxUI.confirm(`Remove the MIDI bypass mapping for ${effectId}?`, {
+            title: 'Remove MIDI mapping?', label: 'Remove mapping',
+          })) return;
           try {
             await this.deleteEffectToggle(note);
             this.setPanelStatus(`Cleared bypass note ${note}`, 'ok');
@@ -347,6 +353,9 @@
         lightClear.className = 'flat';
         lightClear.textContent = 'Default';
         lightClear.addEventListener('click', async () => {
+          if (!await window.AudioxUI.confirm(`Reset the custom LED colors for ${effectId}?`, {
+            title: 'Reset effect lighting?', label: 'Reset lighting',
+          })) return;
           try {
             lightClear.disabled = true;
             await this.deleteEffectLight(effectId);
@@ -375,12 +384,16 @@
         deleteBtn.addEventListener('click', async () => {
           try {
             deleteBtn.disabled = true;
+            let deleted = true;
             if (typeof window.deleteEffectThing === 'function') {
-              await window.deleteEffectThing(effectId);
+              deleted = await window.deleteEffectThing(effectId);
             } else {
+              if (!await window.AudioxUI.confirm(`Delete effect ${effectId}? Its settings and routing connections will be removed.`, {
+                title: 'Delete effect?', label: 'Delete effect',
+              })) return;
               await this.deleteEffect(effectId);
             }
-            this.setPanelStatus(`Deleted ${effectId}`, 'ok');
+            if (deleted !== false) this.setPanelStatus(`Deleted ${effectId}`, 'ok');
           } catch (err) {
             this.setPanelStatus(String(err), 'warn');
           } finally {

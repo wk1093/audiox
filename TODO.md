@@ -116,6 +116,20 @@ The above last two features are mainly to improve my setup, but could probably b
 ## Features and quality of life - v1.11
 - [x] Improve webui, especially errors, don't show nasty JS stack traces, or html responses from api (json data) to the user.
   - Styled notifications and confirmation/loading dialogs, readable API errors, automatic reconnect/restart detection, and clearer Config/System layout.
+- [x] Improve display detection: check framebuffer/DRM connector health every 500 ms, release display and touch resources while disconnected, and reinitialize on reconnect or mode changes without restarting audiox. Non-DRM cable detection depends on the framebuffer driver exposing device/layout changes.
+- [x] Optional USB MIDI passthrough with WebUI off/unmapped/all modes, 500 ms discovery, bounded nonblocking output, and complete MIDI function removal when disabled. Physical USB/host and multichannel-audio validation remains needed.
+- [x] Optional USB keyboard chords: channel/note mappings, WebUI editor, automatic release, bounded trigger queue, and complete HID function removal when disabled.
+- [x] Macro WebUI: learn a MIDI pad, record physical keyboard chords with modifiers, edit saved mappings, and configure per-macro idle/pressed lighting.
+- [x] Standalone Macros page: names, optional MIDI binding/web-only macros, Run, and stable-ID edit/remove; preserve chord recording, MIDI learn and lighting.
+- [x] Document named macro migration, web/MIDI events, per-action device requirements, and runtime-only effect/volume controls.
+- [x] Restricted Lua macro sequences: bounded cooperative key taps, holds/releases, delays and pad lighting; no standard libraries or background interpreter. Hardware keyboard/LED validation remains needed.
+- [x] Lua text typing with adjustable intervals (US-layout ASCII), live note-on event values, and bounded per-macro state. Unicode/other host layouts are not supported; held keys automatically release on completion/cancellation.
+- [x] Expand safe Lua utilities: trigger-time clocks, formatting/conversion, string/table/math helpers, random choices, queued logging, soundboard playback and controller MIDI messages.
+- [ ] Improve documentation for the project, including OS setup guides and usage examples
+  - [x] Set up VitePress at wklab.net/audiox/docs with Pages deployment and descriptive Lua guides, reference and cookbook.
+  - [ ] Write the remaining OS setup, audio routing, Bluetooth, updates and recovery guides.
+
+## Last few improvements - v1.12
 - [ ] See if we can increase bluetooth quality. Not just audio quality, but quality of life, needs better interface (not just UI, also auto-connect features, easier device management, and more reliable connections).
 - [ ] Investigate using LV2 plugins for effects, and if possible, make it so that the user can upload their own LV2 plugins to the device and use them in the audio engine. This would allow for a lot more flexibility and customization for users who want to use their own effects.
 - [ ] More advanced effects
@@ -130,13 +144,10 @@ The above last two features are mainly to improve my setup, but could probably b
 
 - [ ] IMPORTANT: Create a config versioning system, so that older configs can be upgraded if format is changed. This is important for 2.0+ because it is meant to be a more stable release, and we don't want to break people's configs when they update. This will also allow for more advanced features in the future, like being able to export and import configs between devices.
 - [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)
-- [ ] Add a "midi passthrough" feature that allows non-mapped midi messages to be passed through via a USB gadget to a connected host. This should be configurable via the WebUI, to also allow passing through messages that are mapped to soundboard clips, but the default is to only pass through non-mapped messages. This feature should also be able to be disabled entirely, which would fully remove the gadget entirely to save USB bandwidth (this is for people using like 6+ in/out audio channels to the gadget, where bandwidth could start to matter)
 - [ ] Look into dynamic sample size for the audio engine, so that if we notice Xruns or any other issues we can automatically increase the sample size when needed (or at least allow the user to change it via the WebUI). This is mainly for people with a lot of channels or effects that could cause issues.
 
 ## Future
 - [ ] Start adding better comments to Github releases, explaining the changes and features
-- [ ] Improve documentation for the project, including setup guides and usage examples
-  - [ ] Maybe use a subpage of the github pages site, like wklab.net/audiox/docs which could be docs built from md using a static site generator like Jekyll or MkDocs
 - [ ] Create a roadmap for future features and improvements
 - [ ] Explore integration with other audio software and hardware, such as DAWs and MIDI controllers
 - [ ] Hardware...

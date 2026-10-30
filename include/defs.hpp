@@ -2,6 +2,8 @@
 
 #include <cstddef>
 
+inline constexpr unsigned AUDIOX_DEVICE_POLL_INTERVAL_MS = 500;
+
 #ifndef KERNEL_VERSION
 #define KERNEL_VERSION "6.18.36-v8+"
 #endif
@@ -48,6 +50,10 @@
 #define GADGET_CONFIG_LINK GADGET_ROOT "/configs/c.1/uac2.usb0"
 #define GADGET_NETWORK_FUNC GADGET_ROOT "/functions/ncm.usb0"
 #define GADGET_NETWORK_LINK GADGET_ROOT "/configs/c.1/ncm.usb0"
+#define GADGET_MIDI_FUNC GADGET_ROOT "/functions/midi.usb0"
+#define GADGET_MIDI_LINK GADGET_ROOT "/configs/c.1/midi.usb0"
+#define GADGET_KEYBOARD_FUNC GADGET_ROOT "/functions/hid.usb0"
+#define GADGET_KEYBOARD_LINK GADGET_ROOT "/configs/c.1/hid.usb0"
 #define GADGET_UDC_NODE GADGET_ROOT "/UDC"
 #ifndef AUDIOX_USB_GADGET_UDC
 #if AUDIOX_QEMU

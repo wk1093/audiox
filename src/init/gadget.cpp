@@ -4,6 +4,7 @@
 #include "system.hpp"
 #include "audio/gadget_volume.hpp"
 #include "audio/context.hpp"
+#include "midi/context.hpp"
 
 #include <stdio.h>
 #include <fcntl.h>
@@ -69,12 +70,62 @@ static int prepareUsbGadget() {
             return RET_ERR;
         }
     }
-    for (const char *link : {GADGET_CONFIG_LINK, GADGET_NETWORK_LINK}) {
+    for (const char *link : {GADGET_CONFIG_LINK, GADGET_NETWORK_LINK, GADGET_MIDI_LINK, GADGET_KEYBOARD_LINK}) {
         if (unlink(link) < 0 && errno != ENOENT) {
             printf("[INIT] [ERR] unlink %s before USB gadget setup failed: %s\n",
                    link, strerror(errno));
             return RET_ERR;
         }
+    }
+    return RET_OK;
+}
+
+static int configureMidiFunctions(const ConfigData &cfg) {
+    for (const char *link : {GADGET_MIDI_LINK, GADGET_KEYBOARD_LINK}) {
+        if (unlink(link) < 0 && errno != ENOENT) {
+            printf("[INIT] [ERR] Cannot unlink %s: %s\n", link, strerror(errno));
+            return RET_ERR;
+        }
+    }
+    if (cfg.midiPassthrough) {
+        if (ensureDir(GADGET_MIDI_FUNC, 0755) != RET_OK ||
+            writeSysNode(GADGET_MIDI_FUNC "/id", AUDIOX_MIDI_CARD_ID) != RET_OK ||
+            writeSysNode(GADGET_MIDI_FUNC "/in_ports", "1\n") != RET_OK ||
+            writeSysNode(GADGET_MIDI_FUNC "/out_ports", "1\n") != RET_OK ||
+            symlink(GADGET_MIDI_FUNC, GADGET_MIDI_LINK) < 0) {
+            printf("[INIT] [ERR] Cannot configure USB MIDI: %s\n", strerror(errno));
+            return RET_ERR;
+        }
+    } else if (rmdir(GADGET_MIDI_FUNC) < 0 && errno != ENOENT) {
+        printf("[INIT] [ERR] Cannot remove USB MIDI function: %s\n", strerror(errno));
+        return RET_ERR;
+    }
+    if (cfg.keyboardMacros) {
+        static constexpr uint8_t descriptor[] = {
+            0x05,0x01,0x09,0x06,0xa1,0x01,0x05,0x07,0x19,0xe0,0x29,0xe7,
+            0x15,0x00,0x25,0x01,0x75,0x01,0x95,0x08,0x81,0x02,
+            0x95,0x01,0x75,0x08,0x81,0x01,
+            0x95,0x06,0x75,0x08,0x15,0x00,0x25,0x73,0x19,0x00,0x29,0x73,0x81,0x00,0xc0
+        };
+        if (ensureDir(GADGET_KEYBOARD_FUNC, 0755) != RET_OK ||
+            writeSysNode(GADGET_KEYBOARD_FUNC "/protocol", "1\n") != RET_OK ||
+            writeSysNode(GADGET_KEYBOARD_FUNC "/subclass", "1\n") != RET_OK ||
+            writeSysNode(GADGET_KEYBOARD_FUNC "/report_length", "8\n") != RET_OK) return RET_ERR;
+        int fd = open(GADGET_KEYBOARD_FUNC "/report_desc", O_WRONLY | O_CLOEXEC);
+        if (fd < 0) {
+            printf("[INIT] [ERR] Cannot open keyboard descriptor: %s\n", strerror(errno));
+            return RET_ERR;
+        }
+        ssize_t n = write(fd, descriptor, sizeof(descriptor));
+        int error = errno;
+        close(fd);
+        if (n != (ssize_t)sizeof(descriptor) || symlink(GADGET_KEYBOARD_FUNC, GADGET_KEYBOARD_LINK) < 0) {
+            printf("[INIT] [ERR] Cannot configure USB keyboard: %s\n", strerror(n < 0 ? error : errno));
+            return RET_ERR;
+        }
+    } else if (rmdir(GADGET_KEYBOARD_FUNC) < 0 && errno != ENOENT) {
+        printf("[INIT] [ERR] Cannot remove USB keyboard function: %s\n", strerror(errno));
+        return RET_ERR;
     }
     return RET_OK;
 }
@@ -287,7 +338,8 @@ int setupAudioGadget(void *_context) {
     if (prepareUsbGadget() != RET_OK) {
         return RET_ERR;
     }
-    return applyAudioConfig(&cfg);
+    if (applyAudioConfig(&cfg) != RET_OK) return RET_ERR;
+    return configureMidiFunctions(cfg);
 }
 
 int reloadAudioGadget(void *_context) {
@@ -305,6 +357,9 @@ int reloadAudioGadget(void *_context) {
     int stagedRc = context->config->readStagingConfigFile(&nextCfg);
     if (stagedRc == RET_OK) {
         configSourceIsStaging = 1;
+    } else if (stagedRc == RET_ERR) {
+        printf("[INIT] [ERR] Cannot read staged USB configuration\n");
+        return RET_ERR;
     } else {
         nextCfg = context->config->readConfigFile();
     }
@@ -315,9 +370,22 @@ int reloadAudioGadget(void *_context) {
     if (context->audio) {
         context->audio->gadgetVolume.reset();
     }
+    if (context->midi) context->midi->usb.closeDevices();
 
     ConfigData prevCfg;
     (void)readCurrentAudioConfig(&prevCfg);
+    ConfigData saved = context->config->readConfigFile();
+    prevCfg.midiPassthrough = saved.midiPassthrough;
+    prevCfg.keyboardMacros = saved.keyboardMacros;
+    auto restore = [&]() {
+        if (writeSysNode(GADGET_UDC_NODE, "\n") != RET_OK ||
+            (unlink(GADGET_CONFIG_LINK) < 0 && errno != ENOENT) ||
+            applyAudioConfig(&prevCfg) != RET_OK ||
+            configureMidiFunctions(prevCfg) != RET_OK ||
+            bindUsbGadget(context) != RET_OK) {
+            printf("[INIT] [ERR] USB configuration rollback failed\n");
+        }
+    };
 
     int unbound = 0;
     if (writeSysNode(GADGET_UDC_NODE, "\n") == RET_OK) {
@@ -328,7 +396,8 @@ int reloadAudioGadget(void *_context) {
     if (unbound) {
         usleep(20000);
     } else {
-        printf("[INIT] [WARN] USB gadget unbind failed before reload; attempting live update\n");
+        printf("[INIT] [ERR] USB gadget unbind failed before reload\n");
+        return RET_ERR;
     }
 
     if (unlink(GADGET_CONFIG_LINK) < 0 && errno != ENOENT) {
@@ -336,27 +405,24 @@ int reloadAudioGadget(void *_context) {
     }
 
     int ret = applyAudioConfig(&nextCfg);
+    if (ret == RET_OK) ret = configureMidiFunctions(nextCfg);
     if (ret != RET_OK) {
         printf("[INIT] [WARN] USB audio gadget reload failed; restoring previous config\n");
-        (void)applyAudioConfig(&prevCfg);
-        int restoreRc = bindUsbGadget(context);
-        (void)restoreRc;
+        restore();
         return ret;
     }
 
     ret = bindUsbGadget(context);
     if (ret != RET_OK) {
         printf("[INIT] [WARN] USB gadget rebind failed after reload; restoring previous config\n");
-        (void)unlink(GADGET_CONFIG_LINK);
-        (void)applyAudioConfig(&prevCfg);
-        int restoreRc = bindUsbGadget(context);
-        (void)restoreRc;
+        restore();
         return ret;
     }
 
     if (configSourceIsStaging) {
         if (context->config->writeConfigFile(&nextCfg) < 0) {
             printf("[INIT] [WARN] gadget reload succeeded but failed to commit staged config\n");
+            restore();
             return RET_ERR;
         }
         if (unlink(CONFIG_STAGING_FILE_PATH) < 0 && errno != ENOENT) {

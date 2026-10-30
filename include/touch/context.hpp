@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include "../context.hpp"
 
 #define TOUCH_MAX_POINTS 10
@@ -25,10 +26,15 @@ struct TouchContext {
     int max_y{0};
     int has_range{0};
     TouchState state{};
+    uint64_t nextProbeMs{0};
 
     TouchContext(Audiox *context);
+    ~TouchContext();
+    TouchContext(const TouchContext &) = delete;
+    TouchContext &operator=(const TouchContext &) = delete;
 
     void poll();
+    void suspend();
 
     inline bool isReady() const {
         return fd >= 0;

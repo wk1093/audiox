@@ -43,6 +43,7 @@
         <button class="tab-btn" data-tab="volume">Volume</button>
         <button class="tab-btn" data-tab="soundboard">Soundboard</button>
         <button class="tab-btn" data-tab="midi">MIDI</button>
+        <button class="tab-btn" data-tab="macros">Macros</button>
         <button class="tab-btn" data-tab="config">Config</button>
         <button class="tab-btn" data-tab="system">System</button>
       </nav>
@@ -183,6 +184,75 @@
       </div>
     </section>
 
+    <!-- Macros page -->
+    <section class="page" data-page="macros">
+      <div class="macros-layout">
+        <section class="card stack">
+          <h2>Named Automation Macros</h2>
+          <p class="small">Save up to 16 named macros and Run them here, optionally binding a MIDI pad. Only keyboard action plans need USB Keyboard enabled in Config and a connected USB host. Light/MIDI action plans need the selected controller connected. Sound, effects and volume actions do not need either device.</p>
+          <div class="cfg-row">
+            <label for="macro-name">Name (up to 63 UTF-8 bytes)</label>
+            <input id="macro-name" type="text" maxlength="63" autocomplete="off" placeholder="My automation">
+          </div>
+          <label><input id="macro-midi-enabled" type="checkbox"> Bind to a MIDI pad (optional)</label>
+          <div id="macro-midi-binding" class="stack" hidden>
+          <div class="cfg-row">
+            <label for="chord-channel">MIDI Channel (0&ndash;15)</label>
+            <input id="chord-channel" type="number" min="0" max="15" value="0">
+          </div>
+          <div class="cfg-row">
+            <label for="chord-note">Note (0&ndash;127)</label>
+            <input id="chord-note" type="number" min="0" max="127" value="60">
+          </div>
+          <button id="btn-chord-learn" type="button" aria-pressed="false" disabled>Learn MIDI Pad</button>
+          <p id="chord-learn-status" class="small" role="status">Choose a channel/note above, or learn the next pad you press.</p>
+          </div>
+          <div class="cfg-row">
+            <label for="chord-mode">Macro Type</label>
+            <select id="chord-mode">
+              <option value="chord">Keyboard chord</option>
+              <option value="script">Lua sequence</option>
+            </select>
+          </div>
+          <div id="chord-capture-editor" class="stack">
+          <div class="cfg-row">
+            <label for="chord-keys">Keyboard Chord</label>
+            <input id="chord-keys" type="text" maxlength="63" placeholder="Click Record Chord, then press your shortcut" autocomplete="off" spellcheck="false" aria-describedby="chord-capture-status">
+          </div>
+          <button id="btn-chord-record" type="button" aria-pressed="false">Record Chord</button>
+          <p id="chord-capture-status" class="small" role="status">Click Record Chord, hold your modifiers, press the key(s), then release. You can also enter CTRL+SHIFT+F13 manually.</p>
+          <p class="small">Captures physical key positions (host layout applies), up to six keys plus Ctrl, Shift, Alt, and Meta/Windows. Letters, digits, F1&ndash;F24, Enter, Escape, Tab, Space, Backspace, Delete, arrows and navigation keys are supported. Some system/browser shortcuts cannot be captured; enter those manually.</p>
+          </div>
+          <div id="chord-script-editor" class="stack" hidden>
+            <label for="chord-script">Lua Sequence</label>
+            <textarea id="chord-script" rows="9" maxlength="2047" spellcheck="false" placeholder='state.count = (state.count or 0) + 1&#10;if event.velocity &gt; 80 then&#10;  press("SHIFT+A")&#10;  wait(200)&#10;  release()&#10;end&#10;type("Hello!", 80)'></textarea>
+            <p class="small">tap("CTRL+A"), press("SHIFT+A"), release(), type("Hello!", 80), wait(milliseconds), light(velocity). press replaces the held chord; release clears all keys. Taps/text release any previous hold first; sequence completion/cancellation releases everything automatically. type uses US-layout ASCII (including newline and tab); its optional interval is milliseconds between character presses (default 50, minimum 30). Host layout and Caps Lock must match.</p>
+            <p class="small">Lua runs for each queued Run or MIDI note-on. event.source is "web" or "midi"; event.channel, event.note and event.velocity are numbers; event.pressed is true. Web runs use the configured channel/note and velocity 127. state persists across triggers (32 named scalar values). Edits, cancellation/failure and restart reset state; USB loss does not globally reset non-keyboard scripts. millis() and epoch() read original trigger-time snapshots. value_type() inspects values; type() types text.</p>
+            <p class="small">sound.play("clip.wav", 1.0), sound.stop_all(), midi.note_on(0,60,100), midi.note_off(0,60), midi.cc(0,1,64), midi.program(0,5), and midi.send(status,...) queue device actions. Sound must already be preloaded; MIDI goes to the controller, not the USB host. log("message") writes to device logs. No files, shell, network, or module loading. <a href="https://wklab.net/audiox/docs/lua/" target="_blank" rel="noopener noreferrer">Lua guide, API reference and recipes</a> (requires internet on your browser).</p>
+            <p class="small">effects.enable(id, true), effects.toggle(id), effects.set(id, parameter, value) use existing effect IDs and actual parameter ranges (invalid values report runtime errors). volume.set(id, 0..100) and volume.adjust(id, -100..100) use routing thing IDs from GET /api/audio/volumes, not display names. 100% is unity gain; adjustments are percentage points clamped to 0..100. Device controls are runtime-only; routing automation is planned later.</p>
+            <p class="small">Limits: 2,047 UTF-8 bytes, 64 actions, 256 typed characters (255 per type call), 60 seconds scheduled time, 10,000 instructions, 256 KiB Lua memory. Saving checks syntax; execution errors appear in device logs and here after Reload Macros. No actions or state updates from a failed evaluation are applied.</p>
+          </div>
+          <div class="grid-2">
+            <div class="stack">
+              <label for="chord-idle-velocity">Idle LED Velocity / Color</label>
+              <input id="chord-idle-velocity" type="number" min="0" max="127" value="0">
+            </div>
+            <div class="stack">
+              <label for="chord-pressed-velocity">Pressed LED Velocity / Color</label>
+              <input id="chord-pressed-velocity" type="number" min="0" max="127" value="0">
+            </div>
+          </div>
+          <p class="small">Leave both velocities at 0 for web-only macros with no default lighting. 0 turns the LED off; 1&ndash;127 selects your controller's velocity/color. Uses the global lighting output channel. MIDI-bound macro colors override sound/action colors on the same note; Dim Lights still applies. Lua light() requires an enabled MIDI binding and the selected controller connected, even for web Run. Without a binding it reports a runtime error; it temporarily overrides the bound pad.</p>
+          <div class="macro-actions">
+            <button id="btn-chord-save" class="primary">Save Macro</button>
+            <button id="btn-macro-new" class="flat">New Macro</button>
+            <button id="btn-chord-load" class="flat">Reload Macros</button>
+          </div>
+          <div id="chord-list" class="stack"></div>
+        </section>
+      </div>
+    </section>
+
     <!-- MIDI page -->
     <section class="page" data-page="midi">
       <div class="midi-layout">
@@ -259,6 +329,8 @@
             <button id="btn-light-save" class="primary">Save Lighting</button>
             <button id="btn-light-refresh" class="flat">Refresh LEDs</button>
           </div>
+          <button id="btn-light-dim" class="flat" aria-pressed="false" disabled>Dim lights</button>
+          <p class="small" style="margin:0;">Temporarily turns off all MIDI lights without stopping audio or changing saved colors. Restore them here or reboot to return to normal lighting.</p>
         </section>
       </div>
     </section>
@@ -266,7 +338,7 @@
     <section class="page" data-page="config">
       <div class="config-layout">
         <div class="cfg-wrap card">
-          <h2>Audio Config</h2>
+          <h2>USB Config</h2>
           <div class="cfg-row">
             <label for="usb_playback_channels">USB Playback Channels</label>
             <input id="usb_playback_channels" type="number" min="1" max="16" step="1" value="2">
@@ -280,6 +352,22 @@
             <input id="usb_sample_size" type="number" min="1" max="4" step="1" value="2">
           </div>
 
+          <div class="cfg-row">
+            <label for="midi_passthrough">USB MIDI Passthrough</label>
+            <select id="midi_passthrough">
+              <option value="off">Disabled (no MIDI USB function)</option>
+              <option value="unmapped">Unmapped messages only</option>
+              <option value="all">All messages, including mapped</option>
+            </select>
+          </div>
+          <div class="cfg-row">
+            <label for="keyboard_macros">USB Keyboard Chords</label>
+            <select id="keyboard_macros">
+              <option value="0">Disabled (no keyboard USB function)</option>
+              <option value="1">Enabled</option>
+            </select>
+          </div>
+          <p class="small">Save stages these settings. Reload applies them and briefly reconnects USB audio, MIDI, keyboard, and networking. MIDI flows from the selected controller to the host only; host input is not routed back. Choose Unmapped when enabling passthrough for the first time.</p>
           <div class="actions-3">
             <button id="btn-load">Load Config</button>
             <button id="btn-save" class="primary">Save Config</button>

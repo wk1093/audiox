@@ -27,13 +27,19 @@ struct FramebufferContext {
     struct fb_var_screeninfo orig_vinfo;
     int has_orig_vinfo;
     char dev_path[32];
+    uint64_t nextProbeMs{0};
 
     FramebufferContext(Audiox *context);
+    ~FramebufferContext();
+    FramebufferContext(const FramebufferContext &) = delete;
+    FramebufferContext &operator=(const FramebufferContext &) = delete;
 
     // Hardware-related functions
     void waitForFramebuffer(int timeoutSeconds);
     bool isReady() const WARN_UNUSED;
     void checkForFramebuffer();
+    void release();
+    void resetUi();
     void drawPixel(int x, int y, unsigned char r, unsigned char g, unsigned char b);
 
     // Low-level drawing functions

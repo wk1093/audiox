@@ -17,6 +17,8 @@ normal: sound/usb/snd-usb-audio
 normal: drivers/usb/gadget/libcomposite
 normal: drivers/usb/gadget/function/u_audio
 normal: drivers/usb/gadget/function/usb_f_uac2
+normal: drivers/usb/gadget/function/usb_f_midi
+normal: drivers/usb/gadget/function/usb_f_hid
 
 # Bluetooth controller support. The dependency resolver includes the core
 # Bluetooth stack and transport dependencies automatically.

@@ -66,7 +66,23 @@ DNSMASQ_VERSION ?= 2.93
 DNSMASQ_SHA256 ?= 0c00d4e5c97c8306e5fb932b348b34269c9c29a0e7df0e8e82958b407092bc19
 DNSMASQ_BIN ?= $(SHARED_OUT_DIR)/dnsmasq-$(DNSMASQ_VERSION)/dnsmasq
 DNSMASQ_CONF ?= $(CURDIR)/root/etc/dnsmasq.conf
-DNSMASQ_TEST_RUNNER ?= $(shell command -v qemu-aarch64 2>/dev/null)
+
+# Official Lua source is fetched and verified at build time, never vendored.
+LUA_VERSION := 5.4.9
+LUA_SHA256 := 2335b6c582a52654f94612bf10d2f4672805d05329aa6568b1d8cd9e5c6fb8e6
+LUA_BUILD_ROOT ?= $(SHARED_OUT_DIR)/lua-aarch64
+LUA_INCLUDE_DIR = $(LUA_BUILD_ROOT)/include
+LUA_STATIC_LIB = $(LUA_BUILD_ROOT)/lib/liblua.a
+LUA_HEADERS = $(addprefix $(LUA_INCLUDE_DIR)/,lua.h lauxlib.h luaconf.h)
+LUA_LICENSE = $(LUA_BUILD_ROOT)/COPYRIGHT.html
+LUA_STAGED_LICENSE = $(ROOTFS_DIR)/usr/share/licenses/audiox/lua/COPYRIGHT.html
+LUA_AR ?= $(patsubst %gcc,%ar,$(CC))
+HOSTCC ?= cc
+HOSTAR ?= ar
+HOST_LUA_BUILD_ROOT ?= $(SHARED_OUT_DIR)/host/lua
+HOST_LUA_INCLUDE_DIR = $(HOST_LUA_BUILD_ROOT)/include
+HOST_LUA_STATIC_LIB = $(HOST_LUA_BUILD_ROOT)/lib/liblua.a
+HOST_LUA_HEADERS = $(addprefix $(HOST_LUA_INCLUDE_DIR)/,lua.h lauxlib.h luaconf.h)
 
 ifeq ($(ENABLE_ALSA),1)
 RUNTIME_FLAGS += -I$(ALSA_INCLUDE_DIR)
@@ -74,6 +90,8 @@ RUNTIME_LIBS += -L$(ALSA_LIB_DIR) -lasound -ldl
 endif
 RUNTIME_FLAGS += -I$(SBC_INCLUDE_DIR)
 RUNTIME_LIBS += $(SBC_STATIC_LIB)
+RUNTIME_FLAGS += -I$(LUA_INCLUDE_DIR)
+RUNTIME_LIBS += $(LUA_STATIC_LIB) -lm
 
 # SemVer version information.
 # Override on the command line with e.g.:
@@ -86,7 +104,7 @@ RUNTIME_LIBS += $(SBC_STATIC_LIB)
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 11
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.2
+AUDIOX_VERSION_PRERELEASE ?= beta.5
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
 $(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
@@ -105,8 +123,6 @@ HOSTCXX ?= g++
 HOST_CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Werror
 HOST_NCURSES_CFLAGS ?= $(shell pkg-config --cflags ncursesw 2>/dev/null)
 HOST_NCURSES_LIBS ?= $(shell pkg-config --libs ncursesw 2>/dev/null)
-HOST_AUDIO_CFLAGS ?= $(shell pkg-config --cflags alsa sndfile 2>/dev/null)
-HOST_AUDIO_LIBS ?= $(shell pkg-config --libs alsa sndfile 2>/dev/null)
 
 -include $(AUDIOX_CONFIG_FILE)
 
@@ -181,19 +197,7 @@ CONFIG_MENU_SRC = $(SCRIPTS_DIR)/audiox-menuconfig.cpp
 UPDATE_PACK_BIN = $(SHARED_OUT_DIR)/host/audiox-update-pack
 UPDATE_PACK_SRC = $(SCRIPTS_DIR)/audiox-update-pack.cpp
 UPDATE_ARCHIVE ?= $(OUT_DIR)/audiox-update.axu
-AUDIO_BENCH_BIN = $(OUT_DIR)/host/audiox-audio-bench
-AUDIO_ENGINE_TEST_BIN = $(OUT_DIR)/host/audiox-audio-engine-test
 AUDIO_GRAPH_MODE_STAMP = $(OUT_DIR)/.audiox_graph_mode_$(AUDIOX_USE_SHARED_GRAPH_PROCESSOR)
-AUDIO_BENCH_SRCS = \
-	tools/audiox-audio-bench.cpp \
-	src/audio/graph_processor.cpp \
-	src/audio/engine.cpp \
-	src/audio/effects/slot.cpp \
-	src/audio/effects/gain.cpp \
-	src/audio/effects/distortion.cpp \
-	src/audio/effects/gate.cpp \
-	src/audio/effects/pitch.cpp \
-	src/audio/effects/reverb.cpp
 BOOT_CONFIG_FILE ?= $(OUT_DIR)/dev-config.txt
 BOOT_KERNEL_FILE = $(OUT_DIR)/bootfiles/$(KERNEL_IMAGE)
 BOOT_CMDLINE_FILE ?= $(OUT_DIR)/dev-cmdline.txt
@@ -288,8 +292,6 @@ BOOTLOADER_DEFINES = -DKERNEL_VERSION='"$(KV)"' -DAUDIOX_QEMU=$(AUDIOX_QEMU)
 RUNTIME_OBJS := $(patsubst src/%.cpp,$(RUNTIME_OBJ_DIR)/%.o,$(RUNTIME_CPP_SRCS))
 RUNTIME_MAIN_OBJ := $(patsubst src/%.cpp,$(RUNTIME_OBJ_DIR)/%.o,$(RUNTIME_MAIN_SRC))
 WATCHDOG_OBJ := $(patsubst src/%.cpp,$(RUNTIME_OBJ_DIR)/%.o,$(WATCHDOG_SRC))
-WATCHDOG_HOST_BIN := $(OUT_DIR)/host/audiox-watchdog-test
-WATCHDOG_HUNG_CHILD_BIN := $(OUT_DIR)/host/audiox-watchdog-hung-child
 BOOTLOADER_OBJS := $(patsubst src/%.cpp,$(BOOTLOADER_OBJ_DIR)/%.o,$(BOOTLOADER_SRCS))
 RUNTIME_DEPS_FILES := $(RUNTIME_OBJS:.o=.d) $(RUNTIME_MAIN_OBJ:.o=.d) $(WATCHDOG_OBJ:.o=.d)
 BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
@@ -297,7 +299,7 @@ BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
 .DEFAULT_GOAL := all
 
-.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg upload_bootloader upload_kernel upload_cmdline update_archive upload_update boot_config stage_ffmpeg bluetooth_firmware dnsmasq check_dnsmasq_conf test-dnsmasq-config config menuconfig defconfig pi4_defconfig pi5_defconfig olddefconfig print-config print-version audio-bench run-audio-bench test-audio-engine test-watchdog test-resolve-modules debug debug_ui debug-attach debug-reset-disk debug-clean qemu_kernel qemu_disk qemu_debug qemu_require_debug_build
+.PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg upload_bootloader upload_kernel upload_cmdline update_archive upload_update boot_config stage_ffmpeg bluetooth_firmware dnsmasq check_dnsmasq_conf config menuconfig defconfig pi4_defconfig pi5_defconfig olddefconfig print-config print-version debug debug_ui debug-attach debug-reset-disk debug-clean qemu_kernel qemu_disk qemu_debug qemu_require_debug_build
 
 all: initramfs
 
@@ -339,166 +341,7 @@ $(CONFIG_MENU_BIN): $(CONFIG_MENU_SRC)
 	@pkg-config --exists ncursesw || { echo "ncurses development files are required (pkg-config ncursesw)"; exit 1; }
 	$(HOSTCXX) $(HOST_CXXFLAGS) $(HOST_NCURSES_CFLAGS) -o "$@" "$<" $(HOST_NCURSES_LIBS)
 
-audio-bench: $(AUDIO_BENCH_BIN)
-
-run-audio-bench: $(AUDIO_BENCH_BIN)
-	@"$(AUDIO_BENCH_BIN)" "$(if $(BENCH_INPUT),$(BENCH_INPUT),-)" "$(BENCH_ALSA_DEVICE)" "$(BENCH_PORT)"
-
-test-audio-engine: $(AUDIO_ENGINE_TEST_BIN)
-	@$(AUDIO_ENGINE_TEST_BIN)
-
-.PHONY: test-soundboard-config
-test-soundboard-config: $(OUT_DIR)/host/audiox-soundboard-config-test
-	@"$<"
-
-SOUNDBOARD_CONFIG_TEST_SRCS = tests/soundboard_config_test.cpp src/context.cpp \
-	src/config/basic.cpp src/config/midi_map.cpp src/config/backup.cpp \
-	src/midi/midi.cpp src/audio/setup.cpp src/audio/gadget_volume.cpp src/http/server.cpp src/http/logs.cpp src/init/recovery.cpp src/touch/touch.cpp \
-	$(filter-out tools/audiox-audio-bench.cpp src/audio/engine.cpp src/audio/graph_processor.cpp,$(AUDIO_BENCH_SRCS))
-
-$(OUT_DIR)/host/audiox-soundboard-config-test: $(SOUNDBOARD_CONFIG_TEST_SRCS) src/http/api.cpp src/framebuffer/ui.cpp $(wildcard include/config/*.hpp include/midi/*.hpp include/audio/*.hpp include/audio/effects/*.hpp include/http/*.hpp include/touch/*.hpp include/framebuffer/*.hpp) include/defs.hpp include/watchdog_heartbeat.hpp
-	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-format-truncation -Wno-unused-parameter -Iinclude \
-		-DROOT_MOUNT_POINT='"."' -ffunction-sections -fdata-sections \
-		-Wl,--gc-sections -o "$@" $(SOUNDBOARD_CONFIG_TEST_SRCS) \
-		$(shell pkg-config --cflags --libs alsa) -pthread -lm
-
-.PHONY: test-boot-recovery
-test-boot-recovery: $(OUT_DIR)/host/audiox-boot-recovery-test
-	@"$<"
-
-$(OUT_DIR)/host/audiox-boot-recovery-test: tests/boot_recovery_test.cpp include/boot_recovery.hpp include/defs.hpp include/update_archive.hpp
-	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" "$<"
-
-.PHONY: test-config-backup
-test-config-backup: $(OUT_DIR)/host/audiox-config-backup-test $(OUT_DIR)/host/audiox-config-backup-http-test
-	@"$(OUT_DIR)/host/audiox-config-backup-test"
-	@"$(OUT_DIR)/host/audiox-config-backup-http-test"
-
-$(OUT_DIR)/host/audiox-config-backup-test: tests/config_backup_test.cpp src/config/backup.cpp include/config/backup.hpp include/update_archive.hpp include/watchdog_heartbeat.hpp
-	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/config_backup_test.cpp src/config/backup.cpp
-
-$(OUT_DIR)/host/audiox-config-backup-http-test: tests/config_backup_http_test.cpp src/config/backup.cpp src/http/server.cpp include/config/backup.hpp include/http/context.hpp include/update_archive.hpp include/watchdog_heartbeat.hpp
-	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-format-truncation -Wno-unused-parameter -Iinclude \
-		-DROOT_MOUNT_POINT='"."' -ffunction-sections -fdata-sections -Wl,--gc-sections \
-		-o "$@" tests/config_backup_http_test.cpp src/config/backup.cpp -pthread
-
-.PHONY: test-audio-pcm-recover
-test-audio-pcm-recover: $(OUT_DIR)/host/audiox-audio-pcm-recover-test
-	@"$<"
-
-.PHONY: test-system-logs
-test-system-logs: $(OUT_DIR)/host/audiox-system-logs-test
-	@"$<"
-
-$(OUT_DIR)/host/audiox-system-logs-test: tests/system_logs_test.cpp src/http/logs.cpp include/http/logs.hpp include/http/context.hpp
-	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -DROOT_MOUNT_POINT='"."' -o "$@" "$<"
-
-.PHONY: test-gadget-volume test-diagnostics test-mdns
-.PHONY: test-system
-test-system: $(OUT_DIR)/host/audiox-system-test
-	@"$<"
-
-$(OUT_DIR)/host/audiox-system-test: tests/system_test.cpp include/system.hpp include/defs.hpp
-	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" "$<"
-
-.PHONY: test-gadget-setup
-test-gadget-setup: $(OUT_DIR)/host/audiox-gadget-setup-test
-	@"$<"
-
-$(OUT_DIR)/host/audiox-gadget-setup-test: tests/gadget_setup_test.cpp src/init/gadget.cpp $(wildcard include/audio/*.hpp include/config/*.hpp) include/context.hpp include/init.hpp include/system.hpp include/defs.hpp
-	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-parameter -Iinclude \
-		-DGADGET_ROOT='"gadget"' -ffunction-sections -fdata-sections -Wl,--gc-sections \
-		-o "$@" "$<" $(shell pkg-config --cflags alsa)
-
-test-mdns: $(OUT_DIR)/host/audiox-mdns-test
-	@"$<"
-
-$(OUT_DIR)/host/audiox-mdns-test: tests/mdns_test.cpp src/http/mdns.cpp include/http/mdns.hpp
-	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -fsanitize=address,undefined -Iinclude -o "$@" tests/mdns_test.cpp src/http/mdns.cpp
-
-test-gadget-volume: $(OUT_DIR)/host/audiox-gadget-volume-test-0 $(OUT_DIR)/host/audiox-gadget-volume-test-1
-	@"$(OUT_DIR)/host/audiox-gadget-volume-test-0"
-	@"$(OUT_DIR)/host/audiox-gadget-volume-test-1"
-
-.PHONY: test-audio-runtime
-test-audio-runtime: $(OUT_DIR)/host/audiox-audio-runtime-test-0 $(OUT_DIR)/host/audiox-audio-runtime-test-1
-	@"$(OUT_DIR)/host/audiox-audio-runtime-test-0"
-	@"$(OUT_DIR)/host/audiox-audio-runtime-test-1"
-
-$(OUT_DIR)/host/audiox-audio-runtime-test-%: tests/audio_runtime_test.cpp src/audio/processing.cpp src/audio/graph_processor.cpp src/audio/processing_fx.cpp src/audio/gadget_volume.cpp $(wildcard src/audio/effects/*.cpp include/audio/*.hpp include/audio/*.h) $(AUDIOX_CONFIG_FILE)
-	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-function -Wno-format-truncation -Wno-unused-parameter \
-		-Iinclude -DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) -DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) -DAUDIOX_USE_SHARED_GRAPH_PROCESSOR=$* \
-		-ffunction-sections -fdata-sections -Wl,--gc-sections -o "$@" \
-		tests/audio_runtime_test.cpp src/audio/graph_processor.cpp src/audio/processing_fx.cpp src/audio/gadget_volume.cpp \
-		$(wildcard src/audio/effects/*.cpp) $(shell pkg-config --cflags --libs alsa) -pthread -lm
-
-$(OUT_DIR)/host/audiox-gadget-volume-test-%: tests/gadget_volume_test.cpp src/audio/processing.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp $(wildcard include/audio/*.hpp include/audio/*.h) $(AUDIOX_CONFIG_FILE)
-	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-function -Wno-format-truncation -Wno-unused-parameter \
-		-Iinclude -DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) -DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) -DAUDIOX_USE_SHARED_GRAPH_PROCESSOR=$* \
-		-ffunction-sections -fdata-sections -Wl,--gc-sections -o "$@" \
-		tests/gadget_volume_test.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp $(shell pkg-config --cflags --libs alsa) -pthread -lm
-
-test-diagnostics: $(OUT_DIR)/host/audiox-diagnostics-test
-	@"$<"
-
-$(OUT_DIR)/host/audiox-diagnostics-test: tests/diagnostics_test.cpp src/init/diagnostics.cpp include/diagnostics.hpp
-	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/diagnostics_test.cpp
-
-$(OUT_DIR)/host/audiox-audio-pcm-recover-test: tests/audio_pcm_recover_test.cpp include/audio/alsa_pcm.h include/audio/health.hpp include/defs.hpp
-	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-parameter -Iinclude $(shell pkg-config --cflags alsa) -o "$@" "$<" $(shell pkg-config --libs alsa)
-
-test-watchdog: $(WATCHDOG_HOST_BIN)
-test-watchdog: $(WATCHDOG_HOST_BIN) $(WATCHDOG_HUNG_CHILD_BIN)
-	@"$(WATCHDOG_HOST_BIN)" /bin/false 2 "" > "$(OUT_DIR)/watchdog-crash-test.log" 2>&1
-	@grep -q "main process exited" "$(OUT_DIR)/watchdog-crash-test.log"
-	@"$(WATCHDOG_HOST_BIN)" "$(WATCHDOG_HUNG_CHILD_BIN)" 1 "" > "$(OUT_DIR)/watchdog-hang-test.log" 2>&1
-	@grep -q "main-loop heartbeat timed out" "$(OUT_DIR)/watchdog-hang-test.log"
-	@echo "watchdog exit and heartbeat-timeout tests passed"
-	@bash tests/watchdog_service_test.sh "$(WATCHDOG_HOST_BIN)" "$(WATCHDOG_HUNG_CHILD_BIN)" "$(OUT_DIR)/watchdog-service-test"
-
-test-resolve-modules:
-	@bash tests/resolve_modules_test.sh
-
-BENCH_INPUT ?=
-BENCH_ALSA_DEVICE ?= default
-BENCH_PORT ?= 8765
-
-$(AUDIO_BENCH_BIN): $(AUDIO_BENCH_SRCS) $(AUDIOX_CONFIG_FILE) include/audio/pcm_convert.hpp include/audio/engine.hpp include/audio/graph_processor.hpp include/audio/effects/slot.hpp
-	@mkdir -p "$(dir $@)"
-	@command -v "$(HOSTCXX)" >/dev/null || { echo "Host C++ compiler not found: $(HOSTCXX)"; exit 1; }
-	@pkg-config --exists alsa sndfile || { echo "Host ALSA and libsndfile development files are required (pkg-config alsa sndfile)"; exit 1; }
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude $(HOST_AUDIO_CFLAGS) \
-		-DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) \
-		-DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) \
-		-DAUDIOX_BENCH_HTML='"$(CURDIR)/web/audio-bench.html"' \
-		-o "$@" $(AUDIO_BENCH_SRCS) $(HOST_AUDIO_LIBS) -pthread -lm
-
-$(AUDIO_ENGINE_TEST_BIN): tests/audio_engine_test.cpp $(filter-out tools/audiox-audio-bench.cpp,$(AUDIO_BENCH_SRCS)) include/audio/pcm_convert.hpp include/audio/engine.hpp include/audio/graph_processor.hpp $(AUDIOX_CONFIG_FILE)
-	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) \
-		-DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) -o "$@" tests/audio_engine_test.cpp \
-		$(filter-out tools/audiox-audio-bench.cpp,$(AUDIO_BENCH_SRCS)) -pthread -lm
-
-$(WATCHDOG_HOST_BIN): $(WATCHDOG_SRC) include/boot_recovery.hpp include/update_archive.hpp
-	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -DAUDIOX_WATCHDOG_STARTUP_TIMEOUT_MS=3000 \
-		-DAUDIOX_WATCHDOG_HEARTBEAT_TIMEOUT_MS=1200 -o "$@" "$<"
-
-$(WATCHDOG_HUNG_CHILD_BIN): tests/watchdog_hung_child.cpp
-	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -o "$@" "$<"
+include $(CURDIR)/tests/Makefile
 
 fetch_deps:
 	@mkdir -p $(OUT_DIR)
@@ -610,6 +453,15 @@ $(SBC_STATIC_LIB) $(SBC_HEADER) &:
 
 dnsmasq: $(DNSMASQ_BIN)
 
+.PHONY: lua
+lua: $(LUA_STATIC_LIB) $(LUA_HEADERS) $(LUA_LICENSE)
+
+$(LUA_STATIC_LIB) $(LUA_HEADERS) $(LUA_LICENSE) &: scripts/build_lua.sh
+	@bash "$(CURDIR)/scripts/build_lua.sh" "$(LUA_VERSION)" "$(LUA_SHA256)" "$(LUA_BUILD_ROOT)" "$(CC)" "$(LUA_AR)" "$(PKG_FETCH)"
+
+$(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS) &: scripts/build_lua.sh
+	@bash "$(CURDIR)/scripts/build_lua.sh" "$(LUA_VERSION)" "$(LUA_SHA256)" "$(HOST_LUA_BUILD_ROOT)" "$(HOSTCC)" "$(HOSTAR)" "$(PKG_FETCH)"
+
 $(DNSMASQ_BIN): scripts/build_dnsmasq.sh
 	@"$(CURDIR)/scripts/build_dnsmasq.sh" "$(DNSMASQ_VERSION)" "$(DNSMASQ_SHA256)" "$(SHARED_OUT_DIR)" "$@" "$(CC)" "$(PKG_FETCH)"
 
@@ -624,17 +476,6 @@ check_dnsmasq_conf:
 		echo "Update host-record, dns-server, and the /24 dhcp-range in $$conf."; \
 		exit 1; \
 	}
-
-test-dnsmasq-config: $(DNSMASQ_BIN) check_dnsmasq_conf
-	@if [ -n "$(DNSMASQ_TEST_RUNNER)" ]; then \
-		"$(DNSMASQ_TEST_RUNNER)" "$(DNSMASQ_BIN)" --test -C "$(DNSMASQ_CONF)"; \
-	elif command -v dnsmasq >/dev/null 2>&1; then \
-		echo "qemu-aarch64 not found; checking syntax with host dnsmasq"; \
-		dnsmasq --test -C "$(DNSMASQ_CONF)"; \
-	else \
-		echo "Error: need qemu-aarch64 or host dnsmasq to check $(DNSMASQ_CONF)"; \
-		exit 1; \
-	fi
 
 ffmpeg:
 	@if [ -x "$(FFMPEG_BIN)" ]; then \
@@ -703,9 +544,9 @@ $(RUNTIME_OBJ_DIR)/%.o: src/%.cpp
 	@mkdir -p $(dir $@)
 	$(RUNTIME_COMPILER) $(RUNTIME_FLAGS) $(RUNTIME_DEFINES) $(DEPFLAGS) -c -o $@ $<
 
-# Runtime objects include ALSA and SBC headers (bluetooth/context.hpp pulls in
-# sbc/sbc.h), so the sysroots must exist before any of them compile.
-$(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ): | $(RUNTIME_DEPS) $(SBC_STATIC_LIB) $(SBC_HEADER)
+# Runtime objects include ALSA, SBC, and Lua headers, so their build-only
+# dependencies must exist before compilation starts.
+$(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ): | $(RUNTIME_DEPS) $(SBC_STATIC_LIB) $(SBC_HEADER) $(LUA_STATIC_LIB) $(LUA_HEADERS)
 
 $(BOOTLOADER_ROOTFS_DIR)/init: $(BOOTLOADER_OBJS)
 	@echo "Compiling bootloader init..."
@@ -720,7 +561,7 @@ $(ROOTFS_DIR)/init: $(WATCHDOG_OBJ)
 	$(RUNTIME_COMPILER) $(RUNTIME_FLAGS) \
 		-o $(ROOTFS_DIR)/init $(WATCHDOG_OBJ) $(LIBS)
 
-$(ROOTFS_DIR)/sbin/audiox-main: $(RUNTIME_DEPS) $(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ) $(SBC_STATIC_LIB)
+$(ROOTFS_DIR)/sbin/audiox-main: $(RUNTIME_DEPS) $(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ) $(SBC_STATIC_LIB) $(LUA_STATIC_LIB)
 	@echo "Compiling audiox main process..."
 	mkdir -p $(dir $@)
 	$(RUNTIME_COMPILER) $(RUNTIME_FLAGS) \
@@ -735,7 +576,11 @@ bootloader_rootfs: $(BOOTLOADER_ROOTFS_DIR)/init $(BOOT_MODULE_LOAD_LIST) $(BOOT
 	cp -r "$(OUT_DIR)/bootmodules_staging/$(KV)" $(BOOTLOADER_ROOTFS_DIR)/lib/modules/
 	cp $(BOOT_MODULE_LOAD_BASE_LIST) $(BOOTLOADER_ROOTFS_DIR)/etc/bootmodule-load.list
 
-rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB) $(DNSMASQ_BIN) check_dnsmasq_conf
+$(LUA_STAGED_LICENSE): $(LUA_LICENSE)
+	@mkdir -p "$(dir $@)"
+	install -m 0644 "$<" "$@"
+
+rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB) $(LUA_STAGED_LICENSE) $(DNSMASQ_BIN) check_dnsmasq_conf
 	@echo "Creating runtime rootfs structure..."
 	mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/sbin $(ROOTFS_DIR)/etc
 	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev

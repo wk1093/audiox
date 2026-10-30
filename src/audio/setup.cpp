@@ -232,7 +232,8 @@ static int enqueueSfxEvent(AudioContext *ctx, uint8_t slotIndex, int holdStart, 
     return RET_OK;
 }
 
-static int queueSfxByPath(AudioContext *ctx, const char *sfxPath, int holdStart, float pitchRatio) {
+static int queueSfxByPath(AudioContext *ctx, const char *sfxPath, int holdStart, float pitchRatio,
+                          bool loadIfMissing = true) {
     if (!ctx || !sfxPath || !sfxPath[0]) {
         return RET_ERR;
     }
@@ -250,6 +251,10 @@ static int queueSfxByPath(AudioContext *ctx, const char *sfxPath, int holdStart,
     }
 
     if (slotIndex < 0) {
+        if (!loadIfMissing) {
+            printf("[AUDIO] [WARN] macro sound is not preloaded: %s\n", basename);
+            return RET_ERR;
+        }
         int reloadRc = ctx->reloadSfxBank();
         if (reloadRc == RET_ERR) {
             return RET_ERR;
@@ -367,6 +372,17 @@ int AudioContext::triggerSfxPitch(const char *sfxPath, float pitchRatio) {
         pitchRatio = 1.0f;
     }
     return queueSfxByPath(this, sfxPath, 0, pitchRatio);
+}
+
+int AudioContext::triggerPreloadedSfxPitch(const char *basename, float pitchRatio) {
+    if (!basename || !basename[0] || strnlen(basename, MIDI_SFX_PATH_MAX) >= MIDI_SFX_PATH_MAX ||
+        strchr(basename, '/') || strchr(basename, '\\')) {
+        printf("[AUDIO] [WARN] invalid preloaded macro sound basename\n");
+        return RET_ERR;
+    }
+    char path[sizeof(SFX_ROOT_DIR) + MIDI_SFX_PATH_MAX];
+    snprintf(path, sizeof(path), "%s/%s", SFX_ROOT_DIR, basename);
+    return queueSfxByPath(this, path, 0, pitchRatio, false);
 }
 
 int AudioContext::startHeldSfx(const char *sfxPath) {
@@ -492,7 +508,7 @@ uint8_t AudioContext::getSoundboardMode() const {
 void AudioContext::poll() {
     uint64_t now = audioMonotonicMs();
     if (now >= nextHotplugScanMs) {
-        nextHotplugScanMs = now + 1000ULL;
+        nextHotplugScanMs = now + AUDIOX_DEVICE_POLL_INTERVAL_MS;
         (void)rescanDevices();
     }
     int card = -1;

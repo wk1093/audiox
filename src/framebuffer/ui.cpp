@@ -764,6 +764,19 @@ struct ButtonState {
 
 static ButtonState buttonStates[10];
 
+void FramebufferContext::resetUi() {
+    if (soundboardUi.held && app && app->audio) app->audio->stopHeldSfx();
+    soundboardUi = {};
+    deviceListScrollState = {};
+    systemMetricsState = {};
+    for (auto &meter : meterSmoothingState) meter = {};
+    for (auto &button : buttonStates) button = {};
+    _calculatedLogoHeight = 0;
+    uiSleepEnabled = false;
+    uiSleepFrameDrawn = false;
+    uiSleepLastTouchDown = false;
+}
+
 static inline int imuiButton(FramebufferContext *fb, int buttonId, int x, int y, int w, int h,
                               const char *label, TouchState *touch) {
     if (buttonId >= 10) return 0;

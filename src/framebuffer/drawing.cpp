@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include "font8x8_basic.h"
 
 static inline uint32_t packColor(const FramebufferContext *fb, uint8_t r, uint8_t g, uint8_t b) {
@@ -148,6 +149,8 @@ void FramebufferContext::present() {
 
     struct fb_var_screeninfo vinfo;
     if (ioctl(fd, FBIOGET_VSCREENINFO, &vinfo) < 0) {
+        printf("[FBUI] [WARN] Framebuffer query failed: %s\n", strerror(errno));
+        release();
         return;
     }
 
@@ -156,7 +159,17 @@ void FramebufferContext::present() {
     vinfo.activate = FB_ACTIVATE_VBL;
     if (ioctl(fd, FBIOPAN_DISPLAY, &vinfo) < 0) {
         vinfo.activate = FB_ACTIVATE_NOW;
-        (void)ioctl(fd, FBIOPAN_DISPLAY, &vinfo);
+        if (ioctl(fd, FBIOPAN_DISPLAY, &vinfo) < 0) {
+            printf("[FBUI] [WARN] Framebuffer pan failed: %s\n", strerror(errno));
+            if (errno == ENODEV || errno == ENXIO || errno == EIO) {
+                release();
+            } else {
+                pageflip_enabled = 0;
+                draw_offset = front_page ? page_len : 0;
+                memcpy(buffer + draw_offset, stagingBuffer, page_len);
+            }
+            return;
+        }
     }
 
     front_page = draw_page;
@@ -171,8 +184,8 @@ void FramebufferContext::beginFrame() {
         draw_page = (front_page ^ 1u) & 1u;
         draw_offset = draw_page ? page_len : 0;
     } else {
-        draw_page = 0;
-        draw_offset = 0;
+        draw_page = front_page;
+        draw_offset = front_page ? page_len : 0;
     }
 
     if (stagingBuffer) {

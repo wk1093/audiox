@@ -51,6 +51,8 @@ static inline void normalizeConfig(ConfigData *cfg) {
     if (cfg->soundboardMode != SOUNDBOARD_MODE_HOLD) {
         cfg->soundboardMode = SOUNDBOARD_MODE_PLAY;
     }
+    if (cfg->midiPassthrough > 2) cfg->midiPassthrough = 0;
+    cfg->keyboardMacros = cfg->keyboardMacros ? 1 : 0;
 }
 
 static inline char *trimLeft(char *s) {
@@ -128,6 +130,10 @@ static int readConfigPath(const char *path, ConfigData *out, int warnIfMissing) 
             cfg.soundboardMode = soundboardModeFromString(value);
         } else if (strcmp(key, "framebuffer_view") == 0) {
             cfg.framebufferSoundboard = strcmp(value, "soundboard") == 0 ? 1 : 0;
+        } else if (strcmp(key, "midi_passthrough") == 0) {
+            cfg.midiPassthrough = strcmp(value, "unmapped") == 0 ? 1 : strcmp(value, "all") == 0 ? 2 : 0;
+        } else if (strcmp(key, "keyboard_macros") == 0) {
+            cfg.keyboardMacros = strcmp(value, "1") == 0;
         }
     }
 
@@ -163,18 +169,30 @@ int ConfigStore::writeConfigFile(ConfigData *cfg) {
 
     normalizeConfig(cfg);
 
-    int fd = open(CONFIG_REAL_FILE_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    const char *temporary = CONFIG_REAL_FILE_PATH ".tmp";
+    int fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
         printf("[CONFIG] [WARN] failed to open %s for writing: %s\n", CONFIG_REAL_FILE_PATH, strerror(errno));
         return -1;
     }
-    dprintf(fd, "usb_sample_rate=%u\n", cfg->sampleRate);
-    dprintf(fd, "usb_playback_channels=%u\n", cfg->playbackChannels);
-    dprintf(fd, "usb_capture_channels=%u\n", cfg->captureChannels);
-    dprintf(fd, "usb_sample_size=%u\n", cfg->sampleSize);
-    dprintf(fd, "soundboard_mode=%s\n", soundboardModeToString(cfg->soundboardMode));
-    dprintf(fd, "framebuffer_view=%s\n", cfg->framebufferSoundboard ? "soundboard" : "meters");
-    close(fd);
+    int n = dprintf(fd, "usb_sample_rate=%u\nusb_playback_channels=%u\nusb_capture_channels=%u\n"
+                   "usb_sample_size=%u\nsoundboard_mode=%s\nframebuffer_view=%s\n"
+                   "midi_passthrough=%s\nkeyboard_macros=%u\n",
+                   cfg->sampleRate, cfg->playbackChannels, cfg->captureChannels, cfg->sampleSize,
+                   soundboardModeToString(cfg->soundboardMode), cfg->framebufferSoundboard ? "soundboard" : "meters",
+                   cfg->midiPassthrough == 1 ? "unmapped" : cfg->midiPassthrough == 2 ? "all" : "off",
+                   cfg->keyboardMacros);
+    bool ok = n >= 0 && fsync(fd) == 0;
+    int error = errno;
+    if (close(fd) < 0 && ok) { ok = false; error = errno; }
+    if (ok && rename(temporary, CONFIG_REAL_FILE_PATH) < 0) { ok = false; error = errno; }
+    if (!ok) {
+        printf("[CONFIG] [WARN] failed to save %s: %s\n", CONFIG_REAL_FILE_PATH, strerror(error));
+        if (unlink(temporary) < 0 && errno != ENOENT) {
+            printf("[CONFIG] [WARN] failed to remove %s: %s\n", temporary, strerror(errno));
+        }
+        return RET_ERR;
+    }
     return 0;
 }
 

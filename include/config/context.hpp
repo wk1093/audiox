@@ -4,6 +4,7 @@
 #include <cstdint>
 #include "defs.hpp"
 #include "../context.hpp"
+#include "midi/usb.hpp"
 
 #define CONFIG_REAL_FILE_PATH ROOT_MOUNT_POINT "/config.txt"
 #define CONFIG_STAGING_FILE_PATH ROOT_MOUNT_POINT "/config.staging.txt"
@@ -91,6 +92,8 @@ struct ConfigData {
     uint32_t sampleSize;
     uint8_t soundboardMode;
     uint8_t framebufferSoundboard;
+    uint8_t midiPassthrough;
+    uint8_t keyboardMacros;
 };
 
 enum SoundboardMode : uint8_t {
@@ -145,6 +148,8 @@ struct MidiActionMapping {
 
 // Contents of midi_map.txt: note→sfx mappings plus lighting config.
 struct MidiMapData {
+    uint32_t chordCount;
+    MidiChord chords[MIDI_CHORDS_MAX];
     uint32_t mappingCount;
     struct MidiMapping {
         uint8_t note;

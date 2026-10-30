@@ -1,4 +1,4 @@
-name: Deploy AudioX Downloads
+name: Deploy AudioX Site and Docs
 
 on:
   workflow_call:
@@ -7,6 +7,7 @@ on:
     branches: [ "main" ]
     paths:
       - 'site/**'
+      - 'docs/**'
       - 'scripts/mirror-updates.sh'
       - 'web/styles.css'
       - 'logo.svg'
@@ -18,7 +19,7 @@ permissions:
 
 jobs:
   deploy:
-    name: Deploy download site and update mirror
+    name: Deploy site, docs, and update mirror
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -31,7 +32,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Checkout site and mirror tools
+      - name: Checkout site, docs, and mirror tools
         uses: actions/checkout@v4
         with:
           ref: ${{ github.workflow_sha }}
@@ -39,7 +40,20 @@ jobs:
             scripts
             site
             web
+            docs
           persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: Build VitePress documentation
+        run: |
+          npm ci --prefix docs
+          npm run docs:build --prefix docs
 
       - name: Prepare latest stable and nightly update archives
         env:
@@ -47,10 +61,15 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: bash scripts/mirror-updates.sh out/update-pages
 
+      - name: Add documentation to Pages artifact
+        run: |
+          mkdir -p out/update-pages/docs
+          cp -R docs/.vitepress/dist/. out/update-pages/docs/
+
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
-      - name: Upload update mirror
+      - name: Upload Pages site artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: out/update-pages

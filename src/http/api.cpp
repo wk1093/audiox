@@ -70,6 +70,7 @@
 #define HTTP_MIDI_LIGHT_SOUND_SET_PATH HTTP_API_PREFIX "midi/light_sound/set"
 #define HTTP_MIDI_LIGHT_SOUND_DELETE_PATH HTTP_API_PREFIX "midi/light_sound/delete"
 #define HTTP_MIDI_LIGHT_REFRESH_PATH HTTP_API_PREFIX "midi/light_refresh"
+#define HTTP_MIDI_LIGHT_DIM_PATH HTTP_API_PREFIX "midi/light_dim"
 #define HTTP_MIDI_SAMPLER_CONFIG_PATH HTTP_API_PREFIX "midi/sampler_config"
 #define HTTP_MIDI_LAST_CC_PATH HTTP_API_PREFIX "midi/last_cc"
 #define HTTP_MIDI_CC_VOLUMES_PATH HTTP_API_PREFIX "midi/cc_volumes"
@@ -2603,19 +2604,20 @@ static int handleMidiLastNote(HttpServer *server,
 
 	MidiContext *midi = server->app->midi;
 	if (!midi) {
-		static const char none[] = "{\"connected\":false,\"device\":\"\",\"last_note\":-1,\"last_velocity\":0,\"last_seq\":0}\n";
+		static const char none[] = "{\"connected\":false,\"device\":\"\",\"last_note\":-1,\"last_channel\":0,\"last_velocity\":0,\"last_seq\":0}\n";
 		return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", none, sizeof(none) - 1);
 	}
 
 	char out[512];
 	int n = snprintf(out,
 					 sizeof(out),
-					 "{\"connected\":%s,\"device\":\"%s\",\"last_note\":%d,\"last_velocity\":%u,\"last_seq\":%u}\n",
+					 "{\"connected\":%s,\"device\":\"%s\",\"last_note\":%d,\"last_velocity\":%u,\"last_seq\":%u,\"last_channel\":%u}\n",
 					 midi->connected ? "true" : "false",
 					 midi->devPath,
 					 midi->lastNoteSeq ? (int)midi->lastNote : -1,
 					 (unsigned)midi->lastVelocity,
-					 (unsigned)midi->lastNoteSeq);
+					 (unsigned)midi->lastNoteSeq,
+					 (unsigned)midi->lastChannel);
 	if (n < 0) {
 		n = 0;
 	}
@@ -3972,6 +3974,212 @@ static int handleMidiLightSoundDelete(HttpServer *server,
 	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
 }
 
+static int handleMidiChords(HttpServer *server, int cfd, const char *method,
+                           const char *body, size_t body_len, bool named = false, bool run = false) {
+	if (!server || !server->app || !server->app->config) return -1;
+	auto reply = [&](const char *status, const char *text) {
+		return server->sendResponse(cfd, status, "text/plain; charset=utf-8", text, strlen(text));
+	};
+	if (strcmp(method, "GET") && strcmp(method, "POST") && strcmp(method, "DELETE")) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+	if (run && strcmp(method, "POST")) return sendMethodNotAllowed(server, cfd);
+	MidiMapData data = server->app->config->readMidiMapFile();
+	if (strcmp(method, "GET") != 0) {
+		if (!body || body_len > MIDI_SCRIPT_MAX * 2 + 512 || memchr(body, '\0', body_len)) {
+			return reply("400 Bad Request", "invalid macro request size or encoding\n");
+		}
+		auto field = [&](const char *key, char *out, size_t capacity) {
+			int found = 0;
+			for (size_t start = 0; start < body_len;) {
+				size_t end = start;
+				while (end < body_len && body[end] != '&' && body[end] != '\n') ++end;
+				size_t keySize = strlen(key);
+				if (end - start > keySize && !memcmp(body + start, key, keySize) && body[start + keySize] == '=') {
+					size_t size = end - start - keySize - 1;
+					if (found || size >= capacity) return -1;
+					memcpy(out, body + start + keySize + 1, size);
+					out[size] = '\0';
+					found = 1;
+				}
+				start = end + 1;
+			}
+			return found;
+		};
+		char channelText[32]{}, noteText[32]{};
+		uint32_t id = 0;
+		char idText[32]{};
+		int idPresent = field("id", idText, sizeof(idText));
+		if (named && idPresent != 0) {
+			char *end = nullptr;
+			errno = 0;
+			unsigned long parsed = strtoul(idText, &end, 10);
+			if (idPresent != 1 || !idText[0] || idText[0] == '-' || *end || errno ||
+				!parsed || parsed > UINT32_MAX)
+				return reply("400 Bad Request", "invalid macro id\n");
+			id = static_cast<uint32_t>(parsed);
+		}
+		if (named && (run || !strcmp(method, "DELETE")) && !id)
+			return reply("400 Bad Request", "expected macro id\n");
+		bool needsBinding = !named || (!run && strcmp(method, "DELETE"));
+		if (needsBinding && (field("channel", channelText, sizeof(channelText)) != 1 ||
+			field("note", noteText, sizeof(noteText)) != 1)) {
+			return reply("400 Bad Request", "expected channel and note\n");
+		}
+		char *endChannel = nullptr, *endNote = nullptr;
+		long channel = strtol(channelText, &endChannel, 10), note = strtol(noteText, &endNote, 10);
+		if (needsBinding && (!channelText[0] || !noteText[0] || *endChannel || *endNote ||
+			channel < 0 || channel > 15 || note < 0 || note > 127)) {
+			return reply("400 Bad Request", "channel must be 0-15; note must be 0-127\n");
+		}
+		uint32_t index = 0;
+		while (index < data.chordCount && (named ? data.chords[index].id != id :
+			(!data.chords[index].midiEnabled || data.chords[index].channel != channel ||
+			 data.chords[index].note != note))) ++index;
+		if (named && id && index == data.chordCount)
+			return reply("404 Not Found", "macro not found\n");
+		if (run) {
+			auto *midi = server->app->midi;
+			if (!midi) return reply("503 Service Unavailable", "automation runtime unavailable\n");
+			midi->cachedMidiMap = data;
+			midi->syncMacros();
+			if (!midi->triggerMacro(index, 127, true))
+				return reply("409 Conflict", "macro is invalid or its trigger queue is full\n");
+			return reply("200 OK", "queued\n");
+		}
+		if (strcmp(method, "DELETE") == 0) {
+			if (index < data.chordCount) {
+				for (uint32_t j = index + 1; j < data.chordCount; ++j) data.chords[j - 1] = data.chords[j];
+				--data.chordCount;
+			}
+		} else {
+			MidiChord chord{};
+			if (index < data.chordCount) chord = data.chords[index];
+			if (named) {
+				char nameHex[128]{}, enabled[4]{};
+				if (field("name_hex", nameHex, sizeof(nameHex)) != 1 ||
+					!midiHexDecode(nameHex, chord.name, sizeof(chord.name)) || !chord.name[0] ||
+					field("midi_enabled", enabled, sizeof(enabled)) != 1 ||
+					(strcmp(enabled, "0") && strcmp(enabled, "1")))
+					return reply("400 Bad Request", "expected name (1-63 bytes) and midi_enabled=0/1\n");
+				for (const unsigned char *p = reinterpret_cast<const unsigned char *>(chord.name); *p; ++p)
+					if (*p < 32 || *p == 127) return reply("400 Bad Request", "name cannot contain control characters\n");
+				chord.midiEnabled = !strcmp(enabled, "1");
+			}
+			char hex[MIDI_SCRIPT_MAX * 2]{}, velocity[32]{};
+			chord.keys[0] = chord.script[0] = '\0';
+			int keysField = field("keys", chord.keys, sizeof(chord.keys));
+			int scriptField = field("script_hex", hex, sizeof(hex));
+			if (keysField < 0 || scriptField < 0 ||
+				!midiHexDecode(hex, chord.script, sizeof(chord.script))) {
+				return reply("400 Bad Request", "invalid macro keys or script encoding\n");
+			}
+			uint8_t report[8];
+			if ((!chord.script[0] && !midiChordReport(chord.keys, report)) ||
+				(chord.keys[0] && !midiChordReport(chord.keys, report))) {
+				return reply("400 Bad Request", "invalid chord; use e.g. CTRL+SHIFT+F13 (up to six keys)\n");
+			}
+			char error[192]{};
+			if (chord.script[0] && !midiValidateScript(chord.script, error, sizeof(error))) {
+				return reply("400 Bad Request", error);
+			}
+			auto readVelocity = [&](const char *name, uint8_t &target) {
+				int present = field(name, velocity, sizeof(velocity));
+				if (present < 0) return false;
+				if (present) {
+					char *end = nullptr;
+					long value = strtol(velocity, &end, 10);
+					if (!velocity[0] || *end || value < 0 || value > 127) return false;
+					target = value;
+				}
+				return true;
+			};
+			if (!readVelocity("idle_velocity", chord.idleVelocity) ||
+				!readVelocity("pressed_velocity", chord.pressedVelocity)) {
+				return reply("400 Bad Request", "lighting velocities must be 0-127\n");
+			}
+			if (index == MIDI_CHORDS_MAX) return reply("409 Conflict", "maximum 16 chord mappings\n");
+			if (index == data.chordCount) ++data.chordCount;
+			chord.channel = channel;
+			chord.note = note;
+			for (uint32_t j = 0; j < data.chordCount; ++j) {
+				if (j != index && chord.midiEnabled && data.chords[j].midiEnabled &&
+					data.chords[j].channel == chord.channel && data.chords[j].note == chord.note)
+					return reply("409 Conflict", "MIDI trigger already assigned to another macro\n");
+			}
+			data.chords[index] = chord;
+		}
+		if (server->app->config->writeMidiMapFile(&data) != RET_OK) {
+			return reply("500 Internal Server Error", "failed to save chord mappings\n");
+		}
+		if (server->app->midi) {
+			server->app->midi->cachedMidiMap = data;
+			server->app->midi->syncMacros();
+			server->app->midi->refreshAllLighting();
+		}
+	}
+	std::string out = named ? "{\"macros\":[" : "{\"chords\":[";
+	for (uint32_t i = 0; i < data.chordCount; ++i) {
+		const auto &chord = data.chords[i];
+		char row[160];
+		snprintf(row, sizeof(row), "%s{\"channel\":%u,\"note\":%u,\"keys\":\"%s\",",
+			i ? "," : "", chord.channel, chord.note, chord.keys);
+		out += row;
+		if (named) {
+			snprintf(row, sizeof(row), "\"id\":%u,\"midi_enabled\":%s,\"name\":\"",
+				chord.id, chord.midiEnabled ? "true" : "false");
+			out += row;
+			for (const unsigned char *p = reinterpret_cast<const unsigned char *>(chord.name); *p; ++p) {
+				if (*p == '"' || *p == '\\') out += '\\';
+				if (*p < 32) {
+					char escaped[7];
+					snprintf(escaped, sizeof(escaped), "\\u%04x", *p);
+					out += escaped;
+				} else out += static_cast<char>(*p);
+			}
+			out += "\",";
+		}
+		snprintf(row, sizeof(row), "\"idle_velocity\":%u,\"pressed_velocity\":%u,\"script_hex\":\"",
+			chord.idleVelocity, chord.pressedVelocity);
+		out += row;
+		out += midiHexEncode(chord.script);
+		out += "\",\"runtime_error_hex\":\"";
+		if (server->app->midi && i < server->app->midi->compiledMacroCount &&
+			midiMacroEqual(chord, server->app->midi->compiledMacros[i])) {
+			out += midiHexEncode(server->app->midi->macroErrors[i]);
+		}
+		out += "\"}";
+	}
+	out += "]}\n";
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out.data(), out.size());
+}
+
+static int handleMidiLightDim(HttpServer *server, int cfd, const char *method,
+							  const char *body, size_t body_len) {
+	if (!server || !server->app || !method) {
+		return -1;
+	}
+	if (strcmp(method, "GET") != 0 && strcmp(method, "POST") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+	if (!server->app->midi) {
+		static const char err[] = "{\"ok\":false,\"error\":\"midi unavailable\"}\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "application/json; charset=utf-8", err, sizeof(err) - 1);
+	}
+	MidiContext *midi = server->app->midi;
+	if (strcmp(method, "POST") == 0) {
+		char dimmed[16];
+		if (!body || !body_get_value(body, body_len, "dimmed", dimmed, sizeof(dimmed)) ||
+			(strcmp(dimmed, "0") != 0 && strcmp(dimmed, "1") != 0)) {
+			static const char err[] = "{\"ok\":false,\"error\":\"dimmed must be 0 or 1\"}\n";
+			return server->sendResponse(cfd, "400 Bad Request", "application/json; charset=utf-8", err, sizeof(err) - 1);
+		}
+		midi->setLightsDimmed(strcmp(dimmed, "1") == 0);
+	}
+	const char *out = midi->lightsDimmed ? "{\"ok\":true,\"dimmed\":true}\n" : "{\"ok\":true,\"dimmed\":false}\n";
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
+}
+
 static int handleMidiLightRefresh(HttpServer *server, int cfd, const char *method, const char *path) {
 	(void)path;
 	if (!server || !server->app || !method) {
@@ -4253,6 +4461,18 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_MIDI_LIGHT_REFRESH_PATH) == 0) {
 		return handleMidiLightRefresh(server, cfd, method, path);
+	}
+
+	if (strcmp(path, HTTP_MIDI_LIGHT_DIM_PATH) == 0) {
+		return handleMidiLightDim(server, cfd, method, body, body_len);
+	}
+	if (strcmp(path, HTTP_API_PREFIX "midi/chords") == 0) {
+		return handleMidiChords(server, cfd, method, body, body_len);
+	}
+	if (strcmp(path, HTTP_API_PREFIX "macros") == 0 ||
+		strcmp(path, HTTP_API_PREFIX "macros/run") == 0) {
+		return handleMidiChords(server, cfd, method, body, body_len, true,
+			strcmp(path, HTTP_API_PREFIX "macros/run") == 0);
 	}
 
 	if (strcmp(path, HTTP_MIDI_SAMPLER_CONFIG_PATH) == 0) {

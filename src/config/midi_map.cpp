@@ -581,6 +581,25 @@ static int parseMidiActionLine(const char *value,
     return RET_OK;
 }
 
+static void assignMacroIdentities(MidiMapData &data) {
+    for (uint32_t i = 0; i < data.chordCount; ++i) {
+        auto &macro = data.chords[i];
+        if (!macro.id) {
+            uint32_t candidate = 1;
+            for (;;) {
+                bool used = false;
+                for (uint32_t j = 0; j < data.chordCount; ++j)
+                    if (data.chords[j].id == candidate) used = true;
+                if (!used) break;
+                ++candidate;
+            }
+            macro.id = candidate;
+        }
+        if (!macro.name[0])
+            snprintf(macro.name, sizeof(macro.name), "MIDI %u:%u", macro.channel, macro.note);
+    }
+}
+
 static int readMidiMapPath(const char *path, MidiMapData *out) {
     if (!path || !out) {
         return RET_ERR;
@@ -588,6 +607,7 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
 
     MidiMapData data = {};
     data.samplerKeyboardEnabled = 0;
+    bool explicitSamplerEnabled = false;
     data.samplerKeyboardChannel = 0;
     data.samplerRootNote = 60;
     // defaults: channel 0, all states off (vel=0)
@@ -597,7 +617,7 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
         return (errno == ENOENT) ? RET_WARN : RET_ERR;
     }
 
-    char line[320];
+    char line[MIDI_SCRIPT_MAX * 2 + 384];
     while (fgets(line, sizeof(line), fp)) {
         char *eq = strchr(line, '=');
         if (!eq) {
@@ -649,15 +669,83 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             }
         } else if (strcmp(key, "note_action") == 0) {
             (void)parseMidiActionLine(value, data.actionMappings, &data.actionMappingCount);
+        } else if (strcmp(key, "automation") == 0) {
+            unsigned id, enabled, channel, note, idle, pressed;
+            char nameHex[128]{}, keys[64]{};
+            int offset = 0;
+            MidiChord chord{};
+            if (data.chordCount < MIDI_CHORDS_MAX &&
+                sscanf(value, "%u,%u,%u,%u,%u,%u,%127[^,],%63[^,],%n",
+                       &id, &enabled, &channel, &note, &idle, &pressed, nameHex, keys, &offset) == 8 &&
+                offset > 0 && id > 0 && enabled <= 1 && channel <= 15 && note <= 127 &&
+                idle <= 127 && pressed <= 127 &&
+                midiHexDecode(nameHex, chord.name, sizeof(chord.name)) && chord.name[0] &&
+                midiHexDecode(value + offset, chord.script, sizeof(chord.script))) {
+                chord.id = id;
+                chord.midiEnabled = enabled != 0;
+                chord.channel = channel;
+                chord.note = note;
+                chord.idleVelocity = idle;
+                chord.pressedVelocity = pressed;
+                if (strcmp(keys, "-")) strcpy(chord.keys, keys);
+                uint8_t report[8];
+                bool valid = (chord.script[0] || chord.keys[0]) &&
+                    (!chord.keys[0] || midiChordReport(chord.keys, report));
+                for (uint32_t j = 0; j < data.chordCount; ++j)
+                    if (data.chords[j].id == chord.id) valid = false;
+                if (valid) {
+                    data.chords[data.chordCount++] = chord;
+                    continue;
+                }
+            }
+            printf("[CONFIG] [WARN] Invalid or excess automation entry\n");
+        } else if (strcmp(key, "key_macro") == 0) {
+            unsigned channel, note, idle, pressed;
+            char keys[64]{};
+            int offset = 0;
+            if (data.chordCount < MIDI_CHORDS_MAX &&
+                sscanf(value, "%u,%u,%u,%u,%63[^,],%n", &channel, &note, &idle, &pressed, keys, &offset) == 5 &&
+                offset > 0 && channel <= 15 && note <= 127 && idle <= 127 && pressed <= 127 &&
+                strlen(value + offset) < MIDI_SCRIPT_MAX * 2) {
+                MidiChord chord{};
+                chord.channel = channel;
+                chord.note = note;
+                chord.idleVelocity = idle;
+                chord.pressedVelocity = pressed;
+                if (strcmp(keys, "-")) strcpy(chord.keys, keys);
+                uint8_t report[8];
+                if (midiHexDecode(value + offset, chord.script, sizeof(chord.script)) &&
+                    (!chord.keys[0] || midiChordReport(chord.keys, report)) &&
+                    (chord.script[0] || chord.keys[0])) {
+                    data.chords[data.chordCount++] = chord;
+                    continue;
+                }
+            }
+            printf("[CONFIG] [WARN] Invalid or excess key_macro entry\n");
+        } else if (strcmp(key, "key_chord") == 0) {
+            unsigned channel, note;
+            char keys[64]{}, extra;
+            uint8_t report[8];
+            if (data.chordCount < MIDI_CHORDS_MAX &&
+                sscanf(value, "%u,%u,%63[^,\r\n]%c", &channel, &note, keys, &extra) == 3 &&
+                channel <= 15 && note <= 127 && midiChordReport(keys, report)) {
+                MidiChord &chord = data.chords[data.chordCount++];
+                chord.channel = channel;
+                chord.note = note;
+                strcpy(chord.keys, keys);
+            } else {
+                printf("[CONFIG] [WARN] Invalid or excess key_chord entry\n");
+            }
         } else if (strcmp(key, "sampler_keyboard_channel") == 0) {
             long v = strtol(value, NULL, 10);
             if (v >= 0 && v <= 15) {
-                data.samplerKeyboardEnabled = 1;
+                if (!explicitSamplerEnabled) data.samplerKeyboardEnabled = 1;
                 data.samplerKeyboardChannel = (uint8_t)v;
             }
         } else if (strcmp(key, "sampler_keyboard_enabled") == 0) {
             long v = strtol(value, NULL, 10);
             data.samplerKeyboardEnabled = (v != 0) ? 1 : 0;
+            explicitSamplerEnabled = true;
         } else if (strcmp(key, "sampler_root_note") == 0) {
             long v = strtol(value, NULL, 10);
             if (v >= 0 && v <= 127) {
@@ -685,6 +773,7 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
     }
     fclose(fp);
 
+    assignMacroIdentities(data);
     *out = data;
     return RET_OK;
 }
@@ -740,6 +829,18 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
     }
 
     dprintf(fd, "# audiox midi map v1\n");
+    for (uint32_t i = 0; i < data->chordCount && i < MIDI_CHORDS_MAX; ++i) {
+        const auto &chord = data->chords[i];
+        std::string hex = midiHexEncode(chord.script);
+        if (dprintf(fd, "automation=%u,%u,%u,%u,%u,%u,%s,%s,%s\n",
+                    chord.id, chord.midiEnabled ? 1 : 0, chord.channel, chord.note,
+                    chord.idleVelocity, chord.pressedVelocity, midiHexEncode(chord.name).c_str(),
+                    chord.keys[0] ? chord.keys : "-", hex.c_str()) < 0) {
+            printf("[CONFIG] [WARN] Cannot write macro mapping\n");
+            close(fd);
+            return RET_ERR;
+        }
+    }
     dprintf(fd, "# note-to-sfx mappings\n");
     uint32_t count = data->mappingCount;
     if (count > MIDI_MAPPINGS_MAX) {
@@ -1014,6 +1115,35 @@ MidiMapData ConfigStore::readMidiMapFile() const {
 int ConfigStore::writeMidiMapFile(MidiMapData *data) {
     if (!data) {
         return RET_ERR;
+    }
+    if (data->chordCount > MIDI_CHORDS_MAX) {
+        printf("[CONFIG] [WARN] Too many key chord mappings\n");
+        return RET_ERR;
+    }
+    assignMacroIdentities(*data);
+    for (uint32_t i = 0; i < data->chordCount; ++i) {
+        uint8_t report[8];
+        auto &chord = data->chords[i];
+        char error[192]{};
+        if (chord.channel > 15 || chord.note > 127 ||
+            chord.idleVelocity > 127 || chord.pressedVelocity > 127 ||
+            strnlen(chord.keys, sizeof(chord.keys)) == sizeof(chord.keys) ||
+            strnlen(chord.script, sizeof(chord.script)) == sizeof(chord.script) ||
+            strnlen(chord.name, sizeof(chord.name)) == sizeof(chord.name) ||
+            (chord.keys[0] && !midiChordReport(chord.keys, report)) ||
+            (!chord.script[0] && !midiChordReport(chord.keys, report)) ||
+            (chord.script[0] && !midiValidateScript(chord.script, error, sizeof(error)))) {
+            printf("[CONFIG] [WARN] Invalid macro mapping: %s\n", error);
+            return RET_ERR;
+        }
+        for (uint32_t j = 0; j < i; ++j) {
+            if (chord.id == data->chords[j].id ||
+                (chord.midiEnabled && data->chords[j].midiEnabled &&
+                 chord.channel == data->chords[j].channel && chord.note == data->chords[j].note)) {
+                printf("[CONFIG] [WARN] Duplicate macro trigger\n");
+                return RET_ERR;
+            }
+        }
     }
     uint32_t count = data->mappingCount;
     if (count > MIDI_MAPPINGS_MAX) {

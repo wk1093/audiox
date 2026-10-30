@@ -157,6 +157,10 @@ if (effectsManager) {
 }
 
 function setActiveTab(tab) {
+  if (tab !== 'macros') {
+    stopChordRecording();
+    cancelChordLearn();
+  }
   state.activeTab = tab;
   document.querySelectorAll('.tab-btn').forEach((el) => {
     el.classList.toggle('active', el.dataset.tab === tab);
@@ -186,7 +190,11 @@ function setActiveTab(tab) {
   if (tab === 'bluetooth') {
     loadBluetoothDevices();
   }
+  if (tab === 'macros') {
+    loadMidiChords();
+  }
   if (tab === 'midi') {
+    loadLightDim();
     renderStopAllMidiStatus();
     renderSamplerToggleMidiStatus();
   }
@@ -396,6 +404,8 @@ function parseConfigText(text) {
     usb_sample_size: 2,
     soundboard_mode: 'play',
     framebuffer_view: 'meters',
+    midi_passthrough: 'off',
+    keyboard_macros: 0,
   };
 
   for (const rawLine of text.split(/\r?\n/)) {
@@ -404,6 +414,11 @@ function parseConfigText(text) {
     const eq = line.indexOf('=');
     if (eq < 0) continue;
     const key = line.slice(0, eq).trim();
+    if (key === 'midi_passthrough') {
+      const mode = line.slice(eq + 1).trim();
+      cfg.midi_passthrough = ['off', 'unmapped', 'all'].includes(mode) ? mode : 'off';
+      continue;
+    }
     if (key === 'soundboard_mode') {
       const mode = line.slice(eq + 1).trim().toLowerCase();
       cfg.soundboard_mode = (mode === 'hold') ? 'hold' : 'play';
@@ -430,6 +445,8 @@ function formatConfigText(cfg) {
     `usb_sample_size=${cfg.usb_sample_size}`,
     `soundboard_mode=${cfg.soundboard_mode || 'play'}`,
     `framebuffer_view=${cfg.framebuffer_view || 'meters'}`,
+    `midi_passthrough=${cfg.midi_passthrough || 'off'}`,
+    `keyboard_macros=${cfg.keyboard_macros ? 1 : 0}`,
     ''
   ].join('\n');
 }
@@ -494,6 +511,8 @@ function setFormFromConfig(cfg) {
   document.getElementById('usb_capture_channels').value = String(cfg.usb_capture_channels ?? 2);
   configuredUsbSampleRate = Number(cfg.usb_sample_rate) || 48000;
   document.getElementById('usb_sample_size').value = String(cfg.usb_sample_size ?? 2);
+  document.getElementById('midi_passthrough').value = cfg.midi_passthrough || 'off';
+  document.getElementById('keyboard_macros').value = String(cfg.keyboard_macros ? 1 : 0);
 }
 
 function getConfigFromForm() {
@@ -504,6 +523,8 @@ function getConfigFromForm() {
     usb_sample_size: Number(document.getElementById('usb_sample_size').value) || 2,
     soundboard_mode: 'play',
     framebuffer_view: state.framebufferView,
+    midi_passthrough: document.getElementById('midi_passthrough').value,
+    keyboard_macros: Number(document.getElementById('keyboard_macros').value),
   };
 }
 
@@ -1735,6 +1756,311 @@ async function saveConfig() {
   }
 }
 
+let editingMacroId = null;
+let macroCount = 0;
+
+async function loadMidiChords() {
+  try {
+    const res = await fetch('/api/macros', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+    renderMidiChords((await res.json()).macros);
+  } catch (err) {
+    setStatus(`Macro load failed: ${err}`, 'warn', 'midi-chords');
+  }
+}
+
+function renderMidiChords(chords) {
+  macroCount = chords.length;
+  const list = document.getElementById('chord-list');
+  list.replaceChildren();
+  for (const chord of chords) {
+    const row = document.createElement('div');
+    const label = document.createElement('span');
+    label.textContent = `${chord.name} — ${chord.midi_enabled ? `Channel ${chord.channel}, note ${chord.note}` : 'Web only'}: ${chord.script_hex ? 'Lua sequence' : chord.keys} ` +
+      `(LED idle ${chord.idle_velocity ?? 0}, pressed ${chord.pressed_velocity ?? 0})`;
+    if (chord.runtime_error_hex) {
+      label.textContent += ` — Last execution failed: ${chordHexDecode(chord.runtime_error_hex)}`;
+    }
+    const edit = document.createElement('button');
+    edit.textContent = 'Edit';
+    edit.addEventListener('click', () => {
+      stopChordRecording();
+      cancelChordLearn();
+      editingMacroId = chord.id;
+      document.getElementById('macro-name').value = chord.name;
+      document.getElementById('macro-midi-enabled').checked = chord.midi_enabled;
+      document.getElementById('chord-channel').value = chord.channel;
+      document.getElementById('chord-note').value = chord.note;
+      document.getElementById('chord-keys').value = chord.keys;
+      document.getElementById('chord-mode').value = chord.script_hex ? 'script' : 'chord';
+      document.getElementById('chord-script').value = chordHexDecode(chord.script_hex || '');
+      document.getElementById('chord-idle-velocity').value = chord.idle_velocity ?? 0;
+      document.getElementById('chord-pressed-velocity').value = chord.pressed_velocity ?? 0;
+      updateChordMode();
+      updateMacroBinding();
+      document.getElementById('btn-chord-save').textContent = 'Save Changes';
+      document.getElementById('macro-name').focus();
+    });
+    const remove = document.createElement('button');
+    remove.textContent = 'Remove';
+    remove.addEventListener('click', () => saveMidiChord('DELETE', chord, remove));
+    const run = document.createElement('button');
+    run.textContent = 'Run';
+    run.addEventListener('click', () => runMacro(chord.id, run));
+    row.className = 'stack';
+    const actions = document.createElement('div');
+    actions.className = 'macro-actions';
+    actions.append(edit, remove, run);
+    row.append(label, actions);
+    list.appendChild(row);
+  }
+}
+
+async function saveMidiChord(method, chord, button) {
+  if (button.disabled) return;
+  button.disabled = true;
+  try {
+    const payload = method === 'DELETE' ? `id=${chord.id}` :
+      (chord.id ? `id=${chord.id}&` : '') +
+      `name_hex=${chordHexEncode(chord.name)}&midi_enabled=${chord.midi_enabled ? 1 : 0}` +
+      `&channel=${chord.channel}&note=${chord.note}&keys=${chord.keys}` +
+      `&idle_velocity=${chord.idle_velocity ?? 0}&pressed_velocity=${chord.pressed_velocity ?? 0}` +
+      `&script_hex=${chord.script_hex || ''}`;
+    const res = await fetch('/api/macros', {
+      method, headers: { 'Content-Type': 'text/plain' }, body: payload,
+    });
+    if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+    if (method === 'POST' || editingMacroId === chord.id) resetMacroEditor();
+    setStatus(method === 'DELETE' ? 'Macro removed' : 'Macro saved', 'ok', 'midi-chords');
+    await loadMidiChords();
+  } catch (err) {
+    setStatus(`Macro save failed: ${err}`, 'warn', 'midi-chords');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function runMacro(id, button) {
+  if (button.disabled) return;
+  button.disabled = true;
+  try {
+    const res = await fetch('/api/macros/run', {
+      method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: `id=${id}`,
+    });
+    if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+    setStatus('Macro queued (not confirmation of completion)', 'ok', 'midi-chords');
+    await loadMidiChords();
+  } catch (err) {
+    setStatus(`Macro run failed: ${err}`, 'warn', 'midi-chords');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function updateMacroBinding() {
+  const enabled = document.getElementById('macro-midi-enabled').checked;
+  if (!enabled) cancelChordLearn();
+  document.getElementById('btn-chord-learn').disabled = !enabled;
+  document.getElementById('macro-midi-binding').hidden = !enabled;
+}
+
+function resetMacroEditor() {
+  stopChordRecording();
+  cancelChordLearn();
+  editingMacroId = null;
+  document.getElementById('macro-name').value = '';
+  document.getElementById('macro-midi-enabled').checked = false;
+  document.getElementById('chord-channel').value = '0';
+  document.getElementById('chord-note').value = '60';
+  document.getElementById('chord-keys').value = '';
+  document.getElementById('chord-script').value = '';
+  document.getElementById('chord-mode').value = 'chord';
+  document.getElementById('chord-idle-velocity').value = '0';
+  document.getElementById('chord-pressed-velocity').value = '0';
+  document.getElementById('btn-chord-save').textContent = 'Save Macro';
+  updateChordMode();
+  updateMacroBinding();
+}
+
+function chordHexEncode(text) {
+  return Array.from(new TextEncoder().encode(text), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function chordHexDecode(hex) {
+  return new TextDecoder().decode(Uint8Array.from(hex.match(/../g) || [], (byte) => parseInt(byte, 16)));
+}
+
+function updateChordMode() {
+  stopChordRecording();
+  const script = document.getElementById('chord-mode').value === 'script';
+  document.getElementById('chord-capture-editor').hidden = script;
+  document.getElementById('chord-script-editor').hidden = !script;
+}
+
+let chordRecording = null;
+
+function stopChordRecording(keep = false) {
+  if (!chordRecording) return;
+  const input = document.getElementById('chord-keys');
+  if (!keep) input.value = chordRecording.previous;
+  input.readOnly = false;
+  chordRecording = null;
+  const button = document.getElementById('btn-chord-record');
+  button.textContent = 'Record Chord';
+  button.setAttribute('aria-pressed', 'false');
+  document.getElementById('chord-capture-status').textContent = keep ?
+    `Captured ${input.value}. Save Macro to apply.` : 'Recording cancelled. Previous chord restored.';
+}
+
+function chordKeyFromCode(code) {
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+  if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+  if (/^F(?:[1-9]|1[0-9]|2[0-4])$/.test(code)) return code;
+  return {
+    Enter: 'ENTER', Escape: 'ESC', Backspace: 'BACKSPACE', Tab: 'TAB', Space: 'SPACE',
+    Delete: 'DELETE', ArrowRight: 'RIGHT', ArrowLeft: 'LEFT', ArrowDown: 'DOWN', ArrowUp: 'UP',
+    Home: 'HOME', End: 'END', PageUp: 'PAGEUP', PageDown: 'PAGEDOWN',
+  }[code] || null;
+}
+
+document.getElementById('btn-chord-record').addEventListener('click', () => {
+  if (chordRecording) {
+    stopChordRecording();
+    return;
+  }
+  const input = document.getElementById('chord-keys');
+  chordRecording = { previous: input.value, keys: [], held: new Set(), modifiers: new Set() };
+  input.readOnly = true;
+  const button = document.getElementById('btn-chord-record');
+  button.textContent = 'Cancel Recording';
+  button.setAttribute('aria-pressed', 'true');
+  document.getElementById('chord-capture-status').textContent = 'Listening: press your shortcut, then release its keys.';
+  input.focus();
+});
+document.getElementById('btn-chord-record').addEventListener('pointerdown', (event) => {
+  if (chordRecording) event.preventDefault();
+});
+
+document.getElementById('chord-keys').addEventListener('keydown', (event) => {
+  if (!chordRecording) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.repeat || event.isComposing) return;
+  if (event.ctrlKey) chordRecording.modifiers.add('CTRL');
+  if (event.shiftKey) chordRecording.modifiers.add('SHIFT');
+  if (event.altKey) chordRecording.modifiers.add('ALT');
+  if (event.metaKey) chordRecording.modifiers.add('GUI');
+  if (/^(Control|Shift|Alt|Meta)(Left|Right)$/.test(event.code)) return;
+  const key = chordKeyFromCode(event.code);
+  if (!key || (chordRecording.keys.length === 6 && !chordRecording.keys.includes(key))) {
+    stopChordRecording();
+    document.getElementById('chord-capture-status').textContent = 'Unsupported key or more than six keys. Previous chord restored; record again to retry.';
+    return;
+  }
+  chordRecording.held.add(event.code);
+  if (!chordRecording.keys.includes(key)) chordRecording.keys.push(key);
+  const keys =
+    ['CTRL', 'SHIFT', 'ALT', 'GUI'].filter((modifier) => chordRecording.modifiers.has(modifier))
+      .concat(chordRecording.keys).join('+');
+  if (keys.length > 63) {
+    stopChordRecording();
+    document.getElementById('chord-capture-status').textContent = 'Chord exceeds 63 characters. Previous chord restored.';
+    return;
+  }
+  document.getElementById('chord-keys').value = keys;
+});
+
+document.getElementById('chord-keys').addEventListener('keyup', (event) => {
+  if (!chordRecording) return;
+  event.preventDefault();
+  event.stopPropagation();
+  chordRecording.held.delete(event.code);
+  if (chordRecording.keys.length && !chordRecording.held.size) stopChordRecording(true);
+});
+document.getElementById('chord-keys').addEventListener('blur', () => stopChordRecording());
+window.addEventListener('blur', () => stopChordRecording());
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    stopChordRecording();
+    cancelChordLearn();
+  }
+});
+
+function cancelChordLearn() {
+  if (state.mappingAssignTarget !== '__macro__') return;
+  state.mappingAssignTarget = null;
+  if (state.mappingPollTimer) clearInterval(state.mappingPollTimer);
+  state.mappingPollTimer = null;
+  document.getElementById('btn-chord-learn').setAttribute('aria-pressed', 'false');
+  document.getElementById('chord-learn-status').textContent = 'MIDI learning stopped.';
+}
+
+document.getElementById('btn-chord-learn').addEventListener('click', async () => {
+  if (!document.getElementById('macro-midi-enabled').checked) return;
+  if (state.mappingAssignTarget === '__macro__') {
+    cancelChordLearn();
+    return;
+  }
+  const button = document.getElementById('btn-chord-learn');
+  if (button.disabled) return;
+  button.disabled = true;
+  state.mappingAssignTarget = null;
+  if (state.mappingPollTimer) clearInterval(state.mappingPollTimer);
+  state.mappingPollTimer = null;
+  try {
+    const res = await fetch('/api/midi/last_note', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+    const data = await res.json();
+    if (state.activeTab !== 'macros' || document.hidden ||
+        !document.getElementById('macro-midi-enabled').checked) return;
+    const seq = Number(data.last_seq);
+    if (!Number.isInteger(seq) || seq < 0) throw new Error('device did not report a valid MIDI event sequence');
+    state.mappingLastSeq = seq;
+    state.mappingAssignTarget = '__macro__';
+    if (!state.mappingPollTimer) state.mappingPollTimer = setInterval(pollMappingCapture, 220);
+    button.setAttribute('aria-pressed', 'true');
+    document.getElementById('chord-learn-status').textContent = 'Press the desired MIDI pad. Click Learn MIDI Pad again to cancel.';
+  } catch (err) {
+    setStatus(`MIDI learn failed: ${err}`, 'warn', 'midi-chords');
+  } finally {
+    button.disabled = !document.getElementById('macro-midi-enabled').checked;
+  }
+});
+
+document.getElementById('chord-mode').addEventListener('change', updateChordMode);
+document.getElementById('macro-midi-enabled').addEventListener('change', updateMacroBinding);
+document.getElementById('btn-macro-new').addEventListener('click', resetMacroEditor);
+document.getElementById('btn-chord-load').addEventListener('click', loadMidiChords);
+document.getElementById('btn-chord-save').addEventListener('click', () => {
+  if (chordRecording) {
+    setStatus('Finish or cancel recording before saving.', 'warn', 'midi-chords');
+    return;
+  }
+  const channel = Number(document.getElementById('chord-channel').value);
+  const name = document.getElementById('macro-name').value.trim();
+  const midi_enabled = document.getElementById('macro-midi-enabled').checked;
+  const note = Number(document.getElementById('chord-note').value);
+  const keys = document.getElementById('chord-keys').value.trim().toUpperCase();
+  const script = document.getElementById('chord-mode').value === 'script' ?
+    document.getElementById('chord-script').value : '';
+  const idle = Number(document.getElementById('chord-idle-velocity').value);
+  const pressed = Number(document.getElementById('chord-pressed-velocity').value);
+  if (!name || name.includes('\0') || new TextEncoder().encode(name).length > 63 ||
+      (!editingMacroId && macroCount >= 16) ||
+      !Number.isInteger(channel) || channel < 0 || channel > 15 ||
+      !Number.isInteger(note) || note < 0 || note > 127 ||
+      !Number.isInteger(idle) || idle < 0 || idle > 127 ||
+      !Number.isInteger(pressed) || pressed < 0 || pressed > 127 ||
+      (document.getElementById('chord-mode').value === 'script' ? !script.trim() :
+        (!/^[A-Z0-9]+(?:\+[A-Z0-9]+)*$/.test(keys) || keys.length > 63)) ||
+      new TextEncoder().encode(script).length >= 2048) {
+    setStatus('Enter a name (1-63 UTF-8 bytes), channel 0-15, note/LED values 0-127, and a chord (up to 63 characters) or Lua script (up to 2,047 UTF-8 bytes). Maximum 16 macros.', 'warn', 'midi-chords');
+    return;
+  }
+  return saveMidiChord('POST', { id: editingMacroId, name, midi_enabled, channel, note, keys: script ? '' : keys, idle_velocity: idle,
+    pressed_velocity: pressed, script_hex: chordHexEncode(script) }, document.getElementById('btn-chord-save'));
+});
+
 async function reloadConfig() {
   setStatus('reloading config...');
   try {
@@ -2490,19 +2816,26 @@ async function pollMappingCapture() {
     return;
   }
 
+  const targetAtStart = state.mappingAssignTarget;
   try {
     const res = await fetch('/api/midi/last_note', { method: 'GET' });
     const txt = await res.text();
-    if (!res.ok) return;
+    if (!res.ok) {
+      if (targetAtStart === '__macro__') throw new Error(`${res.status}: ${txt}`);
+      return;
+    }
+    if (targetAtStart !== state.mappingAssignTarget) return;
 
     const data = JSON.parse(txt);
     const connected = !!data.connected;
     const seq = Number(data.last_seq || 0);
     const note = Number(data.last_note);
 
-    const isSbTarget = state.mappingAssignTarget !== '__action_stop_all__' &&
+    const isMacroTarget = state.mappingAssignTarget === '__macro__';
+    const isSbTarget = !isMacroTarget && state.mappingAssignTarget !== '__action_stop_all__' &&
                        state.mappingAssignTarget !== '__action_sampler_toggle__';
-    const statusEl2 = isSbTarget ? sbMappingStatusEl : midiActionCaptureStatusEl;
+    const statusEl2 = isMacroTarget ? document.getElementById('chord-learn-status') :
+      (isSbTarget ? sbMappingStatusEl : midiActionCaptureStatusEl);
 
     if (!connected) {
       if (statusEl2) statusEl2.textContent = 'Waiting for MIDI device\u2026';
@@ -2517,7 +2850,15 @@ async function pollMappingCapture() {
         clearInterval(state.mappingPollTimer);
         state.mappingPollTimer = null;
       }
-      if (target === '__action_stop_all__') {
+      if (target === '__macro__') {
+        document.getElementById('btn-chord-learn').setAttribute('aria-pressed', 'false');
+        if (!Number.isInteger(data.last_channel) || data.last_channel < 0 || data.last_channel > 15) {
+          throw new Error('device did not report a valid MIDI channel');
+        }
+        document.getElementById('chord-channel').value = data.last_channel;
+        document.getElementById('chord-note').value = note;
+        statusEl2.textContent = `Selected channel ${data.last_channel}, note ${note}. Record a chord or enter a script, then save.`;
+      } else if (target === '__action_stop_all__') {
         await saveStopAllActionMapping(note);
         if (midiActionCaptureStatusEl) midiActionCaptureStatusEl.textContent = `Assigned note ${note} to stop all.`;
       } else if (target === '__action_sampler_toggle__') {
@@ -2529,7 +2870,12 @@ async function pollMappingCapture() {
       }
       renderSoundboardGrid();
     }
-  } catch (err) {}
+  } catch (err) {
+    if (targetAtStart === '__macro__') {
+      cancelChordLearn();
+      setStatus(`MIDI learn failed: ${err}`, 'warn', 'midi-chords');
+    }
+  }
 }
 
 async function loadSamplerConfig() {
@@ -2872,13 +3218,18 @@ document.getElementById('btn-save').addEventListener('click', () => runLoadingTa
   }
 }));
 
-document.getElementById('btn-reload').addEventListener('click', () => runLoadingTask('Reloading configuration', async () => {
-  const ok = await reloadConfig();
-  if (ok) {
-    await loadRoutingThings();
-    await loadRoutingFile();
-  }
-}));
+document.getElementById('btn-reload').addEventListener('click', async () => {
+  if (!await AudioxUI.confirm('Apply the saved USB configuration? USB audio, MIDI, keyboard, and networking will briefly disconnect. Save any pending changes first.', {
+    title: 'Reload USB configuration', confirmLabel: 'Apply and reconnect',
+  })) return;
+  return runLoadingTask('Reloading configuration', async () => {
+    const ok = await reloadConfig();
+    if (ok) {
+      await loadRoutingThings();
+      await loadRoutingFile();
+    }
+  });
+});
 
 document.getElementById('btn-route-save').addEventListener('click', () => runLoadingTask('Saving routing', saveRouting));
 document.getElementById('btn-route-arrange').addEventListener('click', () => {
@@ -3063,6 +3414,7 @@ document.getElementById('btn-sb-stop-all').addEventListener('click', triggerStop
 document.getElementById('btn-fb-view').addEventListener('click', toggleFramebufferView);
 
 document.getElementById('btn-sb-assign-stop-all').addEventListener('click', async () => {
+  cancelChordLearn();
   const isTarget = state.mappingAssignTarget === '__action_stop_all__';
   if (isTarget) {
     state.mappingAssignTarget = null;
@@ -3084,6 +3436,7 @@ document.getElementById('btn-sb-clear-stop-all').addEventListener('click', async
 });
 
 document.getElementById('btn-sb-assign-sampler-toggle').addEventListener('click', async () => {
+  cancelChordLearn();
   const isTarget = state.mappingAssignTarget === '__action_sampler_toggle__';
   if (isTarget) {
     state.mappingAssignTarget = null;
@@ -3130,6 +3483,63 @@ document.getElementById('btn-system-shutdown').addEventListener('click', async (
 AudioxUpdates.init({ setStatus, ui: AudioxUI });
 AudioxBackup.init({ setStatus, ui: AudioxUI });
 
+
+const lightDimButton = document.getElementById('btn-light-dim');
+let lightDimBusy = false;
+
+function renderLightDim(dimmed) {
+  lightDimButton.textContent = dimmed ? 'Restore lights' : 'Dim lights';
+  lightDimButton.setAttribute('aria-pressed', String(dimmed));
+  lightDimButton.disabled = false;
+}
+
+async function requestLightDim(dimmed) {
+  const res = await fetch('/api/midi/light_dim', dimmed === undefined
+    ? { cache: 'no-store', signal: AbortSignal.timeout(10000) }
+    : {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: `dimmed=${dimmed ? 1 : 0}`,
+      signal: AbortSignal.timeout(10000),
+    });
+  if (!res.ok) throw new Error(`MIDI lights request failed: ${res.status} ${await res.text()}`);
+  const data = await res.json();
+  if (data.ok !== true || typeof data.dimmed !== 'boolean') {
+    throw new Error('MIDI lights returned an unexpected response. Try again.');
+  }
+  renderLightDim(data.dimmed);
+  return data.dimmed;
+}
+
+async function loadLightDim() {
+  if (lightDimBusy) return;
+  lightDimBusy = true;
+  lightDimButton.disabled = true;
+  try {
+    await requestLightDim();
+    AudioxUI.resolve('midi-light-dim');
+  } catch (err) {
+    setStatus(`MIDI lights load failed: ${err}`, 'warn', 'midi-light-dim');
+  } finally {
+    lightDimBusy = false;
+  }
+}
+
+lightDimButton.addEventListener('click', async () => {
+  if (lightDimBusy) return;
+  const dimmed = lightDimButton.getAttribute('aria-pressed') !== 'true';
+  lightDimBusy = true;
+  lightDimButton.disabled = true;
+  try {
+    const result = await requestLightDim(dimmed);
+    setStatus(result ? 'MIDI lights dimmed until restored or rebooted.' : 'MIDI lights restored.', 'ok', 'midi-light-dim');
+  } catch (err) {
+    setStatus(`MIDI lights change failed: ${err}`, 'warn', 'midi-light-dim');
+  } finally {
+    lightDimButton.disabled = false;
+    lightDimBusy = false;
+  }
+});
 
 async function loadLightConfig() {
   try {
@@ -3236,10 +3646,12 @@ document.getElementById('btn-boot-failure-dismiss').addEventListener('click', as
 
 initializeGraphFromConfig();
 const stopConnectionMonitor = AudioxUI.startConnectionMonitor(() => {
+  loadLightDim();
   if (state.activeTab === 'bluetooth') loadBluetoothDevices();
   if (state.activeTab === 'system') pollSystemIfNeeded();
 }, showAudioHealth);
 loadVersion();
 loadBootFailure();
 loadLightConfig();
+loadLightDim();
 loadSamplerConfig();

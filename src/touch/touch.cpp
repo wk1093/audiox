@@ -1,4 +1,5 @@
 #include "touch/context.hpp"
+#include "framebuffer/context.hpp"
 
 #include "defs.hpp"
 
@@ -8,6 +9,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <linux/input.h>
+#include <time.h>
 
 static inline int touchTestBit(const unsigned long *bits, unsigned int bit) {
     return (bits[bit / (8U * sizeof(unsigned long))] >> (bit % (8U * sizeof(unsigned long)))) & 1UL;
@@ -123,37 +125,27 @@ static inline int touchProbeAbsAxis(int fd, unsigned int axis, int *min_out, int
 }
 
 TouchContext::TouchContext(Audiox *context) : app(context) {
-    if (!app) {
-        return;
+    if (app) app->touch = this;
+}
+
+TouchContext::~TouchContext() {
+    suspend();
+    if (app && app->touch == this) app->touch = nullptr;
+}
+
+void TouchContext::suspend() {
+    if (fd >= 0) {
+        close(fd);
+        if (app && app->fb) app->fb->resetUi();
     }
-
-    app->touch = this;
-    int ret = getTouchDevice(this);
-
-    if (ret != RET_OK) {
-        printf("[TOUCH] [WARN] No touch device found during initialization.\n");
-        return;
-    }
-
-    int ok_x = (touchProbeAbsAxis(fd, ABS_X, &min_x, &max_x) == 0) ||
-               (touchProbeAbsAxis(fd, ABS_MT_POSITION_X, &min_x, &max_x) == 0);
-    int ok_y = (touchProbeAbsAxis(fd, ABS_Y, &min_y, &max_y) == 0) ||
-               (touchProbeAbsAxis(fd, ABS_MT_POSITION_Y, &min_y, &max_y) == 0);
-    has_range = ok_x && ok_y && (max_x > min_x) && (max_y > min_y);
-
-    struct input_absinfo slot_info;
-    if (ioctl(fd, EVIOCGABS(ABS_MT_SLOT), &slot_info) == 0 && slot_info.maximum >= 0) {
-        int slots = slot_info.maximum + 1;
-        if (slots > TOUCH_MAX_POINTS) slots = TOUCH_MAX_POINTS;
-        supports_mt_slots = 1;
-        max_slots = slots;
-    } else {
-        supports_mt_slots = 0;
-        max_slots = 1;
-    }   
-
-    printf("[TOUCH] Touch input initialized: fd=%d, range_x=[%d,%d], range_y=[%d,%d], supports_mt_slots=%d, max_slots=%d\n",
-           fd, min_x, max_x, min_y, max_y, supports_mt_slots, max_slots);
+    fd = -1;
+    state = {};
+    memset(slot_active, 0, sizeof(slot_active));
+    memset(slot_x, 0, sizeof(slot_x));
+    memset(slot_y, 0, sizeof(slot_y));
+    supports_mt_slots = current_slot = has_range = 0;
+    max_slots = 1;
+    min_x = max_x = min_y = max_y = 0;
 }
 
 void TouchContext::poll() {
@@ -202,8 +194,10 @@ void TouchContext::poll() {
         }
     }
 
-    if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-        printf("[TOUCH] [WARN] Touch read error: %s\n", strerror(errno));
+    if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+        printf("[TOUCH] [WARN] Touch device disconnected: %s\n", n == 0 ? "end of input" : strerror(errno));
+        suspend();
+        return;
     }
 
     // update state from the first active slot
@@ -225,6 +219,11 @@ void TouchContext::checkForDevice() {
     if (isReady()) {
         return;
     }
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t now = (uint64_t)ts.tv_sec * 1000U + (uint64_t)ts.tv_nsec / 1000000U;
+    if (now < nextProbeMs) return;
+    nextProbeMs = now + AUDIOX_DEVICE_POLL_INTERVAL_MS;
 
     int ret = getTouchDevice(this);
     if (ret == RET_OK) {

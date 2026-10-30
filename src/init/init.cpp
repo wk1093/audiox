@@ -160,18 +160,18 @@ int main() {
         mainContext.eventLoop();
         audiox::diagnostics::pollKernelLog();
         pollBootRecovery();
-        touch.poll();
-        fb.drawMain(&touch.state);
+        fb.checkForFramebuffer();
+        if (fb.isReady()) {
+            touch.checkForDevice();
+            touch.poll();
+            fb.drawMain(&touch.state);
+        } else if (touch.isReady()) {
+            touch.suspend();
+        }
         http.poll();
         mdns.poll();
         audio.poll(); // no audio processing, only hotplug/talking to config for device/routing settings.
         midi.poll();
-        if (!fb.isReady()) {
-            fb.checkForFramebuffer();
-        }
-        if (!touch.isReady()) {
-            touch.checkForDevice();
-        }
     }
 
 }

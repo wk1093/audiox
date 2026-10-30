@@ -49,6 +49,7 @@ Once I believe this is stable enough for general use, I will release v2.0.0
 - Exposes a web soundboard with per-card MIDI assignment and automatic polling
 - Supports MIDI note-to-SFX mappings stored in `/audiox/midi_map.txt` and targeting files in `/audiox/sfx/`
 - Removing a sound clears its MIDI note assignments, per-sound lights, and playback-mode overrides and refreshes controller LEDs. Startup and soundboard reload also purge references to missing files.
+- MIDI > Lighting includes a **Dim lights** toggle that temporarily turns off all controller LEDs while audio and MIDI controls keep working. **Restore lights** resumes normal lighting. This state is kept only in memory, never saved or backed up, and always resets after reboot; LED refreshes and controller reconnections do not cancel it.
 - Preprocesses uploaded soundboard files under `/audiox/sfx/` through `ffmpeg` into 48kHz stereo PCM16 WAV so MP3/OGG/etc work with the current WAV-only loader
 - Web UI pages for Routing, Bluetooth, Effects, Volume, Soundboard, MIDI, Config, and System
 - Compact navigation keeps tabs alongside the logo, with horizontally scrolling tabs on narrow screens. Routing fills the remaining viewport, with internally scrolling route details (a Details toggle on smaller screens), Fit and Fullscreen controls, and an Arrange action that groups inputs, routing helpers, effects, and outputs in left-to-right columns. Nodes stack vertically within each column. Dragging a node keeps the manual layout until Arrange is chosen again. Click a wire to delete it; Alt is not required.
@@ -107,6 +108,137 @@ The version 2 format is designed so that newer archives keep installing on older
 - Absent optional entries (currently only `cmdline.txt`) leave the device's existing file in place.
 
 To extend the format, add new entry types or metadata keys, and never change the meaning of an existing one. Bump the header version only for changes that can't be expressed this way; older devices then refuse the archive cleanly instead of installing it incorrectly. Devices also cap uploads at 256 MiB, so archives must stay under that. Firmware from before this rule (1.9.0 and earlier) accepts only exactly five entries, so update those devices once with `make dev` or a five-entry archive (packed without `--cmdline`).
+
+### USB MIDI passthrough and keyboard macros
+
+In **Config > USB Config**, USB MIDI Passthrough has three modes:
+
+- **Disabled** (default): no MIDI function, ALSA gadget card, or MIDI endpoints are created.
+- **Unmapped messages only**: forward controller messages that are not assigned locally.
+- **All messages**: forward mapped messages too, without disabling their local actions.
+
+Save Config stages the settings; Reload Config applies them. Applying USB configuration briefly disconnects **all** composite interfaces, including audio and the USB network used for the Web UI. The host may need to reopen its audio/MIDI devices after reconnecting. Disabling a function unlinks and removes it from configfs, rather than leaving an unused interface running.
+
+Passthrough is one-way, from the currently selected MIDI controller to the connected USB host. AudioX excludes its own `AudioXMIDI` gadget card from controller discovery to prevent feedback. Host-to-controller MIDI and combining multiple controllers are not implemented. Note, polyphonic pressure, and CC messages are filtered against soundboard, action, effect, volume, enabled sampler-channel, and enabled keyboard-chord mappings. Other channel/system messages, MIDI clock, and SysEx pass through. Note-off routing remembers whether its note-on was forwarded, so a mapping change does not suppress a needed release.
+
+Output uses nonblocking writes and a bounded 4 KiB queue; discovery and USB host-state checks retry every 500 ms. Output descriptors and queued triggers are released while the USB host is disconnected, so disconnected hosts do not accumulate shortcuts to replay later. SysEx is streamed in bounded chunks rather than allocated as one large message. USB errors are logged; a full queue resets the output and attempts all-notes-off rather than blocking audio. A controller disconnect, configuration change, or USB reload also attempts all-notes-off and releases keyboard keys. Releases are best effort if the host is no longer accepting USB traffic.
+
+Open the standalone **Macros** page (the MIDI page retains global MIDI actions and lighting controls). Create up to **16 named automation macros**, with names of **1–63 UTF-8 bytes**. Only keyboard action plans need **USB Keyboard Chords** enabled in Config and a connected USB host; light/MIDI plans need the selected controller connected. Sound, effects, volume, logging and timing need neither device.
+
+1. Enter a name. Leave **Bind to a MIDI pad** unchecked for a web-only macro, or enable it and click **Learn MIDI Pad**, then press the desired controller pad. Both channel (0–15) and note (0–127) are captured; learning does not save until you click **Save Macro**. Manual channel/note entry remains available.
+2. For a keyboard chord, click **Record Chord**, hold the modifiers, press the key(s), then release. JavaScript captures the physical key positions and formats the modifiers automatically. Recording ends when all non-modifier keys are released; Cancel Recording, leaving the editor/tab, or hiding the page discards an unfinished capture. System/browser-reserved shortcuts may require manual entry.
+3. Optionally select Lua sequence and enter a script. Set **Idle** and **Pressed** LED velocities/colors (0–127), then save. Leave both at `0` for web-only macros with no default lighting. Use **Run** on a saved macro to queue a web trigger; success means queued, not completed. **Edit** and **Remove** use its stable positive integer ID: changing the name or MIDI binding updates the same macro. **New Macro** clears the editor for a new ID.
+
+Web Run or MIDI note-on taps a chord or queues its sequence; note-off does not retrigger or cancel a sequence. Taps remain pressed for at least 30 ms, until the next main-loop poll, and are released automatically. Up to 16 macros and 16 pending triggers are supported, played sequentially; queue overflow is logged and excess triggers are dropped. Macro assignments can coexist with local sound/action mappings. Editing macros cancels pending work and releases active keys. USB loss or keyboard disable affects keyboard-dependent plans, not all non-keyboard scripts. Required-controller loss and a 65-second execution timeout can also cancel work. There is no background scripting thread or persistent Lua interpreter while idle.
+
+Modifiers are `CTRL`, `SHIFT`, `ALT`, and `GUI` (Windows/Command). Up to six non-modifier keys can be joined with `+`: `A`–`Z`, `0`–`9`, `F1`–`F24`, `ENTER`, `ESC`, `BACKSPACE`, `TAB`, `SPACE`, `DELETE`, `LEFT`, `RIGHT`, `UP`, `DOWN`, `HOME`, `END`, `PAGEUP`, and `PAGEDOWN`. These are physical keyboard usages interpreted by the host's layout, not arbitrary text. Keyboard emulation is disabled by default; enable it only on a host where the configured shortcuts are appropriate.
+
+Macro LED colors use the controller's velocity palette: 0 is off, and 1–127 depend on the controller. Output uses the global lighting channel, not the input binding's channel. MIDI-bound valid macros override sound/action/effect lighting on the same note; if multiple channels map the same note, the last macro's color wins. **Dim Lights** overrides all macro colors. Legacy chord mappings default to both velocities off. Web-only macros have no default lighting; explicit Lua `light()` requires an enabled MIDI binding and the selected connected controller, including for web Run. Without a binding it reports an explicit runtime error.
+
+#### Restricted Lua sequences
+
+Select **Lua sequence** instead of Keyboard chord and enter, for example:
+
+```lua
+light(9)
+tap("CTRL+C")
+wait(200)
+tap("CTRL+V")
+wait(100)
+```
+
+| Function | Behavior |
+| --- | --- |
+| `tap("CTRL+A")` | Press a chord for at least 30 ms, then release it before the next action. |
+| `press("SHIFT+A")` | Hold this entire chord until `release()`, a replacing keyboard action, or sequence completion/cancellation. Modifier-only chords such as `"CTRL"` are allowed. |
+| `release()` | Release all held keys; no arguments. |
+| `type("Hello!\n", 80)` | Type US-layout ASCII text with an optional interval between character presses in milliseconds (default **50**, range **30–60,000**). Each character is held at least 30 ms and released before the next character, including repeated characters. |
+| `wait(200)` | Add a cooperative delay in milliseconds, range 0–60,000. |
+| `light(9)` | Temporarily change this macro's pad LED until the sequence finishes. |
+
+`press` replaces the complete held chord; it does not add keys to a previous press. `tap` and `type` release any previous hold first rather than inheriting its modifiers. For example, use `press("CTRL+A"); wait(200); release()` to hold Ctrl+A, not `press("CTRL"); tap("A")`. Every sequence automatically releases remaining keys before allowing the next macro to start. USB backpressure retries without blocking or advancing past an unsent report; cancellation and disconnect make best-effort releases.
+
+`type` supports printable ASCII (including uppercase, digits, punctuation, and spaces), newline (`\n`), and tab (`\t`). Unicode, carriage returns, other control characters, and embedded NULs are rejected. The **host must use a US keyboard layout with Caps Lock off**; this emulates physical keys, not a Unicode text-injection protocol. On non-US layouts or with host-side modifiers/locks active, text may differ. The interval is a minimum measured from the actual successful character-press report; main-loop scheduling and host backpressure can make typing slower.
+
+A following action waits for each tap/text character's automatic release; waits start after preceding keyboard reports are delivered. Waits are minimum durations with main-loop scheduling jitter, not realtime deadlines. Idle/pressed lighting resumes when the sequence ends. To visibly hold a scripted color, follow `light()` with `wait()` or a keyboard action.
+
+#### Live Lua events and state
+
+Lua control flow (locals, functions, loops, arithmetic, and conditions) is evaluated for **each queued web Run or MIDI note-on**, with the original trigger values captured even if another sequence is still running:
+
+- `event.source`: `"web"` or `"midi"`.
+- `event.channel`: source MIDI channel, 0–15.
+- `event.note`: source note, 0–127.
+- `event.velocity`: source note-on velocity, 1–127.
+- `event.pressed`: always `true` (note-off does not run Lua).
+- `state`: a per-macro table retained across successful evaluations. Ordinary Lua globals/locals do not persist.
+
+For example, type uppercase A every second pad press, but only on a firm hit:
+
+```lua
+state.count = (state.count or 0) + 1
+local function blink(color)
+    light(color)
+    wait(200)
+    light(0)
+    wait(200)
+end
+blink(9)
+if state.count % 2 == 0 and event.velocity > 80 then
+    type("A", 80)
+end
+```
+
+State supports up to **32 named fields**, with keys up to **31 bytes**, holding booleans, finite numbers, or strings up to **127 bytes**. Nested tables/functions and other values are rejected; assign `nil` to remove a field. State is runtime-only, not backed up or written to disk. It resets on macro edits, restart, or cancellation/timeout/playback failure. USB session loss and keyboard disable no longer globally reset scripts without keyboard actions. A failed evaluation leaves prior state intact and queues **no actions**, even if it called `press()` before failing.
+
+Safe base utilities, selected `string`, `table`, and `math` functions, plus `clamp`, `map`, `round`, and `choose` support formatting, calculations and random choices. Use `..` to concatenate strings and numbers, or `string.format("%d", count)` for integer formatting. `type()` remains text typing; use `value_type()` for Lua value introspection. There is no shell, filesystem, network, module loading, coroutine support, or bytecode execution. Limits per evaluation: **2,047 UTF-8 source bytes**, **64 generated actions**, **255 text bytes per `type` call**, **256 total typed characters**, **60,000 ms combined explicit waits and scheduled typing duration**, **10,000 execution instructions**, and **256 KiB Lua memory**. Saves validate syntax without executing scripts; event-dependent runtime errors/limits are reported in device logs and the macro list after **Reload Macros**. The next successful evaluation clears that macro's error.
+
+Lua runs briefly on the cooperative control loop to generate a bounded plan, never in the audio processing thread. At most one new evaluation starts per 10 ms; queued events retain their own values. The interpreter and its memory are freed after each evaluation; only bounded state values and the current action plan remain. Plans play cooperatively without blocking on typing intervals, holds, or waits.
+
+`millis()` returns a monotonic millisecond snapshot from the original note-on (normally time since boot). `epoch()` returns its Unix timestamp in seconds; the device's wall clock must be set for calendar accuracy. Both remain constant throughout one evaluation: `wait()` queues a future delay, not a Lua sleep. For elapsed-time buttons:
+
+```lua
+local now = millis()
+state.count = (state.count or 0) + 1
+type(string.format("You have pressed this %d times", state.count))
+if state.last then
+    type(string.format("\nIt has been %.1f seconds", (now - state.last) / 1000))
+end
+state.last = now
+```
+
+`sound.play("clip.wav", pitchRatio)` queues a **preloaded** sound (ratio defaults to 1, allowed 0.25–4); `sound.stop_all()` stops soundboard clips. Missing sounds fail explicitly without doing disk discovery/loading on the macro path. `midi.send(status, ...)`, `midi.note_on`, `midi.note_off`, `midi.cc`, and `midi.program` send validated short messages to the **selected controller**, not the USB host. Output is bounded/nonblocking and shares an ordered queue with lighting. Script-generated MIDI notes and sustain are released on completion/cancellation; pair note-on/off with `wait()` for audible notes. `log(message)` queues a device-log message. These are playback actions, not immediate Lua side effects: an evaluation error produces no actions/logs, but a later playback failure cannot undo an already played sound or sent MIDI message. Playback failures cancel pending macros and reset state. Only keyboard action plans require USB Keyboard enabled and a connected USB host; light/MIDI plans require the selected connected controller.
+
+`event.source` is `"web"` or `"midi"`. Web Run still supplies numeric `event.channel` and `event.note` from the saved macro, velocity `127` and `event.pressed = true`, even with MIDI binding disabled.
+
+`effects.enable(id, bool)`, `effects.toggle(id)` and `effects.set(id, parameter, finiteNumber)` control existing effects. Parameter values use actual ranges, not normalized values; out-of-range values are visible runtime errors. `volume.set(id, percent)` uses `0`–`100` (`gain = 0`–`1`, unity at `100`), while `volume.adjust(id, delta)` accepts `-100`–`100` percentage points and clamps the result to `0`–`100`. Although the mixer supports gain up to `2`, scripts deliberately cap at unity. Use exact routing thing IDs from `GET /api/audio/volumes` (`{volumes:[{id,name,gain}]}`), not display names or assumed targets such as `"master"`. For example, `usb_gadget_out` and `usb_gadget_in` are valid only when present in that response; ALSA and effect IDs depend on the current graph. These queued device controls are **runtime-only**, not configuration saves. Routing automation is planned later.
+
+The [Lua documentation](docs/lua/index.md) includes setup, language basics, a complete API reference, performance limits and copyable recipes. The public documentation site is published at <https://wklab.net/audiox/docs/>. General OS setup/audio/Bluetooth/recovery guides are planned; the initial authored content covers Lua macros. Build locally with `npm ci --prefix docs` followed by `npm run docs:build --prefix docs`; `npm run docs:dev --prefix docs` starts the documentation development server, and `npm run docs:preview --prefix docs` previews the static build. Both local servers bind to `127.0.0.1`; do not expose them to a network. Production Pages deployment publishes only the generated static site, not the development server or its tooling. VitePress is pinned at 1.6.4 and currently reports three npm audit findings: high for `vite` and moderate for `esbuild` and VitePress. They affect build/development tooling, not firmware or the static Pages JavaScript. No dependency overrides are applied. Documentation dependencies are separate from firmware builds.
+
+Settings persist as `midi_passthrough=off|unmapped|all` and `keyboard_macros=0|1` in `config.txt`. Macro definitions are written as `automation=id,midiEnabled,channel,note,idle,pressed,nameUTF8hex,keys-or-dash,scriptUTF8hex` in `midi_map.txt`. Legacy `key_macro` and `key_chord` entries remain readable: the reader assigns stable IDs and names such as `MIDI channel:note`. Review them on the Macros page; the next save writes `automation` lines, not an immediate on-disk rewrite when loaded. Configuration backups include both files. Lua state and runtime effect/volume changes are not persisted.
+
+The Web UI uses the named-macro API:
+
+- `GET /api/macros` returns `{macros:[{id,name,midi_enabled,channel,note,keys,script_hex,idle_velocity,pressed_velocity,runtime_error_hex}]}`. IDs are positive integers and names are safely encoded plain JSON strings.
+- `POST /api/macros` takes a plain-text body: optional `id` for updates, `name_hex` (UTF-8 hex), `midi_enabled=0|1`, `channel`, `note`, `keys`, `script_hex`, `idle_velocity`, `pressed_velocity`. Omit `id` to create. Names are up to 63 UTF-8 bytes; Lua source up to 2,047 bytes. Hex protects separators and Unicode. Send literal `+` in chords; nonempty `script_hex` selects Lua.
+- `DELETE /api/macros` takes `id=<positive integer>`.
+- `POST /api/macros/run` takes `id=<positive integer>` and queues a trigger; non-200 responses are errors, not successful runs. Reload the list to inspect later runtime errors.
+
+`/api/midi/chords` remains for backward-compatible clients; new clients use `/api/macros`. `/api/midi/last_note` still includes `last_channel` for learning.
+
+Run `make test-midi-usb test-midi-script test-soundboard-config test-gadget-setup` and `node --test tests/web_midi_test.js tests/web_lighting_test.js` for host checks. Lua is built statically from a pinned, checksum-verified upstream release for the host tests and firmware. The firmware module list includes `usb_f_midi` and `usb_f_hid`. Physical Pi/host enumeration, shortcuts, USB reconnects, and simultaneous multichannel audio still require device-side validation.
+
+### Display hotplug and headless operation
+
+The local UI checks display availability every 500 ms, rather than scanning devices on every main-loop iteration. It checks DRM connector status for the framebuffer's own graphics device where available, as well as framebuffer device replacement and resolution/stride changes. Disconnecting the display releases its mapping and staging buffer, closes touch input, cancels local gestures, and releases any soundboard clip held by the touchscreen. Rendering and touch-device scans stop while headless; audio, MIDI, and the Web UI keep running.
+
+A usable display is automatically reopened and redrawn after reconnecting, without restarting audiox. Missing touch devices are also retried at most once every 500 ms while a display is available. Non-DRM panels remain supported using framebuffer device/layout checks; detecting a cable unplug while the framebuffer remains present requires driver-provided DRM connector status. On graphics devices sharing a framebuffer across connectors, the UI stays active while any connector reports connected.
+
+Display, touch, audio hotplug, and MIDI discovery/path checks share a 500 ms interval. Active touch/MIDI input and HTTP service retain the fast main-loop cadence, and input errors can still report removal immediately. These are cooperative, elapsed-time checks: slow main-loop work can delay a check, but missed intervals do not trigger catch-up scans. Realtime audio stays on its existing worker thread.
+
+Run `make test-display-hotplug` for host-side simulated disconnect/reconnect, mode change, resource cleanup, touch recovery, and polling-frequency checks. Physical HDMI/DSI hotplug should also be checked on the target Pi/driver.
+
+Test and audio-benchmark rules live in `tests/Makefile`, included by the root `Makefile`. Continue running existing commands such as `make test-display-hotplug`, `make test-soundboard-config`, and `make audio-bench` from the repository root.
 
 ### QEMU debug mode
 

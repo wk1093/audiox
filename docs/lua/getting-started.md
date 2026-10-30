@@ -79,14 +79,12 @@ playback remain atomic.
 Read the [API reference](/lua/api) and [limits and troubleshooting](/lua/limits-and-troubleshooting)
 before building longer sequences.
 
-## Migration and device controls
+## Control effects and volumes
 
-Legacy `key_chord` and `key_macro` mappings remain readable: the reader assigns
-stable IDs and names such as `MIDI channel:note`. The next save writes
-`automation=id,midiEnabled,channel,note,idle,pressed,nameUTF8hex,keys-or-dash,scriptUTF8hex`
-lines in `midi_map.txt`; loading alone does not rewrite the file. The web UI now uses
-`/api/macros`; `/api/midi/chords` remains for backward-compatible clients.
-Review migrated names and bindings on the Macros page.
+Scripts can enable, bypass, or toggle existing effects and change their
+parameters with `effects.enable`, `effects.toggle`, and `effects.set`.
+For examples, see [effect recipes](/lua/cookbook#toggle-an-effect) and the
+[Effects guide](/guide/effects#control-effects-from-lua).
 
 Effect and volume controls are runtime-only; they do not save persistent
 configuration. Use existing effect IDs and routing thing IDs, not display

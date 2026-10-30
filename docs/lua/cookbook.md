@@ -113,3 +113,54 @@ midi.note_off(0, note)
 
 Always pair a raw MIDI note-on with its note-off. See
 [MIDI and soundboard](/lua/midi-and-soundboard) for destination details.
+
+## Toggle an effect
+
+Replace `fx_1` with an existing effect ID from `GET /api/effects`. Each Run or
+bound MIDI note-on flips its current enabled flag:
+
+```lua
+effects.toggle("fx_1")
+```
+
+For ordinary effects this switches between processing and bypass. For **Cut**
+it switches between muted and passing. No USB keyboard or MIDI controller is
+required when using web Run.
+
+## Alternate between two reverb presets
+
+Create and route a Reverb effect first, then replace `fx_1` below with its ID.
+The first trigger selects the wetter preset; the next selects the drier one:
+
+```lua
+state.wet = not state.wet
+effects.enable("fx_1", true)
+if state.wet then
+    effects.set("fx_1", "wet_mix", 0.45)
+    effects.set("fx_1", "feedback", 0.75)
+else
+    effects.set("fx_1", "wet_mix", 0.15)
+    effects.set("fx_1", "feedback", 0.4)
+end
+```
+
+`state.wet` is the macro's runtime memory, not a readback of the effect. Another
+control can still change that effect between triggers. Both the state and
+scripted parameter changes are runtime-only; these calls do not overwrite the
+saved effect settings.
+
+## Set pitch from pad velocity
+
+For an existing Pitch effect, use the trigger strength to choose a shift from
+minus twelve to plus twelve semitones:
+
+```lua
+local semitones = round(map(event.velocity, 1, 127, -12, 12))
+effects.enable("fx_2", true)
+effects.set("fx_2", "semitones", semitones)
+```
+
+Replace `fx_2` with your Pitch effect's ID. Web Run supplies velocity 127 and
+therefore selects +12; a MIDI pad supplies its actual note-on velocity.
+Use actual parameter units and valid ranges, not a normalized value.
+See [effect parameter keys](/guide/effects#control-effects-from-lua).

@@ -85,6 +85,28 @@ using a new sound; the trigger does not scan storage. See
 | `volume.set(id, percent)` | Set an existing routing thing's gain to `0`–`100` percent: `0` is mute, `100` is unity (`gain = 1`). |
 | `volume.adjust(id, delta)` | Adjust by `-100`–`100` percentage points, clamping the result to `0`–`100`. |
 
+Effect targets must already exist and be connected into the intended audio path.
+Find IDs and parameter metadata with `GET /api/effects`; use `fx_N` IDs, not
+display labels. `effects.enable(id, false)` bypasses an ordinary effect.
+For **Cut**, enabled means **muted** and disabled means **passing**.
+`effects.toggle` flips that enabled flag, so the same function also toggles a
+Cut mute.
+
+`effects.set` changes a numeric parameter, not the effect type or its routes.
+For example, with an existing Pitch effect whose ID is `fx_2`:
+
+```lua
+effects.enable("fx_2", true)
+effects.set("fx_2", "semitones", 7)
+effects.set("fx_2", "mix", 0.5)
+```
+
+Replace the example ID with your device's ID. The
+[Effects guide](/guide/effects#effect-controls-and-defaults) lists all ranges,
+and its [Lua section](/guide/effects#control-effects-from-lua) lists exact parameter
+keys for every effect. For toggle and preset recipes, use the
+[cookbook](/lua/cookbook#toggle-an-effect).
+
 Use the exact routing thing `id` returned by `GET /api/audio/volumes`
 (`{"volumes":[{"id":"…","name":"…","gain":0.8}]}`), not its display `name`.
 IDs come from the current routing graph: for example `usb_gadget_out` or
@@ -96,12 +118,16 @@ Inspect the device's response before copying an ID into a script:
 curl http://172.31.73.1/api/audio/volumes
 ```
 
-For example, **only if `usb_gadget_out` appears in that response**:
+For example, **only if `usb_gadget_in` appears in that response**:
 
 ```lua
-volume.set("usb_gadget_out", 80)
-volume.adjust("usb_gadget_out", -5)
+volume.set("usb_gadget_in", 80)
+volume.adjust("usb_gadget_in", -5)
 ```
+
+Gain applies to a thing's outgoing routes. A final sink such as `usb_gadget_out`
+does not attenuate its incoming signal using that gain; choose the source or
+an intermediate processing node for audible level changes. See [Volume](/guide/volume).
 
 The existing mixer allows gains up to `2`, but script controls deliberately
 cap at unity. Percentages are not dB. Effect and volume actions are queued

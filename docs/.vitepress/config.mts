@@ -2,7 +2,7 @@ import { defineConfig } from 'vitepress'
 
 export default defineConfig({
   title: 'AudioX Documentation',
-  description: 'Guides for AudioX named automation macros and the Raspberry Pi audio workstation.',
+  description: 'Setup, routing, effects, soundboard, MIDI, automation, and maintenance guides for the AudioX Raspberry Pi audio workstation.',
   base: '/audiox/docs/',
   cleanUrls: true,
   vite: {
@@ -10,11 +10,48 @@ export default defineConfig({
   },
   themeConfig: {
     siteTitle: 'AudioX Docs',
+    search: { provider: 'local' },
     nav: [
+      { text: 'Getting started', link: '/guide/getting-started' },
+      { text: 'Device guides', link: '/guide/web-interface' },
       { text: 'Lua scripts', link: '/lua/getting-started' },
       { text: 'AudioX on GitHub', link: 'https://github.com/wk1093/audiox' },
     ],
     sidebar: [
+      {
+        text: 'Start here',
+        items: [
+          { text: 'Documentation home', link: '/' },
+          { text: 'Getting started', link: '/guide/getting-started' },
+          { text: 'Hardware and compatibility', link: '/guide/hardware' },
+          { text: 'Networking and USB connection', link: '/guide/networking' },
+          { text: 'WebUI overview', link: '/guide/web-interface' },
+        ],
+      },
+      {
+        text: 'Audio and controls',
+        items: [
+          { text: 'Routing', link: '/guide/routing' },
+          { text: 'Bluetooth', link: '/guide/bluetooth' },
+          { text: 'Effects', link: '/guide/effects' },
+          { text: 'Volume', link: '/guide/volume' },
+          { text: 'Soundboard', link: '/guide/soundboard' },
+          { text: 'MIDI', link: '/guide/midi' },
+          { text: 'Macros and automation', link: '/guide/macros' },
+          { text: 'Display and touch', link: '/guide/display' },
+        ],
+      },
+      {
+        text: 'Configuration and maintenance',
+        items: [
+          { text: 'Config and backups', link: '/guide/config' },
+          { text: 'System and updates', link: '/guide/system' },
+          { text: 'Troubleshooting', link: '/guide/troubleshooting' },
+          { text: 'Files and HTTP reference', link: '/guide/reference' },
+          { text: 'Building and development', link: '/guide/development' },
+          { text: 'Releases and publishing', link: '/guide/publishing' },
+        ],
+      },
       {
         text: 'Lua scripts',
         items: [

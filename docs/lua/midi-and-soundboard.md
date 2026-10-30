@@ -73,7 +73,7 @@ midi.note_off(1, note)
 A Lua mapping can coexist with other configured MIDI behavior for a trigger.
 The script's MIDI output is separate from the incoming note and does not
 re-route arbitrary host messages. For full mapping and soundboard setup, see
-the [AudioX project README](https://github.com/wk1093/audiox#readme).
+the [MIDI guide](/guide/midi) and [Soundboard guide](/guide/soundboard).
 
 A playback failure (for example, an unavailable loaded sound or controller
 output) cancels other pending macros and resets state. Actions already

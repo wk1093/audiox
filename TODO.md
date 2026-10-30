@@ -125,9 +125,9 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Restricted Lua macro sequences: bounded cooperative key taps, holds/releases, delays and pad lighting; no standard libraries or background interpreter. Hardware keyboard/LED validation remains needed.
 - [x] Lua text typing with adjustable intervals (US-layout ASCII), live note-on event values, and bounded per-macro state. Unicode/other host layouts are not supported; held keys automatically release on completion/cancellation.
 - [x] Expand safe Lua utilities: trigger-time clocks, formatting/conversion, string/table/math helpers, random choices, queued logging, soundboard playback and controller MIDI messages.
-- [ ] Improve documentation for the project, including OS setup guides and usage examples
+- [x] Improve documentation for the project, including OS setup guides and usage examples
   - [x] Set up VitePress at wklab.net/audiox/docs with Pages deployment and descriptive Lua guides, reference and cookbook.
-  - [ ] Write the remaining OS setup, audio routing, Bluetooth, updates and recovery guides.
+  - [x] Write OS setup, hardware/networking, every WebUI page, audio routing, Bluetooth, display, backups, updates/recovery, troubleshooting and development guides.
 
 ## Last few improvements - v1.12
 - [ ] See if we can increase bluetooth quality. Not just audio quality, but quality of life, needs better interface (not just UI, also auto-connect features, easier device management, and more reliable connections).

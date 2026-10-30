@@ -28,7 +28,7 @@ createServer((request, response) => {
     return
   }
 
-  let file = path.resolve(root, `.${pathname.slice(base.length)}`)
+  let file = path.resolve(root, `./${pathname.slice(base.length)}`)
   if (!file.startsWith(`${root}${path.sep}`) && file !== root) {
     response.writeHead(404).end('Not found')
     return

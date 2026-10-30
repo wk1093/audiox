@@ -28,6 +28,16 @@ test-midi-usb: $(OUT_DIR)/host/audiox-midi-usb-test
 	@"$<"
 
 .PHONY: test-midi-script test-midi-docs
+.PHONY: test-bluetooth-hci
+test-bluetooth-hci: $(OUT_DIR)/host/audiox-bluetooth-hci-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-bluetooth-hci-test: tests/bluetooth_hci_test.cpp src/bluetooth/hci.cpp include/bluetooth/hci.hpp include/defs.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude \
+		-Wl,--wrap=socket -Wl,--wrap=bind -Wl,--wrap=setsockopt -Wl,--wrap=write \
+		-o "$@" tests/bluetooth_hci_test.cpp src/bluetooth/hci.cpp
+
 test-midi-docs: $(OUT_DIR)/host/audiox-midi-docs-test
 	@"$<"
 

@@ -250,6 +250,7 @@ Host tests and desktop bench rules are in `tests/Makefile`, included from the ro
 | Mount/configfs helpers and gadget setup | `make test-system test-gadget-setup` |
 | Runtime logs/kernel diagnostics | `make test-system-logs test-diagnostics` |
 | USB network/mDNS | `make test-mdns test-dnsmasq-config` |
+| Classic Bluetooth discovery | `make test-bluetooth-hci` |
 | Module resolution | `make test-resolve-modules` |
 | Backup archive/HTTP behavior | `make test-config-backup` |
 | Shared audio engine / PCM recovery | `make test-audio-engine test-audio-pcm-recover` |
@@ -266,6 +267,7 @@ node --test tests/web_ui_test.js tests/web_logs_test.js tests/web_updates_test.j
 node --test tests/web_backup_test.js tests/web_midi_test.js tests/web_lighting_test.js
 node --test tests/web_routing_test.js tests/web_soundboard_order_test.js
 node --test tests/build_dependencies_test.js tests/site_navigation_test.js
+node --test tests/web_bluetooth_test.js
 ```
 
 Packaging/release tests use local mocks, not real publication:

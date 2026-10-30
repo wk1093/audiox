@@ -212,16 +212,33 @@ function updateZoomLabel() {
   document.getElementById('btn-zoom-reset').textContent = txt;
 }
 
+const bluetoothHideUnnamed = document.getElementById('bluetooth-hide-unnamed');
+let bluetoothDevices = [];
+
+bluetoothHideUnnamed.addEventListener('change', () => renderBluetoothDevices(bluetoothDevices));
+
+function bluetoothDeviceHasName(device) {
+  const name = String(device.name || '').trim();
+  const compact = (value) => value.replace(/[:-]/g, '').toLowerCase();
+  return Boolean(name) && compact(name) !== compact(String(device.address || ''));
+}
+
 function renderBluetoothDevices(devices) {
   if (!bluetoothDevicesEl) {
     return;
   }
   const focused = bluetoothDevicesEl.contains(document.activeElement)
     ? document.activeElement.dataset.deviceAction : null;
+  const supported = devices.filter((device) => device.classic);
+  const nearby = supported.filter((device) => !device.paired && !device.connected);
+  const hiddenCount = bluetoothHideUnnamed.checked
+    ? nearby.filter((device) => !bluetoothDeviceHasName(device)).length : 0;
   bluetoothDevicesEl.replaceChildren();
   for (const [title, members, emptyText] of [
-    ['My devices', devices.filter((device) => device.paired || device.connected), 'No saved devices. Choose Add device to find and pair an audio device.'],
-    ['Nearby devices', devices.filter((device) => !device.paired && !device.connected), 'No nearby devices found. Put your device in pairing mode, then choose Add device.'],
+    ['My devices', supported.filter((device) => device.paired || device.connected), 'No saved devices. Choose Add device to find and pair an audio device.'],
+    ['Nearby devices', nearby.filter((device) => !bluetoothHideUnnamed.checked || bluetoothDeviceHasName(device)),
+      hiddenCount ? `${hiddenCount} unnamed device(s) hidden. Turn off Hide unnamed devices to show them.`
+        : 'No nearby devices found. Put your device in pairing mode, then choose Add device.'],
   ]) {
     const group = document.createElement('section');
     group.className = 'bluetooth-group';
@@ -230,6 +247,12 @@ function renderBluetoothDevices(devices) {
     const list = document.createElement('div');
     list.className = 'bluetooth-device-list';
     group.append(heading, list);
+    if (title === 'Nearby devices' && hiddenCount && members.length) {
+      const notice = document.createElement('p');
+      notice.className = 'small';
+      notice.textContent = `${hiddenCount} unnamed device(s) hidden.`;
+      heading.after(notice);
+    }
     bluetoothDevicesEl.append(group);
     if (!members.length) {
       const empty = document.createElement('div');
@@ -247,10 +270,10 @@ function renderBluetoothDevices(devices) {
       name.textContent = device.name || device.address;
       const status = document.createElement('span');
       status.className = 'bluetooth-device-state';
-      status.textContent = device.connected ? 'Connected for audio' : device.paired ? 'Paired, not connected' : 'Ready to pair';
+      status.textContent = device.connected ? 'Connected for audio' : device.paired ? 'Paired, not connected' : 'Discovered; put device in pairing mode to pair';
       const address = document.createElement('div');
       address.className = 'bluetooth-device-address';
-      address.textContent = `${device.address} · ${device.classic ? 'Bluetooth audio' : 'Bluetooth Low Energy'}`;
+      address.textContent = `${device.address} · Classic Bluetooth`;
       info.append(name, status, address);
       const actions = document.createElement('div');
       actions.className = 'bluetooth-device-actions';
@@ -309,7 +332,8 @@ async function loadBluetoothDevices() {
       throw new Error(data.error || `request failed: ${res.status}`);
     }
     bluetoothBusy = bluetoothRequestInFlight || Boolean(data.scanning || data.pairing || data.connecting);
-    renderBluetoothDevices(Array.isArray(data.devices) ? data.devices : []);
+    bluetoothDevices = Array.isArray(data.devices) ? data.devices : [];
+    renderBluetoothDevices(bluetoothDevices);
     bluetoothStatusEl.textContent = data.message || (data.ready ? 'Ready' : 'Adapter not ready');
     AudioxUI.resolve('bluetooth-load');
     const scanButton = document.getElementById('btn-bluetooth-scan');

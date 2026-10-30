@@ -64,14 +64,9 @@ static_assert(offsetof(DeviceListRequest, devReq) == 4, "unexpected HCI device l
 #define AUDIOX_HCI_REMOTE_NAME_CANCEL 0x041A
 #define AUDIOX_HCI_WRITE_INQUIRY_MODE 0x0C45
 #define AUDIOX_HCI_WRITE_LOCAL_NAME 0x0C13
-#define AUDIOX_EVT_LE_META_EVENT 0x3E
-#define AUDIOX_LE_ADVERTISING_REPORT 0x02
-#define AUDIOX_LE_EXTENDED_ADVERTISING_REPORT 0x0D
 #define AUDIOX_HCI_CHANNEL_RAW 0
 #define AUDIOX_SOL_HCI 0
 #define AUDIOX_HCI_FILTER 2
-#define AUDIOX_LE_SET_SCAN_PARAMS 0x200B
-#define AUDIOX_LE_SET_SCAN_ENABLE 0x200C
 
 namespace bt {
 
@@ -249,8 +244,8 @@ static void sanitizeName(const uint8_t *text, size_t length, char *out, size_t o
     out[written] = '\0';
 }
 
-// Parses AD/EIR structures (shared by LE advertising and classic extended inquiry).
-static uint8_t parseAdvertisingName(const uint8_t *data,
+// Parses names from Classic Extended Inquiry Response structures.
+static uint8_t parseInquiryName(const uint8_t *data,
                                     size_t dataLength,
                                     char *name,
                                     size_t nameSize) {
@@ -353,87 +348,6 @@ int waitForCommand(int fd, uint16_t opcode, int timeoutMs) {
     return -1;
 }
 
-static void scanLowEnergy(int fd,
-                          DiscoveredDevice *devices,
-                          size_t capacity,
-                          size_t *count) {
-    const uint8_t scanParams[] = {0x01, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00};
-    const uint8_t scanEnable[] = {0x01, 0x00};
-    if (writeCommand(fd, AUDIOX_LE_SET_SCAN_PARAMS, scanParams, sizeof(scanParams)) != RET_OK ||
-        waitForCommand(fd, AUDIOX_LE_SET_SCAN_PARAMS, 1000) != 0 ||
-        writeCommand(fd, AUDIOX_LE_SET_SCAN_ENABLE, scanEnable, sizeof(scanEnable)) != RET_OK ||
-        waitForCommand(fd, AUDIOX_LE_SET_SCAN_ENABLE, 1000) != 0) {
-        printf("[BT] [WARN] LE scan setup failed\n");
-        return;
-    }
-
-    struct pollfd pollFd = {fd, POLLIN, 0};
-    uint8_t packet[512];
-    int reportCount = 0;
-    int scanResponseCount = 0;
-    int namedReportCount = 0;
-    int malformedReportCount = 0;
-    const uint64_t deadline = monotonicMs() + 6000ULL;
-    while (monotonicMs() < deadline) {
-        uint64_t remaining = deadline - monotonicMs();
-        int timeout = (remaining > 1000ULL) ? 1000 : (int)remaining;
-        if (poll(&pollFd, 1, timeout) <= 0) {
-            continue;
-        }
-        ssize_t length = read(fd, packet, sizeof(packet));
-        if (length < 5 || packet[0] != AUDIOX_HCI_EVENT_PKT || packet[1] != AUDIOX_EVT_LE_META_EVENT) {
-            continue;
-        }
-
-        size_t offset = 4;
-        uint8_t batchCount = packet[offset++];
-        bool extended = packet[3] == AUDIOX_LE_EXTENDED_ADVERTISING_REPORT;
-        if (!extended && packet[3] != AUDIOX_LE_ADVERTISING_REPORT) {
-            continue;
-        }
-        for (uint8_t report = 0; report < batchCount; ++report) {
-            size_t addressOffset = extended ? offset + 3 : offset + 2;
-            size_t dataLengthOffset = extended ? offset + 23 : offset + 8;
-            if (dataLengthOffset >= (size_t)length || addressOffset + 6 > (size_t)length) {
-                ++malformedReportCount;
-                break;
-            }
-            uint16_t eventType = extended
-                ? (uint16_t)(packet[offset] | ((uint16_t)packet[offset + 1] << 8))
-                : packet[offset];
-            if ((!extended && eventType == 0x04) ||
-                (extended && (eventType & 0x0008U) != 0)) {
-                ++scanResponseCount;
-            }
-            Address remote = {};
-            memcpy(remote.b, packet + addressOffset, sizeof(remote.b));
-            uint8_t dataLength = packet[dataLengthOffset];
-            offset = dataLengthOffset + 1;
-            if (offset + dataLength > (size_t)length) {
-                ++malformedReportCount;
-                break;
-            }
-            char name[BT_NAME_MAX] = {};
-            uint8_t quality = parseAdvertisingName(packet + offset, dataLength, name, sizeof(name));
-            if (quality != NAME_NONE) {
-                ++namedReportCount;
-            }
-            // Legacy reports carry a trailing RSSI byte after the data.
-            offset += dataLength + (extended ? 0U : 1U);
-            addDiscoveredDevice(devices, capacity, count, remote, name, quality);
-            ++reportCount;
-        }
-    }
-
-    const uint8_t disable[] = {0x00, 0x00};
-    (void)writeCommand(fd, AUDIOX_LE_SET_SCAN_ENABLE, disable, sizeof(disable));
-    printf("[BT] [INFO] LE scan finished: reports=%d scan_responses=%d named_reports=%d malformed=%d\n",
-           reportCount,
-           scanResponseCount,
-           namedReportCount,
-           malformedReportCount);
-}
-
 static int scanClassic(int fd,
                        DiscoveredDevice *devices,
                        size_t capacity,
@@ -470,7 +384,7 @@ static int scanClassic(int fd,
 
         if (event == AUDIOX_EVT_EXTENDED_INQUIRY_RESULT && length >= 18) {
             char name[BT_NAME_MAX] = {};
-            uint8_t quality = parseAdvertisingName(packet + 18, (size_t)length - 18, name, sizeof(name));
+            uint8_t quality = parseInquiryName(packet + 18, (size_t)length - 18, name, sizeof(name));
             addClassicDevice(devices, capacity, count, packet + 4, packet[10],
                              (uint16_t)(packet[15] | (packet[16] << 8)), name, quality);
             continue;
@@ -550,7 +464,7 @@ static void requestRemoteNames(int fd, DiscoveredDevice *devices, size_t count, 
         }
 
         if (!done) {
-            // Free the controller before the LE scan starts.
+            // Release the controller if the name lookup exceeds its budget.
             (void)writeCommand(fd, AUDIOX_HCI_REMOTE_NAME_CANCEL, params, 6);
             (void)waitForCommand(fd, AUDIOX_HCI_REMOTE_NAME_CANCEL, 500);
             break;
@@ -610,7 +524,6 @@ size_t scan(int devId, DiscoveredDevice *out, size_t capacity) {
         requestRemoteNames(fd, out, count, 4000);
     }
     printf("[BT] [INFO] classic scan found %zu device(s)\n", count);
-    scanLowEnergy(fd, out, capacity, &count);
     close(fd);
     return count;
 }

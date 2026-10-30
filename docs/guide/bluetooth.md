@@ -32,6 +32,18 @@ separates **My devices** (paired or connected) from **Nearby devices**
 and **Forget** as appropriate. **Forget** removes the saved pairing; you must
 pair again before reconnecting.
 
+**Hide unnamed devices** is on by default. It hides nearby results without a
+usable name (including names that are just the device address), but never hides
+saved Classic devices. Turn it off to inspect address-only results; the list
+updates immediately without another scan. This is a page-view filter, not a
+saved device setting, and resets to on when you reload the WebUI.
+
+An unnamed result does not prove that the device is out of pairing mode.
+Names may be omitted from discovery replies or remote name lookups may time out.
+Discovery also does not prove audio support or readiness to pair: a Classic
+device can be discoverable without accepting a new pairing. Put the intended
+audio device into pairing mode before choosing Pair.
+
 The page's **Connected** state describes AudioX's outgoing connection to a
 paired audio sink. It does not report whether a phone or other source is
 currently streaming into **Bluetooth In**.
@@ -47,8 +59,18 @@ the archive contains pairing keys, so keep it private.
 Bluetooth audio uses the SBC codec. AudioX does not offer a codec selector or
 AAC/aptX/LDAC support. For outgoing audio, the remote sink must support
 48 kHz stereo SBC; AudioX selects a low SBC bitpool for its output stream.
-AudioX advertises 48 kHz joint-stereo SBC when receiving audio. BLE-only
-devices can appear in scan results, but LE pairing/audio is not supported.
+AudioX advertises 48 kHz joint-stereo SBC when receiving audio.
+
+Discovery uses **Classic inquiry and bounded remote name lookups only**. AudioX
+does not run BLE discovery, so BLE-only advertisements do not fill the list.
+Dual-mode audio devices can still appear through their Classic discoverable
+mode.
+
+[Bluetooth LE Audio](https://www.bluetooth.com/learn-about-bluetooth/feature-enhancements/le-audio/)
+can carry audio, but it is a separate technology using LC3 rather than AudioX's
+Classic A2DP/SBC implementation. AudioX does **not** implement LE Audio or
+Auracast. Generic BLE support or the ability to see an advertisement would not
+make those devices usable for audio here.
 
 Only one outgoing Bluetooth audio device can be connected at a time. Scanning
 and pairing are unavailable while that output is connected; disconnect it
@@ -86,9 +108,10 @@ channel sockets shown in Routing are authoritative for the detected graph. Read
   status and logs.
 - **Scan finds nothing:** put the device in discoverable/pairing mode, move it
   closer, and scan again. AudioX retains saved pairings even when those
-  devices are not currently advertising.
-- **Pair reports LE-only or unsupported:** scan may find BLE devices, but
-  AudioX pairing is for Bluetooth Classic. Use a Classic audio-capable device.
+  devices are not currently discoverable. Try turning off **Hide unnamed
+  devices** if the target has no reported name.
+- **LE-only device is missing:** this is intentional. Use a device with Classic
+  A2DP/SBC support and enable its Classic pairing mode if it has multiple modes.
 - **Cannot scan or pair:** disconnect the current outgoing Bluetooth audio
   device first. Wait for any scan, pairing, or connection operation to finish
   before starting another.
@@ -112,5 +135,4 @@ Related guides: [Getting started](./getting-started.md),
 [Routing](./routing.md), [Configuration](./config.md),
 [Troubleshooting](./troubleshooting.md), [Hardware](./hardware.md),
 [System](./system.md), and [Development](./development.md).
-The planned [Reference](./reference.md) will group Bluetooth API and
-persisted pairing-file details.
+[Reference](./reference.md) groups Bluetooth API and persisted pairing-file details.

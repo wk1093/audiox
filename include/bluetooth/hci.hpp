@@ -51,7 +51,7 @@ int setLocalName(int fd, const char *name);
 // Returns the command status, or -1 on timeout.
 int waitForCommand(int fd, uint16_t opcode, int timeoutMs);
 
-// Classic inquiry, remote name lookup, then LE scan. Returns the device count.
+// Classic inquiry and bounded remote name lookup. Returns the device count.
 size_t scan(int devId, DiscoveredDevice *out, size_t capacity);
 
 } // namespace bt

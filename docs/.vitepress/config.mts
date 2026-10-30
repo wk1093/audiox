@@ -4,6 +4,11 @@ export default defineConfig({
   title: 'AudioX Documentation',
   description: 'Setup, routing, effects, soundboard, MIDI, automation, and maintenance guides for the AudioX Raspberry Pi audio workstation.',
   base: '/audiox/docs/',
+  head: [
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/audiox/docs/logo_small.svg' }],
+    ['link', { rel: 'icon', type: 'image/png', sizes: '512x512', href: '/audiox/docs/logo_small.png' }],
+    ['link', { rel: 'apple-touch-icon', href: '/audiox/docs/logo_small.png' }],
+  ],
   cleanUrls: true,
   vite: {
     server: { host: '127.0.0.1' },

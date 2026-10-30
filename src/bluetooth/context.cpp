@@ -1536,7 +1536,7 @@ void BluetoothContext::runPair(const bt::Address &target) {
         BluetoothDevice *device = findDevice(target);
         if (device && !device->classic && !device->paired) {
             pairing = false;
-            snprintf(message, sizeof(message), "%s is LE only; LE pairing is not supported yet", address);
+            snprintf(message, sizeof(message), "%s does not support Classic Bluetooth; LE Audio is not supported", address);
             return;
         }
     }

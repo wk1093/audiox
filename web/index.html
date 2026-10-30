@@ -114,6 +114,11 @@
             <h2>Bluetooth</h2>
             <p id="bluetooth-status" class="small" role="status">Connect your saved audio devices or discover a new one.</p>
             <p id="bluetooth-scan-hint" class="small" hidden></p>
+            <label class="bluetooth-filter">
+              <input id="bluetooth-hide-unnamed" type="checkbox" role="switch" checked aria-describedby="bluetooth-filter-hint">
+              Hide unnamed devices
+            </label>
+            <p id="bluetooth-filter-hint" class="small">Only Classic Bluetooth is scanned. Turn this off to show nearby devices identified only by an address. Saved devices are always shown.</p>
           </div>
           <button id="btn-bluetooth-scan" class="primary">Add device</button>
         </section>

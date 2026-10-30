@@ -541,6 +541,8 @@ select {
 
 .bluetooth-header p { margin: 8px 0 0; }
 .bluetooth-header button { flex-shrink: 0; }
+.bluetooth-filter { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 13px; cursor: pointer; }
+.bluetooth-filter input { width: auto; margin: 0; accent-color: var(--accent); }
 .bluetooth-groups { display: grid; gap: 20px; }
 .bluetooth-group h2 { margin: 0 0 10px; color: var(--muted); }
 .bluetooth-device-list { display: grid; gap: 8px; }

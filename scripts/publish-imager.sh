@@ -4,9 +4,10 @@ set -euo pipefail
 FILES="${1:?usage: publish-imager.sh <packaged_files_dir>}"
 : "${GH_REPO:?}" "${CHANNEL:?}" "${RELEASE_TAG:?}" "${BUILD_COMMIT:?}"
 : "${GITHUB_RUN_NUMBER:?}" "${GITHUB_RUN_ID:?}" "${GITHUB_SERVER_URL:?}"
+PUBLISH_SEQUENCE="${PUBLISH_SEQUENCE:-$GITHUB_RUN_NUMBER}"
 NIGHTLY_LIMIT=25
 if ! [[ "$CHANNEL" == stable && "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ||
-        "$CHANNEL" == nightly && "$RELEASE_TAG" == "nightly-$GITHUB_RUN_NUMBER" ]]; then
+        "$CHANNEL" == nightly && "$RELEASE_TAG" == "nightly-$PUBLISH_SEQUENCE" ]]; then
     echo "Invalid publishing channel/tag: $CHANNEL/$RELEASE_TAG" >&2
     exit 1
 fi
@@ -40,7 +41,7 @@ if [[ "$CHANNEL" == nightly && -n "$ROLLING" ]]; then
         exit 1
     fi
     NOTES="$(jq -r '.body // ""' <<< "$ROLLING")"
-    if [[ "$NOTES" =~ audiox-run-number:\ ([0-9]+) ]] && (( BASH_REMATCH[1] > GITHUB_RUN_NUMBER )); then
+    if [[ "$NOTES" =~ audiox-run-number:\ ([0-9]+) ]] && (( BASH_REMATCH[1] > PUBLISH_SEQUENCE )); then
         echo "A newer nightly has already been published; skipping this older run."
         exit 0
     fi
@@ -98,7 +99,7 @@ fi
 
 printf 'Version: `%s`\n\nBuild commit: `%s`\n\n[Workflow run](%s/%s/actions/runs/%s)\n\n<!-- audiox-run-number: %s -->\n<!-- audiox-history: true -->\n' \
     "$VERSION" "$BUILD_COMMIT" "$GITHUB_SERVER_URL" "$GH_REPO" "$GITHUB_RUN_ID" \
-    "$GITHUB_RUN_NUMBER" > "$WORK/notes.md"
+    "$PUBLISH_SEQUENCE" > "$WORK/notes.md"
 
 # Published versioned nightly assets are never overwritten, including on reruns.
 if [[ -z "$CURRENT" ]] || jq -e .draft <<< "$CURRENT" > /dev/null; then

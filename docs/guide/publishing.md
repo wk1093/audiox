@@ -10,29 +10,61 @@ The build workflow builds Pi 4 and Pi 5 separately and uploads board-suffixed
 SD images, AXU updates, bootloader initramfs, and runtime initramfs. A successful
 Pi 5 build is not physical hardware validation.
 
-Automatic main-branch nightly builds are filtered by image/build inputs:
-runtime/header/rootfs/WebUI files, Makefile/Kconfig, module lists, logo assets,
-and the build scripts named in the workflow's `push.paths`. Documentation,
-tests, catalogs, and publishing-only edits alone do not trigger a firmware
-nightly. Mixed commits containing image inputs still do. Update the filter when
-adding new image-input locations.
+Main-branch pushes build artifacts but do not publish releases. These builds are
+filtered by image/build inputs: runtime/header/rootfs/WebUI files,
+Makefile/Kconfig, module lists, logo assets, and the build scripts named in the
+workflow's `push.paths`. Pull-request runs also build artifacts without publishing.
 
-This is input filtering, not binary deduplication: generated archives and embedded
-commit IDs can change checksums even when source behavior is unchanged.
-Pull-request runs build artifacts without publishing releases.
+The nightly release check compares these same inputs against published releases.
+Documentation, tests, catalogs, and mirror-only edits do not create a nightly.
+Keep the path filter in the build workflow and `scripts/prepare-release.sh` in sync
+when adding new image-input locations. This is source-input filtering, not binary
+deduplication: archives and embedded commit IDs can change checksums even when
+source behavior is unchanged.
+
+## Automatic release selection
+
+Use **Actions > Release AudioX > Run workflow** on `main` to request a release
+without entering a version. The same action runs daily at **08:00 UTC**
+(GitHub may delay scheduled runs). It reads `make print-version` from the selected
+commit and chooses the channel:
+
+| Makefile version | Publication |
+| --- | --- |
+| `X.Y.Z` | Full stable release tagged `vX.Y.Z` |
+| `X.Y.Z-alpha`, `X.Y.Z-beta.2`, `X.Y.Z-rc.1`, or another SemVer prerelease | Nightly prerelease |
+
+Build metadata in the configured version is rejected; nightly mode adds the
+commit metadata automatically. A stable version that is already published is
+skipped, even if subsequent commits change firmware. Bump the Makefile version
+for another stable release, or set a prerelease suffix to resume nightlies.
+Draft stable releases can be retried only from their original tagged commit.
 
 ## Nightly publication
 
-After both board builds succeed, the workflow:
+For prerelease versions, the action skips building/publishing when the selected
+commit's firmware inputs are already covered by a published stable or nightly
+release on its Git history. Draft releases do not count, and API/comparison
+failures fail the check rather than silently skipping. The first run with no
+published baseline builds a nightly.
 
-1. Publishes a versioned `nightly-<workflow-run-number>` prerelease with images,
+The firmware version comes from the Makefile with nightly mode enabled. Release
+runs are serialized so checks see earlier completed publications instead of
+publishing the same firmware again. Stable versions never launch nightly builds.
+
+When unreleased firmware changes exist, both board builds run. After they succeed,
+the workflow:
+
+1. Publishes a versioned `nightly-<workflow-run-id>` prerelease with images,
    checksums, and `images.json`.
 2. Publishes the updated history catalog.
 3. Prunes releases and tags beyond the newest **25 nightly builds**.
 
+Run IDs avoid tag collisions with the previous push-triggered workflow's run
+numbers. Existing nightly tags remain usable and count toward the retention limit.
 Versioned published assets are not overwritten on reruns, and an older workflow
 run cannot replace a newer nightly. Failed catalog publication does not prune
-history; rerun the workflow to finish it.
+history; use **Re-run failed jobs** to finish it without repeating the release check.
 
 The rolling `nightly` release also offers fixed download names, including
 `audiox-latest-nightly-pi4.img.xz`, `audiox-latest-nightly-pi5.img.xz`, and
@@ -42,17 +74,21 @@ replacement window. Refresh catalogs that refer to pruned nightlies.
 
 ## Publish a stable release
 
-1. Open **Actions > Release AudioX Stable > Run workflow**.
-2. Select `main` and enter a version such as `2.0.0`, without a `v` prefix.
-3. The workflow creates `v2.0.0` at the selected main commit and invokes the
+1. Open **Actions > Release AudioX > Run workflow**, or wait for the daily run.
+2. Select `main`. No version input is needed: the workflow reads
+   `make print-version` from that commit. First commit the desired
+   `AUDIOX_VERSION_MAJOR`, `AUDIOX_VERSION_MINOR`, and `AUDIOX_VERSION_PATCH`
+   values in the Makefile, with prerelease/build metadata empty. A prerelease
+   suffix instead selects nightly publication.
+3. For a Makefile version of `2.0.0`, the workflow creates `v2.0.0` and invokes the
    board builds.
 4. Assets are staged in a draft and published as the latest stable after all
    uploads succeed. There is no additional approval step.
 
 Existing tags are reused only when they point to the same commit, never moved.
-Use **Re-run failed jobs** to retry the same release. The image-build workflow
-can also be manually run for an existing `vX.Y.Z` tag. Pushing a tag alone does
-not publish a stable release.
+Use **Re-run failed jobs** to retry the same release. Bump the Makefile version
+before releasing a different commit. Pushing a tag alone does not publish a stable
+release, and publishing a stable release does not launch a nightly.
 
 Stable assets include `audiox-latest-pi4.img.xz` and
 `audiox-latest-pi5.img.xz`. Stable releases with Imager manifests appear in the
@@ -110,6 +146,7 @@ The mirror must retain downloads while adding the generated docs under `docs/`.
 ```sh
 bash tests/imager_package_test.sh
 bash tests/imager_publish_test.sh
+bash tests/release_workflows_test.sh
 node --test tests/site_navigation_test.js tests/docs_site_test.js
 ```
 

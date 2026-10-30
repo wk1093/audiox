@@ -10,6 +10,7 @@ on:
       - 'web/**'
       - 'scripts/**'
       - '!scripts/mirror-updates.sh'
+      - '!scripts/prepare-release.sh'
       - 'Makefile'
       - 'Kconfig'
       - 'bootmod.txt'
@@ -19,17 +20,15 @@ on:
       - 'logo*.ppm'
   pull_request:
     branches: [ "main" ]
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing stable release tag (vX.Y.Z)"
-        required: true
-        type: string
   workflow_call:
     inputs:
+      channel:
+        description: "Publishing channel (stable or nightly); empty builds artifacts only"
+        default: ''
+        type: string
       tag:
         description: "Existing stable release tag (vX.Y.Z)"
-        required: true
+        default: ''
         type: string
 
 permissions:
@@ -50,10 +49,10 @@ jobs:
       - name: Select publishing channel
         id: release
         env:
-          EVENT_NAME: ${{ github.event_name }}
+          CHANNEL: ${{ inputs.channel }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+          if [[ "$CHANNEL" == stable ]]; then
             if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
               echo "::error::Stable releases require an existing vX.Y.Z tag (no prerelease suffix)."
               exit 1
@@ -63,9 +62,12 @@ jobs:
             echo "patch=${BASH_REMATCH[3]}" >> "$GITHUB_OUTPUT"
             echo "channel=stable" >> "$GITHUB_OUTPUT"
             echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          else
+          elif [[ "$CHANNEL" == nightly && -z "$RELEASE_TAG" ]]; then
             echo "channel=nightly" >> "$GITHUB_OUTPUT"
-            echo "tag=nightly-$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "tag=nightly-$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+          elif [[ -n "$CHANNEL" || -n "$RELEASE_TAG" ]]; then
+            echo "::error::Invalid publishing channel/tag: $CHANNEL/$RELEASE_TAG"
+            exit 1
           fi
 
       - name: Checkout build source
@@ -101,7 +103,7 @@ jobs:
           persist-credentials: false
 
       - name: Set published firmware version
-        if: github.event_name != 'pull_request'
+        if: needs.prepare.outputs.channel != ''
         env:
           CHANNEL: ${{ needs.prepare.outputs.channel }}
           BUILD_COMMIT: ${{ needs.prepare.outputs.commit }}
@@ -124,7 +126,7 @@ jobs:
           fi
 
       - name: Checkout publishing tools from the workflow revision
-        if: github.event_name != 'pull_request'
+        if: needs.prepare.outputs.channel != ''
         uses: actions/checkout@v4
         with:
           ref: ${{ github.workflow_sha }}
@@ -175,7 +177,7 @@ jobs:
           make update_archive
 
       - name: Package Imager image
-        if: github.event_name != 'pull_request'
+        if: needs.prepare.outputs.channel != ''
         env:
           BOARD: ${{ matrix.board }}
           CHANNEL: ${{ needs.prepare.outputs.channel }}
@@ -184,12 +186,12 @@ jobs:
         run: |
           bash .publishing-tools/scripts/package-imager.sh out/audiox.img out/imager \
             "$BOARD" "$CHANNEL" "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$RELEASE_DATE" \
-            "$(make --no-print-directory --eval='imager-version: ; @printf "%s\n" "$(AUDIOX_VERSION_STRING)"' imager-version)"
+            "$(make --silent print-version)"
           cp out/audiox-update.axu "out/imager/audiox-update-$BOARD.axu"
           (cd out/imager && sha256sum "audiox-update-$BOARD.axu" > "audiox-update-$BOARD.axu.sha256")
 
       - name: Upload Imager publishing files
-        if: github.event_name != 'pull_request'
+        if: needs.prepare.outputs.channel != ''
         uses: actions/upload-artifact@v4
         with:
           name: imager-${{ matrix.board }}
@@ -229,7 +231,7 @@ jobs:
   publish:
     name: Publish ${{ needs.prepare.outputs.channel }}
     needs: [prepare, build]
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: needs.prepare.outputs.channel != '' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -258,6 +260,8 @@ jobs:
           CHANNEL: ${{ needs.prepare.outputs.channel }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           BUILD_COMMIT: ${{ needs.prepare.outputs.commit }}
+          # Avoid collisions with the previous push workflow's nightly run numbers.
+          PUBLISH_SEQUENCE: ${{ github.run_id }}
         run: bash scripts/publish-imager.sh release
 
   update-mirror:

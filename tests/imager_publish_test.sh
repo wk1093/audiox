@@ -296,4 +296,20 @@ CHANNEL=nightly RELEASE_TAG=nightly-27 bash "$ROOT/scripts/publish-imager.sh" "$
 jq -e '.os_list | length == 2 and all(.[]; .url | contains("/nightly-27/"))' \
     "$MOCK/assets/nightly/os_list.json" > /dev/null
 echo "PASS: first nightly publication works without an existing rolling release"
+
+for board in pi4 pi5; do
+    bash "$ROOT/scripts/package-imager.sh" "$WORK/audiox.img" "$WORK/package" \
+        "$board" nightly "$GH_REPO" nightly-1001 2026-10-26 1.9.1-nightly+0123456789ab
+done
+CHANNEL=nightly RELEASE_TAG=nightly-1001 PUBLISH_SEQUENCE=1001 GITHUB_RUN_NUMBER=1 \
+    bash "$ROOT/scripts/publish-imager.sh" "$WORK/package"
+jq -e '.os_list | length == 4 and (.[0].url | contains("/nightly-1001/"))' \
+    "$MOCK/assets/nightly/os_list.json" > /dev/null
+jq -e '.[] | select(.tag_name == "nightly") |
+    .body | contains("<!-- audiox-run-number: 1001 -->")' "$MOCK/releases.json" > /dev/null
+echo '' > "$MOCK/calls"
+CHANNEL=nightly RELEASE_TAG=nightly-28 GITHUB_RUN_NUMBER=28 \
+    bash "$ROOT/scripts/publish-imager.sh" "$WORK/package"
+! grep -q '^release ' "$MOCK/calls"
+echo "PASS: run-ID sequences avoid tag collisions and block older push-workflow publications"
 echo "Imager publishing tests passed"

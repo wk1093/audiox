@@ -52,6 +52,7 @@
 #define HTTP_BLUETOOTH_CONNECT_PATH HTTP_API_PREFIX "bluetooth/connect"
 #define HTTP_BLUETOOTH_DISCONNECT_PATH HTTP_API_PREFIX "bluetooth/disconnect"
 #define HTTP_BLUETOOTH_UNPAIR_PATH HTTP_API_PREFIX "bluetooth/unpair"
+#define HTTP_BLUETOOTH_AUTO_CONNECT_PATH HTTP_API_PREFIX "bluetooth/auto-connect"
 #define HTTP_SYSTEM_SYNC_PATH HTTP_API_PREFIX "system/sync"
 #define HTTP_SYSTEM_RESTART_PATH HTTP_API_PREFIX "system/restart"
 #define HTTP_SYSTEM_SHUTDOWN_PATH HTTP_API_PREFIX "system/shutdown"
@@ -3561,6 +3562,49 @@ static int handleBluetoothUnpair(HttpServer *server,
 	return server->sendResponse(cfd, "202 Accepted", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
 }
 
+static int handleBluetoothAutoConnect(HttpServer *server,
+                                      int cfd,
+                                      const char *method,
+                                      const char *body,
+                                      size_t body_len) {
+    if (!server || !method || !body) {
+        return -1;
+    }
+    if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {
+        return sendMethodNotAllowed(server, cfd);
+    }
+    BluetoothContext *bluetooth = server->app ? server->app->bluetooth : nullptr;
+    if (!bluetooth) {
+        static const char err[] = "{\"ok\":false,\"error\":\"bluetooth unavailable\"}\n";
+        return server->sendResponse(cfd, "503 Service Unavailable", "application/json; charset=utf-8", err, sizeof(err) - 1);
+    }
+    char address[32] = {};
+    char enabledText[8] = {};
+    if (!body_get_value(body, body_len, "address", address, sizeof(address)) ||
+        !body_get_value(body, body_len, "enabled", enabledText, sizeof(enabledText))) {
+        static const char bad[] = "{\"ok\":false,\"error\":\"address and enabled are required\"}\n";
+        return server->sendResponse(cfd, "400 Bad Request", "application/json; charset=utf-8", bad, sizeof(bad) - 1);
+    }
+    bool enabled = false;
+    if (strcmp(enabledText, "true") == 0 || strcmp(enabledText, "1") == 0) {
+        enabled = true;
+    } else if (strcmp(enabledText, "false") != 0 && strcmp(enabledText, "0") != 0) {
+        static const char bad[] = "{\"ok\":false,\"error\":\"enabled must be true or false\"}\n";
+        return server->sendResponse(cfd, "400 Bad Request", "application/json; charset=utf-8", bad, sizeof(bad) - 1);
+    }
+    int rc = bluetooth->requestAutoConnect(address, enabled);
+    if (rc == RET_ERR) {
+        static const char bad[] = "{\"ok\":false,\"error\":\"device is not a saved Classic Bluetooth device\"}\n";
+        return server->sendResponse(cfd, "400 Bad Request", "application/json; charset=utf-8", bad, sizeof(bad) - 1);
+    }
+    if (rc != RET_OK) {
+        static const char err[] = "{\"ok\":false,\"error\":\"could not save Auto-connect setting\"}\n";
+        return server->sendResponse(cfd, "500 Internal Server Error", "application/json; charset=utf-8", err, sizeof(err) - 1);
+    }
+    static const char ok[] = "{\"ok\":true}\n";
+    return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
+}
+
 static int handleSystemInfo(HttpServer *server,
 							 int cfd,
 							 const char *method,
@@ -4350,6 +4394,10 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_BLUETOOTH_UNPAIR_PATH) == 0) {
 		return handleBluetoothUnpair(server, cfd, method, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_BLUETOOTH_AUTO_CONNECT_PATH) == 0) {
+		return handleBluetoothAutoConnect(server, cfd, method, body, body_len);
 	}
 
 	if (strcmp(path, HTTP_SYSTEM_SYNC_PATH) == 0) {

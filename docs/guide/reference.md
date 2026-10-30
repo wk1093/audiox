@@ -25,7 +25,7 @@ They are not paths on the computer running your browser.
 | `midi_map.txt` | Sound/action/CC mappings, sampler, lighting, effects, sound order, and named macro definitions |
 | `fx_params.txt` | Saved effect parameter data used by the firmware |
 | `volumes.txt` | Saved gains keyed by audio thing ID |
-| `bluetooth/paired.txt` | Saved Bluetooth pairing records, including sensitive key material |
+| `bluetooth/paired.txt` | Saved Bluetooth pairing records, Auto-connect flags, and sensitive key material |
 | `sfx/` | Soundboard audio files |
 
 Use the normal editors instead of hand-editing files where possible: edits can
@@ -163,7 +163,7 @@ at runtime; see [Macros](./macros) and the [Lua reference](/lua/api).
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /api/bluetooth/devices` | Saved/nearby Bluetooth devices and current status |
-| `POST /api/bluetooth/scan`, `/pair`, `/connect`, `/disconnect`, `/unpair` | Bluetooth lifecycle operations |
+| `POST /api/bluetooth/scan`, `/pair`, `/connect`, `/disconnect`, `/unpair`, `/auto-connect` | Bluetooth lifecycle and per-device Auto-connect operations |
 | `POST /api/config/reload` | Apply staged USB configuration |
 | `GET /api/config/backup` | Stream a complete `.axb` backup |
 | `PUT /api/config/restore` | Upload/validate/stage an `.axb`, then reboot |

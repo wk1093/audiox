@@ -202,6 +202,7 @@ struct AudioContext {
     std::atomic<uint32_t> bluetoothOutputRead{0};
     std::atomic<uint32_t> bluetoothOutputDropped{0};
     std::atomic<int> bluetoothOutputActive{0};
+    std::atomic<int> bluetoothOutputSignalActive{0};
     int16_t bluetoothOutputRing[AUDIO_BT_PCM_RING_FRAMES][2] = {};
     float bluetoothOutputReadFraction = 0.0f;
     float bluetoothOutputRateIntegral = 0.0f;

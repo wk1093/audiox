@@ -994,18 +994,28 @@ static void servicePlaybackIoImpl(AudioContext *ctx, RuntimeGraph *rt, uint16_t 
     for (uint16_t i = 0; i < rt->sinkNodeCount; ++i) {
         const uint16_t node = rt->sinkNodes[i];
         if ((SingleSink && node != onlyNode) ||
-            strcmp(rt->snapshot.things[node].id, "bluetooth_out") != 0 ||
-            !ctx->bluetoothOutputActive.load(std::memory_order_acquire)) {
+            strcmp(rt->snapshot.things[node].id, "bluetooth_out") != 0) {
             continue;
         }
         int16_t block[BUFFER_FRAMES * 2U];
         float gain = ctx->nodeGainAtomics[node].load(std::memory_order_relaxed);
+        int32_t peak = 0;
         for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
             for (uint32_t channel = 0; channel < 2; ++channel) {
                 float sample = rt->inputs[node][channel][frame];
                 sample *= gain * kBluetoothOutputPeakLimit;
                 block[frame * 2U + channel] = audiox::pcm::toS16(sample);
+                const int32_t magnitude = block[frame * 2U + channel] < 0
+                    ? -(int32_t)block[frame * 2U + channel]
+                    : (int32_t)block[frame * 2U + channel];
+                if (magnitude > peak) {
+                    peak = magnitude;
+                }
             }
+        }
+        ctx->bluetoothOutputSignalActive.store(peak >= 80, std::memory_order_release);
+        if (!ctx->bluetoothOutputActive.load(std::memory_order_acquire)) {
+            continue;
         }
         (void)ctx->pushBluetoothOutputPcm(block, BUFFER_FRAMES);
     }

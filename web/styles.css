@@ -553,6 +553,8 @@ select {
 .bluetooth-device-state { font-size: 12px; color: var(--muted); }
 .connected .bluetooth-device-state { color: var(--ok); }
 .bluetooth-device-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.bluetooth-auto-connect { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }
+.bluetooth-auto-connect input { width: auto; margin: 0; accent-color: var(--accent); }
 .bluetooth-device-address { font-size: 11px; color: var(--muted); }
 .bluetooth-empty { padding: 20px; border: 1px dashed var(--line); border-radius: 12px; color: var(--muted); font-size: 13px; }
 .sb-grid.can-reorder .sb-card-name { cursor: grab; user-select: none; touch-action: none; }

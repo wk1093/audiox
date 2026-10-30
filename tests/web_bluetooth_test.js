@@ -10,6 +10,7 @@ function fixture(devices) {
     textContent = '';
     listeners = {};
     checked = true;
+    attributes = {};
     append(...children) {
       for (const child of children) child.parent = this;
       this.children.push(...children);
@@ -20,11 +21,12 @@ function fixture(devices) {
     }
     replaceChildren() { this.children = []; }
     contains(child) { return this.children.includes(child); }
-    setAttribute() {}
+    setAttribute(name, value) { this.attributes[name] = value; }
     addEventListener(event, callback) { this.listeners[event] = callback; }
     querySelectorAll(tag) {
       return this.children.flatMap(child =>
-        [...(child.tag === tag ? [child] : []), ...child.querySelectorAll(tag)]);
+        [...((child.tag === tag || (tag === '[data-device-action]' && child.dataset.deviceAction))
+          ? [child] : []), ...child.querySelectorAll(tag)]);
     }
     get text() { return this.textContent + this.children.map(child => child.text).join(' '); }
   }
@@ -32,6 +34,7 @@ function fixture(devices) {
     'btn-bluetooth-scan', 'bluetooth-scan-hint'].map(id => [id, new Element()]));
   const source = fs.readFileSync(require.resolve('../web/app.js'), 'utf8');
   let fetches = 0;
+  const requests = [];
   const notices = [];
   const context = vm.createContext({
     document: {
@@ -46,20 +49,22 @@ function fixture(devices) {
     state: { activeTab: 'routing' },
     AbortSignal,
     setStatus: (...args) => notices.push(args),
-    fetch: async () => {
+    fetch: async (path, options = {}) => {
       fetches++;
+      if (options.method === 'POST') requests.push([path, options.body]);
       return { ok: true, json: async () => ({ ok: true, ready: true, devices }) };
     },
     clearTimeout,
     setTimeout,
   });
   vm.runInContext(source.slice(source.indexOf('const bluetoothHideUnnamed ='),
-    source.indexOf('async function bluetoothRequest(')), context);
+    source.indexOf('function setRoutingZoo')), context);
   return {
     root: elements.get('bluetooth-devices'),
     filter: elements.get('bluetooth-hide-unnamed'),
     load: () => context.loadBluetoothDevices(),
     fetches: () => fetches,
+    requests,
     notices,
   };
 }
@@ -120,6 +125,27 @@ test('names learned by subsequent polls appear with the filter enabled', async (
   await f.load();
   assert.match(f.root.text, /Headphones/);
   assert.doesNotMatch(f.root.text, /hidden/);
+});
+
+test('saved devices expose an Auto-connect switch that persists changes', async () => {
+  const f = fixture([
+    device('Speaker', '01', { paired: true }),
+    device('Headphones', '02', { paired: true, auto_connect: false }),
+  ]);
+  await f.load();
+  const switches = f.root.querySelectorAll('input');
+  assert.equal(switches.length, 2);
+  const speakerSwitch = switches.find(input => input.attributes['aria-label'] === 'Auto-connect Speaker');
+  const headphoneSwitch = switches.find(input => input.attributes['aria-label'] === 'Auto-connect Headphones');
+  assert.ok(speakerSwitch);
+  assert.ok(headphoneSwitch);
+  assert.equal(speakerSwitch.checked, true);
+  assert.equal(headphoneSwitch.checked, false);
+
+  speakerSwitch.checked = false;
+  await speakerSwitch.listeners.change();
+  assert.equal(f.requests[0][0], '/api/bluetooth/auto-connect');
+  assert.equal(String(f.requests[0][1]), 'address=00:11:22:33:44:01&enabled=false');
 });
 
 test('Bluetooth page exposes a checked and labelled switch with an explanation', () => {

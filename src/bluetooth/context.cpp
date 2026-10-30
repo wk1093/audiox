@@ -19,6 +19,11 @@
 #define BT_STATE_DIR ROOT_MOUNT_POINT "/bluetooth"
 #define BT_PAIRED_FILE BT_STATE_DIR "/paired.txt"
 #define BT_PAIR_TIMEOUT_MS 30000ULL
+#define BT_OUTPUT_CONNECT_TIMEOUT_MS 30000ULL
+#define BT_OUTPUT_SILENCE_THRESHOLD 2500ULL
+#define BT_AUTOCONNECT_RETRY_MIN_MS 5000ULL
+#define BT_AUTOCONNECT_RETRY_MAX_MS 60000ULL
+#define BT_ADAPTER_RETRY_MS 10000ULL
 
 #define BT_AF_BLUETOOTH 31
 #define BT_PROTO_L2CAP 0
@@ -232,6 +237,9 @@ BluetoothContext::BluetoothContext(Audiox *context)
             outputSeid(0),
             outputTransaction(0),
             outputPendingSignal(0),
+            outputCommandPacket(),
+            outputCommandLength(0),
+            outputCommandWritePending(false),
             rtpSequence(0),
             rtpTimestamp(0),
             outputConnecting(false),
@@ -239,6 +247,10 @@ BluetoothContext::BluetoothContext(Audiox *context)
             outputMediaConnecting(false),
             outputConfigured(false),
             outputOpened(false),
+            outputStreaming(0),
+            outputSuspendRequested(false),
+            outputSuspendSupported(true),
+            outputStartRequested(false),
             outputConnected(0),
             outputPacket(),
             outputPacketLength(0),
@@ -247,6 +259,13 @@ BluetoothContext::BluetoothContext(Audiox *context)
             outputFramesPerPacket(0),
             outputMediaMtu(BT_A2DP_DEFAULT_MEDIA_MTU),
             outputRealtimeScheduling(false),
+            autoConnectPaused(false),
+            autoConnectNextDevice(0),
+            autoConnectRetryMs(0),
+            autoConnectBackoffMs(BT_AUTOCONNECT_RETRY_MIN_MS),
+            adapterRetryMs(0),
+            outputConnectDeadlineMs(0),
+            outputSilenceSinceMs(0),
             outputTarget(),
       pairKeyStored(false),
       pairFailure(0) {
@@ -348,6 +367,9 @@ int BluetoothContext::requestConnect(const char *address) {
     }
     outputTarget = target;
     pairTarget = target;
+    autoConnectPaused = false;
+    autoConnectRetryMs = 0;
+    autoConnectBackoffMs = BT_AUTOCONNECT_RETRY_MIN_MS;
     request = BT_REQUEST_CONNECT;
     outputConnectingStatus.store(1, std::memory_order_release);
     snprintf(message, sizeof(message), "Connecting to %s...", device->name[0] ? device->name : address);
@@ -366,6 +388,27 @@ int BluetoothContext::requestDisconnect() {
     request = BT_REQUEST_DISCONNECT;
     snprintf(message, sizeof(message), "Disconnecting Bluetooth output...");
     return RET_OK;
+}
+
+int BluetoothContext::requestAutoConnect(const char *address, bool enabled) {
+    bt::Address target = {};
+    if (!bt::parseAddress(address, &target) || bt::isZeroAddress(target)) {
+        return RET_ERR;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        BluetoothDevice *device = findDevice(target);
+        if (!device || !device->paired || !device->classic) {
+            return RET_ERR;
+        }
+        device->autoConnect = enabled;
+        if (enabled) {
+            autoConnectPaused = false;
+            autoConnectRetryMs = bt::monotonicMs();
+            autoConnectBackoffMs = BT_AUTOCONNECT_RETRY_MIN_MS;
+        }
+    }
+    return savePaired() ? RET_OK : RET_WARN;
 }
 
 int BluetoothContext::requestUnpair(const char *address) {
@@ -394,12 +437,13 @@ int BluetoothContext::buildStatusJson(char *out, size_t outSize) {
     }
     std::lock_guard<std::mutex> lock(mutex);
     int n = snprintf(out, outSize,
-                     "{\"ok\":true,\"ready\":%s,\"scanning\":%s,\"pairing\":%s,\"connecting\":%s,\"connected\":%s,\"message\":\"%s\",\"devices\":[",
+                     "{\"ok\":true,\"ready\":%s,\"scanning\":%s,\"pairing\":%s,\"connecting\":%s,\"connected\":%s,\"streaming\":%s,\"message\":\"%s\",\"devices\":[",
                      adapterReady ? "true" : "false",
                      scanning ? "true" : "false",
                      pairing ? "true" : "false",
                      outputConnectingStatus.load(std::memory_order_relaxed) ? "true" : "false",
                      outputConnected.load(std::memory_order_relaxed) ? "true" : "false",
+                     outputStreaming.load(std::memory_order_relaxed) ? "true" : "false",
                      message);
     if (n < 0 || (size_t)n >= outSize) {
         return RET_ERR;
@@ -409,14 +453,18 @@ int BluetoothContext::buildStatusJson(char *out, size_t outSize) {
         char address[BT_ADDRESS_TEXT] = {};
         bt::formatAddress(devices[i].address, address, sizeof(address));
         n = snprintf(out + used, outSize - used,
-                     "%s{\"address\":\"%s\",\"name\":\"%s\",\"paired\":%s,\"classic\":%s,\"connected\":%s}",
+                     "%s{\"address\":\"%s\",\"name\":\"%s\",\"paired\":%s,\"classic\":%s,\"connected\":%s,\"streaming\":%s,\"auto_connect\":%s}",
                      i > 0 ? "," : "",
                      address,
                      devices[i].name,
                      devices[i].paired ? "true" : "false",
                      devices[i].classic ? "true" : "false",
                      outputConnected.load(std::memory_order_relaxed) &&
-                         bt::sameAddress(outputTarget, devices[i].address) ? "true" : "false");
+                         bt::sameAddress(outputTarget, devices[i].address) ? "true" : "false",
+                     outputConnected.load(std::memory_order_relaxed) &&
+                         outputStreaming.load(std::memory_order_relaxed) &&
+                         bt::sameAddress(outputTarget, devices[i].address) ? "true" : "false",
+                     devices[i].paired && devices[i].autoConnect ? "true" : "false");
         if (n < 0 || (size_t)n >= outSize - used) {
             return RET_ERR;
         }
@@ -612,15 +660,20 @@ void BluetoothContext::threadMain() {
             request = BT_REQUEST_NONE;
         }
 
-        // Retry bring-up only when asked to do something, to keep the log quiet.
-        if (!adapterReady && (firstAttempt || next != BT_REQUEST_NONE)) {
+        const uint64_t loopNowMs = bt::monotonicMs();
+        if (!adapterReady &&
+            (firstAttempt || next != BT_REQUEST_NONE || loopNowMs >= adapterRetryMs)) {
             firstAttempt = false;
             if (!bringUpAdapter()) {
                 std::lock_guard<std::mutex> lock(mutex);
                 scanning = false;
                 pairing = false;
                 snprintf(message, sizeof(message), "Bluetooth adapter unavailable");
-                continue;
+                adapterRetryMs = loopNowMs + BT_ADAPTER_RETRY_MS;
+                outputConnectingStatus.store(0, std::memory_order_release);
+                next = BT_REQUEST_NONE;
+            } else {
+                adapterRetryMs = 0;
             }
         }
 
@@ -638,10 +691,57 @@ void BluetoothContext::threadMain() {
             }
         }
         if (next == BT_REQUEST_DISCONNECT) {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                autoConnectPaused = true;
+                autoConnectRetryMs = 0;
+            }
             disconnectOutput("disconnected by user");
         }
         if (next == BT_REQUEST_UNPAIR) {
             runUnpair(target);
+        }
+
+        if (outputConnectingStatus.load(std::memory_order_acquire) &&
+            outputConnectDeadlineMs != 0 &&
+            bt::monotonicMs() >= outputConnectDeadlineMs) {
+            disconnectOutput("A2DP connection timed out");
+        }
+
+        if (next == BT_REQUEST_NONE && adapterReady &&
+            !outputConnected.load(std::memory_order_acquire) &&
+            !outputConnectingStatus.load(std::memory_order_acquire)) {
+            bt::Address autoTarget = {};
+            char autoName[BT_NAME_MAX] = {};
+            bool shouldConnect = false;
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                const uint64_t nowMs = bt::monotonicMs();
+                if (!autoConnectPaused && nowMs >= autoConnectRetryMs) {
+                    for (size_t offset = 0; offset < deviceCount; ++offset) {
+                        const size_t index = (autoConnectNextDevice + offset) % deviceCount;
+                        const BluetoothDevice &device = devices[index];
+                        if (!device.paired || !device.classic || !device.autoConnect) {
+                            continue;
+                        }
+                        autoTarget = device.address;
+                        snprintf(autoName, sizeof(autoName), "%s",
+                                 device.name[0] ? device.name : "saved device");
+                        autoConnectNextDevice = (index + 1U) % deviceCount;
+                        outputTarget = autoTarget;
+                        outputConnectingStatus.store(1, std::memory_order_release);
+                        snprintf(message, sizeof(message), "Reconnecting to %s...", autoName);
+                        shouldConnect = true;
+                        break;
+                    }
+                    if (!shouldConnect) {
+                        autoConnectRetryMs = nowMs + BT_ADAPTER_RETRY_MS;
+                    }
+                }
+            }
+            if (shouldConnect && !beginOutputConnect(autoTarget)) {
+                disconnectOutput("could not start automatic A2DP reconnection");
+            }
         }
 
         pumpOutputAudio();
@@ -651,7 +751,8 @@ void BluetoothContext::threadMain() {
             {avdtpListenFd, POLLIN, 0},
             {signalingFd, POLLIN, 0},
             {mediaFd, POLLIN, 0},
-            {outputSignalingFd, (short)(outputConnecting ? POLLOUT : POLLIN), 0},
+            {outputSignalingFd,
+             (short)(outputConnecting || outputCommandWritePending ? POLLOUT : POLLIN), 0},
             {outputMediaFd, (short)((outputMediaConnecting || outputPacketLength > 0) ? POLLOUT : 0), 0},
         };
         int pollTimeout = outputConnected.load(std::memory_order_relaxed) ? 2 : 200;
@@ -708,6 +809,10 @@ void BluetoothContext::threadMain() {
             } else if (outputSignalingFd >= 0 && !outputConnecting &&
                        (pollFds[5].revents & (POLLIN | POLLERR | POLLHUP))) {
                 handleOutputSignaling();
+            }
+            if (outputSignalingFd >= 0 && !outputConnecting &&
+                outputCommandWritePending && (pollFds[5].revents & POLLOUT)) {
+                handleOutputSignalingWritable();
             }
             if (outputMediaFd >= 0 && outputMediaConnecting &&
                 (pollFds[6].revents & (POLLOUT | POLLERR | POLLHUP))) {
@@ -1067,9 +1172,16 @@ bool BluetoothContext::beginOutputConnect(const bt::Address &target) {
     }
     outputTransaction = 0;
     outputPendingSignal = 0;
+    outputCommandLength = 0;
+    outputCommandWritePending = false;
     outputSeid = 0;
     outputConfigured = false;
     outputOpened = false;
+    outputStreaming.store(0, std::memory_order_release);
+    outputSuspendRequested = false;
+    outputStartRequested = false;
+    outputSilenceSinceMs = 0;
+    outputConnectDeadlineMs = 0;
     outputMediaConnecting = false;
     outputPacketLength = 0;
     rtpSequence = 0;
@@ -1102,32 +1214,52 @@ bool BluetoothContext::beginOutputConnect(const bt::Address &target) {
         outputSignalingFd = -1;
         return false;
     }
+    outputConnectDeadlineMs = bt::monotonicMs() + BT_OUTPUT_CONNECT_TIMEOUT_MS;
     printf("[BT] [INFO] connecting A2DP source to hci%d peer\n", devId);
     return true;
 }
 
 void BluetoothContext::sendOutputCommand(uint8_t signal, const uint8_t *payload, size_t length) {
-    if (outputSignalingFd < 0 || length > 1000) {
+    if (outputSignalingFd < 0 || length > sizeof(outputCommandPacket) - 2U ||
+        outputPendingSignal != 0 || outputCommandWritePending) {
         disconnectOutput("invalid AVDTP command");
         return;
     }
-    uint8_t packet[1024] = {};
     const uint8_t transaction = outputTransaction++ & 0x0F;
-    packet[0] = (uint8_t)(transaction << 4);
-    packet[1] = signal;
+    outputCommandPacket[0] = (uint8_t)(transaction << 4);
+    outputCommandPacket[1] = signal;
     if (payload && length > 0) {
-        memcpy(packet + 2, payload, length);
+        memcpy(outputCommandPacket + 2, payload, length);
     }
-    ssize_t sent = send(outputSignalingFd, packet, length + 2, MSG_NOSIGNAL);
-    if (sent != (ssize_t)(length + 2)) {
+    outputCommandLength = length + 2U;
+    outputPendingSignal = signal;
+    ssize_t sent = send(outputSignalingFd, outputCommandPacket, outputCommandLength, MSG_NOSIGNAL);
+    if (sent != (ssize_t)outputCommandLength) {
         if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            outputPendingSignal = signal;
+            outputCommandWritePending = true;
             return;
         }
         disconnectOutput(sent < 0 ? strerror(errno) : "short AVDTP command write");
         return;
     }
-    outputPendingSignal = signal;
+    outputCommandLength = 0;
+}
+
+void BluetoothContext::handleOutputSignalingWritable() {
+    if (outputSignalingFd < 0 || !outputCommandWritePending ||
+        outputCommandLength == 0) {
+        return;
+    }
+    ssize_t sent = send(outputSignalingFd, outputCommandPacket, outputCommandLength, MSG_NOSIGNAL);
+    if (sent == (ssize_t)outputCommandLength) {
+        outputCommandLength = 0;
+        outputCommandWritePending = false;
+        return;
+    }
+    if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        return;
+    }
+    disconnectOutput(sent < 0 ? strerror(errno) : "short AVDTP command write");
 }
 
 void BluetoothContext::handleOutputSignaling() {
@@ -1150,12 +1282,25 @@ void BluetoothContext::handleOutputSignaling() {
     }
     if (messageType != 2) {
         uint8_t error = length >= 4 ? packet[3] : 0;
+        if (signal == 0x09) {
+            outputSuspendSupported = false;
+            outputSuspendRequested = false;
+            outputPendingSignal = 0;
+            outputCommandLength = 0;
+            outputCommandWritePending = false;
+            outputSilenceSinceMs = bt::monotonicMs();
+            setMessage("Connected; this device does not support idle audio pause");
+            printf("[BT] [INFO] A2DP peer rejected idle suspend (0x%02x)\n", error);
+            return;
+        }
         char message[BT_MESSAGE_MAX];
         snprintf(message, sizeof(message), "AVDTP signal 0x%02x rejected (0x%02x)", signal, error);
         disconnectOutput(message);
         return;
     }
     outputPendingSignal = 0;
+    outputCommandLength = 0;
+    outputCommandWritePending = false;
     advanceOutputNegotiation(signal, packet + 2, (size_t)length - 2U);
 }
 
@@ -1289,13 +1434,40 @@ void BluetoothContext::advanceOutputNegotiation(uint8_t signal,
     if (signal == 0x07) {
         outputConnecting = false;
         outputConnectingStatus.store(0, std::memory_order_release);
-        outputConnected.store(1, std::memory_order_release);
-        audiox::audioHealth.devicesChanged();
+        outputPendingSignal = 0;
+        outputCommandLength = 0;
+        outputCommandWritePending = false;
+        outputConnectDeadlineMs = 0;
+        outputStartRequested = false;
+        outputSuspendRequested = false;
+        outputStreaming.store(1, std::memory_order_release);
+        if (!outputConnected.exchange(1, std::memory_order_acq_rel)) {
+            audiox::audioHealth.devicesChanged();
+        }
+        outputSilenceSinceMs = bt::monotonicMs();
         if (app && app->audio) {
             app->audio->setBluetoothOutputActive(true);
         }
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            autoConnectBackoffMs = BT_AUTOCONNECT_RETRY_MIN_MS;
+            autoConnectRetryMs = 0;
+        }
         setMessage("Connected to A2DP output");
         printf("[BT] [INFO] A2DP output stream started\n");
+        return;
+    }
+
+    if (signal == 0x09) {
+        outputStreaming.store(0, std::memory_order_release);
+        outputSuspendRequested = false;
+        outputSuspendSupported = true;
+        outputStartRequested = false;
+        outputSilenceSinceMs = 0;
+        if (app && app->audio) {
+            app->audio->setBluetoothOutputActive(false);
+        }
+        setMessage("Connected; audio paused while idle");
     }
 }
 
@@ -1390,6 +1562,35 @@ void BluetoothContext::pumpOutputAudio() {
         return;
     }
     const uint64_t nowMs = bt::monotonicMs();
+    const bool signalActive =
+        app->audio->bluetoothOutputSignalActive.load(std::memory_order_acquire) != 0;
+    const bool streaming = outputStreaming.load(std::memory_order_acquire) != 0;
+    if (streaming) {
+        if (signalActive) {
+            outputSilenceSinceMs = 0;
+        } else if (outputSilenceSinceMs == 0) {
+            outputSilenceSinceMs = nowMs;
+        } else if (outputSuspendSupported && !outputSuspendRequested && outputPendingSignal == 0 &&
+                   outputPacketLength == 0 &&
+                   nowMs - outputSilenceSinceMs >= BT_OUTPUT_SILENCE_THRESHOLD) {
+            const uint8_t seid = (uint8_t)(outputSeid << 2);
+            outputSuspendRequested = true;
+            sendOutputCommand(0x09, &seid, 1);
+            return;
+        }
+    } else {
+        if (!signalActive || outputPendingSignal != 0 || outputStartRequested) {
+            if (!signalActive &&
+                app->audio->bluetoothOutputActive.load(std::memory_order_acquire)) {
+                app->audio->setBluetoothOutputActive(false);
+            }
+            return;
+        }
+        if (!app->audio->bluetoothOutputActive.load(std::memory_order_acquire)) {
+            app->audio->setBluetoothOutputActive(true);
+        }
+    }
+
     if (nowMs >= outputStatsNextMs) {
         const uint32_t dropped = app->audio->bluetoothOutputDropped.load(std::memory_order_relaxed);
         const uint32_t droppedThisSecond = dropped - outputDroppedAtStats;
@@ -1400,7 +1601,8 @@ void BluetoothContext::pumpOutputAudio() {
             return;
         }
     }
-    if (outputPacketLength != 0 || !sbcEncoderInitialized || outputMediaFd < 0) {
+    if (outputPacketLength != 0 || !sbcEncoderInitialized || outputMediaFd < 0 ||
+        outputSuspendRequested || outputPendingSignal != 0) {
         return;
     }
     const size_t codeSize = sbc_get_codesize(&sbcEncoder);
@@ -1424,6 +1626,15 @@ void BluetoothContext::pumpOutputAudio() {
     }
     outputFramesPerPacket = (uint8_t)frameCount;
     const uint32_t pcmFrames = samplesPerFrame * frameCount;
+    if (!streaming) {
+        if (app->audio->getBluetoothOutputAvailable() < pcmFrames) {
+            return;
+        }
+        const uint8_t seid = (uint8_t)(outputSeid << 2);
+        outputStartRequested = true;
+        sendOutputCommand(0x07, &seid, 1);
+        return;
+    }
     app->audio->updateBluetoothOutputRate(pcmFrames, nowMs);
     if (app->audio->getBluetoothOutputAvailable() < pcmFrames) {
         return;
@@ -1485,10 +1696,30 @@ void BluetoothContext::disconnectOutput(const char *reason) {
     outputMediaConnecting = false;
     outputConfigured = false;
     outputOpened = false;
+    outputStreaming.store(0, std::memory_order_release);
+    outputSuspendRequested = false;
+    outputStartRequested = false;
     if (outputConnected.exchange(0, std::memory_order_acq_rel)) audiox::audioHealth.devicesChanged();
     outputPacketLength = 0;
     outputStatsNextMs = 0;
+    outputSilenceSinceMs = 0;
+    outputConnectDeadlineMs = 0;
     if (reason && reason[0]) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (strcmp(reason, "disconnected by user") == 0) {
+                autoConnectPaused = true;
+                autoConnectRetryMs = 0;
+            } else {
+                autoConnectRetryMs = bt::monotonicMs() + autoConnectBackoffMs;
+                if (autoConnectBackoffMs < BT_AUTOCONNECT_RETRY_MAX_MS) {
+                    autoConnectBackoffMs *= 2U;
+                    if (autoConnectBackoffMs > BT_AUTOCONNECT_RETRY_MAX_MS) {
+                        autoConnectBackoffMs = BT_AUTOCONNECT_RETRY_MAX_MS;
+                    }
+                }
+            }
+        }
         printf("[BT] [INFO] A2DP output disconnected: %s\n", reason);
         setMessage("A2DP output: %s", reason);
     }
@@ -1746,10 +1977,14 @@ void BluetoothContext::handleAgentEvent(const uint8_t *packet, size_t length) {
                 memset(device, 0, sizeof(*device));
                 device->address = address;
                 device->classic = true;
+                device->autoConnect = true;
             }
             if (device) {
                 memcpy(device->linkKey, params + 6, 16);
                 device->linkKeyType = params[22];
+                if (!device->paired) {
+                    device->autoConnect = true;
+                }
                 device->paired = true;
             }
             if (pairing && bt::sameAddress(address, pairTarget)) {
@@ -1788,7 +2023,7 @@ void BluetoothContext::handleAgentEvent(const uint8_t *packet, size_t length) {
     }
 }
 
-// Format: one device per line, "ADDRESS KEYHEX KEYTYPE NAME".
+// Format: one device per line, "ADDRESS KEYHEX KEYTYPE NAME<TAB>AUTO=0|1".
 void BluetoothContext::loadPaired() {
     FILE *fp = fopen(BT_PAIRED_FILE, "r");
     if (!fp) {
@@ -1813,8 +2048,24 @@ void BluetoothContext::loadPaired() {
         device.linkKeyType = (uint8_t)keyType;
         device.paired = true;
         device.classic = true;
+        device.autoConnect = true;
         if (nameOffset > 0) {
-            snprintf(device.name, sizeof(device.name), "%s", line + nameOffset);
+            char *name = line + nameOffset;
+            char *autoMarker = strstr(name, "\tAUTO=");
+            bool hasAutoMarker = false;
+            if (autoMarker) {
+                unsigned enabled = 0;
+                char trailing = '\0';
+                if (sscanf(autoMarker, "\tAUTO=%u%c", &enabled, &trailing) == 1 && enabled <= 1) {
+                    device.autoConnect = enabled != 0;
+                    *autoMarker = '\0';
+                    hasAutoMarker = true;
+                }
+            }
+            if (hasAutoMarker && strcmp(name, "-") == 0) {
+                name[0] = '\0';
+            }
+            snprintf(device.name, sizeof(device.name), "%s", name);
         }
         devices[deviceCount++] = device;
     }
@@ -1822,13 +2073,17 @@ void BluetoothContext::loadPaired() {
     printf("[BT] [INFO] loaded %zu paired device(s)\n", deviceCount);
 }
 
-void BluetoothContext::savePaired() {
-    mkdir(BT_STATE_DIR, 0755);
+bool BluetoothContext::savePaired() {
+    std::lock_guard<std::mutex> fileLock(pairedFileMutex);
+    if (mkdir(BT_STATE_DIR, 0755) != 0 && errno != EEXIST) {
+        printf("[BT] [WARN] cannot create %s: %s\n", BT_STATE_DIR, strerror(errno));
+        return false;
+    }
     const char *tmpPath = BT_PAIRED_FILE ".tmp";
     FILE *fp = fopen(tmpPath, "w");
     if (!fp) {
         printf("[BT] [WARN] cannot write %s: %s\n", tmpPath, strerror(errno));
-        return;
+        return false;
     }
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -1843,13 +2098,30 @@ void BluetoothContext::savePaired() {
             for (uint8_t byte : device.linkKey) {
                 fprintf(fp, "%02x", byte);
             }
-            fprintf(fp, " %u %s\n", (unsigned)device.linkKeyType, device.name);
+            fprintf(fp, " %u %s\tAUTO=%u\n",
+                    (unsigned)device.linkKeyType,
+                    device.name[0] ? device.name : "-",
+                    device.autoConnect ? 1U : 0U);
         }
     }
-    fflush(fp);
-    fsync(fileno(fp));
-    fclose(fp);
+    bool saved = fflush(fp) == 0;
+    if (!saved) {
+        printf("[BT] [WARN] cannot flush %s: %s\n", tmpPath, strerror(errno));
+    }
+    if (fsync(fileno(fp)) != 0) {
+        printf("[BT] [WARN] cannot sync %s: %s\n", tmpPath, strerror(errno));
+        saved = false;
+    }
+    if (fclose(fp) != 0) {
+        printf("[BT] [WARN] cannot close %s: %s\n", tmpPath, strerror(errno));
+        saved = false;
+    }
+    if (!saved) {
+        return false;
+    }
     if (rename(tmpPath, BT_PAIRED_FILE) != 0) {
         printf("[BT] [WARN] cannot replace %s: %s\n", BT_PAIRED_FILE, strerror(errno));
+        return false;
     }
+    return true;
 }

@@ -20,17 +20,26 @@ Routing nodes; pairing a device does not create an audio route automatically.
    result. Successfully paired devices appear under **My devices**.
 4. For an audio output (headphones or a speaker), choose **Connect** on the
    paired device. AudioX can connect to one Bluetooth output at a time.
-5. For an audio input source, such as a phone sending audio to AudioX, pair it
+5. **Auto-connect** is on by default for saved devices. AudioX reconnects to an
+   enabled saved output when the adapter is ready and retries if the device is
+   not yet available. Turn it off on a device card to prevent automatic
+   reconnection; manually disconnecting pauses retries until you manually
+   connect again or re-enable Auto-connect.
+6. For an audio input source, such as a phone sending audio to AudioX, pair it
    first, then initiate its audio connection from that device. AudioX presents
    a Bluetooth audio sink and provides **Bluetooth In** as a Routing source.
-6. Connect the relevant Routing node to the desired destination and save the
+7. Connect the relevant Routing node to the desired destination and save the
    route. To stop sending to an output, choose **Disconnect**.
 
 Bluetooth status and device lists refresh while the page is open. The page
 separates **My devices** (paired or connected) from **Nearby devices**
 (discovered but not paired). It offers **Pair**, **Connect**, **Disconnect**,
 and **Forget** as appropriate. **Forget** removes the saved pairing; you must
-pair again before reconnecting.
+pair again before reconnecting. While a connected Bluetooth output carries
+only silence for a short period, AudioX pauses its A2DP media stream and
+resumes automatically when routed audio returns. This releases the active
+audio stream for device multipoint selection where supported; the Bluetooth
+connection itself remains available.
 
 **Hide unnamed devices** is on by default. It hides nearby results without a
 usable name (including names that are just the device address), but never hides
@@ -45,16 +54,17 @@ device can be discoverable without accepting a new pairing. Put the intended
 audio device into pairing mode before choosing Pair.
 
 The page's **Connected** state describes AudioX's outgoing connection to a
-paired audio sink. It does not report whether a phone or other source is
-currently streaming into **Bluetooth In**.
+paired audio sink. A connected output may be paused while idle. This state does
+not report whether a phone or other source is currently streaming into
+**Bluetooth In**.
 
 ## What AudioX saves and supports
 
-Pairing keys and device names are saved on the AudioX device and reloaded on
-startup, so previously paired devices remain in **My devices**. A saved
-pairing is not the same as an active audio connection: choose **Connect** for
-an output when needed. Configuration backups include Bluetooth pairing data;
-the archive contains pairing keys, so keep it private.
+Pairing keys, device names, and Auto-connect settings are saved on the AudioX
+device and reloaded on startup, so previously paired devices remain in **My
+devices**. Existing saved devices default to Auto-connect when upgraded.
+Configuration backups include Bluetooth pairing data and Auto-connect
+settings; the archive contains pairing keys, so keep it private.
 
 Bluetooth audio uses the SBC codec. AudioX does not offer a codec selector or
 AAC/aptX/LDAC support. For outgoing audio, the remote sink must support
@@ -123,6 +133,8 @@ channel sockets shown in Routing are authoritative for the detected graph. Read
   Sink with 48 kHz stereo SBC, and is not already connected elsewhere. If
   needed, disconnect, choose **Forget**, put it back in pairing mode, and pair
   again.
+- **Output reconnects unexpectedly:** turn off **Auto-connect** for that saved
+  device. A manual disconnect stops retries for the current session.
 - **Sound breaks up:** confirm the route is correct, keep the wireless device
   close to AudioX, and try a fresh connection. Bluetooth streaming has bounded
   buffering; persistent output overruns stop the stream rather than continuing

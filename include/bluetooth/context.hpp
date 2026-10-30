@@ -18,6 +18,7 @@ struct BluetoothDevice {
     char name[BT_NAME_MAX];
     bool classic;
     bool paired;
+    bool autoConnect;
     uint8_t linkKey[16];
     uint8_t linkKeyType;
 };
@@ -39,6 +40,7 @@ struct BluetoothContext {
     bool threadStarted;
     std::atomic<int> run;
     mutable std::mutex mutex;
+    std::mutex pairedFileMutex;
 
     int devId;
     int agentFd;
@@ -71,6 +73,9 @@ struct BluetoothContext {
     uint8_t outputSeid;
     uint8_t outputTransaction;
     uint8_t outputPendingSignal;
+    uint8_t outputCommandPacket[1024];
+    size_t outputCommandLength;
+    bool outputCommandWritePending;
     uint32_t rtpSequence;
     uint32_t rtpTimestamp;
     bool outputConnecting;
@@ -78,6 +83,10 @@ struct BluetoothContext {
     bool outputMediaConnecting;
     bool outputConfigured;
     bool outputOpened;
+    std::atomic<int> outputStreaming;
+    bool outputSuspendRequested;
+    bool outputSuspendSupported;
+    bool outputStartRequested;
     std::atomic<int> outputConnected;
     uint8_t outputPacket[1024];
     size_t outputPacketLength;
@@ -86,6 +95,13 @@ struct BluetoothContext {
     uint8_t outputFramesPerPacket;
     uint16_t outputMediaMtu;
     bool outputRealtimeScheduling;
+    bool autoConnectPaused;
+    size_t autoConnectNextDevice;
+    uint64_t autoConnectRetryMs;
+    uint64_t autoConnectBackoffMs;
+    uint64_t adapterRetryMs;
+    uint64_t outputConnectDeadlineMs;
+    uint64_t outputSilenceSinceMs;
 
     BluetoothContext(Audiox *context);
     ~BluetoothContext();
@@ -100,6 +116,7 @@ struct BluetoothContext {
     int requestConnect(const char *address);
     int requestDisconnect();
     int requestUnpair(const char *address);
+    int requestAutoConnect(const char *address, bool enabled);
     int buildStatusJson(char *out, size_t outSize);
     bool getOutputDeviceName(char *out, size_t outSize) const;
 
@@ -117,7 +134,9 @@ private:
     void resetA2dpStream();
     bool beginOutputConnect(const bt::Address &target);
     void handleOutputSignaling();
+    void handleOutputSignalingWritable();
     void handleOutputMediaWritable();
+    void startOutputIfReady(uint64_t nowMs);
     void sendOutputCommand(uint8_t signal, const uint8_t *payload, size_t length);
     void advanceOutputNegotiation(uint8_t signal, const uint8_t *payload, size_t length);
     bool connectOutputMedia();
@@ -131,7 +150,7 @@ private:
     void setMessage(const char *format, ...) __attribute__((format(printf, 2, 3)));
     BluetoothDevice *findDevice(const bt::Address &address);
     void loadPaired();
-    void savePaired();
+    bool savePaired();
     bool configureSbcDecoder(const uint8_t configuration[4]);
     uint32_t decodeSbcPayload(const uint8_t *payload, size_t length);
     bt::Address outputTarget;

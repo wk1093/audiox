@@ -270,7 +270,9 @@ function renderBluetoothDevices(devices) {
       name.textContent = device.name || device.address;
       const status = document.createElement('span');
       status.className = 'bluetooth-device-state';
-      status.textContent = device.connected ? 'Connected for audio' : device.paired ? 'Paired, not connected' : 'Discovered; put device in pairing mode to pair';
+      status.textContent = device.connected
+        ? (device.streaming === false ? 'Connected; audio paused while idle' : 'Connected for audio')
+        : device.paired ? 'Paired, not connected' : 'Discovered; put device in pairing mode to pair';
       const address = document.createElement('div');
       address.className = 'bluetooth-device-address';
       address.textContent = `${device.address} · Classic Bluetooth`;
@@ -291,6 +293,20 @@ function renderBluetoothDevices(devices) {
       if (!device.paired) {
         addAction('Pair', () => pairBluetoothDevice(device.address), 'primary');
       } else {
+        const autoConnectLabel = document.createElement('label');
+        autoConnectLabel.className = 'bluetooth-auto-connect';
+        const autoConnect = document.createElement('input');
+        autoConnect.type = 'checkbox';
+        autoConnect.checked = device.auto_connect !== false;
+        autoConnect.dataset.deviceAction = `${device.address}:Auto-connect`;
+        autoConnect.setAttribute('role', 'switch');
+        autoConnect.setAttribute('aria-label', `Auto-connect ${device.name || device.address}`);
+        autoConnect.disabled = bluetoothBusy;
+        autoConnect.addEventListener('change', () => setBluetoothAutoConnect(device.address, autoConnect.checked));
+        const autoConnectText = document.createElement('span');
+        autoConnectText.textContent = 'Auto-connect';
+        autoConnectLabel.append(autoConnect, autoConnectText);
+        actions.append(autoConnectLabel);
         if (device.connected) {
           addAction('Disconnect', disconnectBluetoothDevice);
         } else if (device.classic) {
@@ -306,7 +322,7 @@ function renderBluetoothDevices(devices) {
     }
   }
   if (focused) {
-    Array.from(bluetoothDevicesEl.querySelectorAll('button'))
+    Array.from(bluetoothDevicesEl.querySelectorAll('[data-device-action]'))
       .find((button) => button.dataset.deviceAction === focused)?.focus();
   }
 }
@@ -397,6 +413,10 @@ function disconnectBluetoothDevice() {
 
 function unpairBluetoothDevice(address) {
   return bluetoothRequest('/api/bluetooth/unpair', `address=${address}`);
+}
+
+function setBluetoothAutoConnect(address, enabled) {
+  return bluetoothRequest('/api/bluetooth/auto-connect', `address=${address}&enabled=${enabled}`);
 }
 
 function setRoutingZoom(nextScale) {

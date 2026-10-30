@@ -130,7 +130,8 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Write OS setup, hardware/networking, every WebUI page, audio routing, Bluetooth, display, backups, updates/recovery, troubleshooting and development guides.
 
 ## Last few improvements - v1.12
-- [ ] See if we can increase bluetooth quality. Not just audio quality, but quality of life, needs better interface (not just UI, also auto-connect features, easier device management, and more reliable connections).
+- [x] Add per-device Bluetooth auto-connect, saved-device reconnection retries, and pause idle A2DP streams so multipoint headsets can switch sources.
+- [ ] Verify Bluetooth reconnection, multipoint handoff, and audio resume behavior with physical devices; continue improving connection reliability.
 - [ ] Investigate using LV2 plugins for effects, and if possible, make it so that the user can upload their own LV2 plugins to the device and use them in the audio engine. This would allow for a lot more flexibility and customization for users who want to use their own effects.
 - [ ] More advanced effects
   - [ ] Noise gate
@@ -139,6 +140,9 @@ The above last two features are mainly to improve my setup, but could probably b
   - [ ] Limiter
   - [ ] Parametric EQ
   - [ ] Multi-band compressor
+- [ ] Start adding better comments to Github releases, explaining the changes and features, maybe some sort of automation with the workflows.
+  - Maybe start using [feat] and [fix] prefixes in commit messages, and then scan all commit messages between last release to automatically generate a changelog that is sorted by features and fixes. Nightly releases would compare between the last release either nightly or stable, a stable release would scan all commits since the last stable release (including duplicate changelogs from all intermediate nightlies)
+  - If two separate features are worked on in the same commit, you can just do "[feat] Feature A [feat] Feature B" or if there is also a fix: "[feat] Feature A [fix] Fix for X"
 
 ## Release - v2.0+
 
@@ -147,7 +151,6 @@ The above last two features are mainly to improve my setup, but could probably b
 - [ ] Look into dynamic sample size for the audio engine, so that if we notice Xruns or any other issues we can automatically increase the sample size when needed (or at least allow the user to change it via the WebUI). This is mainly for people with a lot of channels or effects that could cause issues.
 
 ## Future
-- [ ] Start adding better comments to Github releases, explaining the changes and features
 - [ ] Create a roadmap for future features and improvements
 - [ ] Explore integration with other audio software and hardware, such as DAWs and MIDI controllers
 - [ ] Hardware...

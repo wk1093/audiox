@@ -88,13 +88,13 @@ test('download metadata shows the firmware version when the catalog provides it'
   const ui = site('#download', 200, {
     stable: { tag: 'v1.9.2', date: '2026-10-01', release_url: 'https://example.invalid/v1.9.2', assets: {} },
     nightly: {
-      tag: 'nightly-42', version: '1.10.0-beta.3.nightly+0123456789ab', date: '2026-10-27',
-      release_url: 'https://example.invalid/nightly-42', assets: {},
+      tag: 'v1.10.0-beta.3.nightly+42', version: '1.10.0-beta.3.nightly+0123456789ab', date: '2026-10-27',
+      release_url: 'https://example.invalid/v1.10.0-beta.3.nightly+42', assets: {},
     },
   });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(ui.elements.get('release-meta').textContent, 'v1.9.2 / 2026-10-01');
   ui.elements.get('channel-nightly').listeners.click();
   assert.equal(ui.elements.get('release-meta').textContent,
-    '1.10.0-beta.3.nightly+0123456789ab / nightly-42 / 2026-10-27');
+    '1.10.0-beta.3.nightly+0123456789ab / v1.10.0-beta.3.nightly+42 / 2026-10-27');
 });

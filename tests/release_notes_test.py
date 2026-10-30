@@ -24,7 +24,7 @@ class ReleaseNotesTest(unittest.TestCase):
         self.git("commit", "--quiet", "-m", "baseline")
         self.git("tag", "v1.0.0")
         self.commit("[feat] Add output routing")
-        self.git("tag", "nightly-12")
+        self.git("tag", "v1.0.0-beta.1.nightly+12")
         self.commit("[fix] Recover connection [feat] Resume audio")
         self.commit("Refresh release metadata")
         self.commit("Current release")
@@ -70,14 +70,14 @@ class ReleaseNotesTest(unittest.TestCase):
     def test_nightly_uses_latest_reachable_nightly_or_stable(self):
         notes = self.generate(
             "nightly",
-            "nightly-13",
+            "v1.0.0-beta.1.nightly+13",
             [
                 self.release("v1.0.0", "2026-01-01T00:00:00Z"),
-                self.release("nightly-12", "2026-02-01T00:00:00Z", True),
-                self.release("nightly-99", "2026-03-01T00:00:00Z", True),
-                self.release("nightly-13", "2026-04-01T00:00:00Z", True),
+                self.release("v1.0.0-beta.1.nightly+12", "2026-02-01T00:00:00Z", True),
+                self.release("v1.0.0-beta.1.nightly+99", "2026-03-01T00:00:00Z", True),
+                self.release("v1.0.0-beta.1.nightly+13", "2026-04-01T00:00:00Z", True),
                 self.release("nightly-legacy-1", "2026-03-20T00:00:00Z", True),
-                self.release("nightly-98", "2026-03-15T00:00:00Z", True, draft=True),
+                self.release("v1.0.0-beta.1.nightly+98", "2026-03-15T00:00:00Z", True, draft=True),
                 self.release("v1.1.0", "2026-03-10T00:00:00Z", assets=False),
             ],
         )
@@ -85,7 +85,7 @@ class ReleaseNotesTest(unittest.TestCase):
         self.assertIn("## Features\n\n- Resume audio", notes)
         self.assertIn("## Other changes\n\n- Refresh release metadata", notes)
         self.assertNotIn("Add output routing", notes)
-        self.assertIn("Changes since `nightly-12`.", notes)
+        self.assertIn("Changes since `v1.0.0-beta.1.nightly+12`.", notes)
         self.assertIn("https://github.com/owner/audiox/commit/", notes)
 
     def test_stable_includes_changes_since_previous_stable_even_if_nightly_is_newer(self):
@@ -94,7 +94,7 @@ class ReleaseNotesTest(unittest.TestCase):
             "v1.1.0",
             [
                 self.release("v1.0.0", "2026-01-01T00:00:00Z"),
-                self.release("nightly-12", "2026-02-01T00:00:00Z", True),
+                self.release("v1.0.0-beta.1.nightly+12", "2026-02-01T00:00:00Z", True),
             ],
         )
         self.assertIn("Add output routing", notes)
@@ -107,8 +107,8 @@ class ReleaseNotesTest(unittest.TestCase):
         self.commit_hash = self.git("rev-parse", "HEAD")
         notes = self.generate(
             "nightly",
-            "nightly-13",
-            [self.release("nightly-12", "2026-02-01T00:00:00Z", True)],
+            "v1.0.0-beta.1.nightly+13",
+            [self.release("v1.0.0-beta.1.nightly+12", "2026-02-01T00:00:00Z", True)],
         )
         self.assertIn("- Update documentation ([", notes)
 

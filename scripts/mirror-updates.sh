@@ -20,7 +20,11 @@ for CHANNEL in stable nightly; do
     else
         jq '.[] | select(.tag_name == "nightly" and .draft == false)' "$WORK/releases.json" > "$WORK/rolling.json"
         [[ ! -s "$WORK/rolling.json" ]] && continue
-        TAG="$(jq -er '.body | capture("audiox-run-number: (?<run>[0-9]+)") | "nightly-" + .run' "$WORK/rolling.json")"
+        TAG="$(jq -er '
+            (.body // "") as $body |
+            (try ($body | capture("audiox-release-tag: (?<tag>[^ ]+)").tag) catch
+             ($body | capture("audiox-run-number: (?<run>[0-9]+)") | "nightly-" + .run))
+        ' "$WORK/rolling.json")"
         gh api "repos/$GH_REPO/releases/tags/$TAG" > "$WORK/release.json"
     fi
     # Older releases remain downloadable on GitHub but may not have update archives.
@@ -28,7 +32,9 @@ for CHANNEL in stable nightly; do
         (.name == "audiox-update-pi4.axu" or .name == "audiox-update-pi5.axu"))] | length' "$WORK/release.json")"
     [[ "$COUNT" != 2 ]] && continue
     TAG="$(jq -r .tag_name "$WORK/release.json")"
-    if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && ! "$TAG" =~ ^nightly-[0-9]+$ ]]; then
+    if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ &&
+          ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*\.)?nightly\+[0-9]+$ &&
+          ! "$TAG" =~ ^nightly-[0-9]+$ ]]; then
         echo "Unsupported release tag for update mirror: $TAG" >&2
         exit 1
     fi

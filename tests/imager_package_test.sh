@@ -19,7 +19,7 @@ for CASE in \
         TAG="v2.0.0"
         PREFIX="audiox-latest"
     else
-        TAG="nightly-123"
+        TAG="v1.10.0-beta.3.nightly+123"
         PREFIX="audiox-latest-nightly"
     fi
     for BOARD in pi4 pi5; do
@@ -63,7 +63,7 @@ for CASE in \
 done
 
 if bash "$ROOT/scripts/package-imager.sh" "$WORK/audiox.img" "$WORK/invalid-board" \
-    pi3 nightly owner/repo nightly-123 2026-10-26 1.9.1 > "$WORK/error.log" 2>&1; then
+    pi3 nightly owner/repo v1.10.0-beta.3.nightly+123 2026-10-26 1.9.1 > "$WORK/error.log" 2>&1; then
     echo "Expected unsupported board to fail" >&2
     exit 1
 fi
@@ -86,7 +86,7 @@ for CASE in \
     "nightly|1.10.0-nightly+not-a-commit"; do
     IFS='|' read -r CHANNEL VERSION <<< "$CASE"
     if bash "$ROOT/scripts/package-imager.sh" "$WORK/audiox.img" "$WORK/invalid-version" \
-        pi4 "$CHANNEL" owner/repo nightly-123 2026-10-26 "$VERSION" > "$WORK/error.log" 2>&1; then
+        pi4 "$CHANNEL" owner/repo v1.10.0-beta.3.nightly+123 2026-10-26 "$VERSION" > "$WORK/error.log" 2>&1; then
         echo "Expected $CHANNEL version $VERSION to fail" >&2
         exit 1
     fi

@@ -8,7 +8,10 @@ import subprocess
 from pathlib import Path
 
 STABLE_TAG = re.compile(r"^v\d+\.\d+\.\d+$")
-NIGHTLY_TAG = re.compile(r"^nightly-\d+$")
+NIGHTLY_TAG = re.compile(
+    r"^v\d+\.\d+\.\d+-(?:[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*\.)?nightly\+\d+$"
+)
+LEGACY_NIGHTLY_TAG = re.compile(r"^nightly-\d+$")
 MARKER = re.compile(r"\[(feat|fix)\]\s*(.*?)(?=\[(?:feat|fix)\]|$)", re.IGNORECASE)
 
 
@@ -37,7 +40,8 @@ def choose_baseline(releases: list[dict], channel: str, current_tag: str,
         else:
             eligible = (
                 (STABLE_TAG.fullmatch(tag) and not release.get("prerelease")) or
-                (NIGHTLY_TAG.fullmatch(tag) and release.get("prerelease"))
+                ((NIGHTLY_TAG.fullmatch(tag) or LEGACY_NIGHTLY_TAG.fullmatch(tag))
+                 and release.get("prerelease"))
             )
         if eligible:
             candidates.append(release)

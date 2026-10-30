@@ -55,15 +55,17 @@ publishing the same firmware again. Stable versions never launch nightly builds.
 When unreleased firmware changes exist, both board builds run. After they succeed,
 the workflow:
 
-1. Publishes a versioned `nightly-<workflow-run-id>` prerelease with images,
+1. Publishes a versioned SemVer nightly prerelease with images,
    checksums, and `images.json`.
 2. Publishes the updated history catalog.
 3. Prunes releases and tags beyond the newest **25 nightly builds**.
 
-Release titles use the complete firmware version, for example
-`AudioX v1.10.0-beta.3.nightly+0123456789ab`, rather than the numbered tag.
-The numbered tags remain unchanged for update URLs and history ordering; the
-rolling release keeps its `AudioX Nightly` title.
+Versioned nightlies use tags such as
+`v1.12.0-beta.1.nightly+123456789`, combining the configured prerelease version
+with the workflow run ID. The firmware version in the release notes still uses
+the build's commit hash, for example `1.12.0-beta.1.nightly+0123456789ab`.
+The rolling release keeps its `nightly` tag and `AudioX Nightly` title; its notes
+point update clients at the exact versioned tag.
 
 Versioned releases include notes generated from commit subjects since the
 appropriate published baseline. Nightlies compare with the newest published
@@ -74,8 +76,9 @@ in the next stable notes. Prefix user-facing commit subjects with `[feat]` or
 markers, such as `[feat] Add MIDI mapping [fix] Preserve old settings`. Other
 subjects are retained under Other changes. Each entry links to its commit.
 
-Run IDs avoid tag collisions with the previous push-triggered workflow's run
-numbers. Existing nightly tags remain usable and count toward the retention limit.
+The run ID in each versioned tag makes nightly builds unique and identifies
+their workflow run. Old `nightly-N` releases are not included in the new
+versioned history catalog and may be deleted; GitHub keeps them until removed.
 Versioned published assets are not overwritten on reruns, and an older workflow
 run cannot replace a newer nightly. Failed catalog publication does not prune
 history; use **Re-run failed jobs** to finish it without repeating the release check.

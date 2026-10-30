@@ -7,6 +7,7 @@ trap 'rm -r "$WORK"' EXIT
 trap 'echo "FAIL: line $LINENO: $BASH_COMMAND" >&2' ERR
 export GH_REPO=owner/repo GITHUB_RUN_ID=123456789
 FIXTURE=0
+FIXTURE_VERSION=2.0.0-beta.2
 
 python3 "$ROOT/tests/release_notes_test.py"
 
@@ -33,6 +34,7 @@ commit() {
 
 fixture() {
     FIXTURE=$((FIXTURE + 1))
+    FIXTURE_VERSION="${1:-2.0.0-beta.2}"
     export MOCK="$WORK/fixture-$FIXTURE"
     mkdir -p "$MOCK"
     cd "$MOCK"
@@ -40,7 +42,7 @@ fixture() {
     git config user.email test@example.invalid
     git config user.name "Release test"
     mkdir src docs scripts
-    printf 'print-version:\n\t@printf "%%s\\n" "%s"\n' "${1:-2.0.0-beta.2}" > Makefile
+    printf 'print-version:\n\t@printf "%%s\\n" "%s"\n' "$FIXTURE_VERSION" > Makefile
     echo firmware > src/firmware.cpp
     echo docs > docs/guide.md
     echo mirror > scripts/mirror-updates.sh
@@ -54,7 +56,8 @@ release() {
     git tag "$tag"
     jq --arg tag "$tag" --argjson options "$options" '
         .[0] += [({
-            tag_name: $tag, draft: false, prerelease: ($tag | startswith("nightly")),
+            tag_name: $tag, draft: false,
+            prerelease: ($tag | startswith("nightly") or contains(".nightly+")),
             assets: [{name: "images.json"}], published_at: "2026-10-29T08:00:00Z"
         } + $options)]
     ' releases.json > new.json
@@ -68,7 +71,9 @@ expect_output() {
 }
 
 expect_nightly() {
-    expect_output "$(printf 'channel=nightly\ntag=\npublish=%s' "$1")"
+    local tag=""
+    [[ "$1" != true ]] || tag="v${FIXTURE_VERSION}.nightly+123456789"
+    expect_output "$(printf 'channel=nightly\ntag=%s\npublish=%s' "$tag" "$1")"
 }
 
 expect_stable() {
@@ -86,7 +91,7 @@ expect_failure() {
 
 fixture
 expect_nightly true
-release nightly-42
+release v2.0.0-beta.2.nightly+42
 expect_nightly false
 echo "new docs" > docs/guide.md
 echo "new mirror" > scripts/mirror-updates.sh
@@ -104,9 +109,9 @@ expect_nightly false
 echo "PASS: published stable firmware suppresses duplicate nightlies"
 
 fixture
-release nightly-42 '{"draft": true}'
+release v2.0.0-beta.2.nightly+42 '{"draft": true}'
 release misc-tools
-release nightly-43 '{"assets": []}'
+release v2.0.0-beta.2.nightly+43 '{"assets": []}'
 expect_nightly true
 echo "PASS: drafts, unrelated releases, and missing manifests do not suppress nightlies"
 
@@ -114,7 +119,7 @@ fixture
 release v1.9.0 '{"published_at": "2026-10-30T08:00:00Z"}'
 echo "changed firmware" > src/firmware.cpp
 commit
-release nightly-42
+release v2.0.0-beta.2.nightly+42
 expect_nightly false
 echo "PASS: all published baselines are checked, not just the most recently published"
 
@@ -123,7 +128,7 @@ original="$(git rev-parse HEAD)"
 git checkout --quiet -b other
 echo "other branch" > src/firmware.cpp
 commit
-release nightly-42
+release v2.0.0-beta.2.nightly+42
 git checkout --quiet main
 [[ "$(git rev-parse HEAD)" == "$original" ]]
 expect_nightly true
@@ -163,8 +168,8 @@ MOCK_API_FAIL=1 expect_failure
 echo "not json" > releases.json
 expect_failure
 echo '[[]]' > releases.json
-release nightly-42
-git tag --delete nightly-42 > /dev/null
+release v2.0.0-beta.2.nightly+42
+git tag --delete v2.0.0-beta.2.nightly+42 > /dev/null
 expect_failure
 echo "PASS: API failures, malformed responses, and missing release tags fail explicitly"
 
@@ -181,7 +186,7 @@ grep -Fq 'tag: ${{ needs.prepare.outputs.tag }}' "$RELEASE"
 ! grep -q 'workflow_dispatch:' "$BUILD"
 grep -Fq "if: needs.prepare.outputs.channel != '' && github.ref == 'refs/heads/main'" "$BUILD"
 grep -Fq 'PUBLISH_SEQUENCE: ${{ github.run_id }}' "$BUILD"
-grep -Fq 'tag=nightly-$GITHUB_RUN_ID' "$BUILD"
+grep -Fq 'tag=$RELEASE_TAG' "$BUILD"
 grep -Fq 'name: Checkout release history' "$BUILD"
 grep -Fq 'path: source' "$BUILD"
 grep -Fq 'SOURCE_REPO: ${{ github.workspace }}/source' "$BUILD"
@@ -206,17 +211,43 @@ for event in push pull_request workflow_dispatch schedule; do
     for channel in '' nightly stable; do
         : > "$GITHUB_OUTPUT"
         tag=""
-        [[ "$channel" != stable ]] || tag=v2.0.0
-        EVENT_NAME="$event" CHANNEL="$channel" RELEASE_TAG="$tag" bash -e selection.sh
+        case "$channel" in
+            stable) tag=v2.0.0 ;;
+            nightly) tag="v${FIXTURE_VERSION}.nightly+123456789" ;;
+        esac
+        EVENT_NAME="$event" CHANNEL="$channel" RELEASE_TAG="$tag" RUN_ID=123456789 bash -e selection.sh
         case "$channel" in
             stable) printf 'major=2\nminor=0\npatch=0\nchannel=stable\ntag=v2.0.0\n' > expected ;;
-            nightly) printf 'channel=nightly\ntag=nightly-123456789\n' > expected ;;
+            nightly) printf 'major=2\nminor=0\npatch=0\nchannel=nightly\ntag=v2.0.0-beta.2.nightly+123456789\n' > expected ;;
             '') : > expected ;;
         esac
         diff -u expected "$GITHUB_OUTPUT"
     done
 done
 echo "PASS: build preparation honors the requested channel regardless of caller event"
+
+awk '
+    /- name: Set published firmware version/ { selected = 1 }
+    selected && /run: \|/ { body = 1; next }
+    body && /^      - name:/ { exit }
+    body { sub(/^          /, ""); print }
+' "$BUILD" > version.sh
+[[ -s version.sh ]]
+export GITHUB_ENV="$MOCK/environment"
+CHANNEL=nightly BUILD_COMMIT=0123456789abcdef0123456789abcdef01234567 \
+    VERSION_MAJOR=2 VERSION_MINOR=0 VERSION_PATCH=0 \
+    RELEASE_TAG=v2.0.0-beta.2.nightly+123456789 RUN_ID=123456789 \
+    bash -e version.sh
+grep -q '^AUDIOX_VERSION_NIGHTLY=1$' "$GITHUB_ENV"
+grep -q '^AUDIOX_VERSION_BUILD=0123456789ab$' "$GITHUB_ENV"
+if CHANNEL=nightly BUILD_COMMIT=0123456789abcdef0123456789abcdef01234567 \
+    VERSION_MAJOR=2 VERSION_MINOR=0 VERSION_PATCH=0 \
+    RELEASE_TAG=v2.0.0-beta.3.nightly+123456789 RUN_ID=123456789 \
+    bash -e version.sh > /dev/null 2> error.log; then
+    echo "Expected a nightly tag/version mismatch to fail" >&2
+    exit 1
+fi
+echo "PASS: build version and nightly tag must match the configured prerelease and run ID"
 
 cd "$ROOT"
 [[ "$(make --silent print-version AUDIOX_VERSION_MAJOR=2 AUDIOX_VERSION_MINOR=3 \

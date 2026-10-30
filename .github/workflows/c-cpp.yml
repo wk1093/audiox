@@ -28,7 +28,7 @@ on:
         default: ''
         type: string
       tag:
-        description: "Existing stable release tag (vX.Y.Z)"
+        description: "Stable release tag or versioned nightly tag"
         default: ''
         type: string
 
@@ -63,9 +63,13 @@ jobs:
             echo "patch=${BASH_REMATCH[3]}" >> "$GITHUB_OUTPUT"
             echo "channel=stable" >> "$GITHUB_OUTPUT"
             echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          elif [[ "$CHANNEL" == nightly && -z "$RELEASE_TAG" ]]; then
+          elif [[ "$CHANNEL" == nightly &&
+                  "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*\.)?nightly\+[0-9]+$ ]]; then
+            echo "major=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+            echo "minor=${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+            echo "patch=${BASH_REMATCH[3]}" >> "$GITHUB_OUTPUT"
             echo "channel=nightly" >> "$GITHUB_OUTPUT"
-            echo "tag=nightly-$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+            echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           elif [[ -n "$CHANNEL" || -n "$RELEASE_TAG" ]]; then
             echo "::error::Invalid publishing channel/tag: $CHANNEL/$RELEASE_TAG"
             exit 1
@@ -74,7 +78,7 @@ jobs:
       - name: Checkout build source
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.sha }}
+          ref: ${{ inputs.channel == 'stable' && inputs.tag && format('refs/tags/{0}', inputs.tag) || github.sha }}
           persist-credentials: false
 
       - name: Resolve build commit
@@ -111,6 +115,8 @@ jobs:
           VERSION_MAJOR: ${{ needs.prepare.outputs.major }}
           VERSION_MINOR: ${{ needs.prepare.outputs.minor }}
           VERSION_PATCH: ${{ needs.prepare.outputs.patch }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           if [[ "$CHANNEL" == stable ]]; then
             echo "AUDIOX_VERSION_MAJOR=$VERSION_MAJOR" >> "$GITHUB_ENV"
@@ -120,6 +126,12 @@ jobs:
             echo "AUDIOX_VERSION_NIGHTLY=0" >> "$GITHUB_ENV"
             echo "AUDIOX_VERSION_BUILD=" >> "$GITHUB_ENV"
           else
+            base_version="$(make --silent print-version AUDIOX_VERSION_NIGHTLY=0)"
+            expected_tag="v${base_version}.nightly+${RUN_ID}"
+            if [[ "$RELEASE_TAG" != "$expected_tag" ]]; then
+              echo "::error::Nightly tag $RELEASE_TAG does not match configured version and run ID ($expected_tag)."
+              exit 1
+            fi
             # Keep the Makefile's prerelease: beta.3 -> X.Y.Z-beta.3.nightly+<commit>,
             # none -> X.Y.Z-nightly+<commit>.
             echo "AUDIOX_VERSION_NIGHTLY=1" >> "$GITHUB_ENV"

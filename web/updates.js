@@ -53,9 +53,12 @@
     if (channel !== 'nightly') throw new Error('Unknown update channel.');
     // Use the rolling release only as an index, then resolve immutable assets.
     const rolling = await githubJson('/releases/tags/nightly', request);
-    const match = /audiox-run-number:\s*(\d+)/.exec(rolling.body || '');
-    if (!match) throw new Error('No versioned nightly is published yet.');
-    const release = await githubJson(`/releases/tags/nightly-${match[1]}`, request);
+    const body = rolling.body || '';
+    const tagMatch = /audiox-release-tag:\s*([^\s]+)/.exec(body);
+    const runMatch = /audiox-run-number:\s*(\d+)/.exec(body);
+    const tag = tagMatch ? tagMatch[1] : runMatch ? `nightly-${runMatch[1]}` : '';
+    if (!tag) throw new Error('No versioned nightly is published yet.');
+    const release = await githubJson(`/releases/tags/${encodeURIComponent(tag)}`, request);
     if (!release.prerelease) throw new Error('The selected nightly is not a prerelease.');
     return release;
   }

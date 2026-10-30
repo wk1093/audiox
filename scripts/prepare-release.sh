@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${GH_REPO:?}"
+: "${GH_REPO:?}" "${GITHUB_RUN_ID:?}"
 WORK="$(mktemp -d)"
 trap 'rm -r "$WORK"' EXIT
 
@@ -20,7 +20,7 @@ if [[ -n "$prerelease" ]]; then
         fi
     done
     channel=nightly
-    tag=""
+    tag="v${version}.nightly+${GITHUB_RUN_ID}"
 else
     channel=stable
     tag="v$version"
@@ -63,38 +63,37 @@ fi
 
 jq -r '
     map(select(.draft == false and
-        (.tag_name | test("^(v[0-9]+\\.[0-9]+\\.[0-9]+|nightly(-[0-9]+|-legacy-[0-9]+)?)$")) and
+        (.tag_name | test("^(v[0-9]+\\.[0-9]+\\.[0-9]+|v[0-9]+\\.[0-9]+\\.[0-9]+-(?:[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*\\.)?nightly\\+[0-9]+|nightly(-[0-9]+|-legacy-[0-9]+)?)$")) and
         any(.assets[]; .name == "images.json" or .name == "os_list.json"))) |
     sort_by(.published_at // .created_at) | reverse | .[].tag_name
 ' "$WORK/releases.json" > "$WORK/tags"
 
-while IFS= read -r tag; do
-    commit="$(git rev-parse --verify "refs/tags/$tag^{commit}")"
+while IFS= read -r baseline_tag; do
+    commit="$(git rev-parse --verify "refs/tags/$baseline_tag^{commit}")"
     if git merge-base --is-ancestor "$commit" HEAD; then
         # Match the firmware input filter in c-cpp.yml; publishing/docs changes alone do not count.
         if git diff --quiet "$commit" HEAD -- src include root web scripts Makefile Kconfig \
             bootmod.txt depmod.txt ':(top,glob)logo*.png' ':(top,glob)logo*.svg' ':(top,glob)logo*.ppm' \
             ':(exclude)scripts/mirror-updates.sh' ':(exclude)scripts/prepare-release.sh'; then
-            echo "No firmware changes since published release $tag." >&2
+            echo "No firmware changes since published release $baseline_tag." >&2
             tag=""
             finish false
             exit 0
         else
             status=$?
             if (( status != 1 )); then
-                echo "Failed to compare firmware inputs against $tag." >&2
+                echo "Failed to compare firmware inputs against $baseline_tag." >&2
                 exit "$status"
             fi
         fi
     else
         status=$?
         if (( status != 1 )); then
-            echo "Failed to check ancestry of $tag." >&2
+            echo "Failed to check ancestry of $baseline_tag." >&2
             exit "$status"
         fi
     fi
 done < "$WORK/tags"
 
 echo "Firmware inputs are not covered by a published release; building a nightly." >&2
-tag=""
 finish true

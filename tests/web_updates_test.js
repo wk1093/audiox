@@ -36,16 +36,16 @@ test('stable check uses latest stable endpoint and reports GitHub API errors', a
   await assert.rejects(updates.latestRelease('stable', async () => response({ ...release, prerelease: true })), /not an AudioX stable/);
 });
 
-test('nightly lookup resolves the rolling index to version-specific release metadata', async () => {
+test('nightly lookup resolves the rolling tag to version-specific release metadata', async () => {
   const paths = [];
   const result = await updates.latestRelease('nightly', async (url) => {
     paths.push(url);
     return response(paths.length === 1
-      ? { body: '<!-- audiox-run-number: 42 -->' }
-      : { ...release, tag_name: 'nightly-42', prerelease: true });
+      ? { body: '<!-- audiox-release-tag: v1.10.0-beta.3.nightly+42 -->' }
+      : { ...release, tag_name: 'v1.10.0-beta.3.nightly+42', prerelease: true });
   });
-  assert.equal(result.tag_name, 'nightly-42');
-  assert.ok(paths[1].endsWith('/releases/tags/nightly-42'));
+  assert.equal(result.tag_name, 'v1.10.0-beta.3.nightly+42');
+  assert.ok(paths[1].endsWith('/releases/tags/v1.10.0-beta.3.nightly%2B42'));
   await assert.rejects(updates.latestRelease('nightly', async () => response({})), /No versioned nightly/);
 });
 

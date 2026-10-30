@@ -9,7 +9,8 @@ PUBLISH_SEQUENCE="${PUBLISH_SEQUENCE:-$GITHUB_RUN_NUMBER}"
 NOTES_COMMIT="${NOTES_COMMIT:-$BUILD_COMMIT}"
 NIGHTLY_LIMIT=25
 if ! [[ "$CHANNEL" == stable && "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ||
-        "$CHANNEL" == nightly && "$RELEASE_TAG" == "nightly-$PUBLISH_SEQUENCE" ]]; then
+        "$CHANNEL" == nightly &&
+        "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*\.)?nightly\+$PUBLISH_SEQUENCE$ ]]; then
     echo "Invalid publishing channel/tag: $CHANNEL/$RELEASE_TAG" >&2
     exit 1
 fi
@@ -23,6 +24,10 @@ for BOARD in pi4 pi5; do
     fi
     VERSION="$BOARD_VERSION"
 done
+if [[ "$CHANNEL" == nightly && "$RELEASE_TAG" != "v${VERSION%%+*}+$PUBLISH_SEQUENCE" ]]; then
+    echo "Nightly tag $RELEASE_TAG does not match packaged firmware version $VERSION." >&2
+    exit 1
+fi
 
 WORK="$(mktemp -d)"
 trap 'rm -r "$WORK"' EXIT
@@ -48,29 +53,6 @@ if [[ "$CHANNEL" == nightly && -n "$ROLLING" ]]; then
         exit 0
     fi
 
-    # Preserve the last rolling-only build when migrating to versioned nightlies.
-    if jq -e '.draft == false and ((.body // "") | contains("audiox-history: true") | not)' \
-        <<< "$ROLLING" > /dev/null; then
-        LEGACY_TAG="nightly-legacy-$(jq -r .id <<< "$ROLLING")"
-        LEGACY="$(release_state "$LEGACY_TAG")"
-        if [[ -z "$LEGACY" ]] || jq -e .draft <<< "$LEGACY" > /dev/null; then
-            mkdir "$WORK/legacy"
-            gh release download nightly --pattern '*.img.xz' --pattern '*.sha256' --dir "$WORK/legacy"
-            gh release download nightly --pattern os_list.json --output "$WORK/legacy/old.json"
-            jq --arg old "https://github.com/$GH_REPO/releases/download/nightly/" \
-                --arg new "https://github.com/$GH_REPO/releases/download/$LEGACY_TAG/" \
-                '.os_list |= map(.url |= if startswith($old) then $new + ltrimstr($old) else error("Unexpected legacy image URL") end)' \
-                "$WORK/legacy/old.json" > "$WORK/legacy/images.json"
-            if [[ -z "$LEGACY" ]]; then
-                LEGACY_COMMIT="$(gh api "repos/$GH_REPO/commits/nightly" --jq .sha)"
-                gh release create "$LEGACY_TAG" --target "$LEGACY_COMMIT" \
-                    --title "AudioX Nightly (legacy)" --draft --prerelease --latest=false
-            fi
-            gh release upload "$LEGACY_TAG" "$WORK/legacy/"*.img.xz "$WORK/legacy/"*.sha256 \
-                "$WORK/legacy/images.json" --clobber
-            gh release edit "$LEGACY_TAG" --draft=false --prerelease --latest=false
-        fi
-    fi
 fi
 
 if [[ "$CHANNEL" == stable ]]; then
@@ -108,9 +90,9 @@ python3 "$SCRIPT_DIR/release-notes.py" \
     --repository "$GH_REPO" > "$WORK/changes.md"
 {
     cat "$WORK/changes.md"
-    printf '\n\n---\n\nVersion: `%s`\n\nBuild commit: `%s`\n\n[Workflow run](%s/%s/actions/runs/%s)\n\n<!-- audiox-run-number: %s -->\n<!-- audiox-history: true -->\n' \
+    printf '\n\n---\n\nVersion: `%s`\n\nBuild commit: `%s`\n\n[Workflow run](%s/%s/actions/runs/%s)\n\n<!-- audiox-release-tag: %s -->\n<!-- audiox-run-number: %s -->\n' \
         "$VERSION" "$BUILD_COMMIT" "$GITHUB_SERVER_URL" "$GH_REPO" "$GITHUB_RUN_ID" \
-        "$PUBLISH_SEQUENCE"
+        "$RELEASE_TAG" "$PUBLISH_SEQUENCE"
 } > "$WORK/notes.md"
 
 # Published versioned nightly assets are never overwritten, including on reruns.
@@ -134,13 +116,14 @@ jq --arg channel "$CHANNEL" --arg current "$RELEASE_TAG" '
     [.[] | select((.draft == false or .tag_name == $current) and
         any(.assets[]; .name == "images.json" or .name == "os_list.json")) |
         select(if $channel == "nightly" then
-            .prerelease and (.tag_name | test("^nightly-([0-9]+|legacy-[0-9]+)$"))
+            .prerelease and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-([0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*\\.)?nightly\\+[0-9]+$"))
         else
             .prerelease == false and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
         end)] |
     if $channel == "nightly" then
-        sort_by(if .tag_name | test("^nightly-[0-9]+$") then
-            .tag_name | ltrimstr("nightly-") | tonumber else 0 end) | reverse
+        sort_by(if .tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-([0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*\\.)?nightly\\+[0-9]+$") then
+            .tag_name | capture("\\+(?<run>[0-9]+)$").run | tonumber
+        else 0 end) | reverse
     else sort_by(.published_at // .created_at) | reverse end
 ' "$WORK/releases.json" > "$WORK/candidates.json"
 

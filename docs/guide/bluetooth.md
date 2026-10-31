@@ -5,11 +5,13 @@ description: Pair Bluetooth audio devices, stream in or out, and troubleshoot co
 
 # Bluetooth audio
 
-AudioX supports Bluetooth Classic audio roles in both directions. Route
-**Bluetooth In** to an output to receive audio from another device, or route a
-source such as **Soundboard Out** to **Bluetooth Out** to send audio to a
-headphone or speaker. **Bluetooth In** and **Bluetooth Out** are separate
-Routing nodes; pairing a device does not create an audio route automatically.
+AudioX supports Bluetooth Classic audio roles in both directions. Each paired
+device gets its own Routing nodes: **BT <name> In** (`bt_<MAC>_in`) carries
+audio received from that device, and **BT <name> Out** (`bt_<MAC>_out`) sends
+audio to it. A phone, which only sends audio, gets only an In node; a
+headphone or speaker gets only an Out node once AudioX has identified it. A
+device whose role is not known yet shows both. Pairing a device does not
+create an audio route automatically.
 
 ## Find and pair an audio device
 
@@ -18,18 +20,35 @@ Routing nodes; pairing a device does not create an audio route automatically.
    and lists discovered devices under **Nearby devices**.
 3. Choose **Pair** on the target device. Wait for the status to report the
    result. Successfully paired devices appear under **My devices**.
-4. For an audio output (headphones or a speaker), choose **Connect** on the
-   paired device. AudioX can connect to one Bluetooth output at a time.
-5. **Auto-connect** is on by default for saved devices. AudioX reconnects to an
-   enabled saved output when the adapter is ready and retries if the device is
-   not yet available. Turn it off on a device card to prevent automatic
-   reconnection; manually disconnecting pauses retries until you manually
-   connect again or re-enable Auto-connect.
-6. For an audio input source, such as a phone sending audio to AudioX, pair it
-   first, then initiate its audio connection from that device. AudioX presents
-   a Bluetooth audio sink and provides **Bluetooth In** as a Routing source.
+4. Choose **Connect** on the paired device. AudioX connects in the direction
+   the device supports: it sends audio to headphones and speakers, and
+   receives audio from phones and other audio sources. For a device that does
+   both, AudioX connects the output first, then the input on the same
+   connection. AudioX can keep up to four Bluetooth devices connected at once
+   (for example headphones and a phone), each with its own Routing nodes.
+5. **Auto-connect** is on by default for saved devices. AudioX reconnects to
+   enabled saved devices when the adapter is ready and retries each device
+   with an increasing delay (up to a minute) if it is not yet available.
+   Searching for an absent device ties up the radio for several seconds, so
+   while audio plays to a Bluetooth output AudioX tries an absent device at
+   most every 30 seconds, and while a phone or other source is connected as
+   an input (playing or paused) AudioX does not search at all, because
+   incoming audio would drop out. Headphones and speakers that are switched
+   on during that time normally reconnect to AudioX by themselves; otherwise
+   choose **Connect**. Turn Auto-connect off on a device
+   card to prevent automatic reconnection. Choosing **Disconnect**, or
+   disconnecting from the device itself (for example from the phone's
+   Bluetooth menu), stops AudioX from reconnecting to that device until you
+   choose **Connect**, re-enable Auto-connect, or the device connects to
+   AudioX again. AudioX learns each device's direction when the device
+   identifies as a phone, reports its audio endpoints, opens an audio stream
+   into AudioX, or refuses AudioX's output connection twice in a row.
+6. A paired phone or other audio source can also connect to AudioX by itself,
+   for example by choosing AudioX in the phone's Bluetooth menu. AudioX is
+   connectable by paired devices only; it is not discoverable, so new devices
+   are always paired from the Bluetooth page.
 7. Connect the relevant Routing node to the desired destination and save the
-   route. To stop sending to an output, choose **Disconnect**.
+   route. To stop audio in either direction, choose **Disconnect**.
 
 Bluetooth status and device lists refresh while the page is open. The page
 separates **My devices** (paired or connected) from **Nearby devices**
@@ -53,10 +72,11 @@ Discovery also does not prove audio support or readiness to pair: a Classic
 device can be discoverable without accepting a new pairing. Put the intended
 audio device into pairing mode before choosing Pair.
 
-The page's **Connected** state describes AudioX's outgoing connection to a
-paired audio sink. A connected output may be paused while idle. This state does
-not report whether a phone or other source is currently streaming into
-**Bluetooth In**.
+Each device card reports both directions: **Connected as audio output** (with
+**paused while idle** while AudioX has paused the stream) and **Connected as
+audio input**, followed by **receiving audio** while the device is playing or
+**waiting for audio** while it is connected but silent. Phones usually start
+the stream only while something is playing.
 
 ## What AudioX saves and supports
 
@@ -69,7 +89,11 @@ settings; the archive contains pairing keys, so keep it private.
 Bluetooth audio uses the SBC codec. AudioX does not offer a codec selector or
 AAC/aptX/LDAC support. For outgoing audio, the remote sink must support
 48 kHz stereo SBC; AudioX selects a low SBC bitpool for its output stream.
-AudioX advertises 48 kHz joint-stereo SBC when receiving audio.
+When receiving audio, AudioX accepts SBC at 48 kHz or 44.1 kHz (most phones
+send 44.1 kHz) and converts 44.1 kHz streams to the 48 kHz AudioX clock. It
+prefers 48 kHz joint stereo when the source offers it. Received audio passes
+through a buffer of about 120 ms that absorbs the uneven timing of Bluetooth
+packets, so a Bluetooth input lags slightly behind wired inputs.
 
 Discovery uses **Classic inquiry and bounded remote name lookups only**. AudioX
 does not run BLE discovery, so BLE-only advertisements do not fill the list.
@@ -82,26 +106,39 @@ Classic A2DP/SBC implementation. AudioX does **not** implement LE Audio or
 Auracast. Generic BLE support or the ability to see an advertisement would not
 make those devices usable for audio here.
 
-Only one outgoing Bluetooth audio device can be connected at a time. Scanning
-and pairing are unavailable while that output is connected; disconnect it
-before adding another device.
+Up to four Bluetooth devices can be connected at the same time, in any mix of
+inputs and outputs. All of them share one Bluetooth radio, so several
+simultaneous streams can cause dropouts, especially if a device is far away.
+If audio stutters, disconnect devices you are not using. Scanning and pairing
+are unavailable while any Bluetooth audio device is connected; disconnect all
+devices before adding another one.
 
 ## Route Bluetooth audio
 
-To play a paired headphone or speaker, connect it on the Bluetooth page, then
-route a source to `bluetooth_out`, for example:
+Node IDs contain the device address as 12 uppercase hex digits. To play to
+the paired speaker `00:11:22:33:44:55`, connect it on the Bluetooth page, then
+route a source to its Out node, for example:
 
 ```text
-edge=soundboard_out,bluetooth_out,0,0
-edge=soundboard_out,bluetooth_out,0,1
+edge=soundboard_out,bt_001122334455_out,0,0
+edge=soundboard_out,bt_001122334455_out,0,1
 ```
 
-To receive a stereo stream from another device and send it to the USB host:
+To receive a stereo stream from the phone `A4:C6:F0:A5:7A:A7` and send it to
+the USB host:
 
 ```text
-edge=bluetooth_in,usb_gadget_out,0,0
-edge=bluetooth_in,usb_gadget_out,1,1
+edge=bt_A4C6F0A57AA7_in,usb_gadget_out,0,0
+edge=bt_A4C6F0A57AA7_in,usb_gadget_out,1,1
 ```
+
+A device's nodes pass audio only while it is connected; at other times its In
+node is silent. Routes for a device that is no longer paired disappear from
+the graph but stay saved, and return if you pair it again. Saving routing does
+not remove them. Older single `bluetooth_in`/`bluetooth_out` routes are
+converted to per-device routes automatically. Volume settings, MIDI
+mappings, and macros that used those older IDs must be pointed at the new
+per-device IDs.
 
 The Soundboard currently uses only the first sample channel of a clip, even
 when the clip is stereo. Its Routing node exposes that signal on channel 0, so
@@ -113,6 +150,12 @@ channel sockets shown in Routing are authoritative for the detected graph. Read
 
 ## Troubleshooting
 
+Bluetooth logs retain connection events and errors, but do not print periodic
+healthy-stream statistics or scheduler/tuning diagnostics. Input statistics
+are reported as warnings only when packets or audio frames are lost, decoding
+fails, or the input buffer underruns or overflows. Packet gaps alone do not
+produce a warning.
+
 - **Adapter not ready:** check that the AudioX Bluetooth adapter is available
   and enabled, then reopen Bluetooth. See [System](./system.md) for device
   status and logs.
@@ -122,26 +165,34 @@ channel sockets shown in Routing are authoritative for the detected graph. Read
   devices** if the target has no reported name.
 - **LE-only device is missing:** this is intentional. Use a device with Classic
   A2DP/SBC support and enable its Classic pairing mode if it has multiple modes.
-- **Cannot scan or pair:** disconnect the current outgoing Bluetooth audio
-  device first. Wait for any scan, pairing, or connection operation to finish
+- **Cannot scan or pair:** disconnect the connected Bluetooth audio devices
+  first. Wait for any scan, pairing, or connection operation to finish
   before starting another.
 - **Pairing succeeds but there is no sound:** pairing only saves credentials.
-  For output, choose **Connect** and route a source to `bluetooth_out`. For
-  input, start the audio connection from the sending device and route
-  `bluetooth_in` to a destination. Confirm both stereo channel routes.
+  For output, choose **Connect** and route a source to that device's
+  `bt_<MAC>_out` node. For input, choose **Connect** (or connect from the
+  sending device), start playback on it, and route its `bt_<MAC>_in` node to
+  a destination. Confirm both stereo channel routes.
 - **Output connection fails:** confirm the device is paired, supports A2DP
   Sink with 48 kHz stereo SBC, and is not already connected elsewhere. If
   needed, disconnect, choose **Forget**, put it back in pairing mode, and pair
   again.
-- **Output reconnects unexpectedly:** turn off **Auto-connect** for that saved
-  device. A manual disconnect stops retries for the current session.
+- **Device reconnects unexpectedly:** turn off **Auto-connect** for that saved
+  device. A manual disconnect stops retries for that device until you connect
+  it again.
+- **Phone shows "Connection refused" or "device refused the connection":**
+  phones paired with older AudioX versions saw AudioX as a device without a
+  speaker role and refuse its audio connection. On the phone, forget AudioX;
+  on AudioX, choose **Forget** on the phone's card. Then put the phone in
+  pairing mode and pair it again from **Add device**. A phone paired with an
+  older version may first be tried as an output; AudioX recognizes it as an
+  input after it reports its audio endpoints or refuses twice.
+- **Input connects but stays "waiting for audio":** start playback on the
+  sending device and check that it selected AudioX as its audio output.
 - **Sound breaks up:** confirm the route is correct, keep the wireless device
   close to AudioX, and try a fresh connection. Bluetooth streaming has bounded
   buffering; persistent output overruns stop the stream rather than continuing
   a severely glitching connection.
-- **A phone is streaming in but the page says disconnected:** the page reports
-  AudioX's outgoing link only. Check the receiving path through
-  `bluetooth_in` and the selected destination instead.
 
 Related guides: [Getting started](./getting-started.md),
 [Routing](./routing.md), [Configuration](./config.md),

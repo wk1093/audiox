@@ -2,6 +2,7 @@
 
 #include "audio/context.hpp"
 #include "bluetooth/context.hpp"
+#include "bluetooth/route_id.hpp"
 #include "config/context.hpp"
 #include "touch/context.hpp"
 
@@ -19,12 +20,12 @@
 
 static uint8_t* boot_logo_data = nullptr;
 static constexpr int kButtonDragThresholdPx = 12;
-static constexpr int kMaxUiDevices = 32;
+static constexpr int kMaxUiDevices = 32 + BT_MAX_DEVICES;
+static constexpr uint64_t kBluetoothMeterKey = 1ULL << 63;
 static constexpr int kChannelMeterMax = 16;
 static constexpr int kMeterSmoothingSlots = kMaxUiDevices * kChannelMeterMax * 2;
 static constexpr float kMeterAttackTauMs = 45.0f;
 static constexpr float kMeterReleaseTauMs = 180.0f;
-static constexpr uint64_t kMeterSlotStaleMs = 3000ULL;
 static constexpr int kMeterLabelH = 8;
 static constexpr int kMeterBarH = 2;
 static constexpr int kMeterGap = 2;
@@ -55,7 +56,7 @@ struct ScrollAreaState {
 };
 
 struct MeterSmoothingState {
-    AudioHandle handle{0};
+    uint64_t handle{0};
     uint8_t channelIndex{0};
     uint8_t isCapture{0};
     float level{0.0f};
@@ -319,24 +320,28 @@ static inline int deviceRowHeight(const AudioDeviceInfo &info) {
 }
 
 static inline float getAudioChannelLevel(FramebufferContext *fb,
-                                         AudioHandle handle,
+                                         uint64_t handle,
                                          int channelIndex,
                                          int isCapture) {
     if (!fb || !fb->app || !fb->app->audio) {
         return 0.0f;
     }
-    if (handle == 0) {
-        return fb->app->audio->getGraphThingChannelLevel("bluetooth_out", channelIndex);
+    if (handle & kBluetoothMeterKey) {
+        const uint64_t peer = handle & ~kBluetoothMeterKey;
+        char id[BT_ROUTE_ID_MAX];
+        if (!bt::formatRouteIdFromPacked(peer, isCapture != 0, id, sizeof(id))) {
+            return 0.0f;
+        }
+        return fb->app->audio->getGraphThingChannelLevel(id, channelIndex);
     }
-    return fb->app->audio->getChannelLevel(handle, channelIndex, isCapture);
+    return fb->app->audio->getChannelLevel(static_cast<AudioHandle>(handle), channelIndex, isCapture);
 }
 
-static inline MeterSmoothingState *findMeterSmoothingState(AudioHandle handle,
+static inline MeterSmoothingState *findMeterSmoothingState(uint64_t handle,
                                                            int channelIndex,
                                                            int isCapture,
                                                            uint64_t nowMs) {
     MeterSmoothingState *reuse = nullptr;
-    uint64_t oldestSeenMs = UINT64_MAX;
 
     for (int i = 0; i < kMeterSmoothingSlots; ++i) {
         MeterSmoothingState *state = &meterSmoothingState[i];
@@ -347,22 +352,9 @@ static inline MeterSmoothingState *findMeterSmoothingState(AudioHandle handle,
             return state;
         }
 
-        if (!reuse) {
-            if (!state->active) {
-                reuse = state;
-                continue;
-            }
-            if ((nowMs - state->lastSeenMs) > kMeterSlotStaleMs) {
-                reuse = state;
-                continue;
-            }
-        }
-
-        if (state->lastSeenMs < oldestSeenMs) {
-            oldestSeenMs = state->lastSeenMs;
-            if (!reuse) {
-                reuse = state;
-            }
+        if (!reuse || (!state->active && reuse->active) ||
+            (state->active == reuse->active && state->lastSeenMs < reuse->lastSeenMs)) {
+            reuse = state;
         }
     }
 
@@ -380,7 +372,7 @@ static inline MeterSmoothingState *findMeterSmoothingState(AudioHandle handle,
     return reuse;
 }
 
-static inline float smoothMeterLevel(AudioHandle handle,
+static inline float smoothMeterLevel(uint64_t handle,
                                      int channelIndex,
                                      int isCapture,
                                      float targetLevel,
@@ -412,7 +404,7 @@ static inline void drawChannelMeterGroup(FramebufferContext *fb,
                                          int w,
                                          int channelCount,
                                          const char *label,
-                                         AudioHandle handle,
+                                         uint64_t handle,
                                          int isCapture,
                                          uint64_t nowMs,
                                          unsigned char fillR,
@@ -905,30 +897,37 @@ void FramebufferContext::drawMain(TouchState *touchState) {
     const int headerHeight = 18;
 
     AudioDeviceInfo deviceInfos[kMaxUiDevices];
+    uint64_t meterKeys[kMaxUiDevices] = {};
+    bool bluetoothConnected[kMaxUiDevices] = {};
     size_t deviceCount = 0;
-    bool haveBluetoothOutput = false;
-    bool bluetoothOutputConnected = false;
-    char bluetoothOutputName[64] = {};
-    if (app && app->bluetooth) {
-        haveBluetoothOutput = app->bluetooth->getOutputDeviceName(bluetoothOutputName,
-                                                                  sizeof(bluetoothOutputName));
-        bluetoothOutputConnected = app->bluetooth->outputConnected.load(std::memory_order_acquire) != 0;
-    }
     ConfigData liveCfg = {};
     if (app && app->audio) {
-        size_t capacity = haveBluetoothOutput ? (kMaxUiDevices - 1U) : kMaxUiDevices;
-        deviceCount = app->audio->copyDeviceInfos(deviceInfos, capacity);
+        deviceCount = app->audio->copyDeviceInfos(deviceInfos, 32);
         sortDeviceInfos(deviceInfos, deviceCount);
+        for (size_t i = 0; i < deviceCount; ++i) {
+            meterKeys[i] = deviceInfos[i].handle;
+        }
     }
-    if (haveBluetoothOutput && deviceCount < kMaxUiDevices) {
-        AudioDeviceInfo &bluetoothInfo = deviceInfos[deviceCount++];
-        memset(&bluetoothInfo, 0, sizeof(bluetoothInfo));
-        bluetoothInfo.handle = 0;
-        bluetoothInfo.cardIndex = UINT32_MAX;
-        bluetoothInfo.hasPlayback = 1;
-        bluetoothInfo.playbackChannels = 2;
-        snprintf(bluetoothInfo.displayName, sizeof(bluetoothInfo.displayName),
-                 "Bluetooth: %.48s", bluetoothOutputName);
+    if (app && app->bluetooth) {
+        BluetoothRoutingDevice btDevices[BT_MAX_DEVICES];
+        const size_t btCount = app->bluetooth->copyRoutingDevices(btDevices, BT_MAX_DEVICES);
+        for (size_t i = 0; i < btCount && deviceCount < kMaxUiDevices; ++i) {
+            const BluetoothRoutingDevice &device = btDevices[i];
+            AudioDeviceInfo &info = deviceInfos[deviceCount];
+            info = {};
+            info.cardIndex = UINT32_MAX;
+            info.hasPlayback = device.output;
+            info.hasCapture = device.input;
+            info.playbackChannels = device.output ? 2 : 0;
+            info.captureChannels = device.input ? 2 : 0;
+            char address[BT_ADDRESS_TEXT];
+            bt::formatAddress(device.address, address, sizeof(address));
+            snprintf(info.displayName, sizeof(info.displayName), "BT %.120s",
+                     device.name[0] ? device.name : address);
+            meterKeys[deviceCount] = kBluetoothMeterKey | bt::packAddress(device.address.b);
+            bluetoothConnected[deviceCount] = device.connected;
+            ++deviceCount;
+        }
     }
     if (app && app->config) {
         liveCfg = app->config->readConfigFile();
@@ -1035,9 +1034,11 @@ void FramebufferContext::drawMain(TouchState *touchState) {
         char nameLabel[64];
         char detailLabel[64];
         trimLabelToWidth(deviceInfos[i].displayName, nameLabel, sizeof(nameLabel), maxNameChars);
-        if (deviceInfos[i].handle == 0) {
-            snprintf(detailLabel, sizeof(detailLabel), "A2DP %s 2ch",
-                     bluetoothOutputConnected ? "connected" : "paired");
+        if (meterKeys[i] & kBluetoothMeterKey) {
+            snprintf(detailLabel, sizeof(detailLabel), "A2DP %s p%u c%u",
+                     bluetoothConnected[i] ? "connected" : "paired",
+                     (unsigned)deviceInfos[i].playbackChannels,
+                     (unsigned)deviceInfos[i].captureChannels);
         } else {
             snprintf(detailLabel,
                      sizeof(detailLabel),
@@ -1080,7 +1081,7 @@ void FramebufferContext::drawMain(TouchState *touchState) {
                                   sectionW,
                                   playbackCount,
                                   captureCount > 0 ? "out" : "play",
-                                  deviceInfos[i].handle,
+                                  meterKeys[i],
                                   0,
                                   nowMs,
                                   230,
@@ -1095,7 +1096,7 @@ void FramebufferContext::drawMain(TouchState *touchState) {
                                   sectionW,
                                   captureCount,
                                   playbackCount > 0 ? "in" : "cap",
-                                  deviceInfos[i].handle,
+                                  meterKeys[i],
                                   1,
                                   nowMs,
                                   66,

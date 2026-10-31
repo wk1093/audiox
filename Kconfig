@@ -82,12 +82,15 @@ config BOOT_CD_FIRMWARE
 
 config BT_MINIUART
 	bool "Move Bluetooth to the mini UART"
-	default y if BOARD_PI4
 	default n
 	help
 	  Adds dtoverlay=miniuart-bt and pins core_freq to 250 MHz so the mini
 	  UART baud rate stays stable. Pi 4 only; the Pi 5 has a dedicated
 	  Bluetooth UART.
+
+	  Not recommended: the mini UART's small receive FIFO and 460800 baud
+	  limit drop Bluetooth packets, which breaks incoming A2DP audio from
+	  phones. Leave this off so Bluetooth keeps the PL011 UART.
 
 config ARM_BOOST
 	bool "Enable arm_boost"

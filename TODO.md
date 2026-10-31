@@ -131,16 +131,38 @@ The above last two features are mainly to improve my setup, but could probably b
 
 ## Last few improvements - v1.12
 - [x] Add per-device Bluetooth auto-connect, saved-device reconnection retries, and pause idle A2DP streams so multipoint headsets can switch sources.
-- [ ] Verify Bluetooth reconnection, multipoint handoff, and audio resume behavior with physical devices; continue improving connection reliability.
-- [ ] Investigate using LV2 plugins for effects, and if possible, make it so that the user can upload their own LV2 plugins to the device and use them in the audio engine. This would allow for a lot more flexibility and customization for users who want to use their own effects.
+- [x] Verify Bluetooth reconnection, multipoint handoff, and audio resume behavior with physical devices; continue improving connection reliability.
+- [x] Fix support for Bluetooth phone connection.
+- [x] Investigate using LV2 plugins for effects, and if possible, make it so that the user can upload their own LV2 plugins to the device and use them in the audio engine. This would allow for a lot more flexibility and customization for users who want to use their own effects.
+  - LV2 is not a good fit for this project (for now), but I will make a custom plugin system tailored to the audio engine's requirements. It will be a simple dynamic library (along with some metadata, packed into a single custom file format), loaded at runtime by the audio engine.
+- [x] Generate release notes from `[feat]` and `[fix]` commit markers, including multiple entries in one commit; nightly notes compare to the latest nightly or stable, and stable notes include all changes since the previous stable release.
+
+## Effect Improvements - v1.13
+- [ ] Improve effect system to be more user friendly
+  - [ ] Provide meaningful names for existing effects instead of fx1, fx2, etc.
+  - [ ] Improve parameter UI
+  - [ ] Provide tooltips or descriptions for each parameter to help users understand their function
+  - [ ] 
+- [ ] Also while we are at it, hide the internal routing names from the user, and provide more intuitive labels for the routing paths.
+- [ ] Implement custom plugin system for effects, allowing users to create and load their own effect modules into the audio engine.
+  - [ ] Create API
+  - [ ] Define plugin metadata format (axm)
+  - [ ] Implement plugin loader in the audio engine
+  - [ ] Provide example plugin for users to reference
+  - [ ] Document plugin development process for users
+  - [ ] Test plugin system with multiple plugins loaded simultaneously
+  - [ ] Handle plugin unloading and cleanup properly
+  - [ ] Ensure plugin system is compatible with existing effect system and routing logic
+  - [ ] Implement versioning for plugin API to allow for future updates without breaking existing plugins
+  - [ ] Implement plugin sandboxing to prevent faulty plugins from crashing the audio engine
+  - [ ] Provide a way for plugins to give a custom UI for their parameters:
+    - We should be able to dynamically serve custom JS or CSS for the plugin UI, since the HTTP server is custom. We could just add an api endpoint for the webui to grab a plugin's assets, and the plugin custom format can also contain multiple asset files (yet another custom archive format like axu and axb)
 - [ ] More advanced effects
-  - [ ] Noise gate
   - [ ] Voice noise cancellation/reduction
   - [ ] Compressor
   - [ ] Limiter
   - [ ] Parametric EQ
   - [ ] Multi-band compressor
-- [x] Generate release notes from `[feat]` and `[fix]` commit markers, including multiple entries in one commit; nightly notes compare to the latest nightly or stable, and stable notes include all changes since the previous stable release.
 
 ## Release - v2.0+
 

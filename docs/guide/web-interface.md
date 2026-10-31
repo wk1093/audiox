@@ -20,7 +20,7 @@ Only one page is visible at a time; switching pages does not stop audio.
 | Routing | Connect audio channels, insert processing, and inspect node/route details | [Routing](./routing) |
 | Bluetooth | Discover, pair, connect, disconnect, or forget audio devices | [Bluetooth](./bluetooth) |
 | Effects | Adjust effect parameters, MIDI controls, bypass mappings, and lights | [Effects](./effects) |
-| Volume | Set output gain for individual audio things and assign MIDI knobs | [Volume](./volume) |
+| Volume | Monitor per-channel meters, set node gain, and assign MIDI knobs | [Volume](./volume) |
 | Soundboard | Upload, play, replace, order, and map short audio clips | [Soundboard](./soundboard) |
 | MIDI | Assign global actions, configure pitched sample playback, and set controller lights | [MIDI](./midi) |
 | Macros | Create named keyboard shortcuts or Lua automations; run them from the web or MIDI | [Macros](./macros) |

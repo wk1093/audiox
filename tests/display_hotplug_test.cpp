@@ -185,6 +185,15 @@ ssize_t fakeRead(int fd, void *, size_t) {
 AudioContext::AudioContext(Audiox *context) : app(context) { app->audio = this; }
 AudioContext::~AudioContext() { app->audio = nullptr; }
 void AudioContext::stopHeldSfx() { ++heldStops; }
+static char lastMeterId[BT_ROUTE_ID_MAX];
+float AudioContext::getGraphThingChannelLevel(const char *id, int channel) const {
+    snprintf(lastMeterId, sizeof(lastMeterId), "%s", id);
+    return channel == 0 ? 0.25f : 0.5f;
+}
+float AudioContext::getChannelLevel(AudioHandle handle, int channel, bool capture) const {
+    assert(handle == 42 && channel == 1 && capture);
+    return 0.75f;
+}
 
 int main() {
     int statusFd = mkstemp(statusPath);
@@ -200,6 +209,19 @@ int main() {
         Audiox app;
         AudioContext audio(&app);
         FramebufferContext fb(&app);
+        const uint64_t phone = kBluetoothMeterKey | 0xA4C6F0A57AA7ULL;
+        const uint64_t headphones = kBluetoothMeterKey | 0xB8841102C99CULL;
+        assert(getAudioChannelLevel(&fb, phone, 0, 1) == 0.25f);
+        assert(strcmp(lastMeterId, "bt_A4C6F0A57AA7_in") == 0);
+        assert(getAudioChannelLevel(&fb, headphones, 1, 0) == 0.5f);
+        assert(strcmp(lastMeterId, "bt_B8841102C99C_out") == 0);
+        assert(getAudioChannelLevel(&fb, headphones, 1, 1) == 0.5f);
+        assert(strcmp(lastMeterId, "bt_B8841102C99C_in") == 0);
+        assert(getAudioChannelLevel(&fb, 42, 1, 1) == 0.75f);
+        assert(smoothMeterLevel(phone, 0, 1, 0.25f, 1) == 0.25f);
+        assert(smoothMeterLevel(headphones, 0, 1, 0.75f, 1) == 0.75f);
+        assert(smoothMeterLevel(headphones, 0, 0, 0.5f, 1) == 0.5f);
+        assert(findMeterSmoothingState(phone, 0, 1, 1)->level == 0.25f);
         TouchContext touch(&app);
         assert(app.fb == &fb && app.touch == &touch);
         assert(fb.isReady() && fb.pageflip_enabled && maps == 1);

@@ -34,6 +34,9 @@ const routingPath = '/api/rootfs/routing.txt';
 const state = {
   nodes: [],
   edges: [],
+  // Routes to Bluetooth devices that are not currently paired. They stay in
+  // routing.txt untouched so the routing comes back when the device returns.
+  dormantEdges: [],
   positions: {},
   selectedNodeId: null,
   selectedEdgeIdx: -1,
@@ -186,6 +189,9 @@ function setActiveTab(tab) {
   }
   if (tab === 'volume') {
     loadVolumes();
+    startMeterPolling();
+  } else {
+    stopMeterPolling();
   }
   if (tab === 'bluetooth') {
     loadBluetoothDevices();
@@ -216,6 +222,38 @@ const bluetoothHideUnnamed = document.getElementById('bluetooth-hide-unnamed');
 let bluetoothDevices = [];
 
 bluetoothHideUnnamed.addEventListener('change', () => renderBluetoothDevices(bluetoothDevices));
+
+function isBluetoothInputOnly(device) {
+  return Boolean(device?.audio_source) && !device?.audio_sink;
+}
+
+function bluetoothDeviceStatus(device) {
+  if (!device.paired && !device.connected) {
+    return 'Discovered; put device in pairing mode to pair';
+  }
+  // Older status payloads only report the combined connected/streaming flags.
+  const outputUp = device.output_connected ?? (device.connected && !isBluetoothInputOnly(device));
+  const inputUp = device.input_connected ?? (device.connected && isBluetoothInputOnly(device));
+  const parts = [];
+  if (outputUp) {
+    parts.push((device.output_streaming ?? device.streaming) === false
+      ? 'Connected as audio output; paused while idle' : 'Connected as audio output');
+  }
+  if (inputUp) {
+    parts.push((device.input_streaming ?? device.streaming)
+      ? 'Connected as audio input; receiving audio' : 'Connected as audio input; waiting for audio');
+  }
+  if (parts.length) {
+    return parts.join(' · ');
+  }
+  if (device.connected) {
+    return 'Connected for audio';
+  }
+  if (device.connecting) {
+    return 'Connecting...';
+  }
+  return isBluetoothInputOnly(device) ? 'Audio input, not connected' : 'Paired, not connected';
+}
 
 function bluetoothDeviceHasName(device) {
   const name = String(device.name || '').trim();
@@ -270,9 +308,7 @@ function renderBluetoothDevices(devices) {
       name.textContent = device.name || device.address;
       const status = document.createElement('span');
       status.className = 'bluetooth-device-state';
-      status.textContent = device.connected
-        ? (device.streaming === false ? 'Connected; audio paused while idle' : 'Connected for audio')
-        : device.paired ? 'Paired, not connected' : 'Discovered; put device in pairing mode to pair';
+      status.textContent = bluetoothDeviceStatus(device);
       const address = document.createElement('div');
       address.className = 'bluetooth-device-address';
       address.textContent = `${device.address} · Classic Bluetooth`;
@@ -308,7 +344,7 @@ function renderBluetoothDevices(devices) {
         autoConnectLabel.append(autoConnect, autoConnectText);
         actions.append(autoConnectLabel);
         if (device.connected) {
-          addAction('Disconnect', disconnectBluetoothDevice);
+          addAction('Disconnect', () => disconnectBluetoothDevice(device.address));
         } else if (device.classic) {
           addAction('Connect', () => connectBluetoothDevice(device.address), 'primary');
         }
@@ -407,8 +443,8 @@ function connectBluetoothDevice(address) {
   return bluetoothRequest('/api/bluetooth/connect', `address=${address}`);
 }
 
-function disconnectBluetoothDevice() {
-  return bluetoothRequest('/api/bluetooth/disconnect', '');
+function disconnectBluetoothDevice(address) {
+  return bluetoothRequest('/api/bluetooth/disconnect', address ? `address=${address}` : '');
 }
 
 function unpairBluetoothDevice(address) {
@@ -526,7 +562,7 @@ function formatRoutingText() {
   if (state.nodes.some((node) => node.id === 'routing_helper')) {
     out.push('node=routing_helper');
   }
-  for (const edge of state.edges) {
+  for (const edge of [...state.edges, ...state.dormantEdges]) {
     out.push(`edge=${edge.src},${edge.dst},${edge.srcChannel},${edge.dstChannel}`);
   }
   out.push('');
@@ -630,6 +666,12 @@ function renderEdgesList() {
 
 function normalizeThingId(v) {
   return String(v || '').trim();
+}
+
+const BLUETOOTH_ROUTE_ID = /^(bt_[0-9A-Fa-f]{12}_(in|out)|bluetooth_(in|out))$/;
+
+function isBluetoothRouteId(id) {
+  return BLUETOOTH_ROUTE_ID.test(normalizeThingId(id));
 }
 
 function isDeviceNode(node) {
@@ -759,11 +801,19 @@ function syncEdgesFromGraph() {
     : null;
 
   const next = [];
+  const dormant = [];
   const seen = new Set();
-  for (const edge of state.edges) {
+  for (const edge of [...state.edges, ...state.dormantEdges]) {
     const srcNode = state.nodeByThingId.get(edge.src);
     const dstNode = state.nodeByThingId.get(edge.dst);
     if (!srcNode || !dstNode) {
+      if ((srcNode || isBluetoothRouteId(edge.src)) && (dstNode || isBluetoothRouteId(edge.dst))) {
+        const key = edgeKey(edge);
+        if (!seen.has(key)) {
+          seen.add(key);
+          dormant.push(edge);
+        }
+      }
       continue;
     }
 
@@ -799,6 +849,7 @@ function syncEdgesFromGraph() {
 
   next.sort((a, b) => edgeKey(a).localeCompare(edgeKey(b)));
   state.edges = next;
+  state.dormantEdges = dormant;
 
   if (prevSelectedKey) {
     state.selectedEdgeIdx = state.edges.findIndex((e) => edgeKey(e) === prevSelectedKey);
@@ -1602,6 +1653,7 @@ async function loadRoutingFile() {
     const txt = await res.text();
     if (!res.ok) {
       state.edges = [];
+      state.dormantEdges = [];
       rebuildRoutingGraph();
       AudioxUI.setUnsaved('routing', false);
       setStatus('routing file missing, starting empty', 'warn');
@@ -1609,6 +1661,7 @@ async function loadRoutingFile() {
     }
 
     state.edges = parseRoutingText(txt);
+    state.dormantEdges = [];
     state.selectedEdgeIdx = -1;
     rebuildRoutingGraph();
     AudioxUI.setUnsaved('routing', false);
@@ -2051,6 +2104,8 @@ document.getElementById('chord-keys').addEventListener('keyup', (event) => {
 document.getElementById('chord-keys').addEventListener('blur', () => stopChordRecording());
 window.addEventListener('blur', () => stopChordRecording());
 document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopMeterPolling();
+  else if (state.activeTab === 'volume') startMeterPolling();
   if (document.hidden) {
     stopChordRecording();
     cancelChordLearn();
@@ -3052,6 +3107,92 @@ async function initializeGraphFromConfig() {
 
 // ---- Volume page ----
 
+const volumeMeters = new Map();
+let meterPollTimer = null;
+let meterPollBusy = false;
+let meterTopology = null;
+
+function stopMeterPolling() {
+  if (meterPollTimer !== null) clearInterval(meterPollTimer);
+  meterPollTimer = null;
+}
+
+function startMeterPolling() {
+  stopMeterPolling();
+  if (document.hidden) return;
+  pollMeters();
+  meterPollTimer = setInterval(pollMeters, 250);
+}
+
+function updateVolumeMeter(id, levels) {
+  const group = volumeMeters.get(id);
+  if (!group) return;
+  if (group.children.length !== levels.length) {
+    group.replaceChildren();
+    levels.forEach((_, channel) => {
+      const row = document.createElement('label');
+      row.className = 'vol-meter-row';
+      const label = document.createElement('span');
+      label.textContent = `Ch ${channel + 1}`;
+      const meter = document.createElement('meter');
+      meter.min = 0;
+      meter.max = 1;
+      meter.high = 0.95;
+      meter.optimum = 0;
+      meter.setAttribute('aria-label', `${id} channel ${channel + 1}`);
+      const value = document.createElement('span');
+      row.append(label, meter, value);
+      group.appendChild(row);
+    });
+  }
+  levels.forEach((raw, channel) => {
+    const level = Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : 0;
+    const db = level > 0 ? 20 * Math.log10(level) : -Infinity;
+    const row = group.children[channel];
+    row.children[1].value = Math.max(0, (db + 60) / 60);
+    row.children[2].textContent = `${db > -60 ? db.toFixed(1) : '-inf'} dBFS`;
+  });
+}
+
+async function pollMeters() {
+  if (meterPollBusy || state.activeTab !== 'volume' || document.hidden) return;
+  meterPollBusy = true;
+  const status = document.getElementById('vol-meter-status');
+  try {
+    const res = await fetch('/api/audio/meters', { cache: 'no-store', signal: AbortSignal.timeout(2000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!Array.isArray(data.meters) || data.meters.some(meter =>
+      typeof meter.id !== 'string' || !Array.isArray(meter.levels) ||
+      meter.levels.length > 16 || meter.levels.some(level => !Number.isFinite(level)))) {
+      throw new Error('Invalid meter data');
+    }
+    if (state.activeTab !== 'volume' || document.hidden) return;
+    const topology = JSON.stringify(data.meters.map(meter => [meter.id, meter.levels.length]));
+    if (meterTopology !== null && topology !== meterTopology && !(await loadVolumes())) {
+      throw new Error('Could not refresh meter channels');
+    }
+    meterTopology = topology;
+    if (state.activeTab !== 'volume' || document.hidden) return;
+    const liveIds = new Set(data.meters.map(meter => meter.id));
+    for (const [id, group] of volumeMeters) {
+      if (!liveIds.has(id)) group.replaceChildren();
+    }
+    data.meters.forEach(meter => updateVolumeMeter(meter.id, meter.levels));
+    const message = 'Live levels: 4 updates/s, -60 to 0 dBFS.';
+    if (status && status.textContent !== message) status.textContent = message;
+  } catch (err) {
+    if (state.activeTab !== 'volume' || document.hidden) return;
+    for (const [id, group] of volumeMeters) {
+      updateVolumeMeter(id, Array(group.children.length).fill(0));
+    }
+    const message = `Meters unavailable: ${AudioxUI.formatMessage(err)}`;
+    if (status && status.textContent !== message) status.textContent = message;
+  } finally {
+    meterPollBusy = false;
+  }
+}
+
 async function loadVolumes() {
   try {
     const [vRes, ccRes] = await Promise.all([
@@ -3067,8 +3208,10 @@ async function loadVolumes() {
     state.ccVolumes = Array.isArray(mappings?.mappings) ? mappings.mappings : [];
     renderVolGrid();
     AudioxUI.resolve('volumes-load');
+    return true;
   } catch (err) {
     setStatus(`volume load error: ${err}`, 'warn', 'volumes-load');
+    return false;
   }
 }
 
@@ -3087,6 +3230,7 @@ function percentToGain(pct) {
 
 function renderVolGrid() {
   if (!volGridEl) return;
+  volumeMeters.clear();
   volGridEl.innerHTML = '';
 
   if (!state.volumes.length) {
@@ -3189,6 +3333,10 @@ function renderVolGrid() {
 
     card.appendChild(nameEl);
     card.appendChild(idEl);
+    const meters = document.createElement('div');
+    meters.className = 'vol-meters';
+    volumeMeters.set(id, meters);
+    card.appendChild(meters);
     card.appendChild(sliderRow);
     card.appendChild(ccRow);
     volGridEl.appendChild(card);

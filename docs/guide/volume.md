@@ -26,6 +26,25 @@ outgoing route does not attenuate the signal arriving at that destination.
 For practical output-level control, adjust the source or an intermediate node
 in the path.
 
+## Live meters
+
+Each card shows per-channel signal levels, including each paired Bluetooth
+device's input and output nodes. Meters refresh up to four times per second
+while the Volume page is visible; switching pages or hiding the browser tab
+stops polling. They are slower snapshots than the local framebuffer meters
+and may miss short transients.
+
+The bars use a -60 to 0 dBFS scale. Source and processing nodes show their
+output signal before outgoing-route gain; destination nodes show incoming
+signal. They monitor the routing graph, not acoustic loudness or confirmation
+that a disconnected speaker is receiving audio. Node/channel changes refresh
+the cards automatically. A failed request clears the meters and displays
+**Meters unavailable** rather than leaving stale levels on screen.
+
+The snapshot API is `GET /api/audio/meters`, returning
+`{"meters":[{"id":"bt_A4C6F0A57AA7_in","levels":[0.5,0.25]}]}`.
+Levels are linear per-channel peaks clamped to 0–1, not dB values.
+
 ## Assign a MIDI knob or fader
 
 1. Connect the MIDI controller and open the node's **Assign CC** control.
@@ -49,18 +68,23 @@ require USB MIDI passthrough; it uses the controller AudioX is already
 receiving.
 
 For automation, use the graph ID (for example, `usb_gadget_in`,
-`soundboard_out`, `bluetooth_in`, or an effect ID such as `fx_1`), not the
+`soundboard_out`, `bt_A4C6F0A57AA7_in`, or an effect ID such as `fx_1`), not the
 display name. The [Macros](./macros.md) `volume.set` helper takes a percentage
 from 0 to 100 and has a unity-gain maximum. A hardware MIDI CC volume mapping
 has the wider 0–200% range described above. The planned
 [Reference](./reference.md) will group API and persisted-file details.
 
-For example, to set the gain on Bluetooth audio entering AudioX to 50% from a
-macro, target its source-node ID:
+For example, to set the gain on audio entering AudioX from the phone
+`A4:C6:F0:A5:7A:A7` to 50% from a macro, target its source-node ID:
 
 ```lua
-volume.set("bluetooth_in", 50)
+volume.set("bt_A4C6F0A57AA7_in", 50)
 ```
+
+Each paired Bluetooth device has its own volume entry. Volume settings,
+MIDI mappings, and macros that targeted the older shared `bluetooth_in` or
+`bluetooth_out` IDs need to be pointed at the per-device `bt_<MAC>_in` or
+`bt_<MAC>_out` ID.
 
 ## What is in the list?
 

@@ -15,6 +15,11 @@ metrics. Scroll the device list when there are more devices than fit on screen.
 Meters indicate signal activity; they are not a calibrated loudness measurement
 or a guarantee that a downstream speaker is receiving audio.
 
+Each paired Bluetooth audio device has its own row, including input-only
+phones, output-only headphones, and devices supporting both directions.
+Stereo input and output meters are separate; the row indicates whether the
+device is paired or connected. Bluetooth rows follow wired devices.
+
 The bottom controls are:
 
 - **Sleep:** blank the UI until the next touch. Audio and control continue;

@@ -1,4 +1,6 @@
 #include "bluetooth/context.hpp"
+#include "bluetooth/a2dp.hpp"
+#include "bluetooth/route_id.hpp"
 
 #include "audio/context.hpp"
 #include "audio/health.hpp"
@@ -20,10 +22,20 @@
 #define BT_PAIRED_FILE BT_STATE_DIR "/paired.txt"
 #define BT_PAIR_TIMEOUT_MS 30000ULL
 #define BT_OUTPUT_CONNECT_TIMEOUT_MS 30000ULL
+#define BT_OUTPUT_REFUSALS_BEFORE_INPUT 2U
+// How long an AudioX-opened input channel waits for the source to configure the
+// stream before AudioX configures it.
+#define BT_INPUT_ACCEPT_WAIT_MS 3000ULL
+#define BT_USER_DISCONNECT_REASON "disconnected by user"
 #define BT_OUTPUT_SILENCE_THRESHOLD 2500ULL
 #define BT_AUTOCONNECT_RETRY_MIN_MS 5000ULL
 #define BT_AUTOCONNECT_RETRY_MAX_MS 60000ULL
 #define BT_ADAPTER_RETRY_MS 10000ULL
+#define BT_AUTOCONNECT_CHECK_MS 500ULL
+// Minimum gap between auto-connect pages while any Bluetooth stream is running.
+#define BT_AUTOCONNECT_STREAMING_GAP_MS 30000ULL
+#define BT_AVDTP_RESPONSE_TIMEOUT_MS 10000ULL
+#define BT_INPUT_STATS_INTERVAL_MS 5000ULL
 
 #define BT_AF_BLUETOOTH 31
 #define BT_PROTO_L2CAP 0
@@ -44,6 +56,7 @@
 #define BT_MAX_SBC_FRAMES_PER_PACKET 8U
 
 #define BT_EVT_AUTH_COMPLETE 0x06
+#define BT_EVT_CONN_REQUEST 0x04
 #define BT_EVT_PIN_CODE_REQUEST 0x16
 #define BT_EVT_LINK_KEY_REQUEST 0x17
 #define BT_EVT_LINK_KEY_NOTIFY 0x18
@@ -60,9 +73,40 @@
 #define BT_CMD_USER_CONFIRM_REPLY 0x042C
 #define BT_CMD_USER_PASSKEY_NEG_REPLY 0x042F
 #define BT_CMD_WRITE_SSP_MODE 0x0C56
+#define BT_CMD_WRITE_SCAN_ENABLE 0x0C1A
+#define BT_CMD_WRITE_CLASS_OF_DEVICE 0x0C24
+#define BT_CMD_PIN_CODE_NEG_REPLY 0x040E
+#define BT_CMD_IO_CAPABILITY_NEG_REPLY 0x0434
+#define BT_SCAN_PAGE 0x02
+// Audio + Rendering service, Audio/Video major class, Loudspeaker minor class.
+#define BT_CLASS_OF_DEVICE 0x240414U
+#define BT_PAIRING_NOT_ALLOWED 0x18
+
+#define AVDTP_DISCOVER 0x01
+#define AVDTP_GET_CAPABILITIES 0x02
+#define AVDTP_SET_CONFIGURATION 0x03
+#define AVDTP_GET_CONFIGURATION 0x04
+#define AVDTP_RECONFIGURE 0x05
+#define AVDTP_OPEN 0x06
+#define AVDTP_START 0x07
+#define AVDTP_CLOSE 0x08
+#define AVDTP_SUSPEND 0x09
+#define AVDTP_ABORT 0x0A
+#define AVDTP_GET_ALL_CAPABILITIES 0x0C
+#define AVDTP_DELAY_REPORT 0x0D
+#define AVDTP_BAD_ACP_SEID 0x12
+#define AVDTP_SEP_IN_USE 0x13
+#define AVDTP_BAD_PAYLOAD_FORMAT 0x18
+#define AVDTP_NOT_SUPPORTED_COMMAND 0x19
+#define AVDTP_UNSUPPORTED_CONFIGURATION 0x29
+#define AVDTP_BAD_STATE 0x31
+#define AVDTP_SINK_SEID 1U
+#define AVDTP_SOURCE_SEID 2U
 
 #define BT_IO_CAP_NO_INPUT_NO_OUTPUT 0x03
 #define BT_AUTH_GENERAL_BONDING 0x04
+#define BT_COD_MAJOR_PHONE 0x02
+#define BT_LINK_TYPE_ACL 0x01
 
 namespace {
 
@@ -109,87 +153,6 @@ bool parseHexKey(const char *text, uint8_t *out) {
     return true;
 }
 
-void appendBytes(uint8_t *out, size_t capacity, size_t *length,
-                 const uint8_t *data, size_t dataLength) {
-    if (dataLength > capacity - *length) {
-        return;
-    }
-    memcpy(out + *length, data, dataLength);
-    *length += dataLength;
-}
-
-void appendSequence(uint8_t *out, size_t capacity, size_t *length,
-                    const uint8_t *data, size_t dataLength) {
-    if (dataLength > 255 || dataLength + 2 > capacity - *length) {
-        return;
-    }
-    out[(*length)++] = 0x35;
-    out[(*length)++] = (uint8_t)dataLength;
-    appendBytes(out, capacity, length, data, dataLength);
-}
-
-void appendAttribute(uint8_t *out, size_t capacity, size_t *length,
-                     uint16_t id, const uint8_t *value, size_t valueLength) {
-    if (valueLength + 3 > capacity - *length) {
-        return;
-    }
-    out[(*length)++] = 0x09;
-    out[(*length)++] = (uint8_t)(id >> 8);
-    out[(*length)++] = (uint8_t)id;
-    appendBytes(out, capacity, length, value, valueLength);
-}
-
-size_t makeA2dpServiceRecord(uint8_t *out, size_t capacity) {
-    uint8_t attributes[256] = {};
-    size_t attributesLength = 0;
-
-    const uint8_t serviceClasses[] = {0x19, 0x11, 0x0B};
-    uint8_t value[64] = {};
-    size_t valueLength = 0;
-    appendSequence(value, sizeof(value), &valueLength, serviceClasses, sizeof(serviceClasses));
-    appendAttribute(attributes, sizeof(attributes), &attributesLength, 0x0001, value, valueLength);
-
-    uint8_t protocolDescriptors[64] = {};
-    size_t protocolLength = 0;
-    uint8_t l2capDescriptor[] = {0x19, 0x01, 0x00, 0x09, 0x00, BT_PSM_AVDTP};
-    uint8_t avdtpDescriptor[] = {0x19, 0x00, 0x19, 0x09, 0x01, 0x03};
-    appendSequence(protocolDescriptors, sizeof(protocolDescriptors), &protocolLength,
-                   l2capDescriptor, sizeof(l2capDescriptor));
-    appendSequence(protocolDescriptors, sizeof(protocolDescriptors), &protocolLength,
-                   avdtpDescriptor, sizeof(avdtpDescriptor));
-    valueLength = 0;
-    appendSequence(value, sizeof(value), &valueLength, protocolDescriptors, protocolLength);
-    appendAttribute(attributes, sizeof(attributes), &attributesLength, 0x0004, value, valueLength);
-
-    const uint8_t browseGroup[] = {0x19, 0x10, 0x02};
-    valueLength = 0;
-    appendSequence(value, sizeof(value), &valueLength, browseGroup, sizeof(browseGroup));
-    appendAttribute(attributes, sizeof(attributes), &attributesLength, 0x0005, value, valueLength);
-
-    uint8_t profileDescriptor[16] = {0x19, 0x11, 0x0D, 0x09, 0x01, 0x03};
-    valueLength = 0;
-    appendSequence(value, sizeof(value), &valueLength, profileDescriptor, sizeof(profileDescriptor));
-    valueLength = 0;
-    appendSequence(value, sizeof(value), &valueLength, profileDescriptor, 6);
-    uint8_t profileList[24] = {};
-    size_t profileListLength = 0;
-    appendBytes(profileList, sizeof(profileList), &profileListLength, value, valueLength);
-    valueLength = 0;
-    appendSequence(value, sizeof(value), &valueLength, profileList, profileListLength);
-    appendAttribute(attributes, sizeof(attributes), &attributesLength, 0x0009, value, valueLength);
-
-    const uint8_t serviceName[] = {0x25, 0x06, 'A', 'u', 'd', 'i', 'o', 'X'};
-    appendAttribute(attributes, sizeof(attributes), &attributesLength, 0x0100,
-                    serviceName, sizeof(serviceName));
-
-    if (attributesLength + 4 > capacity) {
-        return 0;
-    }
-    size_t recordLength = 0;
-    appendSequence(out, capacity, &recordLength, attributes, attributesLength);
-    return recordLength;
-}
-
 uint16_t readBe16(const uint8_t *data) {
     return (uint16_t)(((uint16_t)data[0] << 8) | data[1]);
 }
@@ -208,67 +171,33 @@ BluetoothContext::BluetoothContext(Audiox *context)
       run(0),
       devId(-1),
       agentFd(-1),
-            sdpListenFd(-1),
-            avdtpListenFd(-1),
-            signalingFd(-1),
-            mediaFd(-1),
-            outputSignalingFd(-1),
-            outputMediaFd(-1),
+      sdpListenFd(-1),
+      avdtpListenFd(-1),
+      sdpClientFds{-1, -1, -1, -1},
       adapterReady(false),
       scanning(false),
       pairing(false),
       request(BT_REQUEST_NONE),
       pairTarget(),
+      connectQueued(false),
       message(),
       devices(),
       deviceCount(0),
-            sbcDecoder(),
-            sbcDecoderInitialized(false),
-            sbcChannels(0),
-            avdtpConfigured(false),
-            avdtpOpened(false),
-            avdtpStreaming(false),
-            sbcConfiguration(),
-            sbcFragment(),
-            sbcFragmentSize(0),
-            sbcFragmentActive(false),
-            sbcEncoder(),
-            sbcEncoderInitialized(false),
-            outputSeid(0),
-            outputTransaction(0),
-            outputPendingSignal(0),
-            outputCommandPacket(),
-            outputCommandLength(0),
-            outputCommandWritePending(false),
-            rtpSequence(0),
-            rtpTimestamp(0),
-            outputConnecting(false),
-            outputConnectingStatus(0),
-            outputMediaConnecting(false),
-            outputConfigured(false),
-            outputOpened(false),
-            outputStreaming(0),
-            outputSuspendRequested(false),
-            outputSuspendSupported(true),
-            outputStartRequested(false),
-            outputConnected(0),
-            outputPacket(),
-            outputPacketLength(0),
-            outputStatsNextMs(0),
-            outputDroppedAtStats(0),
-            outputFramesPerPacket(0),
-            outputMediaMtu(BT_A2DP_DEFAULT_MEDIA_MTU),
-            outputRealtimeScheduling(false),
-            autoConnectPaused(false),
-            autoConnectNextDevice(0),
-            autoConnectRetryMs(0),
-            autoConnectBackoffMs(BT_AUTOCONNECT_RETRY_MIN_MS),
-            adapterRetryMs(0),
-            outputConnectDeadlineMs(0),
-            outputSilenceSinceMs(0),
-            outputTarget(),
+      links(),
+      linkStatus(),
+      realtimeScheduling(false),
+      autoConnectNextDevice(0),
+      lastAutoConnectMs(0),
+      autoConnectCheckMs(0),
+      adapterRetryMs(0),
+      inboundPhone(),
       pairKeyStored(false),
       pairFailure(0) {
+    for (BluetoothLink &link : links) {
+        link.signalingFd = -1;
+        link.inMediaFd = -1;
+        link.outMediaFd = -1;
+    }
     if (app) {
         app->bluetooth = this;
     }
@@ -277,14 +206,6 @@ BluetoothContext::BluetoothContext(Audiox *context)
 
 BluetoothContext::~BluetoothContext() {
     stop();
-    if (sbcDecoderInitialized) {
-        sbc_finish(&sbcDecoder);
-        sbcDecoderInitialized = false;
-    }
-    if (sbcEncoderInitialized) {
-        sbc_finish(&sbcEncoder);
-        sbcEncoderInitialized = false;
-    }
     if (app && app->bluetooth == this) {
         app->bluetooth = nullptr;
     }
@@ -311,7 +232,7 @@ void BluetoothContext::stop() {
     run.store(0, std::memory_order_release);
     pthread_join(thread, nullptr);
     threadStarted = false;
-    disconnectOutput(nullptr);
+    closeAllLinks(nullptr);
     if (agentFd >= 0) {
         close(agentFd);
         agentFd = -1;
@@ -319,11 +240,23 @@ void BluetoothContext::stop() {
     closeA2dpSockets();
 }
 
+namespace {
+
+bool anyLinkUsed(const BluetoothLinkStatus *status) {
+    for (size_t i = 0; i < BT_MAX_LINKS; ++i) {
+        if (status[i].used) {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
 int BluetoothContext::requestScan() {
     std::lock_guard<std::mutex> lock(mutex);
-    if (request != BT_REQUEST_NONE || scanning || pairing ||
-        outputConnectingStatus.load(std::memory_order_relaxed) ||
-        outputConnected.load(std::memory_order_relaxed)) {
+    // Scanning and pairing stall the worker thread, which also carries audio.
+    if (request != BT_REQUEST_NONE || scanning || pairing || connectQueued || anyLinkUsed(linkStatus)) {
         return RET_WARN;
     }
     request = BT_REQUEST_SCAN;
@@ -338,9 +271,8 @@ int BluetoothContext::requestPair(const char *address) {
         return RET_ERR;
     }
     std::lock_guard<std::mutex> lock(mutex);
-    if (request != BT_REQUEST_NONE || scanning || pairing ||
-        outputConnectingStatus.load(std::memory_order_relaxed) ||
-        outputConnected.load(std::memory_order_relaxed)) {
+    // Scanning and pairing stall the worker thread, which also carries audio.
+    if (request != BT_REQUEST_NONE || scanning || pairing || connectQueued || anyLinkUsed(linkStatus)) {
         return RET_WARN;
     }
     request = BT_REQUEST_PAIR;
@@ -360,33 +292,58 @@ int BluetoothContext::requestConnect(const char *address) {
     if (!device || !device->paired || !device->classic) {
         return RET_ERR;
     }
-    if (request != BT_REQUEST_NONE || scanning || pairing ||
-        outputConnectingStatus.load(std::memory_order_relaxed) ||
-        outputConnected.load(std::memory_order_relaxed)) {
+    if (request != BT_REQUEST_NONE || scanning || pairing || connectQueued) {
         return RET_WARN;
     }
-    outputTarget = target;
+    size_t freeLinks = 0;
+    for (const BluetoothLinkStatus &status : linkStatus) {
+        if (!status.used) {
+            ++freeLinks;
+            continue;
+        }
+        // One connection attempt at a time, and never two links to one device.
+        if (status.connecting || bt::sameAddress(status.address, target)) {
+            return RET_WARN;
+        }
+    }
+    if (freeLinks == 0) {
+        snprintf(message, sizeof(message), "Disconnect a Bluetooth device first (%u at most)",
+                 (unsigned)BT_MAX_LINKS);
+        return RET_WARN;
+    }
+    device->autoConnectHeld = false;
+    device->autoConnectBackoffMs = BT_AUTOCONNECT_RETRY_MIN_MS;
+    device->autoConnectAtMs = 0;
     pairTarget = target;
-    autoConnectPaused = false;
-    autoConnectRetryMs = 0;
-    autoConnectBackoffMs = BT_AUTOCONNECT_RETRY_MIN_MS;
     request = BT_REQUEST_CONNECT;
-    outputConnectingStatus.store(1, std::memory_order_release);
+    connectQueued = true;
     snprintf(message, sizeof(message), "Connecting to %s...", device->name[0] ? device->name : address);
     return RET_OK;
 }
 
-int BluetoothContext::requestDisconnect() {
+int BluetoothContext::requestDisconnect(const char *address) {
+    bt::Address target = {};
+    if (address && address[0] &&
+        (!bt::parseAddress(address, &target) || bt::isZeroAddress(target))) {
+        return RET_ERR;
+    }
     std::lock_guard<std::mutex> lock(mutex);
-    if (request != BT_REQUEST_NONE || scanning || pairing ||
-        outputConnectingStatus.load(std::memory_order_relaxed) == 1) {
+    if (request != BT_REQUEST_NONE || scanning || pairing) {
         return RET_WARN;
     }
-    if (!outputConnected.load(std::memory_order_relaxed)) {
+    const bool all = bt::isZeroAddress(target);
+    bool matches = false;
+    for (const BluetoothLinkStatus &status : linkStatus) {
+        if (status.used && (all || bt::sameAddress(status.address, target))) {
+            matches = true;
+        }
+    }
+    if (!matches) {
         return RET_WARN;
     }
+    pairTarget = target;
     request = BT_REQUEST_DISCONNECT;
-    snprintf(message, sizeof(message), "Disconnecting Bluetooth output...");
+    snprintf(message, sizeof(message), "Disconnecting Bluetooth audio...");
     return RET_OK;
 }
 
@@ -403,9 +360,9 @@ int BluetoothContext::requestAutoConnect(const char *address, bool enabled) {
         }
         device->autoConnect = enabled;
         if (enabled) {
-            autoConnectPaused = false;
-            autoConnectRetryMs = bt::monotonicMs();
-            autoConnectBackoffMs = BT_AUTOCONNECT_RETRY_MIN_MS;
+            device->autoConnectHeld = false;
+            device->autoConnectAtMs = 0;
+            device->autoConnectBackoffMs = BT_AUTOCONNECT_RETRY_MIN_MS;
         }
     }
     return savePaired() ? RET_OK : RET_WARN;
@@ -421,8 +378,7 @@ int BluetoothContext::requestUnpair(const char *address) {
     if (!device || !device->paired) {
         return RET_ERR;
     }
-    if (request != BT_REQUEST_NONE || scanning || pairing ||
-        outputConnectingStatus.load(std::memory_order_relaxed) == 1) {
+    if (request != BT_REQUEST_NONE || scanning || pairing || connectQueued) {
         return RET_WARN;
     }
     pairTarget = target;
@@ -436,35 +392,74 @@ int BluetoothContext::buildStatusJson(char *out, size_t outSize) {
         return RET_ERR;
     }
     std::lock_guard<std::mutex> lock(mutex);
+    bool connecting = connectQueued;
+    bool outputUp = false;
+    bool outputPlaying = false;
+    bool inputUp = false;
+    bool inputPlaying = false;
+    for (const BluetoothLinkStatus &status : linkStatus) {
+        if (!status.used) {
+            continue;
+        }
+        connecting = connecting || status.connecting;
+        outputUp = outputUp || status.outputConnected;
+        outputPlaying = outputPlaying || status.outputStreaming;
+        inputUp = inputUp || status.inputConnected;
+        inputPlaying = inputPlaying || status.inputStreaming;
+    }
+    auto flag = [](bool value) { return value ? "true" : "false"; };
     int n = snprintf(out, outSize,
-                     "{\"ok\":true,\"ready\":%s,\"scanning\":%s,\"pairing\":%s,\"connecting\":%s,\"connected\":%s,\"streaming\":%s,\"message\":\"%s\",\"devices\":[",
-                     adapterReady ? "true" : "false",
-                     scanning ? "true" : "false",
-                     pairing ? "true" : "false",
-                     outputConnectingStatus.load(std::memory_order_relaxed) ? "true" : "false",
-                     outputConnected.load(std::memory_order_relaxed) ? "true" : "false",
-                     outputStreaming.load(std::memory_order_relaxed) ? "true" : "false",
+                     "{\"ok\":true,\"ready\":%s,\"scanning\":%s,\"pairing\":%s,\"connecting\":%s,\"connected\":%s,\"streaming\":%s,"
+                     "\"output_connected\":%s,\"output_streaming\":%s,\"input_connected\":%s,\"input_streaming\":%s,"
+                     "\"max_connections\":%u,\"message\":\"%s\",\"devices\":[",
+                     flag(adapterReady),
+                     flag(scanning),
+                     flag(pairing),
+                     flag(connecting),
+                     flag(outputUp || inputUp),
+                     flag(outputPlaying || inputPlaying),
+                     flag(outputUp),
+                     flag(outputPlaying),
+                     flag(inputUp),
+                     flag(inputPlaying),
+                     (unsigned)BT_MAX_LINKS,
                      message);
     if (n < 0 || (size_t)n >= outSize) {
         return RET_ERR;
     }
     size_t used = (size_t)n;
     for (size_t i = 0; i < deviceCount; ++i) {
+        const BluetoothDevice &device = devices[i];
         char address[BT_ADDRESS_TEXT] = {};
-        bt::formatAddress(devices[i].address, address, sizeof(address));
+        bt::formatAddress(device.address, address, sizeof(address));
+        BluetoothLinkStatus here = {};
+        for (const BluetoothLinkStatus &status : linkStatus) {
+            if (status.used && bt::sameAddress(status.address, device.address)) {
+                here = status;
+                break;
+            }
+        }
+        const bool deviceConnecting = here.connecting ||
+            (connectQueued && request == BT_REQUEST_CONNECT && bt::sameAddress(pairTarget, device.address));
         n = snprintf(out + used, outSize - used,
-                     "%s{\"address\":\"%s\",\"name\":\"%s\",\"paired\":%s,\"classic\":%s,\"connected\":%s,\"streaming\":%s,\"auto_connect\":%s}",
+                     "%s{\"address\":\"%s\",\"name\":\"%s\",\"paired\":%s,\"classic\":%s,\"connecting\":%s,\"connected\":%s,\"streaming\":%s,"
+                     "\"output_connected\":%s,\"output_streaming\":%s,\"input_connected\":%s,\"input_streaming\":%s,"
+                     "\"auto_connect\":%s,\"audio_source\":%s,\"audio_sink\":%s}",
                      i > 0 ? "," : "",
                      address,
-                     devices[i].name,
-                     devices[i].paired ? "true" : "false",
-                     devices[i].classic ? "true" : "false",
-                     outputConnected.load(std::memory_order_relaxed) &&
-                         bt::sameAddress(outputTarget, devices[i].address) ? "true" : "false",
-                     outputConnected.load(std::memory_order_relaxed) &&
-                         outputStreaming.load(std::memory_order_relaxed) &&
-                         bt::sameAddress(outputTarget, devices[i].address) ? "true" : "false",
-                     devices[i].paired && devices[i].autoConnect ? "true" : "false");
+                     device.name,
+                     flag(device.paired),
+                     flag(device.classic),
+                     flag(deviceConnecting),
+                     flag(here.outputConnected || here.inputConnected),
+                     flag(here.outputStreaming || here.inputStreaming),
+                     flag(here.outputConnected),
+                     flag(here.outputStreaming),
+                     flag(here.inputConnected),
+                     flag(here.inputStreaming),
+                     flag(device.paired && device.autoConnect),
+                     flag(device.audioSource),
+                     flag(device.audioSink));
         if (n < 0 || (size_t)n >= outSize - used) {
             return RET_ERR;
         }
@@ -477,18 +472,29 @@ int BluetoothContext::buildStatusJson(char *out, size_t outSize) {
     return RET_OK;
 }
 
-bool BluetoothContext::getOutputDeviceName(char *out, size_t outSize) const {
+bool BluetoothContext::getOutputDeviceName(char *out, size_t outSize, bool *connected) const {
+    if (connected) {
+        *connected = false;
+    }
     if (!out || outSize == 0) {
         return false;
     }
     std::lock_guard<std::mutex> lock(mutex);
     const BluetoothDevice *selected = nullptr;
-    for (size_t i = 0; i < deviceCount; ++i) {
-        if (devices[i].paired && devices[i].classic && bt::sameAddress(outputTarget, devices[i].address)) {
-            selected = &devices[i];
-            break;
+    for (const BluetoothLinkStatus &status : linkStatus) {
+        if (status.used && status.outputConnected) {
+            selected = findDevice(status.address);
+            if (selected) {
+                if (connected) {
+                    *connected = true;
+                }
+                break;
+            }
         }
-        if (!selected && devices[i].paired && devices[i].classic) {
+    }
+    for (size_t i = 0; !selected && i < deviceCount; ++i) {
+        if (devices[i].paired && devices[i].classic &&
+            !(devices[i].audioSource && !devices[i].audioSink)) {
             selected = &devices[i];
         }
     }
@@ -521,31 +527,111 @@ BluetoothDevice *BluetoothContext::findDevice(const bt::Address &address) {
     return nullptr;
 }
 
-bool BluetoothContext::configureSbcDecoder(const uint8_t configuration[4]) {
+const BluetoothDevice *BluetoothContext::findDevice(const bt::Address &address) const {
+    for (size_t i = 0; i < deviceCount; ++i) {
+        if (bt::sameAddress(devices[i].address, address)) {
+            return &devices[i];
+        }
+    }
+    return nullptr;
+}
+
+// Device name, or its address when unnamed. Must not hold mutex.
+void BluetoothContext::deviceLabel(const bt::Address &address, char *out, size_t outSize) {
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        const BluetoothDevice *device = findDevice(address);
+        if (device && device->name[0]) {
+            snprintf(out, outSize, "%s", device->name);
+            return;
+        }
+    }
+    bt::formatAddress(address, out, outSize);
+}
+
+
+namespace {
+
+int socketError(int fd) {
+    int error = 0;
+    socklen_t errorLength = sizeof(error);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &errorLength) < 0) {
+        error = errno;
+    }
+    return error;
+}
+
+void closeFd(int &fd) {
+    if (fd >= 0) {
+        close(fd);
+        fd = -1;
+    }
+}
+
+void resetLink(BluetoothLink &link) {
+    memset(&link, 0, sizeof(link));
+    link.signalingFd = -1;
+    link.inMediaFd = -1;
+    link.outMediaFd = -1;
+    link.outSuspendSupported = true;
+    link.mediaMtu = BT_A2DP_DEFAULT_MEDIA_MTU;
+}
+
+} // namespace
+
+int BluetoothContext::findLink(const bt::Address &address) const {
+    for (int i = 0; i < BT_MAX_LINKS; ++i) {
+        if (links[i].used && bt::sameAddress(links[i].address, address)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int BluetoothContext::allocateLink(const bt::Address &address) {
+    for (int i = 0; i < BT_MAX_LINKS; ++i) {
+        if (!links[i].used) {
+            resetLink(links[i]);
+            links[i].used = true;
+            links[i].address = address;
+            return i;
+        }
+    }
+    return -1;
+}
+
+bool BluetoothContext::linkIdle(int index) const {
+    const BluetoothLink &link = links[index];
+    return !link.wantOutput && !link.outUp && !link.wantInput && !link.inConfigured;
+}
+
+bool BluetoothContext::configureSbcDecoder(int index, const uint8_t configuration[4]) {
+    BluetoothLink &link = links[index];
     if (!configuration) {
         return false;
     }
-    if (sbcDecoderInitialized) {
-        sbc_finish(&sbcDecoder);
-        sbcDecoderInitialized = false;
+    if (link.decoderReady) {
+        sbc_finish(&link.decoder);
+        link.decoderReady = false;
     }
-    if (sbc_init_a2dp(&sbcDecoder, 0, configuration, 4) < 0) {
+    if (sbc_init_a2dp(&link.decoder, 0, configuration, 4) < 0) {
         printf("[BT] [WARN] SBC decoder rejected negotiated configuration\n");
         return false;
     }
-    sbcDecoderInitialized = true;
-    sbcChannels = sbcDecoder.mode == SBC_MODE_MONO ? 1 : 2;
+    link.decoderReady = true;
+    link.decoderChannels = link.decoder.mode == SBC_MODE_MONO ? 1 : 2;
+    link.fragmentSize = 0;
+    link.fragmentActive = false;
     printf("[BT] [INFO] SBC decoder ready: %u Hz, %u channel(s), bitpool %u\n",
-           sbcDecoder.frequency == SBC_FREQ_48000 ? 48000U :
-           sbcDecoder.frequency == SBC_FREQ_44100 ? 44100U :
-           sbcDecoder.frequency == SBC_FREQ_32000 ? 32000U : 16000U,
-           (unsigned)sbcChannels,
-           (unsigned)sbcDecoder.bitpool);
+           bt::sbcSampleRate(configuration),
+           (unsigned)link.decoderChannels,
+           (unsigned)link.decoder.bitpool);
     return true;
 }
 
-uint32_t BluetoothContext::decodeSbcPayload(const uint8_t *payload, size_t length) {
-    if (!sbcDecoderInitialized || !app || !app->audio || !payload || length < 2) {
+uint32_t BluetoothContext::decodeSbcPayload(int index, const uint8_t *payload, size_t length) {
+    BluetoothLink &link = links[index];
+    if (!link.decoderReady || !app || !app->audio || !payload || length < 2) {
         return 0;
     }
     const uint8_t packetHeader = payload[0];
@@ -559,55 +645,53 @@ uint32_t BluetoothContext::decodeSbcPayload(const uint8_t *payload, size_t lengt
         const uint8_t *fragment = payload + 1;
         size_t fragmentLength = length - 1;
         if (start) {
-            sbcFragmentSize = 0;
-            sbcFragmentActive = true;
-        } else if (!sbcFragmentActive) {
+            link.fragmentSize = 0;
+            link.fragmentActive = true;
+        } else if (!link.fragmentActive) {
             return 0;
         }
-        if (fragmentLength > sizeof(sbcFragment) - sbcFragmentSize) {
-            sbcFragmentActive = false;
-            sbcFragmentSize = 0;
+        if (fragmentLength > sizeof(link.fragment) - link.fragmentSize) {
+            link.fragmentActive = false;
+            link.fragmentSize = 0;
             return 0;
         }
-        memcpy(sbcFragment + sbcFragmentSize, fragment, fragmentLength);
-        sbcFragmentSize += fragmentLength;
+        memcpy(link.fragment + link.fragmentSize, fragment, fragmentLength);
+        link.fragmentSize += fragmentLength;
         if (!last) {
             return 0;
         }
-        uint8_t completeFrame[sizeof(sbcFragment) + 1];
+        uint8_t completeFrame[sizeof(link.fragment) + 1];
         completeFrame[0] = 1;
-        memcpy(completeFrame + 1, sbcFragment, sbcFragmentSize);
-        size_t completeLength = sbcFragmentSize + 1;
-        sbcFragmentActive = false;
-        sbcFragmentSize = 0;
-        return decodeSbcPayload(completeFrame, completeLength);
+        memcpy(completeFrame + 1, link.fragment, link.fragmentSize);
+        const size_t completeLength = link.fragmentSize + 1;
+        link.fragmentActive = false;
+        link.fragmentSize = 0;
+        return decodeSbcPayload(index, completeFrame, completeLength);
     }
     if (start || last) {
         return 0;
     }
-    uint8_t frameCount = packetHeader & 0x0FU;
+    const uint8_t frameCount = packetHeader & 0x0FU;
     if (frameCount == 0) {
         return 0;
     }
 
+    BluetoothInputStream &stream = app->audio->bluetoothInputs[index];
     const uint8_t *frame = payload + 1;
     size_t remaining = length - 1;
     uint32_t totalFrames = 0;
     int16_t decoded[16U * 8U * 2U];
     int16_t stereo[16U * 8U * 2U];
-    for (uint8_t index = 0; index < frameCount && remaining > 0; ++index) {
+    for (uint8_t i = 0; i < frameCount && remaining > 0; ++i) {
         size_t decodedBytes = 0;
-        ssize_t consumed = sbc_decode(&sbcDecoder,
-                                     frame,
-                                     remaining,
-                                     decoded,
-                                     sizeof(decoded),
-                                     &decodedBytes);
+        const ssize_t consumed = sbc_decode(&link.decoder, frame, remaining,
+                                            decoded, sizeof(decoded), &decodedBytes);
         if (consumed <= 0 || (size_t)consumed > remaining ||
             decodedBytes == 0 || decodedBytes > sizeof(decoded)) {
+            ++link.inDecodeErrors;
             break;
         }
-        const uint32_t channels = sbcChannels;
+        const uint32_t channels = link.decoderChannels;
         const uint32_t samples = (uint32_t)(decodedBytes / (sizeof(int16_t) * channels));
         if (samples > 16U * 8U) {
             break;
@@ -616,7 +700,7 @@ uint32_t BluetoothContext::decodeSbcPayload(const uint8_t *payload, size_t lengt
             stereo[sample * 2U] = decoded[sample * channels];
             stereo[sample * 2U + 1U] = channels == 2 ? decoded[sample * 2U + 1U] : decoded[sample];
         }
-        totalFrames += app->audio->pushBluetoothPcm(stereo, samples);
+        totalFrames += stream.push(stereo, samples);
         frame += (size_t)consumed;
         remaining -= (size_t)consumed;
     }
@@ -625,32 +709,30 @@ uint32_t BluetoothContext::decodeSbcPayload(const uint8_t *payload, size_t lengt
 
 void BluetoothContext::threadMain() {
     printf("[BT] [INFO] bluetooth thread started\n");
-    printf("[BT] [INFO] A2DP tuning: bitpool_cap=%u requested_media_mtu=%u media_mtu_cap=%u max_frames_per_packet=%u\n",
-           BT_A2DP_TARGET_BITPOOL,
-           BT_A2DP_REQUESTED_MEDIA_MTU,
-           BT_A2DP_MAX_MEDIA_MTU,
-           BT_MAX_SBC_FRAMES_PER_PACKET);
     bool firstAttempt = true;
     while (run.load(std::memory_order_acquire)) {
-        const bool wantOutputRealtime = outputConnected.load(std::memory_order_acquire) != 0;
-        if (wantOutputRealtime != outputRealtimeScheduling) {
-            sched_param priority = {};
-            int policy = wantOutputRealtime ? SCHED_FIFO : SCHED_OTHER;
-            priority.sched_priority = wantOutputRealtime ? 98 : 0;
-            int rc = pthread_setschedparam(pthread_self(), policy, &priority);
-            if (rc == 0) {
-                outputRealtimeScheduling = wantOutputRealtime;
-                printf("[BT] [INFO] Bluetooth worker scheduler policy=%d priority=%d\n",
-                       policy,
-                       priority.sched_priority);
-            } else {
-                printf("[BT] [WARN] cannot set Bluetooth worker scheduler policy=%d priority=%d: %s\n",
-                       policy,
-                       priority.sched_priority,
-                       strerror(rc));
-                outputRealtimeScheduling = wantOutputRealtime;
+        bool wantRealtime = false;
+        bool anyOutputUp = false;
+        for (const BluetoothLink &link : links) {
+            if (link.used && (link.outUp || link.inStreaming)) {
+                wantRealtime = true;
+            }
+            if (link.used && link.outUp) {
+                anyOutputUp = true;
             }
         }
+        if (wantRealtime != realtimeScheduling) {
+            sched_param priority = {};
+            const int policy = wantRealtime ? SCHED_FIFO : SCHED_OTHER;
+            priority.sched_priority = wantRealtime ? 98 : 0;
+            const int rc = pthread_setschedparam(pthread_self(), policy, &priority);
+            if (rc != 0) {
+                printf("[BT] [WARN] cannot set Bluetooth worker scheduler policy=%d priority=%d: %s\n",
+                       policy, priority.sched_priority, strerror(rc));
+            }
+            realtimeScheduling = wantRealtime;
+        }
+
         uint8_t next = BT_REQUEST_NONE;
         bt::Address target = {};
         {
@@ -670,7 +752,6 @@ void BluetoothContext::threadMain() {
                 pairing = false;
                 snprintf(message, sizeof(message), "Bluetooth adapter unavailable");
                 adapterRetryMs = loopNowMs + BT_ADAPTER_RETRY_MS;
-                outputConnectingStatus.store(0, std::memory_order_release);
                 next = BT_REQUEST_NONE;
             } else {
                 adapterRetryMs = 0;
@@ -679,165 +760,158 @@ void BluetoothContext::threadMain() {
 
         if (next == BT_REQUEST_SCAN) {
             runScan();
+            publishLinkStatus();
             continue;
         }
         if (next == BT_REQUEST_PAIR) {
             runPair(target);
+            publishLinkStatus();
             continue;
         }
-        if (next == BT_REQUEST_CONNECT) {
-            if (!beginOutputConnect(target)) {
-                disconnectOutput("could not start A2DP connection");
-            }
+        if (next == BT_REQUEST_CONNECT && !beginConnect(target, false)) {
+            scheduleAutoConnectRetry(target);
         }
         if (next == BT_REQUEST_DISCONNECT) {
-            {
-                std::lock_guard<std::mutex> lock(mutex);
-                autoConnectPaused = true;
-                autoConnectRetryMs = 0;
+            const bool all = bt::isZeroAddress(target);
+            for (int i = 0; i < BT_MAX_LINKS; ++i) {
+                if (links[i].used && (all || bt::sameAddress(links[i].address, target))) {
+                    holdAutoConnect(links[i].address);
+                    closeLink(i, BT_USER_DISCONNECT_REASON);
+                }
             }
-            disconnectOutput("disconnected by user");
         }
         if (next == BT_REQUEST_UNPAIR) {
             runUnpair(target);
         }
 
-        if (outputConnectingStatus.load(std::memory_order_acquire) &&
-            outputConnectDeadlineMs != 0 &&
-            bt::monotonicMs() >= outputConnectDeadlineMs) {
-            disconnectOutput("A2DP connection timed out");
+        const uint64_t nowMs = bt::monotonicMs();
+        for (int i = 0; i < BT_MAX_LINKS; ++i) {
+            serviceLinkTimers(i, nowMs);
         }
+        if (next == BT_REQUEST_NONE) {
+            runAutoConnect(nowMs);
+        }
+        for (int i = 0; i < BT_MAX_LINKS; ++i) {
+            pumpOutputAudio(i);
+        }
+        publishLinkStatus();
 
-        if (next == BT_REQUEST_NONE && adapterReady &&
-            !outputConnected.load(std::memory_order_acquire) &&
-            !outputConnectingStatus.load(std::memory_order_acquire)) {
-            bt::Address autoTarget = {};
-            char autoName[BT_NAME_MAX] = {};
-            bool shouldConnect = false;
-            {
-                std::lock_guard<std::mutex> lock(mutex);
-                const uint64_t nowMs = bt::monotonicMs();
-                if (!autoConnectPaused && nowMs >= autoConnectRetryMs) {
-                    for (size_t offset = 0; offset < deviceCount; ++offset) {
-                        const size_t index = (autoConnectNextDevice + offset) % deviceCount;
-                        const BluetoothDevice &device = devices[index];
-                        if (!device.paired || !device.classic || !device.autoConnect) {
-                            continue;
-                        }
-                        autoTarget = device.address;
-                        snprintf(autoName, sizeof(autoName), "%s",
-                                 device.name[0] ? device.name : "saved device");
-                        autoConnectNextDevice = (index + 1U) % deviceCount;
-                        outputTarget = autoTarget;
-                        outputConnectingStatus.store(1, std::memory_order_release);
-                        snprintf(message, sizeof(message), "Reconnecting to %s...", autoName);
-                        shouldConnect = true;
-                        break;
-                    }
-                    if (!shouldConnect) {
-                        autoConnectRetryMs = nowMs + BT_ADAPTER_RETRY_MS;
-                    }
+        enum {
+            POLL_AGENT,
+            POLL_SDP_LISTEN,
+            POLL_AVDTP_LISTEN,
+            POLL_SDP_CLIENTS,
+        };
+        constexpr size_t sdpClientCount = sizeof(sdpClientFds) / sizeof(sdpClientFds[0]);
+        constexpr size_t linkBase = POLL_SDP_CLIENTS + sdpClientCount;
+        struct pollfd pollFds[linkBase + BT_MAX_LINKS * 3U] = {};
+        pollFds[POLL_AGENT] = {agentFd, POLLIN, 0};
+        pollFds[POLL_SDP_LISTEN] = {sdpListenFd, POLLIN, 0};
+        pollFds[POLL_AVDTP_LISTEN] = {avdtpListenFd, POLLIN, 0};
+        for (size_t i = 0; i < sdpClientCount; ++i) {
+            pollFds[POLL_SDP_CLIENTS + i] = {sdpClientFds[i], POLLIN, 0};
+        }
+        for (int i = 0; i < BT_MAX_LINKS; ++i) {
+            const BluetoothLink &link = links[i];
+            struct pollfd *slot = &pollFds[linkBase + (size_t)i * 3U];
+            slot[0] = {-1, 0, 0};
+            slot[1] = {-1, 0, 0};
+            slot[2] = {-1, 0, 0};
+            if (!link.used) {
+                continue;
+            }
+            slot[0] = {link.signalingFd,
+                       (short)(link.signalingConnecting ? POLLOUT
+                                                        : (POLLIN | (link.commandWritePending ? POLLOUT : 0))),
+                       0};
+            slot[1] = {link.inMediaFd, (short)(link.inMediaConnecting ? POLLOUT : POLLIN), 0};
+            slot[2] = {link.outMediaFd,
+                       (short)((link.outMediaConnecting || link.packetLength > 0) ? POLLOUT : 0), 0};
+        }
+        const int pollTimeout = anyOutputUp ? 2 : 200;
+        if (poll(pollFds, sizeof(pollFds) / sizeof(pollFds[0]), pollTimeout) > 0) {
+            if (agentFd >= 0 && (pollFds[POLL_AGENT].revents & POLLIN)) {
+                uint8_t packet[300];
+                const ssize_t length = read(agentFd, packet, sizeof(packet));
+                if (length > 0) {
+                    handleAgentEvent(packet, (size_t)length);
                 }
             }
-            if (shouldConnect && !beginOutputConnect(autoTarget)) {
-                disconnectOutput("could not start automatic A2DP reconnection");
-            }
-        }
-
-        pumpOutputAudio();
-        struct pollfd pollFds[7] = {
-            {agentFd, POLLIN, 0},
-            {sdpListenFd, POLLIN, 0},
-            {avdtpListenFd, POLLIN, 0},
-            {signalingFd, POLLIN, 0},
-            {mediaFd, POLLIN, 0},
-            {outputSignalingFd,
-             (short)(outputConnecting || outputCommandWritePending ? POLLOUT : POLLIN), 0},
-            {outputMediaFd, (short)((outputMediaConnecting || outputPacketLength > 0) ? POLLOUT : 0), 0},
-        };
-        int pollTimeout = outputConnected.load(std::memory_order_relaxed) ? 2 : 200;
-        if (poll(pollFds, 7, pollTimeout) > 0) {
-            if (agentFd >= 0 && (pollFds[0].revents & POLLIN)) {
-            uint8_t packet[300];
-            ssize_t length = read(agentFd, packet, sizeof(packet));
-            if (length > 0) {
-                handleAgentEvent(packet, (size_t)length);
-            }
-            }
-            if (sdpListenFd >= 0 && (pollFds[1].revents & POLLIN)) {
+            if (sdpListenFd >= 0 && (pollFds[POLL_SDP_LISTEN].revents & POLLIN)) {
                 acceptSdpRequest();
             }
-            if (avdtpListenFd >= 0 && (pollFds[2].revents & POLLIN)) {
+            for (size_t i = 0; i < sdpClientCount; ++i) {
+                const struct pollfd &client = pollFds[POLL_SDP_CLIENTS + i];
+                if (client.fd >= 0 && client.fd == sdpClientFds[i] &&
+                    (client.revents & (POLLIN | POLLERR | POLLHUP)) &&
+                    !handleSdpRequest(sdpClientFds[i])) {
+                    close(sdpClientFds[i]);
+                    sdpClientFds[i] = -1;
+                }
+            }
+            for (int i = 0; i < BT_MAX_LINKS; ++i) {
+                const struct pollfd *slot = &pollFds[linkBase + (size_t)i * 3U];
+                BluetoothLink &link = links[i];
+                if (link.used && slot[0].fd >= 0 && slot[0].fd == link.signalingFd) {
+                    if (link.signalingConnecting) {
+                        if (slot[0].revents & (POLLOUT | POLLERR | POLLHUP)) {
+                            handleSignalingConnected(i);
+                        }
+                    } else {
+                        if (slot[0].revents & (POLLIN | POLLERR | POLLHUP)) {
+                            handleSignalingReadable(i);
+                        }
+                        if (link.used && slot[0].fd == link.signalingFd && link.commandWritePending &&
+                            (slot[0].revents & POLLOUT)) {
+                            flushCommand(i);
+                        }
+                    }
+                }
+                if (link.used && slot[1].fd >= 0 && slot[1].fd == link.inMediaFd) {
+                    if (link.inMediaConnecting) {
+                        if (slot[1].revents & (POLLOUT | POLLERR | POLLHUP)) {
+                            const int error = socketError(link.inMediaFd);
+                            if (error != 0) {
+                                closeInputStream(i, strerror(error));
+                                if (linkIdle(i)) {
+                                    closeLink(i, "could not open the A2DP input media channel");
+                                }
+                            } else {
+                                handleMediaConnected(i, true);
+                            }
+                        }
+                    } else if (slot[1].revents & (POLLIN | POLLERR | POLLHUP)) {
+                        readInputMedia(i);
+                    }
+                }
+                if (link.used && slot[2].fd >= 0 && slot[2].fd == link.outMediaFd) {
+                    if (link.outMediaConnecting) {
+                        if (slot[2].revents & (POLLOUT | POLLERR | POLLHUP)) {
+                            const int error = socketError(link.outMediaFd);
+                            if (error != 0) {
+                                closeOutputStream(i, strerror(error));
+                            } else {
+                                handleMediaConnected(i, false);
+                            }
+                        }
+                    } else if (link.packetLength > 0 && (slot[2].revents & POLLOUT)) {
+                        flushOutputPacket(i);
+                    } else if (slot[2].revents & (POLLERR | POLLHUP)) {
+                        closeOutputStream(i, "A2DP media channel closed");
+                    }
+                }
+            }
+            if (avdtpListenFd >= 0 && (pollFds[POLL_AVDTP_LISTEN].revents & POLLIN)) {
                 acceptA2dpChannel();
             }
-            if (signalingFd >= 0 && (pollFds[3].revents & POLLIN)) {
-                uint8_t packet[1024];
-                ssize_t length = read(signalingFd, packet, sizeof(packet));
-                if (length > 0) {
-                    handleAvdtpPacket(packet, (size_t)length);
-                } else if (length == 0) {
-                    close(signalingFd);
-                    signalingFd = -1;
-                    if (mediaFd >= 0) {
-                        close(mediaFd);
-                        mediaFd = -1;
-                    }
-                    resetA2dpStream();
-                }
-            }
-            if (mediaFd >= 0 && (pollFds[4].revents & POLLIN)) {
-                uint8_t packet[2048];
-                ssize_t length = read(mediaFd, packet, sizeof(packet));
-                if (length > 0 && avdtpStreaming) {
-                    handleA2dpMedia(packet, (size_t)length);
-                } else if (length == 0) {
-                    close(mediaFd);
-                    mediaFd = -1;
-                    avdtpStreaming = false;
-                }
-            }
-            if (outputSignalingFd >= 0 && outputConnecting &&
-                (pollFds[5].revents & (POLLOUT | POLLERR | POLLHUP))) {
-                int error = 0;
-                socklen_t errorLength = sizeof(error);
-                if (getsockopt(outputSignalingFd, SOL_SOCKET, SO_ERROR, &error, &errorLength) < 0 || error != 0) {
-                    disconnectOutput(strerror(error ? error : errno));
-                } else {
-                    outputConnecting = false;
-                    sendOutputCommand(0x01, nullptr, 0);
-                }
-            } else if (outputSignalingFd >= 0 && !outputConnecting &&
-                       (pollFds[5].revents & (POLLIN | POLLERR | POLLHUP))) {
-                handleOutputSignaling();
-            }
-            if (outputSignalingFd >= 0 && !outputConnecting &&
-                outputCommandWritePending && (pollFds[5].revents & POLLOUT)) {
-                handleOutputSignalingWritable();
-            }
-            if (outputMediaFd >= 0 && outputMediaConnecting &&
-                (pollFds[6].revents & (POLLOUT | POLLERR | POLLHUP))) {
-                int error = 0;
-                socklen_t errorLength = sizeof(error);
-                if (getsockopt(outputMediaFd, SOL_SOCKET, SO_ERROR, &error, &errorLength) < 0 || error != 0) {
-                    disconnectOutput(strerror(error ? error : errno));
-                } else {
-                    outputMediaConnecting = false;
-                    if (!readOutputMediaMtu()) {
-                        disconnectOutput("could not read negotiated L2CAP media MTU");
-                        continue;
-                    }
-                    const uint8_t seid = (uint8_t)(outputSeid << 2);
-                    sendOutputCommand(0x07, &seid, 1);
-                }
-            } else if (outputMediaFd >= 0 && outputPacketLength > 0 &&
-                       (pollFds[6].revents & POLLOUT)) {
-                handleOutputMediaWritable();
-            }
         }
-        pumpOutputAudio();
+        for (int i = 0; i < BT_MAX_LINKS; ++i) {
+            pumpOutputAudio(i);
+        }
     }
     printf("[BT] [INFO] bluetooth thread stopped\n");
 }
+
 
 bool BluetoothContext::bringUpAdapter() {
     int id = bt::openAdapter();
@@ -859,6 +933,26 @@ bool BluetoothContext::bringUpAdapter() {
     if (bt::writeCommand(fd, BT_CMD_WRITE_SSP_MODE, sspEnable, sizeof(sspEnable)) != RET_OK ||
         bt::waitForCommand(fd, BT_CMD_WRITE_SSP_MODE, 1000) != 0) {
         printf("[BT] [WARN] could not enable simple pairing; legacy PIN pairing only\n");
+    }
+
+    const uint8_t classOfDevice[] = {
+        (uint8_t)BT_CLASS_OF_DEVICE,
+        (uint8_t)(BT_CLASS_OF_DEVICE >> 8),
+        (uint8_t)(BT_CLASS_OF_DEVICE >> 16),
+    };
+    if (bt::writeCommand(fd, BT_CMD_WRITE_CLASS_OF_DEVICE, classOfDevice, sizeof(classOfDevice)) != RET_OK ||
+        bt::waitForCommand(fd, BT_CMD_WRITE_CLASS_OF_DEVICE, 1000) != 0) {
+        printf("[BT] [WARN] could not set Bluetooth device class to audio speaker\n");
+    }
+
+    // Page scan lets paired phones connect to AudioX. Inquiry scan stays off,
+    // so AudioX is not discoverable; new devices are paired from the web UI.
+    const uint8_t scanEnable[] = {BT_SCAN_PAGE};
+    if (bt::writeCommand(fd, BT_CMD_WRITE_SCAN_ENABLE, scanEnable, sizeof(scanEnable)) != RET_OK ||
+        bt::waitForCommand(fd, BT_CMD_WRITE_SCAN_ENABLE, 1000) != 0) {
+        printf("[BT] [WARN] could not enable page scan; devices cannot connect to AudioX\n");
+    } else {
+        printf("[BT] [INFO] connectable by paired devices\n");
     }
 
     devId = id;
@@ -907,14 +1001,20 @@ bool BluetoothContext::openA2dpListeners() {
 }
 
 void BluetoothContext::closeA2dpSockets() {
-    int *fds[] = {&sdpListenFd, &avdtpListenFd, &signalingFd, &mediaFd};
+    closeAllLinks(nullptr);
+    int *fds[] = {&sdpListenFd, &avdtpListenFd};
     for (int *fd : fds) {
         if (*fd >= 0) {
             close(*fd);
             *fd = -1;
         }
     }
-    resetA2dpStream();
+    for (int &fd : sdpClientFds) {
+        if (fd >= 0) {
+            close(fd);
+            fd = -1;
+        }
+    }
 }
 
 void BluetoothContext::acceptSdpRequest() {
@@ -922,204 +1022,1024 @@ void BluetoothContext::acceptSdpRequest() {
     if (fd < 0) {
         return;
     }
-    handleSdpRequest(fd);
-    close(fd);
+    // Requests arrive after the channel opens and may repeat, so the channel
+    // stays open until the client hangs up.
+    for (int &slot : sdpClientFds) {
+        if (slot < 0) {
+            slot = fd;
+            return;
+        }
+    }
+    close(sdpClientFds[0]);
+    for (size_t i = 1; i < sizeof(sdpClientFds) / sizeof(sdpClientFds[0]); ++i) {
+        sdpClientFds[i - 1] = sdpClientFds[i];
+    }
+    sdpClientFds[sizeof(sdpClientFds) / sizeof(sdpClientFds[0]) - 1] = fd;
 }
+
+bool BluetoothContext::handleSdpRequest(int fd) {
+    uint8_t request[1024] = {};
+    ssize_t length = read(fd, request, sizeof(request));
+    if (length < 0) {
+        return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+    }
+    if (length == 0) {
+        return false;
+    }
+    uint8_t response[512] = {};
+    const size_t responseLength = bt::buildSdpResponse(request, (size_t)length, response, sizeof(response));
+    if (responseLength > 0) {
+        (void)send(fd, response, responseLength, MSG_NOSIGNAL);
+    }
+    return true;
+}
+
 
 void BluetoothContext::acceptA2dpChannel() {
     int fd = accept4(avdtpListenFd, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (fd < 0) {
         return;
     }
-    if (signalingFd < 0) {
-        signalingFd = fd;
-        avdtpConfigured = false;
-        avdtpOpened = false;
-        avdtpStreaming = false;
-        printf("[BT] [INFO] AVDTP signaling channel connected\n");
-    } else if (avdtpOpened && mediaFd < 0) {
-        mediaFd = fd;
-        printf("[BT] [INFO] A2DP media channel connected\n");
-    } else {
+    L2capAddress peer = {};
+    socklen_t peerLength = sizeof(peer);
+    if (getpeername(fd, (struct sockaddr *)&peer, &peerLength) != 0) {
         close(fd);
-    }
-}
-
-void BluetoothContext::handleSdpRequest(int fd) {
-    uint8_t requestPacket[1024] = {};
-    ssize_t length = read(fd, requestPacket, sizeof(requestPacket));
-    if (length < 5) {
         return;
     }
-    const uint8_t pdu = requestPacket[0];
-    const uint16_t transaction = readBe16(requestPacket + 1);
-    const uint16_t parameterLength = readBe16(requestPacket + 3);
-    if ((size_t)length < (size_t)parameterLength + 5U) {
+    bt::Address address = {};
+    memcpy(address.b, peer.bdaddr, sizeof(address.b));
+    char addressText[BT_ADDRESS_TEXT] = {};
+    bt::formatAddress(address, addressText, sizeof(addressText));
+
+    const int existing = findLink(address);
+    if (existing >= 0) {
+        BluetoothLink &link = links[existing];
+        if (link.signalingConnecting) {
+            // The device called AudioX while AudioX was still calling it; keep
+            // the device's channel and drop ours.
+            closeFd(link.signalingFd);
+            link.signalingFd = fd;
+            link.signalingConnecting = false;
+            printf("[BT] [INFO] AVDTP signaling channel connected from %s (crossed connect)\n", addressText);
+            handleSignalingConnected(existing);
+            return;
+        }
+        // Second channel from a connected device: the media transport of a
+        // stream the device opened on AudioX's sink.
+        if (link.inOpened && link.inMediaFd < 0 && !link.inMediaConnecting) {
+            link.inMediaFd = fd;
+            printf("[BT] [INFO] A2DP input media channel connected from %s\n", addressText);
+            return;
+        }
+        printf("[BT] [INFO] ignored extra AVDTP channel from %s\n", addressText);
+        close(fd);
         return;
     }
 
-    uint8_t record[256] = {};
-    size_t recordLength = makeA2dpServiceRecord(record, sizeof(record));
-    uint8_t parameters[512] = {};
-    size_t responseLength = 0;
-    uint8_t responsePdu = (uint8_t)(pdu + 1);
-
-    if (pdu == 0x06 && parameterLength >= 5) {
-        uint8_t outer[300] = {};
-        size_t outerLength = 0;
-        appendSequence(outer, sizeof(outer), &outerLength, record, recordLength);
-        writeBe16(parameters, (uint16_t)outerLength);
-        memcpy(parameters + 2, outer, outerLength);
-        parameters[2 + outerLength] = 0;
-        responseLength = outerLength + 3;
-    } else if (pdu == 0x02 && parameterLength >= 5) {
-        writeBe16(parameters, 1);
-        writeBe16(parameters + 2, 1);
-        parameters[4] = 0x00;
-        parameters[5] = 0x01;
-        parameters[6] = 0x00;
-        parameters[7] = 0x00;
-        parameters[8] = 0;
-        responseLength = 9;
-    } else if (pdu == 0x04 && parameterLength >= 6) {
-        writeBe16(parameters, (uint16_t)recordLength);
-        memcpy(parameters + 2, record, recordLength);
-        parameters[2 + recordLength] = 0;
-        responseLength = recordLength + 3;
+    const int index = allocateLink(address);
+    if (index < 0) {
+        printf("[BT] [WARN] %s connected but %u Bluetooth devices are already connected\n",
+               addressText, (unsigned)BT_MAX_LINKS);
+        setMessage("%s: disconnect another Bluetooth device first", addressText);
+        close(fd);
+        return;
+    }
+    bool knownSource = false;
+    bool knownSink = false;
+    char name[BT_NAME_MAX] = {};
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        BluetoothDevice *device = findDevice(address);
+        if (device) {
+            knownSource = device->audioSource;
+            knownSink = device->audioSink;
+            device->autoConnectHeld = false;
+            device->autoConnectAtMs = 0;
+            device->autoConnectBackoffMs = BT_AUTOCONNECT_RETRY_MIN_MS;
+            snprintf(name, sizeof(name), "%s", device->name);
+        }
+    }
+    const uint64_t nowMs = bt::monotonicMs();
+    BluetoothLink &link = links[index];
+    link.signalingFd = fd;
+    if (knownSink && !knownSource) {
+        // A speaker reconnecting to AudioX expects AudioX to start the stream.
+        link.wantOutput = true;
+        link.discoverAtMs = 0;
     } else {
-        responsePdu = 0x01;
-        parameters[0] = 0x03;
-        parameters[1] = 0x00;
-        responseLength = 2;
+        // A source normally configures its stream right away. If it does not
+        // (or the device turns out to be a speaker), AudioX takes over.
+        link.wantInput = true;
+        link.wantOutput = knownSink;
+        link.discoverAtMs = knownSink ? 0 : nowMs + BT_INPUT_ACCEPT_WAIT_MS;
     }
-
-    uint8_t response[520] = {};
-    response[0] = responsePdu;
-    writeBe16(response + 1, transaction);
-    writeBe16(response + 3, (uint16_t)responseLength);
-    memcpy(response + 5, parameters, responseLength);
-    (void)send(fd, response, responseLength + 5, MSG_NOSIGNAL);
+    link.inInitiateAtMs = nowMs + BT_INPUT_ACCEPT_WAIT_MS;
+    link.connecting = link.wantOutput;
+    link.deadlineMs = link.wantOutput ? nowMs + BT_OUTPUT_CONNECT_TIMEOUT_MS : 0;
+    printf("[BT] [INFO] AVDTP signaling channel connected from %s\n", addressText);
+    if (link.wantOutput) {
+        setMessage("%s connected; starting audio output...", name[0] ? name : addressText);
+    } else {
+        setMessage("%s connected as an audio input", name[0] ? name : addressText);
+    }
+    driveLink(index);
 }
 
-void BluetoothContext::handleAvdtpPacket(const uint8_t *packet, size_t length) {
-    if (!packet || length < 2) {
+bool BluetoothContext::beginConnect(const bt::Address &target, bool automatic) {
+    char targetText[BT_ADDRESS_TEXT] = {};
+    bt::formatAddress(target, targetText, sizeof(targetText));
+    if (findLink(target) >= 0) {
+        return true;
+    }
+    bool source = false;
+    bool sink = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        const BluetoothDevice *device = findDevice(target);
+        if (!device || !device->paired) {
+            return false;
+        }
+        source = device->audioSource;
+        sink = device->audioSink;
+    }
+    const int index = allocateLink(target);
+    if (index < 0) {
+        setMessage("Disconnect a Bluetooth device first (%u at most)", (unsigned)BT_MAX_LINKS);
+        return false;
+    }
+    int fd = socket(BT_AF_BLUETOOTH, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, BT_PROTO_L2CAP);
+    if (fd < 0) {
+        printf("[BT] [WARN] AVDTP signaling socket failed: %s\n", strerror(errno));
+        resetLink(links[index]);
+        return false;
+    }
+    Security security = {BT_SECURITY_MEDIUM, 0};
+    if (setsockopt(fd, BT_SOL_BLUETOOTH, BT_SECURITY_OPT, &security, sizeof(security)) < 0) {
+        printf("[BT] [WARN] could not require security for A2DP: %s\n", strerror(errno));
+    }
+    L2capAddress remote = {};
+    remote.family = BT_AF_BLUETOOTH;
+    remote.psm = htole16(BT_PSM_AVDTP);
+    memcpy(remote.bdaddr, target.b, sizeof(remote.bdaddr));
+    bool inProgress = false;
+    if (connect(fd, (struct sockaddr *)&remote, sizeof(remote)) != 0) {
+        if (errno != EINPROGRESS) {
+            printf("[BT] [WARN] AVDTP signaling connect failed: %s\n", strerror(errno));
+            close(fd);
+            resetLink(links[index]);
+            return false;
+        }
+        inProgress = true;
+    }
+    BluetoothLink &link = links[index];
+    const bool inputOnly = source && !sink;
+    link.signalingFd = fd;
+    link.signalingConnecting = inProgress;
+    link.connecting = true;
+    link.deadlineMs = bt::monotonicMs() + BT_OUTPUT_CONNECT_TIMEOUT_MS;
+    link.wantOutput = !inputOnly;
+    link.wantInput = source;
+    link.discoverAtMs = 0;
+    printf("[BT] [INFO] %sconnecting A2DP %s %s on hci%d\n",
+           automatic ? "auto-" : "",
+           inputOnly ? "input from" : "to",
+           targetText, devId);
+    if (!inProgress) {
+        handleSignalingConnected(index);
+    }
+    return true;
+}
+
+void BluetoothContext::handleSignalingConnected(int index) {
+    BluetoothLink &link = links[index];
+    const bt::Address address = link.address;
+    const bool wantOutput = link.wantOutput;
+    if (link.signalingConnecting) {
+        const int error = socketError(link.signalingFd);
+        if (error != 0) {
+            const bool refused = error == ECONNREFUSED;
+            closeLink(index, refused
+                ? "device refused the connection; if it is a phone, connect from the phone, or forget AudioX on the device and pair again from AudioX"
+                : strerror(error));
+            if (wantOutput) {
+                noteOutputChannelResult(address, refused);
+            }
+            return;
+        }
+        link.signalingConnecting = false;
+    }
+    if (wantOutput) {
+        noteOutputChannelResult(address, false);
+    }
+    const uint64_t nowMs = bt::monotonicMs();
+    if (link.inInitiateAtMs == 0 || link.inInitiateAtMs < nowMs) {
+        link.inInitiateAtMs = nowMs + BT_INPUT_ACCEPT_WAIT_MS;
+    }
+    char addressText[BT_ADDRESS_TEXT] = {};
+    bt::formatAddress(address, addressText, sizeof(addressText));
+    printf("[BT] [INFO] AVDTP signaling channel connected to %s\n", addressText);
+    if (!wantOutput && link.connecting) {
+        link.connecting = false;
+        link.deadlineMs = 0;
+        resetAutoConnectBackoff(address);
+        char label[BT_NAME_MAX] = {};
+        deviceLabel(address, label, sizeof(label));
+        setMessage("%s connected as an audio input", label);
+    }
+    driveLink(index);
+}
+
+bool BluetoothContext::sendCommand(int index, uint8_t signal, const uint8_t *payload, size_t length, bool input) {
+    BluetoothLink &link = links[index];
+    if (!link.used || link.signalingFd < 0 || link.signalingConnecting ||
+        length > sizeof(link.commandPacket) - 2U || link.pendingSignal != 0 || link.commandWritePending) {
+        return false;
+    }
+    const uint8_t transaction = link.transaction++ & 0x0F;
+    link.commandPacket[0] = (uint8_t)(transaction << 4);
+    link.commandPacket[1] = signal;
+    if (payload && length > 0) {
+        memcpy(link.commandPacket + 2, payload, length);
+    }
+    link.commandLength = length + 2U;
+    link.pendingSignal = signal;
+    link.pendingTransaction = transaction;
+    link.pendingInput = input;
+    link.pendingSinceMs = bt::monotonicMs();
+    const ssize_t sent = send(link.signalingFd, link.commandPacket, link.commandLength, MSG_NOSIGNAL);
+    if (sent == (ssize_t)link.commandLength) {
+        link.commandLength = 0;
+        return true;
+    }
+    if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        link.commandWritePending = true;
+        return true;
+    }
+    closeLink(index, sent < 0 ? strerror(errno) : "short AVDTP command write");
+    return false;
+}
+
+void BluetoothContext::flushCommand(int index) {
+    BluetoothLink &link = links[index];
+    if (!link.commandWritePending || link.commandLength == 0) {
+        link.commandWritePending = false;
+        return;
+    }
+    const ssize_t sent = send(link.signalingFd, link.commandPacket, link.commandLength, MSG_NOSIGNAL);
+    if (sent == (ssize_t)link.commandLength) {
+        link.commandLength = 0;
+        link.commandWritePending = false;
+        return;
+    }
+    if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        return;
+    }
+    closeLink(index, sent < 0 ? strerror(errno) : "short AVDTP command write");
+}
+
+// Advances whatever AudioX still has to set up on this link, one command at a time.
+void BluetoothContext::driveLink(int index) {
+    BluetoothLink &link = links[index];
+    if (!link.used || link.signalingFd < 0 || link.signalingConnecting ||
+        link.pendingSignal != 0 || link.commandWritePending) {
+        return;
+    }
+    const uint64_t nowMs = bt::monotonicMs();
+    if (!link.discovered) {
+        // A source that configured its own stream needs nothing from AudioX.
+        if (!link.wantOutput && (link.inRemoteActive || link.inConfigured)) {
+            return;
+        }
+        if (nowMs < link.discoverAtMs) {
+            return;
+        }
+        sendCommand(index, AVDTP_DISCOVER, nullptr, 0, false);
+        return;
+    }
+    if (link.wantOutput && !link.outUp) {
+        if (!link.outStarting && link.remoteSinkSeid != 0) {
+            link.outStarting = true;
+            const uint8_t seid = (uint8_t)(link.remoteSinkSeid << 2);
+            sendCommand(index, AVDTP_GET_CAPABILITIES, &seid, 1, false);
+        }
+        // The input waits until the output is running.
+        return;
+    }
+    if (link.wantInput && link.remoteSourceSeid != 0 && !link.inConfigured && !link.inRemoteActive &&
+        nowMs >= link.inInitiateAtMs) {
+        const uint8_t seid = (uint8_t)(link.remoteSourceSeid << 2);
+        sendCommand(index, AVDTP_GET_CAPABILITIES, &seid, 1, true);
+    }
+}
+
+void BluetoothContext::serviceLinkTimers(int index, uint64_t nowMs) {
+    BluetoothLink &link = links[index];
+    if (!link.used) {
+        return;
+    }
+    if (link.connecting && link.deadlineMs != 0 && nowMs >= link.deadlineMs) {
+        closeLink(index, "A2DP connection timed out");
+        return;
+    }
+    if (link.pendingSignal != 0 && !link.signalingConnecting &&
+        nowMs - link.pendingSinceMs >= BT_AVDTP_RESPONSE_TIMEOUT_MS) {
+        closeLink(index, "device stopped answering A2DP signaling");
+        return;
+    }
+    driveLink(index);
+    if (link.used && link.inStreaming) {
+        logInputStats(index, nowMs, false);
+    }
+}
+
+void BluetoothContext::handleSignalingReadable(int index) {
+    BluetoothLink &link = links[index];
+    uint8_t packet[1024] = {};
+    const ssize_t length = read(link.signalingFd, packet, sizeof(packet));
+    if (length < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+        return;
+    }
+    if (length <= 0) {
+        // The device hanging up is deliberate; do not dial an input straight back.
+        const bool deliberate = length == 0 || errno == ECONNRESET;
+        closeLink(index, length == 0 ? "device disconnected" : strerror(errno), deliberate);
+        return;
+    }
+    if (length < 2 || ((packet[0] >> 2) & 0x03) != 0) {
         return;
     }
     const uint8_t transaction = packet[0] >> 4;
-    const uint8_t packetType = (packet[0] >> 2) & 0x03;
     const uint8_t messageType = packet[0] & 0x03;
     const uint8_t signal = packet[1] & 0x3F;
-    if (packetType != 0 || messageType != 0) {
+    if (messageType == 0) {
+        handleAvdtpCommand(index, packet, (size_t)length);
         return;
     }
+    if (link.pendingSignal != 0 && signal == link.pendingSignal && transaction == link.pendingTransaction) {
+        handleResponse(index, messageType, signal, packet + 2, (size_t)length - 2U);
+    }
+}
+
+// Answers AVDTP commands for this device. SEID 1 is AudioX's A2DP sink (the
+// input); SEID 2 is its A2DP source, only reported once the output configured it.
+void BluetoothContext::handleAvdtpCommand(int index, const uint8_t *packet, size_t length) {
+    BluetoothLink &link = links[index];
+    if (link.signalingFd < 0 || !packet || length < 2) {
+        return;
+    }
+    const int fd = link.signalingFd;
+    const uint8_t transaction = packet[0] >> 4;
+    const uint8_t signal = packet[1] & 0x3F;
+    const uint8_t *payload = packet + 2;
+    const size_t payloadLength = length - 2;
+    const uint8_t acpSeid = payloadLength >= 1 ? (uint8_t)(payload[0] >> 2) : 0;
+    uint8_t rejectSeid = acpSeid;
+    const bool sinkSeid = acpSeid == AVDTP_SINK_SEID;
+    const bool sourceSeid = acpSeid == AVDTP_SOURCE_SEID && link.outConfigured;
+    BluetoothOutputStream *outputSlot = app && app->audio ? &app->audio->bluetoothOutputs[index] : nullptr;
+    BluetoothInputStream *inputSlot = app && app->audio ? &app->audio->bluetoothInputs[index] : nullptr;
 
     uint8_t response[64] = {};
     size_t responseLength = 2;
     response[0] = (uint8_t)((transaction << 4) | 0x02);
     response[1] = signal;
-    const uint8_t *payload = packet + 2;
-    size_t payloadLength = length - 2;
-    bool accept = true;
+    uint8_t error = 0;
+    uint8_t errorCategory = 0;
+    const char *closeInputReason = nullptr;
+    const char *closeOutputReason = nullptr;
+    bool inputConfigured = false;
 
     switch (signal) {
-    case 0x01: // Discover
-        response[2] = 0x04; // SEID 1, Audio Sink, not in use.
-        response[3] = 0x08; // Audio media type, Sink TSEP.
-        responseLength = 4;
+    case AVDTP_DISCOVER:
+        response[responseLength++] = (uint8_t)((AVDTP_SINK_SEID << 2) | (link.inConfigured ? 0x02 : 0x00));
+        response[responseLength++] = 0x08; // Audio, Sink
+        if (link.outConfigured) {
+            response[responseLength++] = (uint8_t)((AVDTP_SOURCE_SEID << 2) | 0x02);
+            response[responseLength++] = 0x00; // Audio, Source
+        }
         break;
-    case 0x02: // GetCapabilities
-    case 0x0C: // GetAllCapabilities
-        if (payloadLength < 1 || (payload[0] >> 2) != 1) {
-            accept = false;
-            break;
+    case AVDTP_GET_CAPABILITIES:
+    case AVDTP_GET_ALL_CAPABILITIES:
+        if (payloadLength < 1) {
+            error = AVDTP_BAD_PAYLOAD_FORMAT;
+        } else if (!sinkSeid) {
+            error = AVDTP_BAD_ACP_SEID;
+        } else {
+            const uint8_t capabilities[] = {0x01, 0x00, 0x07, 0x06, 0x00, 0x00};
+            memcpy(response + responseLength, capabilities, sizeof(capabilities));
+            responseLength += sizeof(capabilities);
+            memcpy(response + responseLength, bt::A2DP_SBC_SINK_CAPABILITIES, 4);
+            responseLength += 4;
         }
-        response[2] = 0x01;
-        response[3] = 0x00;
-        response[4] = 0x07;
-        response[5] = 0x06;
-        response[6] = 0x00;
-        response[7] = 0x00;
-        response[8] = 0x11; // 48 kHz, joint stereo.
-        response[9] = 0xFF; // All SBC block lengths, subbands, and allocations.
-        response[10] = 0x02;
-        response[11] = 0x35;
-        responseLength = 12;
         break;
-    case 0x03: { // SetConfiguration
-        if (payloadLength < 2 || (payload[0] >> 2) != 1) {
-            accept = false;
+    case AVDTP_SET_CONFIGURATION:
+    case AVDTP_RECONFIGURE: {
+        const bool reconfigure = signal == AVDTP_RECONFIGURE;
+        if (payloadLength < (reconfigure ? 1U : 2U)) {
+            error = AVDTP_BAD_PAYLOAD_FORMAT;
             break;
         }
-        uint8_t candidate[4] = {};
-        bool gotSbc = false;
-        for (size_t offset = 2; offset + 2 <= payloadLength;) {
-            const uint8_t category = payload[offset++];
-            const uint8_t categoryLength = payload[offset++];
-            if (offset + categoryLength > payloadLength) {
-                break;
-            }
-            if (category == 0x07 && categoryLength == 6 && payload[offset + 1] == 0x00) {
-                memcpy(candidate, payload + offset + 2, sizeof(candidate));
-                gotSbc = true;
-            }
-            offset += categoryLength;
-        }
-        if (!gotSbc || (candidate[0] & 0x10U) == 0 ||
-            (candidate[0] & 0x0FU) == 0 || (candidate[1] & 0x15U) != 0x15U ||
-            candidate[2] > 2 || candidate[3] < 2 || candidate[2] > candidate[3] ||
-            !configureSbcDecoder(candidate)) {
-            accept = false;
+        if (!sinkSeid) {
+            error = AVDTP_BAD_ACP_SEID;
             break;
         }
-        memcpy(sbcConfiguration, candidate, sizeof(sbcConfiguration));
-        avdtpConfigured = true;
+        if (!reconfigure && link.inConfigured) {
+            error = AVDTP_SEP_IN_USE;
+            break;
+        }
+        if (reconfigure && (!link.inOpened || link.inStreaming)) {
+            error = AVDTP_BAD_STATE;
+            break;
+        }
+        const size_t capabilitiesOffset = reconfigure ? 1U : 2U;
+        const uint8_t *sbc = bt::findSbcCodec(payload + capabilitiesOffset,
+                                             payloadLength - capabilitiesOffset);
+        errorCategory = 0x07;
+        if (!sbc || !bt::isValidSbcSinkConfiguration(sbc) || !configureSbcDecoder(index, sbc)) {
+            error = AVDTP_UNSUPPORTED_CONFIGURATION;
+            break;
+        }
+        errorCategory = 0;
+        memcpy(link.inConfig, sbc, sizeof(link.inConfig));
+        link.inConfigured = true;
+        link.inRemoteActive = true;
+        link.wantInput = true;
+        if (!link.wantOutput) {
+            link.connecting = false;
+            link.deadlineMs = 0;
+        }
+        inputConfigured = true;
         break;
     }
-    case 0x06: // Open
-        if (payloadLength < 1 || !avdtpConfigured || (payload[0] >> 2) != 1) {
-            accept = false;
+    case AVDTP_GET_CONFIGURATION:
+        if (!sinkSeid) {
+            error = AVDTP_BAD_ACP_SEID;
+        } else if (!link.inConfigured) {
+            error = AVDTP_BAD_STATE;
+        } else {
+            const uint8_t configuration[] = {0x01, 0x00, 0x07, 0x06, 0x00, 0x00};
+            memcpy(response + responseLength, configuration, sizeof(configuration));
+            responseLength += sizeof(configuration);
+            memcpy(response + responseLength, link.inConfig, sizeof(link.inConfig));
+            responseLength += sizeof(link.inConfig);
+        }
+        break;
+    case AVDTP_OPEN:
+        if (!sinkSeid) {
+            error = AVDTP_BAD_ACP_SEID;
+        } else if (!link.inConfigured || link.inOpened) {
+            error = AVDTP_BAD_STATE;
+        } else {
+            link.inOpened = true;
+        }
+        break;
+    case AVDTP_START:
+    case AVDTP_SUSPEND: {
+        // The command may list several SEIDs; check them all before acting.
+        const bool starting = signal == AVDTP_START;
+        bool startOutput = false;
+        bool startInput = false;
+        bool stopOutput = false;
+        bool stopInput = false;
+        if (payloadLength < 1) {
+            error = AVDTP_BAD_PAYLOAD_FORMAT;
+        }
+        for (size_t i = 0; i < payloadLength && !error; ++i) {
+            const uint8_t seid = (uint8_t)(payload[i] >> 2);
+            if (seid == AVDTP_SOURCE_SEID && link.outConfigured) {
+                if (!link.outOpened) {
+                    error = AVDTP_BAD_STATE;
+                } else if (starting) {
+                    startOutput = true;
+                } else {
+                    stopOutput = true;
+                }
+            } else if (seid == AVDTP_SINK_SEID) {
+                if (!link.inOpened) {
+                    error = AVDTP_BAD_STATE;
+                } else if (starting) {
+                    startInput = true;
+                } else {
+                    stopInput = true;
+                }
+            } else {
+                error = AVDTP_BAD_ACP_SEID;
+            }
+            if (error) {
+                rejectSeid = seid;
+            }
+        }
+        if (error) {
             break;
         }
-        avdtpOpened = true;
-        break;
-    case 0x07: // Start
-        if (payloadLength < 1 || !avdtpOpened || (payload[0] >> 2) != 1) {
-            accept = false;
-            break;
+        if (startOutput) {
+            link.outStartRequested = false;
+            link.outStreaming = true;
+            link.silenceSinceMs = bt::monotonicMs();
+            if (outputSlot && !outputSlot->active.load(std::memory_order_acquire)) {
+                outputSlot->setActive(true);
+            }
         }
-        avdtpStreaming = true;
-        printf("[BT] [INFO] A2DP stream started\n");
-        break;
-    case 0x09: // Suspend
-        avdtpStreaming = false;
-        break;
-    case 0x08: // Close
-        avdtpStreaming = false;
-        avdtpOpened = false;
-        avdtpConfigured = false;
-        if (mediaFd >= 0) {
-            close(mediaFd);
-            mediaFd = -1;
+        if (stopOutput) {
+            link.outStreaming = false;
+            link.outSuspendRequested = false;
+            link.outStartRequested = false;
+            link.silenceSinceMs = 0;
+            if (outputSlot) {
+                outputSlot->setActive(false);
+            }
         }
-        if (sbcDecoderInitialized) {
-            sbc_finish(&sbcDecoder);
-            sbcDecoderInitialized = false;
+        if (startInput && !link.inStreaming) {
+            startInputAudio(index);
+        }
+        if (stopInput && link.inStreaming) {
+            logInputStats(index, bt::monotonicMs(), true);
+            link.inStreaming = false;
+            if (inputSlot) {
+                inputSlot->stop();
+            }
+            char addressText[BT_ADDRESS_TEXT] = {};
+            bt::formatAddress(link.address, addressText, sizeof(addressText));
+            printf("[BT] [INFO] A2DP input from %s paused by device\n", addressText);
+        }
+        break;
+    }
+    case AVDTP_CLOSE:
+    case AVDTP_ABORT:
+        if (sourceSeid) {
+            closeOutputReason = signal == AVDTP_CLOSE ? "device closed the stream" : "device aborted the stream";
+        } else if (sinkSeid) {
+            if (signal == AVDTP_CLOSE && !link.inConfigured) {
+                error = AVDTP_BAD_STATE;
+                break;
+            }
+            closeInputReason = signal == AVDTP_CLOSE ? "device closed the stream" : "device aborted the stream";
+        } else if (signal == AVDTP_CLOSE) {
+            error = AVDTP_BAD_ACP_SEID;
+        }
+        break;
+    case AVDTP_DELAY_REPORT:
+        if (!sourceSeid && !sinkSeid) {
+            error = AVDTP_BAD_ACP_SEID;
         }
         break;
     default:
-        accept = false;
-        break;
+        // General reject for signals this endpoint does not know.
+        response[0] = (uint8_t)((transaction << 4) | 0x01);
+        (void)send(fd, response, 2, MSG_NOSIGNAL);
+        return;
     }
 
-    if (!accept) {
+    if (error) {
+        // Only START and SUSPEND rejects carry the SEID; configuration rejects
+        // carry the failing service category.
         response[0] = (uint8_t)((transaction << 4) | 0x03);
-        response[2] = 0x31;
-        responseLength = 3;
+        responseLength = 2;
+        if (signal == AVDTP_SET_CONFIGURATION || signal == AVDTP_RECONFIGURE) {
+            response[responseLength++] = errorCategory;
+        } else if (signal == AVDTP_START || signal == AVDTP_SUSPEND) {
+            response[responseLength++] = (uint8_t)(rejectSeid << 2);
+        }
+        response[responseLength++] = error;
     }
-    (void)send(signalingFd, response, responseLength, MSG_NOSIGNAL);
+    (void)send(fd, response, responseLength, MSG_NOSIGNAL);
+    if (inputConfigured) {
+        setDeviceRoles(link.address, 1, -1, "configured an A2DP input stream");
+    }
+    if (closeInputReason) {
+        closeInputStream(index, closeInputReason);
+    }
+    if (closeOutputReason) {
+        closeOutputStream(index, closeOutputReason);
+    }
 }
 
-void BluetoothContext::handleA2dpMedia(const uint8_t *packet, size_t length) {
+void BluetoothContext::handleResponse(int index, uint8_t messageType, uint8_t signal,
+                                      const uint8_t *payload, size_t length) {
+    BluetoothLink &link = links[index];
+    const bool input = link.pendingInput;
+    link.pendingSignal = 0;
+    link.commandLength = 0;
+    link.commandWritePending = false;
+    if (signal == AVDTP_DISCOVER) {
+        if (messageType != 2) {
+            closeLink(index, "device rejected A2DP discovery");
+            return;
+        }
+        handleDiscoverResponse(index, payload, length);
+    } else if (input) {
+        handleInputResponse(index, messageType, signal, payload, length);
+    } else {
+        handleOutputResponse(index, messageType, signal, payload, length);
+    }
+    driveLink(index);
+}
+
+void BluetoothContext::handleDiscoverResponse(int index, const uint8_t *payload, size_t length) {
+    BluetoothLink &link = links[index];
+    uint8_t sinkSeid = 0;
+    uint8_t sourceSeid = 0;
+    bool sinkBusy = false;
+    bool sourceBusy = false;
+    for (size_t offset = 0; offset + 2 <= length; offset += 2) {
+        if ((payload[offset + 1] >> 4) != 0) {
+            continue;
+        }
+        const uint8_t seid = payload[offset] >> 2;
+        const bool inUse = (payload[offset] & 0x02U) != 0;
+        if (payload[offset + 1] & 0x08U) {
+            if (sinkSeid == 0 || (sinkBusy && !inUse)) {
+                sinkSeid = seid;
+                sinkBusy = inUse;
+            }
+        } else if (sourceSeid == 0 || (sourceBusy && !inUse)) {
+            sourceSeid = seid;
+            sourceBusy = inUse;
+        }
+    }
+    link.discovered = true;
+    link.remoteSinkSeid = sinkSeid;
+    link.remoteSourceSeid = sourceSeid;
+    const bt::Address address = link.address;
+    char label[BT_NAME_MAX] = {};
+    deviceLabel(address, label, sizeof(label));
+    if (sinkSeid != 0 || sourceSeid != 0) {
+        setDeviceRoles(address, sourceSeid ? 1 : 0, sinkSeid ? 1 : 0, "reported its A2DP endpoints");
+    }
+    const bool wasConnecting = link.connecting;
+    link.wantOutput = sinkSeid != 0;
+    link.wantInput = sourceSeid != 0 || link.inConfigured;
+    if (!link.wantOutput && !link.wantInput) {
+        closeLink(index, "device has no A2DP audio endpoint");
+        return;
+    }
+    if (link.wantOutput && !link.connecting && !link.outUp) {
+        link.connecting = true;
+        link.deadlineMs = bt::monotonicMs() + BT_OUTPUT_CONNECT_TIMEOUT_MS;
+    }
+    if (!link.wantOutput && wasConnecting) {
+        link.connecting = false;
+        link.deadlineMs = 0;
+        resetAutoConnectBackoff(address);
+        setMessage("%s connected as an audio input", label);
+    }
+}
+
+void BluetoothContext::handleOutputResponse(int index, uint8_t messageType, uint8_t signal,
+                                            const uint8_t *payload, size_t length) {
+    BluetoothLink &link = links[index];
+    BluetoothOutputStream *slot = app && app->audio ? &app->audio->bluetoothOutputs[index] : nullptr;
+    if (messageType != 2) {
+        const uint8_t error = length > 0 ? payload[length - 1] : 0;
+        if (signal == AVDTP_SUSPEND) {
+            link.outSuspendSupported = false;
+            link.outSuspendRequested = false;
+            link.silenceSinceMs = bt::monotonicMs();
+            setMessage("Connected; this device does not support idle audio pause");
+            printf("[BT] [INFO] A2DP peer rejected idle suspend (0x%02x)\n", error);
+            return;
+        }
+        char reason[BT_MESSAGE_MAX];
+        snprintf(reason, sizeof(reason), "AVDTP signal 0x%02x rejected (0x%02x)", signal, error);
+        closeOutputStream(index, reason);
+        return;
+    }
+
+    if (signal == AVDTP_GET_CAPABILITIES || signal == AVDTP_GET_ALL_CAPABILITIES) {
+        const uint8_t *remoteSbc = nullptr;
+        for (size_t offset = 0; offset + 2 <= length;) {
+            const uint8_t category = payload[offset++];
+            const uint8_t categoryLength = payload[offset++];
+            if (offset + categoryLength > length) {
+                break;
+            }
+            if (category == 0x07 && categoryLength == 6 &&
+                payload[offset] == 0 && payload[offset + 1] == 0) {
+                remoteSbc = payload + offset + 2;
+            }
+            offset += categoryLength;
+        }
+        if (!remoteSbc || (remoteSbc[0] & 0x10U) == 0) {
+            closeOutputStream(index, "device SBC audio does not include 48 kHz");
+            return;
+        }
+        uint8_t channelMode = 0;
+        if (remoteSbc[0] & 0x01U) channelMode = 0x01; // joint stereo
+        else if (remoteSbc[0] & 0x02U) channelMode = 0x02; // stereo
+        else if (remoteSbc[0] & 0x04U) channelMode = 0x04; // dual channel
+        if (channelMode == 0) {
+            closeOutputStream(index, "device has no stereo SBC mode");
+            return;
+        }
+        uint8_t selected[4] = {};
+        selected[0] = (uint8_t)(0x10U | channelMode);
+        if (remoteSbc[1] & 0x10U) selected[1] |= 0x10U;
+        else if (remoteSbc[1] & 0x20U) selected[1] |= 0x20U;
+        else if (remoteSbc[1] & 0x40U) selected[1] |= 0x40U;
+        else if (remoteSbc[1] & 0x80U) selected[1] |= 0x80U;
+        if (remoteSbc[1] & 0x04U) selected[1] |= 0x04U;
+        else if (remoteSbc[1] & 0x08U) selected[1] |= 0x08U;
+        if (remoteSbc[1] & 0x01U) selected[1] |= 0x01U;
+        else if (remoteSbc[1] & 0x02U) selected[1] |= 0x02U;
+        if ((selected[1] & 0xFCU) == 0 || (selected[1] & 0x03U) == 0) {
+            closeOutputStream(index, "device has no compatible SBC framing");
+            return;
+        }
+        selected[2] = remoteSbc[2] > 2 ? remoteSbc[2] : 2;
+        selected[3] = remoteSbc[3] < BT_A2DP_TARGET_BITPOOL ? remoteSbc[3] : BT_A2DP_TARGET_BITPOOL;
+        if (selected[3] < selected[2]) {
+            closeOutputStream(index, "device SBC bitpool range is invalid");
+            return;
+        }
+        if (link.encoderReady) {
+            sbc_finish(&link.encoder);
+            link.encoderReady = false;
+        }
+        if (sbc_init_a2dp(&link.encoder, 0, selected, sizeof(selected)) < 0) {
+            closeOutputStream(index, "SBC encoder rejected device configuration");
+            return;
+        }
+        link.encoderReady = true;
+        printf("[BT] [INFO] SBC output config: frequency=%u mode=%u blocks=%u subbands=%u bitpool=%u frame_length=%zu code_size=%zu\n",
+               bt::sbcSampleRate(selected),
+               (unsigned)link.encoder.mode,
+               link.encoder.blocks == SBC_BLK_16 ? 16U :
+               link.encoder.blocks == SBC_BLK_12 ? 12U :
+               link.encoder.blocks == SBC_BLK_8 ? 8U : 4U,
+               link.encoder.subbands == SBC_SB_8 ? 8U : 4U,
+               (unsigned)link.encoder.bitpool,
+               sbc_get_frame_length(&link.encoder),
+               sbc_get_codesize(&link.encoder));
+        const uint8_t config[] = {
+            (uint8_t)(link.remoteSinkSeid << 2),
+            (uint8_t)(AVDTP_SOURCE_SEID << 2),
+            0x01, 0x00,
+            0x07, 0x06, 0x00, 0x00,
+            selected[0], selected[1], selected[2], selected[3],
+        };
+        sendCommand(index, AVDTP_SET_CONFIGURATION, config, sizeof(config), false);
+        return;
+    }
+
+    if (signal == AVDTP_SET_CONFIGURATION) {
+        link.outConfigured = true;
+        const uint8_t seid = (uint8_t)(link.remoteSinkSeid << 2);
+        sendCommand(index, AVDTP_OPEN, &seid, 1, false);
+        return;
+    }
+
+    if (signal == AVDTP_OPEN) {
+        link.outOpened = true;
+        if (!connectMedia(index, false)) {
+            closeOutputStream(index, "could not open A2DP media channel");
+        }
+        return;
+    }
+
+    if (signal == AVDTP_START) {
+        const uint64_t nowMs = bt::monotonicMs();
+        link.outStreaming = true;
+        link.outStartRequested = false;
+        link.outSuspendRequested = false;
+        link.silenceSinceMs = nowMs;
+        if (link.outUp) {
+            if (slot && !slot->active.load(std::memory_order_acquire)) {
+                slot->setActive(true);
+            }
+            return;
+        }
+        link.outUp = true;
+        link.connecting = false;
+        link.deadlineMs = 0;
+        link.statsNextMs = 0;
+        if (slot) {
+            slot->peer.store(bt::packAddress(link.address.b), std::memory_order_release);
+            slot->setActive(true);
+            link.droppedAtStats = slot->dropped.load(std::memory_order_acquire);
+        }
+        // Give a dual-role device a moment to start its own input stream.
+        if (link.inInitiateAtMs < nowMs + 1000ULL) {
+            link.inInitiateAtMs = nowMs + 1000ULL;
+        }
+        const bt::Address address = link.address;
+        resetAutoConnectBackoff(address);
+        setDeviceRoles(address, -1, 1, "accepted an A2DP output stream");
+        char label[BT_NAME_MAX] = {};
+        deviceLabel(address, label, sizeof(label));
+        char addressText[BT_ADDRESS_TEXT] = {};
+        bt::formatAddress(address, addressText, sizeof(addressText));
+        printf("[BT] [INFO] A2DP output stream started to %s\n", addressText);
+        setMessage("Connected to %s", label);
+        return;
+    }
+
+    if (signal == AVDTP_SUSPEND) {
+        link.outStreaming = false;
+        link.outSuspendRequested = false;
+        link.outSuspendSupported = true;
+        link.outStartRequested = false;
+        link.silenceSinceMs = 0;
+        if (slot) {
+            slot->setActive(false);
+        }
+    }
+}
+
+void BluetoothContext::handleInputResponse(int index, uint8_t messageType, uint8_t signal,
+                                           const uint8_t *payload, size_t length) {
+    BluetoothLink &link = links[index];
+    if (messageType != 2) {
+        // The device configured the stream itself while AudioX was doing so.
+        if (link.inRemoteActive) {
+            return;
+        }
+        char reason[BT_MESSAGE_MAX];
+        snprintf(reason, sizeof(reason), "A2DP input signal 0x%02x rejected (0x%02x)",
+                 signal, length > 0 ? payload[length - 1] : 0);
+        closeInputStream(index, reason);
+        if (linkIdle(index)) {
+            closeLink(index, reason);
+        }
+        return;
+    }
+
+    if (signal == AVDTP_GET_CAPABILITIES || signal == AVDTP_GET_ALL_CAPABILITIES) {
+        if (link.inRemoteActive || link.inConfigured) {
+            return;
+        }
+        const uint8_t *remoteSbc = bt::findSbcCodec(payload, length);
+        uint8_t selected[4] = {};
+        const char *failure = nullptr;
+        if (!remoteSbc || !bt::selectSbcSinkConfiguration(remoteSbc, selected)) {
+            failure = "device SBC audio is not available at 44.1 or 48 kHz";
+        } else if (!configureSbcDecoder(index, selected)) {
+            failure = "SBC decoder rejected device configuration";
+        }
+        if (failure) {
+            closeInputStream(index, failure);
+            if (linkIdle(index)) {
+                closeLink(index, failure);
+            }
+            return;
+        }
+        memcpy(link.inConfig, selected, sizeof(link.inConfig));
+        const uint8_t config[] = {
+            (uint8_t)(link.remoteSourceSeid << 2),
+            (uint8_t)(AVDTP_SINK_SEID << 2),
+            0x01, 0x00,
+            0x07, 0x06, 0x00, 0x00,
+            selected[0], selected[1], selected[2], selected[3],
+        };
+        sendCommand(index, AVDTP_SET_CONFIGURATION, config, sizeof(config), true);
+        return;
+    }
+
+    if (signal == AVDTP_SET_CONFIGURATION) {
+        if (link.inRemoteActive) {
+            return;
+        }
+        link.inConfigured = true;
+        setDeviceRoles(link.address, 1, -1, "configured an A2DP input stream");
+        if (!link.used) {
+            return;
+        }
+        const uint8_t seid = (uint8_t)(link.remoteSourceSeid << 2);
+        sendCommand(index, AVDTP_OPEN, &seid, 1, true);
+        return;
+    }
+
+    if (signal == AVDTP_OPEN) {
+        link.inOpened = true;
+        if (!connectMedia(index, true)) {
+            closeInputStream(index, "could not open A2DP input media channel");
+            if (linkIdle(index)) {
+                closeLink(index, "could not open A2DP input media channel");
+            }
+        }
+    }
+}
+
+
+bool BluetoothContext::connectMedia(int index, bool input) {
+    BluetoothLink &link = links[index];
+    int &mediaFd = input ? link.inMediaFd : link.outMediaFd;
+    if (mediaFd >= 0) {
+        return true;
+    }
+    int fd = socket(BT_AF_BLUETOOTH, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, BT_PROTO_L2CAP);
+    if (fd < 0) {
+        return false;
+    }
+    Security security = {BT_SECURITY_MEDIUM, 0};
+    (void)setsockopt(fd, BT_SOL_BLUETOOTH, BT_SECURITY_OPT, &security, sizeof(security));
+    if (!input) {
+        int sendBufferSize = BT_A2DP_MEDIA_SNDBUF;
+        if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sendBufferSize, sizeof(sendBufferSize)) < 0) {
+            printf("[BT] [WARN] could not limit A2DP media send buffer: %s\n", strerror(errno));
+        }
+        L2capOptions l2capOptions = {};
+        l2capOptions.omtu = BT_A2DP_REQUESTED_MEDIA_MTU;
+        l2capOptions.imtu = BT_A2DP_REQUESTED_MEDIA_MTU;
+        l2capOptions.flushTo = BT_A2DP_FLUSH_TIMEOUT_MS;
+        if (setsockopt(fd, BT_SOL_L2CAP, BT_L2CAP_OPTIONS, &l2capOptions, sizeof(l2capOptions)) < 0) {
+            printf("[BT] [WARN] could not request larger A2DP media MTU: %s\n", strerror(errno));
+        }
+    }
+    L2capAddress remote = {};
+    remote.family = BT_AF_BLUETOOTH;
+    remote.psm = htole16(BT_PSM_AVDTP);
+    memcpy(remote.bdaddr, link.address.b, sizeof(remote.bdaddr));
+    if (connect(fd, (struct sockaddr *)&remote, sizeof(remote)) == 0) {
+        mediaFd = fd;
+        handleMediaConnected(index, input);
+        return true;
+    }
+    if (errno != EINPROGRESS) {
+        printf("[BT] [WARN] A2DP %s media connect failed: %s\n", input ? "input" : "output", strerror(errno));
+        close(fd);
+        return false;
+    }
+    mediaFd = fd;
+    if (input) {
+        link.inMediaConnecting = true;
+    } else {
+        link.outMediaConnecting = true;
+    }
+    return true;
+}
+
+void BluetoothContext::handleMediaConnected(int index, bool input) {
+    BluetoothLink &link = links[index];
+    char addressText[BT_ADDRESS_TEXT] = {};
+    bt::formatAddress(link.address, addressText, sizeof(addressText));
+    if (input) {
+        link.inMediaConnecting = false;
+        printf("[BT] [INFO] A2DP input media channel connected to %s; waiting for the device to play\n",
+               addressText);
+        return;
+    }
+    link.outMediaConnecting = false;
+    if (!readMediaMtu(index)) {
+        closeOutputStream(index, "could not read A2DP media MTU");
+        return;
+    }
+    const uint8_t seid = (uint8_t)(link.remoteSinkSeid << 2);
+    sendCommand(index, AVDTP_START, &seid, 1, false);
+}
+
+bool BluetoothContext::readMediaMtu(int index) {
+    BluetoothLink &link = links[index];
+    if (link.outMediaFd < 0) {
+        return false;
+    }
+    L2capOptions options = {};
+    socklen_t length = sizeof(options);
+    if (getsockopt(link.outMediaFd, BT_SOL_L2CAP, BT_L2CAP_OPTIONS, &options, &length) < 0 ||
+        length < sizeof(options)) {
+        printf("[BT] [WARN] L2CAP_OPTIONS read failed: %s\n", strerror(errno));
+        return false;
+    }
+    uint16_t mtu = options.omtu;
+    if (mtu < BT_A2DP_DEFAULT_MEDIA_MTU) {
+        mtu = BT_A2DP_DEFAULT_MEDIA_MTU;
+    }
+    if (mtu > BT_A2DP_MAX_MEDIA_MTU) {
+        mtu = BT_A2DP_MAX_MEDIA_MTU;
+    }
+    link.mediaMtu = mtu;
+    printf("[BT] [INFO] A2DP media MTU: outgoing=%u incoming=%u\n",
+           (unsigned)options.omtu, (unsigned)options.imtu);
+    return true;
+}
+
+void BluetoothContext::readInputMedia(int index) {
+    BluetoothLink &link = links[index];
+    uint8_t packet[2048];
+    for (int count = 0; count < 16 && link.inMediaFd >= 0; ++count) {
+        const ssize_t length = read(link.inMediaFd, packet, sizeof(packet));
+        if (length < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+            return;
+        }
+        if (length <= 0) {
+            const char *reason = length == 0 ? "media channel closed" : strerror(errno);
+            closeInputStream(index, reason);
+            if (linkIdle(index)) {
+                closeLink(index, reason);
+            }
+            return;
+        }
+        if (!link.inOpened) {
+            continue;
+        }
+        // Some sources stream without sending START first.
+        if (!link.inStreaming) {
+            startInputAudio(index);
+        }
+        handleA2dpMedia(index, packet, (size_t)length);
+    }
+}
+
+void BluetoothContext::handleA2dpMedia(int index, const uint8_t *packet, size_t length) {
     if (!packet || length < 13 || (packet[0] >> 6) != 2) {
         return;
     }
@@ -1145,585 +2065,516 @@ void BluetoothContext::handleA2dpMedia(const uint8_t *packet, size_t length) {
         }
         payloadLength -= padding;
     }
-    if (payloadLength > 0) {
-        (void)decodeSbcPayload(packet + headerLength, payloadLength);
+    if (payloadLength == 0) {
+        return;
     }
+    BluetoothLink &link = links[index];
+    const uint64_t nowMs = bt::monotonicMs();
+    if (link.inLastPacketMs != 0) {
+        const uint32_t gapMs = (uint32_t)(nowMs - link.inLastPacketMs);
+        if (gapMs > link.inMaxGapMs) {
+            link.inMaxGapMs = gapMs;
+        }
+        if (gapMs >= 60U) {
+            ++link.inLongGaps;
+        }
+    }
+    link.inLastPacketMs = nowMs;
+    ++link.inPackets;
+    const uint16_t sequence = readBe16(packet + 2);
+    const uint32_t timestamp = ((uint32_t)packet[4] << 24) | ((uint32_t)packet[5] << 16) |
+                               ((uint32_t)packet[6] << 8) | (uint32_t)packet[7];
+    if (link.inRtpValid) {
+        const uint16_t lost = (uint16_t)(sequence - (uint16_t)(link.inRtpSequence + 1U));
+        if (lost != 0 && lost < 0x8000U) {
+            link.inLostPackets += lost;
+        }
+        // The sender skipping audio shows up as a timestamp jump without lost packets.
+        const uint32_t jump = timestamp - link.inRtpNextTimestamp;
+        if (jump != 0 && jump < 0x80000000U) {
+            link.inSkippedFrames += jump;
+        }
+    }
+    const uint32_t frames = decodeSbcPayload(index, packet + headerLength, payloadLength);
+    link.inFrames += frames;
+    link.inRtpValid = true;
+    link.inRtpSequence = sequence;
+    link.inRtpNextTimestamp = timestamp + frames;
 }
 
-void BluetoothContext::resetA2dpStream() {
-    avdtpConfigured = false;
-    avdtpOpened = false;
-    avdtpStreaming = false;
-    sbcFragmentSize = 0;
-    sbcFragmentActive = false;
-    if (sbcDecoderInitialized) {
-        sbc_finish(&sbcDecoder);
-        sbcDecoderInitialized = false;
-    }
-}
-
-bool BluetoothContext::beginOutputConnect(const bt::Address &target) {
-    if (outputSignalingFd >= 0 || outputConnected.load(std::memory_order_acquire)) {
-        return false;
-    }
+void BluetoothContext::startInputAudio(int index) {
+    BluetoothLink &link = links[index];
+    link.inStreaming = true;
+    const uint32_t rate = bt::sbcSampleRate(link.inConfig);
     if (app && app->audio) {
-        app->audio->setBluetoothOutputActive(false);
-        outputDroppedAtStats = app->audio->bluetoothOutputDropped.load(std::memory_order_acquire);
-    }
-    outputTransaction = 0;
-    outputPendingSignal = 0;
-    outputCommandLength = 0;
-    outputCommandWritePending = false;
-    outputSeid = 0;
-    outputConfigured = false;
-    outputOpened = false;
-    outputStreaming.store(0, std::memory_order_release);
-    outputSuspendRequested = false;
-    outputStartRequested = false;
-    outputSilenceSinceMs = 0;
-    outputConnectDeadlineMs = 0;
-    outputMediaConnecting = false;
-    outputPacketLength = 0;
-    rtpSequence = 0;
-    rtpTimestamp = 0;
-
-    outputSignalingFd = socket(BT_AF_BLUETOOTH,
-                               SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC,
-                               BT_PROTO_L2CAP);
-    if (outputSignalingFd < 0) {
-        printf("[BT] [WARN] AVDTP signaling socket failed: %s\n", strerror(errno));
-        return false;
-    }
-    Security security = {BT_SECURITY_MEDIUM, 0};
-    if (setsockopt(outputSignalingFd, BT_SOL_BLUETOOTH, BT_SECURITY_OPT,
-                   &security, sizeof(security)) < 0) {
-        printf("[BT] [WARN] could not require security for A2DP output: %s\n", strerror(errno));
-    }
-    L2capAddress remote = {};
-    remote.family = BT_AF_BLUETOOTH;
-    remote.psm = htole16(BT_PSM_AVDTP);
-    memcpy(remote.bdaddr, target.b, sizeof(remote.bdaddr));
-    if (connect(outputSignalingFd, (struct sockaddr *)&remote, sizeof(remote)) == 0) {
-        outputConnecting = false;
-        sendOutputCommand(0x01, nullptr, 0);
-    } else if (errno == EINPROGRESS) {
-        outputConnecting = true;
-    } else {
-        printf("[BT] [WARN] AVDTP signaling connect failed: %s\n", strerror(errno));
-        close(outputSignalingFd);
-        outputSignalingFd = -1;
-        return false;
-    }
-    outputConnectDeadlineMs = bt::monotonicMs() + BT_OUTPUT_CONNECT_TIMEOUT_MS;
-    printf("[BT] [INFO] connecting A2DP source to hci%d peer\n", devId);
-    return true;
-}
-
-void BluetoothContext::sendOutputCommand(uint8_t signal, const uint8_t *payload, size_t length) {
-    if (outputSignalingFd < 0 || length > sizeof(outputCommandPacket) - 2U ||
-        outputPendingSignal != 0 || outputCommandWritePending) {
-        disconnectOutput("invalid AVDTP command");
-        return;
-    }
-    const uint8_t transaction = outputTransaction++ & 0x0F;
-    outputCommandPacket[0] = (uint8_t)(transaction << 4);
-    outputCommandPacket[1] = signal;
-    if (payload && length > 0) {
-        memcpy(outputCommandPacket + 2, payload, length);
-    }
-    outputCommandLength = length + 2U;
-    outputPendingSignal = signal;
-    ssize_t sent = send(outputSignalingFd, outputCommandPacket, outputCommandLength, MSG_NOSIGNAL);
-    if (sent != (ssize_t)outputCommandLength) {
-        if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            outputCommandWritePending = true;
-            return;
-        }
-        disconnectOutput(sent < 0 ? strerror(errno) : "short AVDTP command write");
-        return;
-    }
-    outputCommandLength = 0;
-}
-
-void BluetoothContext::handleOutputSignalingWritable() {
-    if (outputSignalingFd < 0 || !outputCommandWritePending ||
-        outputCommandLength == 0) {
-        return;
-    }
-    ssize_t sent = send(outputSignalingFd, outputCommandPacket, outputCommandLength, MSG_NOSIGNAL);
-    if (sent == (ssize_t)outputCommandLength) {
-        outputCommandLength = 0;
-        outputCommandWritePending = false;
-        return;
-    }
-    if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        return;
-    }
-    disconnectOutput(sent < 0 ? strerror(errno) : "short AVDTP command write");
-}
-
-void BluetoothContext::handleOutputSignaling() {
-    uint8_t packet[1024] = {};
-    ssize_t length = read(outputSignalingFd, packet, sizeof(packet));
-    if (length < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        return;
-    }
-    if (length < 2) {
-        disconnectOutput(length < 0 ? strerror(errno) : "AVDTP peer disconnected");
-        return;
-    }
-    const uint8_t transaction = packet[0] >> 4;
-    const uint8_t packetType = (packet[0] >> 2) & 0x03;
-    const uint8_t messageType = packet[0] & 0x03;
-    const uint8_t signal = packet[1] & 0x3F;
-    if (packetType != 0 || transaction != ((outputTransaction - 1U) & 0x0FU) ||
-        signal != outputPendingSignal) {
-        return;
-    }
-    if (messageType != 2) {
-        uint8_t error = length >= 4 ? packet[3] : 0;
-        if (signal == 0x09) {
-            outputSuspendSupported = false;
-            outputSuspendRequested = false;
-            outputPendingSignal = 0;
-            outputCommandLength = 0;
-            outputCommandWritePending = false;
-            outputSilenceSinceMs = bt::monotonicMs();
-            setMessage("Connected; this device does not support idle audio pause");
-            printf("[BT] [INFO] A2DP peer rejected idle suspend (0x%02x)\n", error);
-            return;
-        }
-        char message[BT_MESSAGE_MAX];
-        snprintf(message, sizeof(message), "AVDTP signal 0x%02x rejected (0x%02x)", signal, error);
-        disconnectOutput(message);
-        return;
-    }
-    outputPendingSignal = 0;
-    outputCommandLength = 0;
-    outputCommandWritePending = false;
-    advanceOutputNegotiation(signal, packet + 2, (size_t)length - 2U);
-}
-
-void BluetoothContext::advanceOutputNegotiation(uint8_t signal,
-                                                const uint8_t *payload,
-                                                size_t length) {
-    if (signal == 0x01) {
-        bool foundSink = false;
-        for (size_t offset = 0; offset + 2 <= length; offset += 2) {
-            uint8_t mediaType = (payload[offset + 1] >> 4) & 0x0F;
-            bool isSink = (payload[offset + 1] & 0x08U) != 0;
-            if (mediaType == 0 && isSink) {
-                outputSeid = payload[offset] >> 2;
-                foundSink = true;
-                break;
-            }
-        }
-        if (!foundSink) {
-            disconnectOutput("peer has no A2DP Sink endpoint");
-            return;
-        }
-        uint8_t seid = (uint8_t)(outputSeid << 2);
-        sendOutputCommand(0x02, &seid, 1);
-        return;
-    }
-
-    if (signal == 0x02 || signal == 0x0C) {
-        const uint8_t *remoteSbc = nullptr;
-        for (size_t offset = 0; offset + 2 <= length;) {
-            const uint8_t category = payload[offset++];
-            const uint8_t categoryLength = payload[offset++];
-            if (offset + categoryLength > length) {
-                break;
-            }
-            if (category == 0x07 && categoryLength == 6 &&
-                payload[offset] == 0 && payload[offset + 1] == 0) {
-                remoteSbc = payload + offset + 2;
-            }
-            offset += categoryLength;
-        }
-        if (!remoteSbc || (remoteSbc[0] & 0x10U) == 0) {
-            disconnectOutput("peer SBC capabilities do not include 48 kHz");
-            return;
-        }
-        uint8_t channelMode = 0;
-        if (remoteSbc[0] & 0x01U) channelMode = 0x01; // joint stereo
-        else if (remoteSbc[0] & 0x02U) channelMode = 0x02; // stereo
-        else if (remoteSbc[0] & 0x04U) channelMode = 0x04; // dual channel
-        if (channelMode == 0) {
-            disconnectOutput("peer has no stereo SBC mode");
-            return;
-        }
-        uint8_t selected[4] = {};
-        selected[0] = (uint8_t)(0x10U | channelMode);
-        if (remoteSbc[1] & 0x10U) selected[1] |= 0x10U;
-        else if (remoteSbc[1] & 0x20U) selected[1] |= 0x20U;
-        else if (remoteSbc[1] & 0x40U) selected[1] |= 0x40U;
-        else if (remoteSbc[1] & 0x80U) selected[1] |= 0x80U;
-        if (remoteSbc[1] & 0x04U) selected[1] |= 0x04U;
-        else if (remoteSbc[1] & 0x08U) selected[1] |= 0x08U;
-        if (remoteSbc[1] & 0x01U) selected[1] |= 0x01U;
-        else if (remoteSbc[1] & 0x02U) selected[1] |= 0x02U;
-        if ((selected[1] & 0xFCU) == 0 || (selected[1] & 0x03U) == 0) {
-            disconnectOutput("peer has no compatible SBC framing");
-            return;
-        }
-        selected[2] = remoteSbc[2] > 2 ? remoteSbc[2] : 2;
-        selected[3] = remoteSbc[3] < BT_A2DP_TARGET_BITPOOL
-            ? remoteSbc[3] : BT_A2DP_TARGET_BITPOOL;
-        if (selected[3] < selected[2]) {
-            disconnectOutput("peer SBC bitpool range is invalid");
-            return;
-        }
-        if (sbcEncoderInitialized) {
-            sbc_finish(&sbcEncoder);
-            sbcEncoderInitialized = false;
-        }
-        if (sbc_init_a2dp(&sbcEncoder, 0, selected, sizeof(selected)) < 0) {
-            disconnectOutput("SBC encoder rejected peer configuration");
-            return;
-        }
-        sbcEncoder.bitpool = selected[3];
-        sbcEncoderInitialized = true;
-         printf("[BT] [INFO] SBC output config: frequency=%u mode=%u blocks=%u subbands=%u bitpool=%u frame_length=%zu code_size=%zu\n",
-             sbcEncoder.frequency == SBC_FREQ_48000 ? 48000U :
-             sbcEncoder.frequency == SBC_FREQ_44100 ? 44100U :
-             sbcEncoder.frequency == SBC_FREQ_32000 ? 32000U : 16000U,
-             (unsigned)sbcEncoder.mode,
-             sbcEncoder.blocks == SBC_BLK_16 ? 16U :
-             sbcEncoder.blocks == SBC_BLK_12 ? 12U :
-             sbcEncoder.blocks == SBC_BLK_8 ? 8U : 4U,
-             sbcEncoder.subbands == SBC_SB_8 ? 8U : 4U,
-             (unsigned)sbcEncoder.bitpool,
-             sbc_get_frame_length(&sbcEncoder),
-             sbc_get_codesize(&sbcEncoder));
-        uint8_t config[10] = {
-            (uint8_t)(outputSeid << 2),
-            (uint8_t)(2U << 2),
-            0x01, 0x00,
-            0x07, 0x06, 0x00, 0x00,
-            selected[0], selected[1],
-        };
-        uint8_t fullConfig[12] = {};
-        memcpy(fullConfig, config, sizeof(config));
-        fullConfig[10] = selected[2];
-        fullConfig[11] = selected[3];
-        outputConfigured = true;
-        sendOutputCommand(0x03, fullConfig, sizeof(fullConfig));
-        return;
-    }
-
-    if (signal == 0x03) {
-        if (!outputConfigured) {
-            disconnectOutput("A2DP configuration was not initialized");
-            return;
-        }
-        outputOpened = false;
-        uint8_t seid = (uint8_t)(outputSeid << 2);
-        sendOutputCommand(0x06, &seid, 1);
-        return;
-    }
-
-    if (signal == 0x06) {
-        outputOpened = true;
-        if (!connectOutputMedia()) {
-            disconnectOutput("could not open A2DP media channel");
-        }
-        return;
-    }
-
-    if (signal == 0x07) {
-        outputConnecting = false;
-        outputConnectingStatus.store(0, std::memory_order_release);
-        outputPendingSignal = 0;
-        outputCommandLength = 0;
-        outputCommandWritePending = false;
-        outputConnectDeadlineMs = 0;
-        outputStartRequested = false;
-        outputSuspendRequested = false;
-        outputStreaming.store(1, std::memory_order_release);
-        if (!outputConnected.exchange(1, std::memory_order_acq_rel)) {
-            audiox::audioHealth.devicesChanged();
-        }
-        outputSilenceSinceMs = bt::monotonicMs();
-        if (app && app->audio) {
-            app->audio->setBluetoothOutputActive(true);
-        }
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            autoConnectBackoffMs = BT_AUTOCONNECT_RETRY_MIN_MS;
-            autoConnectRetryMs = 0;
-        }
-        setMessage("Connected to A2DP output");
-        printf("[BT] [INFO] A2DP output stream started\n");
-        return;
-    }
-
-    if (signal == 0x09) {
-        outputStreaming.store(0, std::memory_order_release);
-        outputSuspendRequested = false;
-        outputSuspendSupported = true;
-        outputStartRequested = false;
-        outputSilenceSinceMs = 0;
-        if (app && app->audio) {
-            app->audio->setBluetoothOutputActive(false);
-        }
-        setMessage("Connected; audio paused while idle");
-    }
-}
-
-bool BluetoothContext::connectOutputMedia() {
-    outputMediaFd = socket(BT_AF_BLUETOOTH,
-                           SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC,
-                           BT_PROTO_L2CAP);
-    if (outputMediaFd < 0) {
-        return false;
-    }
-    Security security = {BT_SECURITY_MEDIUM, 0};
-    (void)setsockopt(outputMediaFd, BT_SOL_BLUETOOTH, BT_SECURITY_OPT,
-                     &security, sizeof(security));
-    int sendBufferSize = BT_A2DP_MEDIA_SNDBUF;
-    if (setsockopt(outputMediaFd, SOL_SOCKET, SO_SNDBUF,
-                   &sendBufferSize, sizeof(sendBufferSize)) < 0) {
-        printf("[BT] [WARN] could not limit A2DP media send buffer: %s\n", strerror(errno));
-    }
-    L2capOptions l2capOptions = {};
-    l2capOptions.omtu = BT_A2DP_REQUESTED_MEDIA_MTU;
-    l2capOptions.imtu = BT_A2DP_REQUESTED_MEDIA_MTU;
-    l2capOptions.flushTo = BT_A2DP_FLUSH_TIMEOUT_MS;
-    if (setsockopt(outputMediaFd, BT_SOL_L2CAP, BT_L2CAP_OPTIONS,
-                   &l2capOptions, sizeof(l2capOptions)) < 0) {
-        printf("[BT] [WARN] could not request larger A2DP media MTU: %s\n", strerror(errno));
-    }
-    L2capAddress remote = {};
-    remote.family = BT_AF_BLUETOOTH;
-    remote.psm = htole16(BT_PSM_AVDTP);
-    memcpy(remote.bdaddr, outputTarget.b, sizeof(remote.bdaddr));
-    if (connect(outputMediaFd, (struct sockaddr *)&remote, sizeof(remote)) == 0) {
-        if (!readOutputMediaMtu()) {
-            close(outputMediaFd);
-            outputMediaFd = -1;
-            return false;
-        }
-        const uint8_t seid = (uint8_t)(outputSeid << 2);
-        sendOutputCommand(0x07, &seid, 1);
-        return true;
-    }
-    if (errno == EINPROGRESS) {
-        outputMediaConnecting = true;
-        return true;
-    }
-    close(outputMediaFd);
-    outputMediaFd = -1;
-    return false;
-}
-
-bool BluetoothContext::readOutputMediaMtu() {
-    if (outputMediaFd < 0) {
-        return false;
-    }
-    L2capOptions options = {};
-    socklen_t length = sizeof(options);
-    if (getsockopt(outputMediaFd, BT_SOL_L2CAP, BT_L2CAP_OPTIONS,
-                   &options, &length) < 0 || length < sizeof(options)) {
-        printf("[BT] [WARN] L2CAP_OPTIONS read failed: %s\n", strerror(errno));
-        return false;
-    }
-    uint16_t mtu = options.omtu;
-    if (mtu < BT_A2DP_DEFAULT_MEDIA_MTU) {
-        mtu = BT_A2DP_DEFAULT_MEDIA_MTU;
-    }
-    if (mtu > BT_A2DP_MAX_MEDIA_MTU) {
-        mtu = BT_A2DP_MAX_MEDIA_MTU;
-    }
-    outputMediaMtu = mtu;
-    printf("[BT] [INFO] A2DP media MTU: outgoing=%u incoming=%u\n",
-           (unsigned)options.omtu,
-           (unsigned)options.imtu);
-    return true;
-}
-
-void BluetoothContext::handleOutputMediaWritable() {
-    if (outputMediaFd < 0 || outputPacketLength == 0) {
-        return;
-    }
-    ssize_t sent = send(outputMediaFd, outputPacket, outputPacketLength, MSG_NOSIGNAL);
-    if (sent == (ssize_t)outputPacketLength) {
-        outputPacketLength = 0;
-        return;
-    }
-    if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        return;
-    }
-    disconnectOutput(sent < 0 ? strerror(errno) : "short A2DP media write");
-}
-
-void BluetoothContext::pumpOutputAudio() {
-    if (!outputConnected.load(std::memory_order_acquire) || !app || !app->audio) {
-        return;
+        BluetoothInputStream &stream = app->audio->bluetoothInputs[index];
+        stream.start(bt::packAddress(link.address.b), rate);
+        link.inUnderrunsLogged = stream.underruns.load(std::memory_order_relaxed);
+        link.inOverflowsLogged = stream.overflows.load(std::memory_order_relaxed);
+        link.inDroppedLogged = stream.dropped.load(std::memory_order_relaxed);
     }
     const uint64_t nowMs = bt::monotonicMs();
-    const bool signalActive =
-        app->audio->bluetoothOutputSignalActive.load(std::memory_order_acquire) != 0;
-    const bool streaming = outputStreaming.load(std::memory_order_acquire) != 0;
-    if (streaming) {
+    link.inStatsNextMs = nowMs + BT_INPUT_STATS_INTERVAL_MS;
+    link.inStatsStartMs = nowMs;
+    link.inLastPacketMs = 0;
+    link.inPackets = 0;
+    link.inFrames = 0;
+    link.inMaxGapMs = 0;
+    link.inLongGaps = 0;
+    link.inLostPackets = 0;
+    link.inSkippedFrames = 0;
+    link.inDecodeErrors = 0;
+    link.inRtpValid = false;
+    char addressText[BT_ADDRESS_TEXT] = {};
+    bt::formatAddress(link.address, addressText, sizeof(addressText));
+    printf("[BT] [INFO] A2DP input stream started from %s at %u Hz\n", addressText, rate);
+}
+
+// Report actual input trouble, not periodic healthy-stream telemetry.
+void BluetoothContext::logInputStats(int index, uint64_t nowMs, bool force) {
+    BluetoothLink &link = links[index];
+    if (!app || !app->audio || (!force && nowMs < link.inStatsNextMs)) {
+        return;
+    }
+    const uint64_t elapsedMs = nowMs > link.inStatsStartMs ? nowMs - link.inStatsStartMs : 0;
+    link.inStatsNextMs = nowMs + BT_INPUT_STATS_INTERVAL_MS;
+    link.inStatsStartMs = nowMs;
+    const BluetoothInputStream &stream = app->audio->bluetoothInputs[index];
+    const uint32_t underruns = stream.underruns.load(std::memory_order_relaxed);
+    const uint32_t overflows = stream.overflows.load(std::memory_order_relaxed);
+    const uint32_t dropped = stream.dropped.load(std::memory_order_relaxed);
+    const uint32_t newUnderruns = underruns - link.inUnderrunsLogged;
+    const uint32_t newOverflows = overflows - link.inOverflowsLogged;
+    const uint32_t newDropped = dropped - link.inDroppedLogged;
+    link.inUnderrunsLogged = underruns;
+    link.inOverflowsLogged = overflows;
+    link.inDroppedLogged = dropped;
+    const uint32_t fill = stream.write.load(std::memory_order_relaxed) -
+                          stream.read.load(std::memory_order_relaxed);
+    const uint32_t arrivalRate = elapsedMs >= 1000U ? (uint32_t)((uint64_t)link.inFrames * 1000U / elapsedMs) : 0;
+    const bool trouble = newUnderruns || newOverflows || newDropped || link.inLostPackets ||
+                         link.inSkippedFrames || link.inDecodeErrors;
+    char addressText[BT_ADDRESS_TEXT] = {};
+    bt::formatAddress(link.address, addressText, sizeof(addressText));
+    if (trouble) {
+        printf("[BT] [WARN] A2DP input from %s: rate=%u received=%u/s packets=%u max_gap=%ums gaps_over_60ms=%u "
+               "lost_packets=%u skipped_by_sender=%u decode_errors=%u underruns=%u overflows=%u dropped_frames=%u "
+               "buffered=%u target=%u\n",
+               addressText, stream.sampleRate.load(std::memory_order_relaxed), arrivalRate, link.inPackets,
+               link.inMaxGapMs, link.inLongGaps, link.inLostPackets, link.inSkippedFrames, link.inDecodeErrors,
+               newUnderruns, newOverflows, newDropped, fill, stream.targetFill());
+    }
+    link.inPackets = 0;
+    link.inFrames = 0;
+    link.inMaxGapMs = 0;
+    link.inLongGaps = 0;
+    link.inLostPackets = 0;
+    link.inSkippedFrames = 0;
+    link.inDecodeErrors = 0;
+}
+
+void BluetoothContext::flushOutputPacket(int index) {
+    BluetoothLink &link = links[index];
+    if (link.outMediaFd < 0 || link.packetLength == 0) {
+        return;
+    }
+    const ssize_t sent = send(link.outMediaFd, link.packet, link.packetLength, MSG_NOSIGNAL);
+    if (sent == (ssize_t)link.packetLength) {
+        link.packetLength = 0;
+        return;
+    }
+    if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        return;
+    }
+    closeOutputStream(index, sent < 0 ? strerror(errno) : "short A2DP media write");
+}
+
+void BluetoothContext::pumpOutputAudio(int index) {
+    BluetoothLink &link = links[index];
+    if (!link.used || !link.outUp || !app || !app->audio) {
+        return;
+    }
+    BluetoothOutputStream &slot = app->audio->bluetoothOutputs[index];
+    const uint64_t nowMs = bt::monotonicMs();
+    const bool signalActive = slot.signalActive.load(std::memory_order_acquire) != 0;
+    // Input commands share the signaling channel but do not block audio.
+    const bool outputCommandPending = link.pendingSignal != 0 && !link.pendingInput;
+    const bool commandSlotBusy = link.pendingSignal != 0 || link.commandWritePending;
+    if (link.outStreaming) {
         if (signalActive) {
-            outputSilenceSinceMs = 0;
-        } else if (outputSilenceSinceMs == 0) {
-            outputSilenceSinceMs = nowMs;
-        } else if (outputSuspendSupported && !outputSuspendRequested && outputPendingSignal == 0 &&
-                   outputPacketLength == 0 &&
-                   nowMs - outputSilenceSinceMs >= BT_OUTPUT_SILENCE_THRESHOLD) {
-            const uint8_t seid = (uint8_t)(outputSeid << 2);
-            outputSuspendRequested = true;
-            sendOutputCommand(0x09, &seid, 1);
-            return;
-        }
-    } else {
-        if (!signalActive || outputPendingSignal != 0 || outputStartRequested) {
-            if (!signalActive &&
-                app->audio->bluetoothOutputActive.load(std::memory_order_acquire)) {
-                app->audio->setBluetoothOutputActive(false);
+            link.silenceSinceMs = 0;
+        } else if (link.silenceSinceMs == 0) {
+            link.silenceSinceMs = nowMs;
+        } else if (link.outSuspendSupported && !link.outSuspendRequested && !commandSlotBusy &&
+                   link.packetLength == 0 &&
+                   nowMs - link.silenceSinceMs >= BT_OUTPUT_SILENCE_THRESHOLD) {
+            const uint8_t seid = (uint8_t)(link.remoteSinkSeid << 2);
+            link.outSuspendRequested = true;
+            if (!sendCommand(index, AVDTP_SUSPEND, &seid, 1, false)) {
+                link.outSuspendRequested = false;
             }
             return;
         }
-        if (!app->audio->bluetoothOutputActive.load(std::memory_order_acquire)) {
-            app->audio->setBluetoothOutputActive(true);
+    } else {
+        if (!signalActive || outputCommandPending || link.outStartRequested) {
+            if (!signalActive && slot.active.load(std::memory_order_acquire)) {
+                slot.setActive(false);
+            }
+            return;
+        }
+        if (!slot.active.load(std::memory_order_acquire)) {
+            slot.setActive(true);
         }
     }
 
-    if (nowMs >= outputStatsNextMs) {
-        const uint32_t dropped = app->audio->bluetoothOutputDropped.load(std::memory_order_relaxed);
-        const uint32_t droppedThisSecond = dropped - outputDroppedAtStats;
-        outputDroppedAtStats = dropped;
-        outputStatsNextMs = nowMs + 1000ULL;
-        if (droppedThisSecond > SAMPLE_RATE / 20U) {
-            disconnectOutput("PCM output queue is overrunning; stopping glitchy stream");
+    if (nowMs >= link.statsNextMs) {
+        const uint32_t dropped = slot.dropped.load(std::memory_order_relaxed);
+        const uint32_t droppedThisSecond = dropped - link.droppedAtStats;
+        link.droppedAtStats = dropped;
+        const bool firstSample = link.statsNextMs == 0;
+        link.statsNextMs = nowMs + 1000ULL;
+        if (!firstSample && droppedThisSecond > SAMPLE_RATE / 20U) {
+            closeOutputStream(index, "PCM output queue is overrunning; stopping glitchy stream");
             return;
         }
     }
-    if (outputPacketLength != 0 || !sbcEncoderInitialized || outputMediaFd < 0 ||
-        outputSuspendRequested || outputPendingSignal != 0) {
+    if (link.packetLength != 0 || !link.encoderReady || link.outMediaFd < 0 ||
+        link.outSuspendRequested || outputCommandPending) {
         return;
     }
-    const size_t codeSize = sbc_get_codesize(&sbcEncoder);
+    const size_t codeSize = sbc_get_codesize(&link.encoder);
     if (codeSize == 0 || codeSize > 512 || (codeSize % 4) != 0) {
-        disconnectOutput("unsupported negotiated SBC frame size");
+        closeOutputStream(index, "unsupported negotiated SBC frame size");
         return;
     }
     const uint32_t samplesPerFrame = (uint32_t)(codeSize / 4);
-    const size_t sbcFrameLength = sbc_get_frame_length(&sbcEncoder);
-    if (sbcFrameLength == 0 || sbcFrameLength >= outputMediaMtu - BT_RTP_SBC_HEADER_SIZE) {
-        disconnectOutput("SBC frame does not fit media MTU");
+    const size_t sbcFrameLength = sbc_get_frame_length(&link.encoder);
+    if (sbcFrameLength == 0 || sbcFrameLength >= link.mediaMtu - BT_RTP_SBC_HEADER_SIZE) {
+        closeOutputStream(index, "SBC frame does not fit media MTU");
         return;
     }
-    uint32_t frameCount = (outputMediaMtu - BT_RTP_SBC_HEADER_SIZE) / (uint32_t)sbcFrameLength;
+    uint32_t frameCount = (link.mediaMtu - BT_RTP_SBC_HEADER_SIZE) / (uint32_t)sbcFrameLength;
     if (frameCount > BT_MAX_SBC_FRAMES_PER_PACKET) {
         frameCount = BT_MAX_SBC_FRAMES_PER_PACKET;
     }
     if (frameCount < 3U) {
-        disconnectOutput("media MTU permits fewer than three SBC frames per packet");
+        closeOutputStream(index, "media MTU permits fewer than three SBC frames per packet");
         return;
     }
-    outputFramesPerPacket = (uint8_t)frameCount;
     const uint32_t pcmFrames = samplesPerFrame * frameCount;
-    if (!streaming) {
-        if (app->audio->getBluetoothOutputAvailable() < pcmFrames) {
+    if (!link.outStreaming) {
+        if (commandSlotBusy || slot.available() < pcmFrames) {
             return;
         }
-        const uint8_t seid = (uint8_t)(outputSeid << 2);
-        outputStartRequested = true;
-        sendOutputCommand(0x07, &seid, 1);
+        const uint8_t seid = (uint8_t)(link.remoteSinkSeid << 2);
+        link.outStartRequested = sendCommand(index, AVDTP_START, &seid, 1, false);
         return;
     }
-    app->audio->updateBluetoothOutputRate(pcmFrames, nowMs);
-    if (app->audio->getBluetoothOutputAvailable() < pcmFrames) {
+    slot.updateRate(pcmFrames, nowMs);
+    if (slot.available() < pcmFrames) {
         return;
     }
     int16_t pcm[BT_MAX_SBC_FRAMES_PER_PACKET * 128U * 2U];
-    if (pcmFrames > BT_MAX_SBC_FRAMES_PER_PACKET * 128U ||
-        app->audio->resampleBluetoothOutputPcm(pcm, pcmFrames) != pcmFrames) {
+    if (pcmFrames > BT_MAX_SBC_FRAMES_PER_PACKET * 128U || slot.resample(pcm, pcmFrames) != pcmFrames) {
         return;
     }
 
-    uint8_t packet[BT_A2DP_MAX_MEDIA_MTU] = {};
+    uint8_t *packet = link.packet;
+    const size_t capacity = link.mediaMtu < sizeof(link.packet) ? link.mediaMtu : sizeof(link.packet);
     packet[0] = 0x80;
     packet[1] = 96;
-    writeBe16(packet + 2, (uint16_t)rtpSequence++);
-    packet[4] = (uint8_t)(rtpTimestamp >> 24);
-    packet[5] = (uint8_t)(rtpTimestamp >> 16);
-    packet[6] = (uint8_t)(rtpTimestamp >> 8);
-    packet[7] = (uint8_t)rtpTimestamp;
+    writeBe16(packet + 2, (uint16_t)link.rtpSequence++);
+    packet[4] = (uint8_t)(link.rtpTimestamp >> 24);
+    packet[5] = (uint8_t)(link.rtpTimestamp >> 16);
+    packet[6] = (uint8_t)(link.rtpTimestamp >> 8);
+    packet[7] = (uint8_t)link.rtpTimestamp;
     packet[8] = 'A'; packet[9] = 'u'; packet[10] = 'd'; packet[11] = 'X';
     packet[12] = (uint8_t)frameCount;
     size_t packetLength = BT_RTP_SBC_HEADER_SIZE;
     for (uint32_t frame = 0; frame < frameCount; ++frame) {
         ssize_t written = 0;
-        ssize_t consumed = sbc_encode(&sbcEncoder,
-                                      pcm + frame * (uint32_t)(codeSize / sizeof(int16_t)),
-                                      codeSize,
-                                      packet + packetLength,
-                                      sizeof(packet) - packetLength,
-                                      &written);
+        const ssize_t consumed = sbc_encode(&link.encoder,
+                                            pcm + frame * (uint32_t)(codeSize / sizeof(int16_t)),
+                                            codeSize,
+                                            packet + packetLength,
+                                            capacity - packetLength,
+                                            &written);
         if (consumed != (ssize_t)codeSize || written <= 0 ||
-            (size_t)written > sizeof(packet) - packetLength) {
-            disconnectOutput("SBC encoding failed");
+            (size_t)written > capacity - packetLength) {
+            closeOutputStream(index, "SBC encoding failed");
             return;
         }
         packetLength += (size_t)written;
     }
-    rtpTimestamp += pcmFrames;
-    memcpy(outputPacket, packet, packetLength);
-    outputPacketLength = packetLength;
+    link.rtpTimestamp += pcmFrames;
+    link.packetLength = packetLength;
+    flushOutputPacket(index);
 }
 
-void BluetoothContext::disconnectOutput(const char *reason) {
+void BluetoothContext::closeInputStream(int index, const char *reason) {
+    BluetoothLink &link = links[index];
+    const bool wasActive = link.inConfigured || link.inStreaming || link.inMediaFd >= 0;
+    if (link.inStreaming) {
+        logInputStats(index, bt::monotonicMs(), true);
+    }
+    closeFd(link.inMediaFd);
     if (app && app->audio) {
-        app->audio->setBluetoothOutputActive(false);
+        app->audio->bluetoothInputs[index].stop();
     }
-    int *fds[] = {&outputSignalingFd, &outputMediaFd};
-    for (int *fd : fds) {
-        if (*fd >= 0) {
-            close(*fd);
-            *fd = -1;
-        }
+    if (link.decoderReady) {
+        sbc_finish(&link.decoder);
+        link.decoderReady = false;
     }
-    if (sbcEncoderInitialized) {
-        sbc_finish(&sbcEncoder);
-        sbcEncoderInitialized = false;
+    if (link.pendingSignal != 0 && link.pendingInput) {
+        link.pendingSignal = 0;
+        link.commandLength = 0;
+        link.commandWritePending = false;
     }
-    outputConnecting = false;
-    outputConnectingStatus.store(0, std::memory_order_release);
-    outputMediaConnecting = false;
-    outputConfigured = false;
-    outputOpened = false;
-    outputStreaming.store(0, std::memory_order_release);
-    outputSuspendRequested = false;
-    outputStartRequested = false;
-    if (outputConnected.exchange(0, std::memory_order_acq_rel)) audiox::audioHealth.devicesChanged();
-    outputPacketLength = 0;
-    outputStatsNextMs = 0;
-    outputSilenceSinceMs = 0;
-    outputConnectDeadlineMs = 0;
-    if (reason && reason[0]) {
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            if (strcmp(reason, "disconnected by user") == 0) {
-                autoConnectPaused = true;
-                autoConnectRetryMs = 0;
-            } else {
-                autoConnectRetryMs = bt::monotonicMs() + autoConnectBackoffMs;
-                if (autoConnectBackoffMs < BT_AUTOCONNECT_RETRY_MAX_MS) {
-                    autoConnectBackoffMs *= 2U;
-                    if (autoConnectBackoffMs > BT_AUTOCONNECT_RETRY_MAX_MS) {
-                        autoConnectBackoffMs = BT_AUTOCONNECT_RETRY_MAX_MS;
-                    }
-                }
-            }
-        }
-        printf("[BT] [INFO] A2DP output disconnected: %s\n", reason);
-        setMessage("A2DP output: %s", reason);
+    link.inConfigured = false;
+    link.inOpened = false;
+    link.inStreaming = false;
+    link.inRemoteActive = false;
+    link.inMediaConnecting = false;
+    link.inInitiateAtMs = 0;
+    link.fragmentSize = 0;
+    link.fragmentActive = false;
+    link.wantInput = false;
+    if (wasActive && reason && reason[0]) {
+        char addressText[BT_ADDRESS_TEXT] = {};
+        bt::formatAddress(link.address, addressText, sizeof(addressText));
+        printf("[BT] [INFO] A2DP input from %s closed: %s\n", addressText, reason);
     }
 }
+
+void BluetoothContext::closeOutputStream(int index, const char *reason) {
+    BluetoothLink &link = links[index];
+    if (!link.wantInput && !link.inConfigured) {
+        closeLink(index, reason);
+        return;
+    }
+    if (app && app->audio) {
+        BluetoothOutputStream &slot = app->audio->bluetoothOutputs[index];
+        slot.setActive(false);
+        slot.peer.store(0, std::memory_order_release);
+    }
+    closeFd(link.outMediaFd);
+    if (link.encoderReady) {
+        sbc_finish(&link.encoder);
+        link.encoderReady = false;
+    }
+    if (link.pendingSignal != 0 && !link.pendingInput) {
+        link.pendingSignal = 0;
+        link.commandLength = 0;
+        link.commandWritePending = false;
+    }
+    link.outStarting = false;
+    link.outConfigured = false;
+    link.outOpened = false;
+    link.outUp = false;
+    link.outStreaming = false;
+    link.outMediaConnecting = false;
+    link.outSuspendRequested = false;
+    link.outStartRequested = false;
+    link.packetLength = 0;
+    link.silenceSinceMs = 0;
+    link.statsNextMs = 0;
+    link.wantOutput = false;
+    link.connecting = false;
+    link.deadlineMs = 0;
+    if (reason && reason[0]) {
+        char label[BT_NAME_MAX] = {};
+        deviceLabel(link.address, label, sizeof(label));
+        printf("[BT] [INFO] A2DP output to %s stopped: %s\n", label, reason);
+        setMessage("%s output: %s", label, reason);
+    }
+}
+
+void BluetoothContext::closeLink(int index, const char *reason, bool hold) {
+    BluetoothLink &link = links[index];
+    if (!link.used) {
+        return;
+    }
+    const bt::Address address = link.address;
+    const bool wasOutput = link.outUp || link.wantOutput;
+    if (link.inStreaming) {
+        logInputStats(index, bt::monotonicMs(), true);
+    }
+    closeFd(link.signalingFd);
+    closeFd(link.inMediaFd);
+    closeFd(link.outMediaFd);
+    if (link.decoderReady) {
+        sbc_finish(&link.decoder);
+    }
+    if (link.encoderReady) {
+        sbc_finish(&link.encoder);
+    }
+    if (app && app->audio) {
+        app->audio->bluetoothInputs[index].stop();
+        BluetoothOutputStream &slot = app->audio->bluetoothOutputs[index];
+        slot.setActive(false);
+        slot.peer.store(0, std::memory_order_release);
+    }
+    resetLink(link);
+    // A device that hung up its input meant it; outputs are re-dialed.
+    if (hold && !wasOutput) {
+        holdAutoConnect(address);
+    }
+    if (reason && reason[0]) {
+        if (strcmp(reason, BT_USER_DISCONNECT_REASON) != 0) {
+            scheduleAutoConnectRetry(address);
+        }
+        char label[BT_NAME_MAX] = {};
+        deviceLabel(address, label, sizeof(label));
+        printf("[BT] [INFO] %s disconnected: %s\n", label, reason);
+        setMessage("%s: %s", label, reason);
+    }
+}
+
+void BluetoothContext::closeAllLinks(const char *reason) {
+    for (int i = 0; i < BT_MAX_LINKS; ++i) {
+        closeLink(i, reason);
+    }
+}
+
+void BluetoothContext::publishLinkStatus() {
+    BluetoothLinkStatus snapshot[BT_MAX_LINKS] = {};
+    for (int i = 0; i < BT_MAX_LINKS; ++i) {
+        const BluetoothLink &link = links[i];
+        if (!link.used) {
+            continue;
+        }
+        const bool signalingUp = link.signalingFd >= 0 && !link.signalingConnecting;
+        snapshot[i].used = true;
+        snapshot[i].address = link.address;
+        snapshot[i].connecting = link.connecting;
+        snapshot[i].outputConnected = link.outUp;
+        snapshot[i].outputStreaming = link.outUp && link.outStreaming;
+        snapshot[i].inputConnected = signalingUp &&
+            (link.inConfigured || (link.wantInput && !(link.wantOutput && !link.outUp)));
+        snapshot[i].inputStreaming = link.inStreaming;
+    }
+    bool devicesChanged = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        for (int i = 0; i < BT_MAX_LINKS; ++i) {
+            const BluetoothLinkStatus &before = linkStatus[i];
+            const BluetoothLinkStatus &after = snapshot[i];
+            if (before.used != after.used ||
+                before.outputConnected != after.outputConnected ||
+                before.inputConnected != after.inputConnected ||
+                (after.used && !bt::sameAddress(before.address, after.address))) {
+                devicesChanged = true;
+            }
+        }
+        memcpy(linkStatus, snapshot, sizeof(linkStatus));
+        if (request != BT_REQUEST_CONNECT) {
+            connectQueued = false;
+        }
+    }
+    if (devicesChanged) {
+        audiox::audioHealth.devicesChanged();
+    }
+}
+
+void BluetoothContext::runAutoConnect(uint64_t nowMs) {
+    if (!adapterReady || nowMs < autoConnectCheckMs) {
+        return;
+    }
+    autoConnectCheckMs = nowMs + BT_AUTOCONNECT_CHECK_MS;
+    bool anyStream = false;
+    bool freeLink = false;
+    for (const BluetoothLink &link : links) {
+        if (link.used && (link.connecting || link.signalingConnecting)) {
+            // Paging one device at a time keeps the radio free for the rest.
+            return;
+        }
+        if (!link.used) {
+            freeLink = true;
+            continue;
+        }
+        const bool signalingUp = link.signalingFd >= 0 && !link.signalingConnecting;
+        if (signalingUp &&
+            (link.inConfigured || (link.wantInput && !(link.wantOutput && !link.outUp)))) {
+            // A page blocks the radio for seconds and drops incoming media,
+            // even while the source is paused and about to resume. Absent
+            // speakers reconnect to AudioX by themselves when switched on.
+            return;
+        }
+        if (link.outUp || link.inStreaming) {
+            anyStream = true;
+        }
+    }
+    if (!freeLink) {
+        return;
+    }
+    // Paging an absent device steals air time from running streams.
+    if (anyStream && nowMs - lastAutoConnectMs < BT_AUTOCONNECT_STREAMING_GAP_MS) {
+        return;
+    }
+    bt::Address target = {};
+    bool found = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (scanning || pairing || deviceCount == 0) {
+            return;
+        }
+        for (size_t offset = 0; offset < deviceCount; ++offset) {
+            const size_t index = (autoConnectNextDevice + offset) % deviceCount;
+            const BluetoothDevice &device = devices[index];
+            if (!device.paired || !device.classic || !device.autoConnect || device.autoConnectHeld ||
+                nowMs < device.autoConnectAtMs || findLink(device.address) >= 0) {
+                continue;
+            }
+            target = device.address;
+            autoConnectNextDevice = (index + 1U) % deviceCount;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        return;
+    }
+    char label[BT_NAME_MAX] = {};
+    deviceLabel(target, label, sizeof(label));
+    setMessage("Reconnecting to %s...", label);
+    lastAutoConnectMs = nowMs;
+    if (!beginConnect(target, true)) {
+        scheduleAutoConnectRetry(target);
+    }
+}
+
+void BluetoothContext::scheduleAutoConnectRetry(const bt::Address &address) {
+    std::lock_guard<std::mutex> lock(mutex);
+    BluetoothDevice *device = findDevice(address);
+    if (!device) {
+        return;
+    }
+    uint64_t backoff = device->autoConnectBackoffMs;
+    if (backoff < BT_AUTOCONNECT_RETRY_MIN_MS) {
+        backoff = BT_AUTOCONNECT_RETRY_MIN_MS;
+    }
+    device->autoConnectAtMs = bt::monotonicMs() + backoff;
+    backoff *= 2U;
+    device->autoConnectBackoffMs = backoff > BT_AUTOCONNECT_RETRY_MAX_MS ? BT_AUTOCONNECT_RETRY_MAX_MS : backoff;
+}
+
+void BluetoothContext::resetAutoConnectBackoff(const bt::Address &address) {
+    std::lock_guard<std::mutex> lock(mutex);
+    BluetoothDevice *device = findDevice(address);
+    if (device) {
+        device->autoConnectBackoffMs = BT_AUTOCONNECT_RETRY_MIN_MS;
+        device->autoConnectAtMs = 0;
+    }
+}
+
+void BluetoothContext::holdAutoConnect(const bt::Address &address) {
+    std::lock_guard<std::mutex> lock(mutex);
+    BluetoothDevice *device = findDevice(address);
+    if (device) {
+        device->autoConnectHeld = true;
+    }
+}
+
 
 void BluetoothContext::runScan() {
     static bt::DiscoveredDevice found[BT_MAX_DEVICES];
@@ -1862,11 +2713,10 @@ void BluetoothContext::runPair(const bt::Address &target) {
 }
 
 void BluetoothContext::runUnpair(const bt::Address &target) {
-    if (outputConnected.load(std::memory_order_acquire) && bt::sameAddress(outputTarget, target)) {
-        disconnectOutput("device forgotten");
-    }
-    if (outputConnectingStatus.load(std::memory_order_acquire) && bt::sameAddress(outputTarget, target)) {
-        disconnectOutput("connection cancelled for forget");
+    const int index = findLink(target);
+    if (index >= 0) {
+        holdAutoConnect(target);
+        closeLink(index, "device forgotten");
     }
 
     uint8_t params[7] = {};
@@ -1919,6 +2769,22 @@ void BluetoothContext::handleAgentEvent(const uint8_t *packet, size_t length) {
     bt::formatAddress(address, addressText, sizeof(addressText));
 
     switch (event) {
+    case BT_EVT_CONN_REQUEST: {
+        if (paramLength < 10 || params[9] != BT_LINK_TYPE_ACL) {
+            break;
+        }
+        const uint32_t classOfDevice = (uint32_t)params[6] |
+                                       ((uint32_t)params[7] << 8) |
+                                       ((uint32_t)params[8] << 16);
+        const uint8_t majorClass = (uint8_t)((classOfDevice >> 8) & 0x1FU);
+        printf("[BT] [INFO] connection request from %s (class 0x%06x)\n",
+               addressText, (unsigned)classOfDevice);
+        if (majorClass == BT_COD_MAJOR_PHONE) {
+            inboundPhone = address;
+            setDeviceRoles(address, 1, -1, "identified as a phone");
+        }
+        break;
+    }
     case BT_EVT_LINK_KEY_REQUEST: {
         uint8_t reply[22] = {};
         bool known = false;
@@ -1940,6 +2806,15 @@ void BluetoothContext::handleAgentEvent(const uint8_t *packet, size_t length) {
         break;
     }
     case BT_EVT_IO_CAPABILITY_REQUEST: {
+        if (!pairingAllowed(address)) {
+            const uint8_t reject[] = {
+                address.b[0], address.b[1], address.b[2], address.b[3], address.b[4], address.b[5],
+                BT_PAIRING_NOT_ALLOWED,
+            };
+            bt::writeCommand(agentFd, BT_CMD_IO_CAPABILITY_NEG_REPLY, reject, sizeof(reject));
+            printf("[BT] [WARN] rejected pairing from %s; pair new devices from AudioX\n", addressText);
+            break;
+        }
         const uint8_t reply[] = {
             address.b[0], address.b[1], address.b[2], address.b[3], address.b[4], address.b[5],
             BT_IO_CAP_NO_INPUT_NO_OUTPUT, 0x00, BT_AUTH_GENERAL_BONDING,
@@ -1957,6 +2832,11 @@ void BluetoothContext::handleAgentEvent(const uint8_t *packet, size_t length) {
         printf("[BT] [WARN] %s asked for a passkey; rejected\n", addressText);
         break;
     case BT_EVT_PIN_CODE_REQUEST: {
+        if (!pairingAllowed(address)) {
+            bt::writeCommand(agentFd, BT_CMD_PIN_CODE_NEG_REPLY, address.b, 6);
+            printf("[BT] [WARN] rejected PIN pairing from %s; pair new devices from AudioX\n", addressText);
+            break;
+        }
         uint8_t reply[23] = {};
         memcpy(reply, address.b, 6);
         reply[6] = 4;
@@ -1984,6 +2864,9 @@ void BluetoothContext::handleAgentEvent(const uint8_t *packet, size_t length) {
                 device->linkKeyType = params[22];
                 if (!device->paired) {
                     device->autoConnect = true;
+                }
+                if (bt::sameAddress(address, inboundPhone)) {
+                    device->audioSource = true;
                 }
                 device->paired = true;
             }
@@ -2023,7 +2906,122 @@ void BluetoothContext::handleAgentEvent(const uint8_t *packet, size_t length) {
     }
 }
 
-// Format: one device per line, "ADDRESS KEYHEX KEYTYPE NAME<TAB>AUTO=0|1".
+// AudioX is connectable, so only the device being paired from the web UI or a
+// device that is already paired (refreshing its key) may pair.
+bool BluetoothContext::pairingAllowed(const bt::Address &address) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (pairing && bt::sameAddress(address, pairTarget)) {
+        return true;
+    }
+    const BluetoothDevice *device = findDevice(address);
+    return device && device->paired;
+}
+
+// The link came up but the device refused the AVDTP channel, which is what a
+// phone (an A2DP source with no sink endpoint) does when AudioX calls it. After
+// repeated refusals, treat a device with unknown roles as an audio input so
+// auto-connect stops calling it. Devices already known as outputs are kept.
+void BluetoothContext::noteOutputChannelResult(const bt::Address &address, bool refused) {
+    bool markInput = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        BluetoothDevice *device = findDevice(address);
+        if (!device) {
+            return;
+        }
+        if (!refused || device->audioSource || device->audioSink) {
+            device->outputRefusals = 0;
+            return;
+        }
+        if (device->outputRefusals < UINT8_MAX) {
+            ++device->outputRefusals;
+        }
+        markInput = device->outputRefusals >= BT_OUTPUT_REFUSALS_BEFORE_INPUT;
+        if (markInput) {
+            device->outputRefusals = 0;
+        }
+    }
+    if (markInput) {
+        setDeviceRoles(address, 1, 0, "refused A2DP output repeatedly");
+        char addressText[BT_ADDRESS_TEXT] = {};
+        bt::formatAddress(address, addressText, sizeof(addressText));
+        setMessage("%s refused audio output; treating it as an audio input", addressText);
+    }
+}
+
+void BluetoothContext::setDeviceRoles(const bt::Address &address, int source, int sink,
+                                      const char *reason) {
+    if (bt::isZeroAddress(address)) {
+        return;
+    }
+    bool changed = false;
+    bool paired = false;
+    bool finalSource = false;
+    bool finalSink = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        BluetoothDevice *device = findDevice(address);
+        if (!device) {
+            return;
+        }
+        if (source >= 0 && device->audioSource != (source != 0)) {
+            device->audioSource = source != 0;
+            changed = true;
+        }
+        if (sink >= 0 && device->audioSink != (sink != 0)) {
+            device->audioSink = sink != 0;
+            changed = true;
+        }
+        paired = device->paired;
+        finalSource = device->audioSource;
+        finalSink = device->audioSink;
+    }
+    char addressText[BT_ADDRESS_TEXT] = {};
+    bt::formatAddress(address, addressText, sizeof(addressText));
+    if (changed) {
+        printf("[BT] [INFO] %s %s; roles: %s%s%s\n", addressText, reason,
+               finalSource ? "input" : "",
+               finalSource && finalSink ? " and " : "",
+               finalSink ? "output" : (finalSource ? " only, no output auto-connect" : "unknown"));
+        if (paired) {
+            savePaired();
+            if (app && app->audio && app->audio->reloadRoutingGraph() == RET_ERR) {
+                printf("[BT] [WARN] graph refresh after role change failed\n");
+            }
+        }
+    }
+}
+
+size_t BluetoothContext::copyRoutingDevices(BluetoothRoutingDevice *out, size_t cap) const {
+    if (!out || cap == 0) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(mutex);
+    size_t count = 0;
+    for (size_t i = 0; i < deviceCount && count < cap; ++i) {
+        const BluetoothDevice &device = devices[i];
+        if (!device.paired || !device.classic) {
+            continue;
+        }
+        const bool known = device.audioSource || device.audioSink;
+        BluetoothRoutingDevice &entry = out[count++];
+        entry.address = device.address;
+        snprintf(entry.name, sizeof(entry.name), "%s", device.name);
+        entry.input = !known || device.audioSource;
+        entry.output = !known || device.audioSink;
+        entry.connected = false;
+        for (const BluetoothLinkStatus &status : linkStatus) {
+            if (status.used && bt::sameAddress(status.address, device.address)) {
+                entry.connected = status.inputConnected || status.outputConnected;
+                break;
+            }
+        }
+    }
+    return count;
+}
+
+// Format: one device per line,
+// "ADDRESS KEYHEX KEYTYPE NAME<TAB>AUTO=0|1[<TAB>SOURCE=0|1<TAB>SINK=0|1]".
 void BluetoothContext::loadPaired() {
     FILE *fp = fopen(BT_PAIRED_FILE, "r");
     if (!fp) {
@@ -2055,11 +3053,25 @@ void BluetoothContext::loadPaired() {
             bool hasAutoMarker = false;
             if (autoMarker) {
                 unsigned enabled = 0;
-                char trailing = '\0';
-                if (sscanf(autoMarker, "\tAUTO=%u%c", &enabled, &trailing) == 1 && enabled <= 1) {
-                    device.autoConnect = enabled != 0;
-                    *autoMarker = '\0';
-                    hasAutoMarker = true;
+                unsigned source = 0;
+                unsigned sink = 0;
+                int consumed = 0;
+                if (sscanf(autoMarker, "\tAUTO=%u%n", &enabled, &consumed) == 1 && enabled <= 1) {
+                    const char *rest = autoMarker + consumed;
+                    int rolesConsumed = 0;
+                    bool valid = rest[0] == '\0';
+                    if (!valid &&
+                        sscanf(rest, "\tSOURCE=%u\tSINK=%u%n", &source, &sink, &rolesConsumed) == 2 &&
+                        source <= 1 && sink <= 1 && rest[rolesConsumed] == '\0') {
+                        valid = true;
+                    }
+                    if (valid) {
+                        device.autoConnect = enabled != 0;
+                        device.audioSource = source != 0;
+                        device.audioSink = sink != 0;
+                        *autoMarker = '\0';
+                        hasAutoMarker = true;
+                    }
                 }
             }
             if (hasAutoMarker && strcmp(name, "-") == 0) {
@@ -2098,10 +3110,12 @@ bool BluetoothContext::savePaired() {
             for (uint8_t byte : device.linkKey) {
                 fprintf(fp, "%02x", byte);
             }
-            fprintf(fp, " %u %s\tAUTO=%u\n",
+            fprintf(fp, " %u %s\tAUTO=%u\tSOURCE=%u\tSINK=%u\n",
                     (unsigned)device.linkKeyType,
                     device.name[0] ? device.name : "-",
-                    device.autoConnect ? 1U : 0U);
+                    device.autoConnect ? 1U : 0U,
+                    device.audioSource ? 1U : 0U,
+                    device.audioSink ? 1U : 0U);
         }
     }
     bool saved = fflush(fp) == 0;

@@ -148,8 +148,91 @@ test('saved devices expose an Auto-connect switch that persists changes', async 
   assert.equal(String(f.requests[0][1]), 'address=00:11:22:33:44:01&enabled=false');
 });
 
+test('saved audio inputs offer Auto-connect and show their connection state', async () => {
+  const f = fixture([
+    device('Speaker', '01', { paired: true }),
+    device('Phone', '02', { paired: true, auto_connect: true, audio_source: true }),
+    device('Headset', '03', { paired: true, audio_source: true, audio_sink: true }),
+  ]);
+  await f.load();
+  const switches = f.root.querySelectorAll('input');
+  assert.deepEqual(switches.map(input => input.attributes['aria-label']).sort(),
+    ['Auto-connect Headset', 'Auto-connect Phone', 'Auto-connect Speaker']);
+  assert.match(f.root.text, /Phone Audio input, not connected/);
+  assert.match(f.root.text, /Speaker Paired, not connected/);
+});
+
+test('connected devices report each direction and disconnect by address', async () => {
+  const f = fixture([
+    device('Phone', '02', { paired: true, connected: true, audio_source: true,
+      input_connected: true, input_streaming: false, output_connected: false }),
+    device('Transceiver', '03', { paired: true, connected: true, streaming: true, audio_source: true, audio_sink: true,
+      input_connected: true, input_streaming: true, output_connected: true, output_streaming: true }),
+  ]);
+  await f.load();
+  assert.match(f.root.text, /Phone Connected as audio input; waiting for audio/);
+  assert.match(f.root.text,
+    /Transceiver Connected as audio output · Connected as audio input; receiving audio/);
+  const disconnect = f.root.querySelectorAll('button')
+    .find(button => button.attributes['aria-label'] === 'Disconnect Phone');
+  await disconnect.listeners.click();
+  assert.deepEqual(f.requests[0], ['/api/bluetooth/disconnect', 'address=00:11:22:33:44:02']);
+});
+
 test('Bluetooth page exposes a checked and labelled switch with an explanation', () => {
   const html = fs.readFileSync(require.resolve('../web/index.html'), 'utf8');
   assert.match(html, /<label class="bluetooth-filter">\s*<input id="bluetooth-hide-unnamed"[^>]*role="switch"[^>]*checked[^>]*>\s*Hide unnamed devices\s*<\/label>/);
   assert.match(html, /id="bluetooth-filter-hint"[^>]*>Only Classic Bluetooth is scanned/);
+});
+
+function routingFixture(thingIds) {
+  const source = fs.readFileSync(require.resolve('../web/app.js'), 'utf8');
+  const slice = (start, end) => source.slice(source.indexOf(start), source.indexOf(end));
+  const nodeByThingId = new Map(thingIds.map(([id, inputs, outputs]) => [id, {
+    inputs: Array.from({ length: inputs }), outputs: Array.from({ length: outputs }),
+  }]));
+  const context = vm.createContext({
+    state: {
+      graph: {}, nodes: [], edges: [], dormantEdges: [], selectedEdgeIdx: -1, nodeByThingId,
+      graphCanvas: { setDirty() {} },
+    },
+    renderEdgesList() {},
+  });
+  vm.runInContext([
+    slice('function edgeKey(', 'function findEdgeIndex('),
+    slice('function formatRoutingText(', 'function makeThingsSignature('),
+    slice('function normalizeThingId(', 'function isDeviceNode('),
+    slice('function getOutputChannelCount(', 'function addEdgeFromConnection('),
+  ].join('\n'), context);
+  return context;
+}
+
+test('routing save keeps lines for Bluetooth devices that are not paired', () => {
+  const ctx = routingFixture([
+    ['alsa_usb_dev0_in', 0, 2],
+    ['alsa_usb_dev0_out', 2, 0],
+    ['bt_001122334401_out', 2, 0],
+  ]);
+  ctx.state.edges = [
+    { src: 'alsa_usb_dev0_in', dst: 'bt_001122334401_out', srcChannel: 0, dstChannel: 0 },
+    { src: 'alsa_usb_dev0_in', dst: 'bt_A4C6F0A57AA7_out', srcChannel: 0, dstChannel: 0 },
+    { src: 'bt_A4C6F0A57AA7_in', dst: 'alsa_usb_dev0_out', srcChannel: 1, dstChannel: 1 },
+    { src: 'bluetooth_in', dst: 'alsa_usb_dev0_out', srcChannel: 0, dstChannel: 0 },
+    { src: 'alsa_gone_dev0_in', dst: 'alsa_usb_dev0_out', srcChannel: 0, dstChannel: 0 },
+  ];
+  ctx.syncEdgesFromGraph();
+  assert.equal(ctx.state.edges.length, 1);
+  assert.equal(ctx.state.dormantEdges.length, 3);
+  const text = ctx.formatRoutingText();
+  assert.match(text, /edge=alsa_usb_dev0_in,bt_001122334401_out,0,0/);
+  assert.match(text, /edge=alsa_usb_dev0_in,bt_A4C6F0A57AA7_out,0,0/);
+  assert.match(text, /edge=bt_A4C6F0A57AA7_in,alsa_usb_dev0_out,1,1/);
+  assert.match(text, /edge=bluetooth_in,alsa_usb_dev0_out,0,0/);
+  assert.doesNotMatch(text, /alsa_gone/);
+
+  ctx.state.nodeByThingId.set('bt_A4C6F0A57AA7_in', { inputs: [], outputs: [{}, {}] });
+  ctx.syncEdgesFromGraph();
+  assert.equal(ctx.state.edges.length, 2);
+  assert.ok(ctx.state.edges.some(edge => edge.src === 'bt_A4C6F0A57AA7_in'));
+  assert.equal(ctx.state.dormantEdges.length, 2);
 });

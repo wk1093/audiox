@@ -38,6 +38,14 @@ $(OUT_DIR)/host/audiox-bluetooth-hci-test: tests/bluetooth_hci_test.cpp src/blue
 		-Wl,--wrap=socket -Wl,--wrap=bind -Wl,--wrap=setsockopt -Wl,--wrap=write \
 		-o "$@" tests/bluetooth_hci_test.cpp src/bluetooth/hci.cpp
 
+.PHONY: test-bluetooth-a2dp
+test-bluetooth-a2dp: $(OUT_DIR)/host/audiox-bluetooth-a2dp-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-bluetooth-a2dp-test: tests/bluetooth_a2dp_test.cpp src/bluetooth/a2dp.cpp include/bluetooth/a2dp.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/bluetooth_a2dp_test.cpp src/bluetooth/a2dp.cpp
+
 test-midi-docs: $(OUT_DIR)/host/audiox-midi-docs-test
 	@"$<"
 
@@ -70,6 +78,16 @@ test-audio-engine: $(AUDIO_ENGINE_TEST_BIN)
 
 test-display-hotplug: $(OUT_DIR)/host/audiox-display-hotplug-test
 	@"$<"
+
+.PHONY: test-audio-meters
+test-audio-meters: $(OUT_DIR)/host/audiox-audio-meters-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-audio-meters-test: tests/audio_meters_test.cpp src/audio/graph.cpp $(wildcard include/audio/*.hpp include/bluetooth/*.hpp include/config/*.hpp)
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-format-truncation -Iinclude \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections \
+		-o "$@" "$<" $(shell pkg-config --cflags alsa) -pthread
 
 $(OUT_DIR)/host/audiox-display-hotplug-test: tests/display_hotplug_test.cpp src/context.cpp \
 		src/framebuffer/hardware.cpp src/framebuffer/drawing.cpp src/framebuffer/ui.cpp src/touch/touch.cpp \

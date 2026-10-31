@@ -90,6 +90,7 @@
 #define HTTP_AUDIO_VOLUMES_PATH HTTP_API_PREFIX "audio/volumes"
 #define HTTP_AUDIO_VOLUME_SET_PATH HTTP_API_PREFIX "audio/volume/set"
 #define HTTP_AUDIO_DEVICES_PATH HTTP_API_PREFIX "audio/devices"
+#define HTTP_AUDIO_METERS_PATH HTTP_API_PREFIX "audio/meters"
 #define HTTP_AUDIO_RESCAN_PATH HTTP_API_PREFIX "audio/rescan"
 #define HTTP_FS_ROOT ROOT_MOUNT_POINT "/"
 #define HTTP_BOOT_CONFIG_FILE "/boot/config.txt"
@@ -1001,6 +1002,25 @@ static int handleAudioDevices(HttpServer *server,
 		return server->sendResponse(cfd, "500 Internal Server Error", "application/json; charset=utf-8", err, sizeof(err) - 1);
 	}
 
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
+}
+
+static int handleAudioMeters(HttpServer *server, int cfd, const char *method) {
+	if (!server || !server->app || !method) {
+		return -1;
+	}
+	if (strcmp(method, "GET") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+	if (!server->app->audio) {
+		static const char err[] = "audio unavailable\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	char out[HTTP_BODY_MAX];
+	if (server->app->audio->buildMetersJson(out, sizeof(out)) != RET_OK) {
+		static const char err[] = "encode failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
 }
 
@@ -3507,7 +3527,11 @@ static int handleBluetoothConnect(HttpServer *server,
 	return server->sendResponse(cfd, "202 Accepted", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
 }
 
-static int handleBluetoothDisconnect(HttpServer *server, int cfd, const char *method) {
+static int handleBluetoothDisconnect(HttpServer *server,
+							     int cfd,
+							     const char *method,
+							     const char *body,
+							     size_t body_len) {
 	if (!server || !method) {
 		return -1;
 	}
@@ -3519,9 +3543,18 @@ static int handleBluetoothDisconnect(HttpServer *server, int cfd, const char *me
 		static const char err[] = "{\"ok\":false,\"error\":\"bluetooth unavailable\"}\n";
 		return server->sendResponse(cfd, "503 Service Unavailable", "application/json; charset=utf-8", err, sizeof(err) - 1);
 	}
-	int rc = bluetooth->requestDisconnect();
+	// Optional: without an address every Bluetooth audio connection is closed.
+	char address[32] = {};
+	if (body && body_len > 0) {
+		(void)body_get_value(body, body_len, "address", address, sizeof(address));
+	}
+	int rc = bluetooth->requestDisconnect(address);
+	if (rc == RET_ERR) {
+		static const char bad[] = "{\"ok\":false,\"error\":\"invalid bluetooth address\"}\n";
+		return server->sendResponse(cfd, "400 Bad Request", "application/json; charset=utf-8", bad, sizeof(bad) - 1);
+	}
 	if (rc != RET_OK) {
-		static const char busy[] = "{\"ok\":false,\"error\":\"bluetooth output is not connected or is busy\"}\n";
+		static const char busy[] = "{\"ok\":false,\"error\":\"device is not connected or bluetooth is busy\"}\n";
 		return server->sendResponse(cfd, "409 Conflict", "application/json; charset=utf-8", busy, sizeof(busy) - 1);
 	}
 	static const char ok[] = "{\"ok\":true}\n";
@@ -4389,7 +4422,7 @@ int handleApiRequest(HttpServer *server,
 	}
 
 	if (strcmp(path, HTTP_BLUETOOTH_DISCONNECT_PATH) == 0) {
-		return handleBluetoothDisconnect(server, cfd, method);
+		return handleBluetoothDisconnect(server, cfd, method, body, body_len);
 	}
 
 	if (strcmp(path, HTTP_BLUETOOTH_UNPAIR_PATH) == 0) {
@@ -4485,6 +4518,10 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_AUDIO_DEVICES_PATH) == 0) {
 		return handleAudioDevices(server, cfd, method, path);
+	}
+
+	if (strcmp(path, HTTP_AUDIO_METERS_PATH) == 0) {
+		return handleAudioMeters(server, cfd, method);
 	}
 
 	if (strcmp(path, HTTP_AUDIO_RESCAN_PATH) == 0) {

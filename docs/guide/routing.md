@@ -15,9 +15,9 @@ restored when AudioX restarts.
 1. Open **Routing**. AudioX loads the current audio devices, effects, and saved
    connections. If the list is empty, check that the audio subsystem has started
    and reload the page.
-2. Find an input node, such as **USB Gadget In**, **Bluetooth In**, or an
-   `… In` ALSA device. Find a destination such as **USB Gadget Out**,
-   **Bluetooth Out**, or an `… Out` ALSA device.
+2. Find an input node, such as **USB Gadget In**, a **BT … In** node for a
+   paired Bluetooth device, or an `… In` ALSA device. Find a destination such
+   as **USB Gadget Out**, a **BT … Out** node, or an `… Out` ALSA device.
 3. Drag from an output socket on the source node to an input socket on the
    destination. The socket labels are one-based (`out 1`, `in 1`); the channel
    numbers shown in route details and saved files are zero-based (`[0]` is the
@@ -42,7 +42,7 @@ A route is directed. Its channels are written as
 
 ```text
 # Bluetooth input, through effect fx_1, to the USB audio host
-edge=bluetooth_in,fx_1,0,0
+edge=bt_A4C6F0A57AA7_in,fx_1,0,0
 edge=fx_1,usb_gadget_out,0,0
 ```
 
@@ -51,7 +51,7 @@ edit this file. The example uses channel 0 at each step. For stereo, make a
 separate route for channel 1:
 
 ```text
-edge=bluetooth_in,fx_1,1,1
+edge=bt_A4C6F0A57AA7_in,fx_1,1,1
 edge=fx_1,usb_gadget_out,1,1
 ```
 
@@ -62,12 +62,28 @@ edge=fx_1,usb_gadget_out,1,1
 | `usb_gadget_in` | Source (outputs) | USB host/computer playback entering AudioX. |
 | `usb_gadget_out` | Destination (inputs) | AudioX playback sent to the USB host/computer. |
 | `soundboard_out` | Source (outputs) | Soundboard audio. |
-| `bluetooth_in` | Source (outputs) | Audio received from a Bluetooth audio source. |
-| `bluetooth_out` | Destination (inputs) | Audio sent to the connected Bluetooth output device. |
+| `bt_<MAC>_in` | Source (outputs) | Audio received from one paired Bluetooth device, such as a phone. |
+| `bt_<MAC>_out` | Destination (inputs) | Audio sent to one paired Bluetooth headphone or speaker. |
 | `routing_helper` | Two inputs and two outputs | Optional two-channel pass-through node. |
 | `fx_1`, `fx_2`, … | Processing node | Effect IDs assigned when effects are created. |
 | `alsa_<stable-card-id>_devN_in` | Source (outputs) | Capture channels from a detected ALSA device. |
 | `alsa_<stable-card-id>_devN_out` | Destination (inputs) | Playback channels to a detected ALSA device. |
+
+Each paired Bluetooth device gets its own nodes. `<MAC>` is the device
+address as 12 uppercase hex digits without separators, so the phone
+`A4:C6:F0:A5:7A:A7` appears as `bt_A4C6F0A57AA7_in`. Devices that only send
+audio, such as phones, get only an `_in` node. Devices that only receive
+audio get only an `_out` node. A device that AudioX has not yet identified
+gets both. A Bluetooth node passes audio only while that device is
+connected; otherwise its input node is silent and its output node discards
+audio.
+
+Routes to a Bluetooth device that is not paired (for example after
+**Forget**) are not shown in the graph. **Save Routing** keeps them in the
+file untouched, and they come back when the device is paired again. Older
+configurations that used the single `bluetooth_in` or `bluetooth_out` node are
+converted to one route per paired device with that role. If no such device is
+paired yet, the old lines are kept until one is.
 
 The ALSA ID pattern is illustrative; the card ID and device number depend on
 the connected hardware. Use the exact ID shown in your graph. Effect IDs are
@@ -86,7 +102,7 @@ which is the reverse of how a USB host describes those same streams:
 
 For example, to listen to host playback through an ALSA device, route from
 `usb_gadget_in` to that device's `…_out` node. To record Bluetooth input on
-the host, route from `bluetooth_in` to `usb_gadget_out`. The USB node names
+the host, route from the device's `bt_<MAC>_in` node to `usb_gadget_out`. The USB node names
 describe AudioX/gadget stream direction, not the host application's playback
 or recording action.
 
@@ -98,7 +114,7 @@ configuration is represented by a separate line:
 
 ```text
 node=routing_helper
-edge=bluetooth_in,routing_helper,0,0
+edge=bt_A4C6F0A57AA7_in,routing_helper,0,0
 edge=routing_helper,fx_1,0,0
 edge=fx_1,usb_gadget_out,0,0
 ```

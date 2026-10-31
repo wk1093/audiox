@@ -98,7 +98,7 @@ If nothing enumerates, eliminate the data cable and power arrangement as causes 
 
 Advanced kernel-fault investigation can use a **3.3 V UART adapter**, never RS-232 or 5 V signaling. Connect ground and the selected Pi UART TX to the adapter RX; do not connect the adapter's power pin. Confirm the UART/pins for the board and Bluetooth overlay before wiring.
 
-The normal command line uses framebuffer consoles. Serial logging requires an appropriate console option, normally `console=serial0,115200`, while preserving the single-line command line and `rdinit=/init`. The Pi 4 default moves Bluetooth to mini-UART; Pi 5 has different UART defaults. This is diagnostic work, not a guaranteed login shell. See [Troubleshooting](/guide/troubleshooting) and [Development](/guide/development) before modifying boot files.
+The normal command line uses framebuffer consoles. Serial logging requires an appropriate console option, normally `console=serial0,115200`, while preserving the single-line command line and `rdinit=/init`. On the Pi 4, Bluetooth keeps the PL011 UART, so `serial0` (GPIO 14/15) is the mini UART. The optional `CONFIG_BT_MINIUART` setting swaps them, but it drops incoming Bluetooth audio packets and is not recommended. Pi 5 has different UART defaults. This is diagnostic work, not a guaranteed login shell. See [Troubleshooting](/guide/troubleshooting) and [Development](/guide/development) before modifying boot files.
 
 ## Implementation references
 

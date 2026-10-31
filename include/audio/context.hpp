@@ -15,13 +15,13 @@
 
 #include "audio/effects/slot.hpp"
 #include "audio/gadget_volume.hpp"
+#include "audio/bluetooth_stream.hpp"
 
 #define AUDIO_GRAPH_MAX_THINGS 64
 #define AUDIO_GRAPH_MAX_EDGES 128
 #define AUDIO_SFX_MAX_FRAMES (SAMPLE_RATE * 8)
 #define AUDIO_SFX_SLOT_COUNT 64
 #define AUDIO_SFX_QUEUE_CAP 128
-#define AUDIO_BT_PCM_RING_FRAMES 8192
 
 struct AudioGraphThingInfo {
     char id[64];
@@ -190,26 +190,9 @@ struct AudioContext {
     mutable std::mutex routingGraphMutex;
     std::atomic<float> nodeChannelLevels[AUDIO_GRAPH_MAX_THINGS][16];
 
-    std::atomic<uint32_t> bluetoothPcmWrite{0};
-    std::atomic<uint32_t> bluetoothPcmRead{0};
-    std::atomic<uint32_t> bluetoothPcmDropped{0};
-    int16_t bluetoothPcmRing[AUDIO_BT_PCM_RING_FRAMES][2] = {};
-    float bluetoothPcmReadFrac = 0.0f;
-    float bluetoothPcmReadRatio = 1.0f;
-    float bluetoothPcmRateIntegral = 0.0f;
-
-    std::atomic<uint32_t> bluetoothOutputWrite{0};
-    std::atomic<uint32_t> bluetoothOutputRead{0};
-    std::atomic<uint32_t> bluetoothOutputDropped{0};
-    std::atomic<int> bluetoothOutputActive{0};
-    std::atomic<int> bluetoothOutputSignalActive{0};
-    int16_t bluetoothOutputRing[AUDIO_BT_PCM_RING_FRAMES][2] = {};
-    float bluetoothOutputReadFraction = 0.0f;
-    float bluetoothOutputRateIntegral = 0.0f;
-    float bluetoothOutputRateRatio = 1.0f;
-    float bluetoothOutputFilteredFill = 0.0f;
-    uint64_t bluetoothOutputRateLastUpdateMs = 0;
-    uint8_t bluetoothOutputRateInitialized = 0;
+    // One slot per Bluetooth link; a slot's peer selects which bt_<MAC> node it feeds.
+    BluetoothInputStream bluetoothInputs[AUDIO_BT_MAX_LINKS];
+    BluetoothOutputStream bluetoothOutputs[AUDIO_BT_MAX_LINKS];
 
     // Per-thing output gain (0.0-1.0). Indexed by current routing snapshot node index.
     // Updated atomically so the audio thread reads without locking.
@@ -244,6 +227,7 @@ struct AudioContext {
     size_t copyRoutingThings(AudioGraphThingInfo *out, size_t cap) const;
     int reloadRoutingGraph() WARN_UNUSED;
     int buildRoutingGraphJson(char *out, size_t out_sz) const WARN_UNUSED;
+    int buildMetersJson(char *out, size_t outSize) const WARN_UNUSED;
 
     void poll();
 
@@ -264,15 +248,7 @@ struct AudioContext {
     int setEffectType(const char *thingId, uint8_t type);
     int setEffectEnabled(const char *thingId, uint8_t enabled);
 
-    // Stereo signed PCM at SAMPLE_RATE. Called by the Bluetooth worker; does
-    // not block and drops newest frames if the realtime consumer falls behind.
-    uint32_t pushBluetoothPcm(const int16_t *stereoFrames, uint32_t frames);
-    uint32_t pushBluetoothOutputPcm(const int16_t *stereoFrames, uint32_t frames);
-    void updateBluetoothOutputRate(uint32_t packetFrames, uint64_t nowMs);
-    uint32_t resampleBluetoothOutputPcm(int16_t *stereoFrames, uint32_t outputFrames);
-    uint32_t getBluetoothOutputAvailable() const;
     float getGraphThingChannelLevel(const char *thingId, int channelIndex) const;
-    void setBluetoothOutputActive(bool active);
     int toggleEffectEnabled(const char *thingId);
     int persistEffectBypass(const char *effectId);
     int setEffectParam(const char *thingId, const char *paramName, float value);

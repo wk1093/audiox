@@ -4,9 +4,19 @@
 #include <fstream>
 #include <string>
 #include <thread>
+#include <sys/statvfs.h>
 
 namespace {
 int rebootRequests = 0;
+bool lowStorage = false;
+int captureStatvfs(const char *path, struct statvfs *storage) {
+    const int rc = statvfs(path, storage);
+    if (rc == 0 && lowStorage) {
+        storage->f_bavail = 1;
+        storage->f_frsize = 4096;
+    }
+    return rc;
+}
 int captureBackupReboot(int command) {
     assert(command == RB_AUTOBOOT);
     ++rebootRequests;
@@ -15,8 +25,17 @@ int captureBackupReboot(int command) {
 }
 
 #define reboot captureBackupReboot
+#define statvfs(...) captureStatvfs(__VA_ARGS__)
 #include "../src/http/server.cpp"
 #undef reboot
+#undef statvfs
+
+int prepareBootUpdateRecovery() { assert(false); return -1; }
+int AudioContext::reloadSfxBank() { assert(false); return -1; }
+int handleApiRequest(HttpServer *, int, const char *, const char *, const char *, size_t, const char *) {
+    assert(false);
+    return -1;
+}
 
 namespace fs = std::filesystem;
 
@@ -27,11 +46,13 @@ std::string exchange(HttpServer &server, const char *method, const char *path,
     int pair[2];
     assert(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
     std::thread worker([&]() {
-        size_t initial = body.empty() ? 0 : 1;
-        (void)handleConfigBackup(&server, pair[1], method, path, body.data(), initial, claimed);
+        handleClient(&server, pair[1]);
         close(pair[1]);
     });
-    size_t sent = body.empty() ? 0 : 1;
+    const std::string header = std::string(method) + " " + path + " HTTP/1.1\r\nHost: localhost\r\nContent-Length: " +
+        std::to_string(claimed) + "\r\n\r\n";
+    assert(send(pair[0], header.data(), header.size(), MSG_NOSIGNAL) == (ssize_t)header.size());
+    size_t sent = 0;
     while (sent < body.size()) {
         ssize_t n = send(pair[0], body.data() + sent, body.size() - sent, MSG_NOSIGNAL);
         if (n <= 0) break;
@@ -76,10 +97,20 @@ int main() {
     const std::string sound(200000, 'x');
     put("sfx/kick.wav", sound);
     HttpServer server(nullptr);
+    lowStorage = true;
+    std::string response = exchange(server, "GET", "/api/config/restore/check?size=46661632");
+    assert(response.find("507 Insufficient Storage") != std::string::npos);
+    assert(response.find("need 110100480 bytes, have 4096 bytes free") != std::string::npos);
+    assert(!fs::exists(".config-restore") && rebootRequests == 0);
+    lowStorage = false;
+    assert(exchange(server, "GET", "/api/config/restore/check?size=20").find("200 OK") != std::string::npos);
+    for (const char *query : {"", "?size=nan", "?size=-1", "?size=20junk", "?size=18446744073709551616"})
+        assert(exchange(server, "GET", (std::string("/api/config/restore/check") + query).c_str()).find("400 Bad Request") != std::string::npos);
+    assert(exchange(server, "POST", "/api/config/restore/check?size=20").find("405 Method Not Allowed") != std::string::npos);
     assert(exchange(server, "POST", "/api/config/backup").find("405 Method Not Allowed") != std::string::npos);
     assert(exchange(server, "GET", "/api/config/restore").find("405 Method Not Allowed") != std::string::npos);
     assert(exchange(server, "PUT", "/api/config/restore", "", audiox::backup::maxArchiveSize + 1).find("413 Payload Too Large") != std::string::npos);
-    std::string response = exchange(server, "GET", "/api/config/backup");
+    response = exchange(server, "GET", "/api/config/backup");
     assert(response.find("200 OK") != std::string::npos);
     assert(response.find("Content-Disposition: attachment; filename=\"audiox-backup.axb\"") != std::string::npos);
     assert(response.find("Cache-Control: no-store") != std::string::npos);

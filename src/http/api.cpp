@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/wait.h>
 #include <sys/reboot.h>
 #include <sys/mount.h>
@@ -3714,9 +3715,23 @@ static int handleSystemInfo(HttpServer *server,
 	char ffmpeg_version[256];
 	getFfmpegVersion(ffmpeg_version, sizeof(ffmpeg_version));
 
+	char storage_json[256] = "null";
+	struct statvfs storage{};
+	if (statvfs(ROOT_MOUNT_POINT, &storage) == 0) {
+		const uint64_t unit = storage.f_frsize;
+		snprintf(storage_json, sizeof(storage_json),
+				 "{\"total_bytes\":%llu,\"used_bytes\":%llu,\"free_bytes\":%llu,\"reserved_bytes\":%llu}",
+				 (unsigned long long)(storage.f_blocks * unit),
+				 (unsigned long long)((storage.f_blocks - storage.f_bfree) * unit),
+				 (unsigned long long)(storage.f_bavail * unit),
+				 (unsigned long long)((storage.f_bfree - storage.f_bavail) * unit));
+	} else {
+		printf("[HTTP] [WARN] read storage usage (%s): %s\n", ROOT_MOUNT_POINT, strerror(errno));
+	}
+
 	const uint64_t warningAt = audiox::audioHealth.warningAt();
 	const uint64_t now = audiox::healthMonotonicMs();
-	char out[1280];
+	char out[1536];
 	int n = snprintf(out, sizeof(out),
 					 "{\"version\":\"%s\",\"kernel\":\"%s\","
 					 "\"board\":\"%s\","
@@ -3727,11 +3742,12 @@ static int handleSystemInfo(HttpServer *server,
 					 "\"mem_avail_mb\":%ld,"
 					 "\"load1\":%.2f,"
 					 "\"ffmpeg\":\"%s\","
+					 "\"storage\":%s,"
 					 "\"audio_health\":{\"xruns\":%llu,\"warning_id\":\"%llu\","
 					 "\"warning_active\":%s}}\n",
 					 version_str, kernel_buf, audioxDetectBoard(), model_buf, cpu_freq_mhz,
 					 uptime_secs, mem_total_mb, mem_avail_mb, load1,
-					 ffmpeg_version,
+					 ffmpeg_version, storage_json,
 					 (unsigned long long)audiox::audioHealth.total(),
 					 (unsigned long long)warningAt,
 					 audiox::audioHealth.warningActive(now) ? "true" : "false");

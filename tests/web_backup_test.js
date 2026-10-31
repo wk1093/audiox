@@ -28,6 +28,14 @@ function controller() {
   const popup = { ...ui, confirm: async () => true, runTask: async (_title, action) => action() };
   global.window = { open: (...args) => downloads.push(args) };
   let mode = 'success';
+  const checks = [];
+  global.fetch = async (url, options) => {
+    checks.push(url);
+    assert.equal(url, '/api/config/restore/check?size=20');
+    assert.equal(options.cache, 'no-store');
+    return { ok: mode !== 'storage', status: mode === 'storage' ? 507 : 200,
+      text: async () => 'insufficient storage for restore: need 110100480 bytes, have 4096 bytes free; no settings changed' };
+  };
   global.XMLHttpRequest = class {
     constructor() {
       this.events = {};
@@ -58,7 +66,7 @@ function controller() {
   };
   backup.init({ setStatus: () => {}, ui: popup });
   return {
-    elements, downloads, uploads, popup,
+    elements, downloads, uploads, popup, checks,
     click: (id) => elements.get(id).listeners.click(),
     mode: (value) => { mode = value; },
   };
@@ -104,6 +112,7 @@ test('restore sends the File with progress and locks controls until reboot', asy
   ui.elements.get('backup_file').files = [file];
   await ui.click('btn-config-restore');
   assert.deepEqual(ui.uploads, [file]);
+  assert.equal(ui.checks.length, 1);
   assert.equal(ui.elements.get('backup-progress').value, 100);
   assert.match(ui.elements.get('backup-status').textContent, /validated and staged/);
   assert.equal(ui.elements.get('other-control').disabled, true);
@@ -111,6 +120,16 @@ test('restore sends the File with progress and locks controls until reboot', asy
   await ui.click('btn-config-restore');
   assert.equal(ui.downloads.length, 0);
   assert.equal(ui.uploads.length, 1);
+});
+
+test('insufficient restore storage is reported before starting the upload', async () => {
+  const ui = controller();
+  ui.mode('storage');
+  ui.elements.get('backup_file').files = [archive()];
+  await ui.click('btn-config-restore');
+  assert.equal(ui.uploads.length, 0);
+  assert.match(ui.elements.get('backup-status').textContent, /507.*insufficient storage.*no settings changed/);
+  assert.equal(ui.elements.get('other-control').disabled, false);
 });
 
 test('server rejection and connection failures are explicit and recover original disabled states', async () => {

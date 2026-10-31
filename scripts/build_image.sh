@@ -35,7 +35,7 @@ dd if=/dev/zero of="${IMG_FILE}" bs=1M count="${IMG_SIZE_MB}" status=progress
 parted --script "${IMG_FILE}" mklabel msdos
 parted --script "${IMG_FILE}" mkpart primary fat32 2048s 98303s
 parted --script "${IMG_FILE}" set 1 boot on
-parted --script "${IMG_FILE}" mkpart primary fat32 98304s 100%
+parted --script "${IMG_FILE}" mkpart primary ext4 98304s 100%
 
 LOOP_DEV="$(sudo losetup --find --show --partscan "${IMG_FILE}")"
 cleanup() {

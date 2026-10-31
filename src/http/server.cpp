@@ -1011,6 +1011,50 @@ static int handleRootfsUpload(HttpServer *server,
     return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
 }
 
+static int checkRestoreStorage(HttpServer *server, int cfd, size_t contentLength) {
+    if (contentLength < 20 || contentLength > audiox::backup::maxArchiveSize) {
+        static const char message[] = "backup must be between 20 bytes and 4 GiB\n";
+        return server->sendResponse(cfd, "413 Payload Too Large", "text/plain", message, sizeof(message) - 1) == 0 ? 1 : -1;
+    }
+    struct statvfs storage;
+    if (statvfs(ROOT_MOUNT_POINT, &storage) < 0) {
+        const int error = errno;
+        printf("[CONFIG] [ERR] restore storage check failed: %s\n", strerror(error));
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "check restore storage", error) == 0 ? 1 : -1;
+    }
+    const uint64_t freeBytes = (uint64_t)storage.f_bavail * storage.f_frsize;
+    const uint64_t required = (uint64_t)contentLength * 2 + 16 * 1024 * 1024;
+    if (freeBytes < required) {
+        char message[256];
+        int n = snprintf(message, sizeof(message),
+                         "insufficient storage for restore: need %llu bytes, have %llu bytes free; no settings changed\n",
+                         (unsigned long long)required, (unsigned long long)freeBytes);
+        printf("[CONFIG] [WARN] %s", message);
+        return server->sendResponse(cfd, "507 Insufficient Storage", "text/plain", message, (size_t)n) == 0 ? 1 : -1;
+    }
+    return 0;
+}
+
+static int handleRestoreCheck(HttpServer *server, int cfd, const char *method, const char *query) {
+    if (strcmp(method, "GET") != 0) {
+        static const char message[] = "method not allowed\n";
+        return server->sendResponse(cfd, "405 Method Not Allowed", "text/plain", message, sizeof(message) - 1);
+    }
+    char *end = nullptr;
+    const char *size = query && strncmp(query, "size=", 5) == 0 ? query + 5 : "";
+    errno = 0;
+    const unsigned long long bytes = strtoull(size, &end, 10);
+    if (!size[0] || size[0] < '0' || size[0] > '9' || *end || errno == ERANGE ||
+        bytes > audiox::backup::maxArchiveSize) {
+        static const char message[] = "invalid backup size\n";
+        return server->sendResponse(cfd, "400 Bad Request", "text/plain", message, sizeof(message) - 1);
+    }
+    const int rc = checkRestoreStorage(server, cfd, (size_t)bytes);
+    if (rc != 0) return rc < 0 ? -1 : 0;
+    static const char message[] = "restore storage available\n";
+    return server->sendResponse(cfd, "200 OK", "text/plain", message, sizeof(message) - 1);
+}
+
 static int handleConfigBackup(HttpServer *server, int cfd, const char *method,
                               const char *path, const char *initial, size_t initialLen,
                               size_t contentLength) {
@@ -1019,20 +1063,9 @@ static int handleConfigBackup(HttpServer *server, int cfd, const char *method,
         static const char message[] = "method not allowed\n";
         return server->sendResponse(cfd, "405 Method Not Allowed", "text/plain", message, sizeof(message) - 1);
     }
-    if (restoring && (contentLength < 20 || contentLength > audiox::backup::maxArchiveSize)) {
-        static const char message[] = "backup must be between 20 bytes and 4 GiB\n";
-        return server->sendResponse(cfd, "413 Payload Too Large", "text/plain", message, sizeof(message) - 1);
-    }
     if (restoring) {
-        struct statvfs storage;
-        if (statvfs(ROOT_MOUNT_POINT, &storage) < 0) {
-            return sendErrnoResponse(server, cfd, "500 Internal Server Error", "check restore storage", errno);
-        }
-        uint64_t freeBytes = (uint64_t)storage.f_bavail * storage.f_frsize;
-        if (freeBytes < (uint64_t)contentLength * 2 + 16 * 1024 * 1024) {
-            static const char message[] = "insufficient storage for backup upload, extracted files and restore metadata; no settings changed\n";
-            return server->sendResponse(cfd, "507 Insufficient Storage", "text/plain", message, sizeof(message) - 1);
-        }
+        const int checked = checkRestoreStorage(server, cfd, contentLength);
+        if (checked != 0) return checked < 0 ? -1 : 0;
     }
     char temp[] = ROOT_MOUNT_POINT "/.backup-transfer-XXXXXX";
     int fd = mkstemp(temp);
@@ -1049,6 +1082,7 @@ static int handleConfigBackup(HttpServer *server, int cfd, const char *method,
         if (rc) {
             int saved = errno;
             close(fd);
+            printf("[CONFIG] [ERR] backup upload failed: %s\n", rc < 0 ? strerror(saved) : "incomplete upload");
             if (rc < 0) return sendErrnoResponse(server, cfd, "500 Internal Server Error", "receive backup", saved);
             static const char message[] = "incomplete backup upload; no settings changed\n";
             return server->sendResponse(cfd, "400 Bad Request", "text/plain", message, sizeof(message) - 1);
@@ -1252,6 +1286,11 @@ static void handleClient(HttpServer *server, int cfd) {
 
     size_t body_off = (size_t)header_end;
     size_t initial_body_len = have > body_off ? have - body_off : 0;
+
+    if (strcmp(path, "/api/config/restore/check") == 0) {
+        (void)handleRestoreCheck(server, cfd, method, query);
+        return;
+    }
 
     if (strcmp(path, "/api/config/backup") == 0 || strcmp(path, "/api/config/restore") == 0) {
         if (setSocketTimeouts(cfd, 10000, 10000) < 0) {

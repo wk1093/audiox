@@ -987,6 +987,7 @@ select {
 }
 
 .system-info { grid-column: 1; grid-row: 1; }
+.storage-meter { width: 100%; }
 .system-actions { grid-column: 2; grid-row: 1; }
 .system-logs { grid-column: 1; grid-row: 2; }
 

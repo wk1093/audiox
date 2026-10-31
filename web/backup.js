@@ -46,6 +46,12 @@
           title: 'Replace configuration?', label: 'Restore and reboot',
         })) return;
         await ui.runTask('Restoring configuration', async () => {
+          message('Checking available restore storage...');
+          const check = await fetch(`/api/config/restore/check?size=${archive.size}`, { cache: 'no-store' });
+          if (!check.ok) {
+            const details = (await check.text()).trim();
+            throw new Error(`Restore preflight rejected (${check.status}): ${details || 'no response details'}`);
+          }
           progress.hidden = false;
           progress.value = 0;
           message('Uploading backup. Keep this page open until validation finishes...');

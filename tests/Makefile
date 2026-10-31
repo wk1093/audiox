@@ -1,11 +1,19 @@
 # Included by the root Makefile; invoke targets from the repository root.
-.PHONY: test test-native test-web test-release test-audio-graph test-audio-graph-mailbox test-audio-graph-tsan test-build-dependencies
+.PHONY: test test-native test-web test-release test-audio-graph test-audio-graph-mailbox test-audio-graph-tsan test-build-dependencies test-storage-expand
 test: test-native test-web test-release
 
 test-native: test-audio-engine test-audio-runtime test-audio-meters test-audio-graph test-audio-graph-mailbox \
 	test-audio-pcm-recover test-bluetooth-hci test-bluetooth-a2dp test-display-hotplug test-soundboard-config \
 	test-boot-recovery test-config-backup test-system-logs test-system test-gadget-setup test-mdns \
-	test-gadget-volume test-diagnostics test-midi-usb test-midi-script test-midi-docs test-watchdog test-resolve-modules test-build-dependencies
+	test-gadget-volume test-diagnostics test-midi-usb test-midi-script test-midi-docs test-watchdog test-resolve-modules test-build-dependencies test-storage-expand
+
+test-storage-expand: $(OUT_DIR)/host/audiox-storage-expand-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-storage-expand-test: tests/storage_expand_test.cpp src/init/storage.cpp include/storage_expand.hpp include/watchdog_heartbeat.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -Wl,--wrap=open -Wl,--wrap=realpath -Wl,--wrap=fstat \
+		-Wl,--wrap=pwrite -Wl,--wrap=ioctl -o "$@" tests/storage_expand_test.cpp src/init/storage.cpp
 
 test-build-dependencies:
 	bash tests/build_dependencies_test.sh

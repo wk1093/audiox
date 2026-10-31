@@ -192,9 +192,20 @@ grep -Fq 'path: source' "$BUILD"
 grep -Fq 'SOURCE_REPO: ${{ github.workspace }}/source' "$BUILD"
 grep -Fq '.publishing-tools/scripts/publish-imager.sh release' "$BUILD"
 grep -Fq '!scripts/release-notes.py' "$BUILD"
-for name in "Package Imager image" "Upload Imager publishing files"; do
+for name in "Get FFmpeg" "Build SD Card Image (.img)" "Build Update Archive (.axu)" \
+    "Package Imager image" "Upload Imager publishing files" \
+    "Upload SD Card Image Artifact" "Upload Update Archive Artifact"; do
     grep -F -A1 -- "- name: $name" "$BUILD" |
         grep -Fq "if: needs.prepare.outputs.channel != ''"
+done
+for name in "Build Initramfs targets" "Upload Bootloader Initramfs Artifact" "Upload Runtime Initramfs Artifact"; do
+    step="$(awk -v name="$name" '
+        $0 == "      - name: " name { found = 1; next }
+        found && /^      - / { exit }
+        found { print }
+    ' "$BUILD")"
+    [[ -n "$step" ]]
+    ! grep -q 'if:' <<< "$step"
 done
 echo "PASS: workflow wiring separates artifact builds from explicit publication"
 

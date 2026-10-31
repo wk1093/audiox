@@ -26,7 +26,7 @@ on:
   workflow_call:
     inputs:
       channel:
-        description: "Publishing channel (stable or nightly); empty builds artifacts only"
+        description: "Publishing channel (stable or nightly); empty builds initramfs artifacts only"
         default: ''
         type: string
       tag:
@@ -198,14 +198,17 @@ jobs:
           make initramfs
       
       - name: Get FFmpeg
+        if: needs.prepare.outputs.channel != ''
         run: |
           make ffmpeg
 
       - name: Build SD Card Image (.img)
+        if: needs.prepare.outputs.channel != ''
         run: |
           make image
         
       - name: Build Update Archive (.axu)
+        if: needs.prepare.outputs.channel != ''
         run: |
           make update_archive
 
@@ -234,6 +237,7 @@ jobs:
           retention-days: 7
 
       - name: Upload SD Card Image Artifact
+        if: needs.prepare.outputs.channel != ''
         uses: actions/upload-artifact@v4
         with:
           name: audiox-img-${{ matrix.board }}
@@ -241,6 +245,7 @@ jobs:
           retention-days: 7
 
       - name: Upload Update Archive Artifact
+        if: needs.prepare.outputs.channel != ''
         uses: actions/upload-artifact@v4
         with:
           name: update-archive-${{ matrix.board }}

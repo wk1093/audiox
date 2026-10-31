@@ -63,6 +63,12 @@ Two-stage boot artifacts:
 - out/initramfs.cpio.gz (bootloader)
 - out/program.cpio.gz (runtime)
 
+Ordinary CI builds run regression tests and build/upload both initramfs artifacts
+for each supported board. FFmpeg download, SD image creation, compressed Imager
+packaging (`.img.xz`), and update archives (`.axu`) run only for stable or nightly
+releases. Locally, plain `make` also defaults to initramfs; use `make image` or
+`make update_archive` explicitly when you need release packages.
+
 ## Coding guidelines
 
 - Use focused changes. Avoid unrelated refactors in the same PR.

@@ -141,7 +141,6 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Test Pi 5 hardware for compatibility and performance with the current audio engine and WebUI.
   - [x] Fix configuration backup restore failures.
   - [x] Expand image storage to fill the SD card.
-- [ ] Test the framebuffer UI on Pi 5 with a connected screen; rendering, touch interaction, and display hotplug remain untested on that board.
 
 ## Effect Improvements - v1.13
 - [ ] Improve effect system to be more user friendly
@@ -175,6 +174,7 @@ The above last two features are mainly to improve my setup, but could probably b
 - [ ] IMPORTANT: Create a config versioning system, so that older configs can be upgraded if format is changed. This is important for 2.0+ because it is meant to be a more stable release, and we don't want to break people's configs when they update. This will also allow for more advanced features in the future, like being able to export and import configs between devices.
 - [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)
 - [ ] Look into dynamic sample size for the audio engine, so that if we notice Xruns or any other issues we can automatically increase the sample size when needed (or at least allow the user to change it via the WebUI). This is mainly for people with a lot of channels or effects that could cause issues.
+- [ ] Test the framebuffer UI on Pi 5 with a connected screen; rendering, touch interaction, and display hotplug remain untested on that board.
 
 ## Future
 - [ ] Create a roadmap for future features and improvements

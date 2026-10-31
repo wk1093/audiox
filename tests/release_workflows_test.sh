@@ -204,6 +204,8 @@ grep -Fq 'run: make test' "$BUILD"
 grep -Fq 'run: make test-audio-graph-tsan' "$BUILD"
 grep -Fq -- "- 'tests/**'" "$BUILD"
 grep -Fq -- "- '.github/workflows/**'" "$BUILD"
+grep -F -A1 -- '- name: Install host test dependencies' "$BUILD" |
+    grep -Fwq 'libsbc-dev'
 echo "PASS: regression tests gate image builds and run for test-only changes"
 
 fixture

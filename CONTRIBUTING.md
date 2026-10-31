@@ -78,7 +78,7 @@ Before opening a PR:
 1. Build locally and confirm your change compiles.
 2. Run the relevant tests, then `make test` before release. This runs the native
    C++/Bash, Node.js, and release-workflow regression suites. Host dependencies
-   include a C++17 compiler, pkg-config, ALSA/libsndfile/ncurses development
+   include a C++17 compiler, pkg-config, ALSA/libsndfile/ncurses/SBC development
    headers, Node.js 22+, Python 3, Bash, and jq; Make builds its host Lua library.
    `make test-native` and `make test-web` run individual suites.
    `make test-audio-graph-tsan` checks graph publication with ThreadSanitizer.

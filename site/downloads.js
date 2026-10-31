@@ -38,7 +38,7 @@ function renderDownloads() {
     const find = (selector) => card.querySelector(selector);
     find('.board-label').textContent = `${board.toUpperCase()} / 64-bit`;
     find('.board-name').textContent = board === 'pi4' ? 'Raspberry Pi 4' : 'Raspberry Pi 5';
-    find('.board-description').textContent = `${asset.name || release.tag}${board === 'pi5' ? ' - Pi 5 support is untested on hardware.' : ''}`;
+    find('.board-description').textContent = asset.name || release.tag;
     const size = (bytes) => `${(bytes / 1048576).toFixed(1)} MiB`;
     find('.axu-link').href = asset.url;
     find('.axu-size').textContent = `${size(asset.size)} / update an existing device`;

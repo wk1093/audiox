@@ -4,7 +4,7 @@ AudioX builds a custom AArch64 initramfs system, not a package installed into a 
 
 Commands in this guide are source-tree developer commands, not commands to paste into an assumed SSH session on AudioX. Building `initramfs`, `image`, or `update_archive` produces host-side artifacts only. **Upload targets contact and modify the real device; `make dev` and `make upload_update` also trigger installation and reboots.** Export targets overwrite a mounted card's boot files; QEMU reset/clean targets delete VM data. Review each section before running its commands.
 
-Pi 4 Model B is the current target. Pi 5 presets/artifacts remain **untested on hardware**. Host tests and QEMU are useful development tools, not proof of Pi 5 compatibility or successful USB audio transport.
+Pi 4 Model B and Pi 5 are hardware-tested targets. The Pi 5 framebuffer UI remains untested with a connected display. Host tests and QEMU complement hardware testing but do not replace it.
 
 ## Repository map
 
@@ -55,7 +55,7 @@ Start with one board's defaults:
 
 ```bash
 make pi4_defconfig
-# Or, for experimental Pi 5 builds:
+# Or, for Pi 5 builds:
 # make pi5_defconfig
 make menuconfig
 make print-config

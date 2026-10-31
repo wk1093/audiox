@@ -15,7 +15,7 @@ config BOARD_PI4
 	bool "Raspberry Pi 4 Model B"
 
 config BOARD_PI5
-	bool "Raspberry Pi 5 (untested)"
+	bool "Raspberry Pi 5"
 
 endchoice
 

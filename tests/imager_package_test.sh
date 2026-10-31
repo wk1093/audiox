@@ -50,10 +50,8 @@ for CASE in \
              .image_download_size == $download_size and
              .release_date == "2026-10-26"' \
             "$OUTPUT/$BOARD.json" > /dev/null
-        if [[ "$BOARD" == pi4 ]]; then
-            jq -e --arg name "AudioX $DISPLAY Raspberry Pi 4 ($CHANNEL)" \
-                '.name == $name' "$OUTPUT/$BOARD.json" > /dev/null
-        fi
+        jq -e --arg name "AudioX $DISPLAY Raspberry Pi ${BOARD#pi} ($CHANNEL)" \
+            '.name == $name' "$OUTPUT/$BOARD.json" > /dev/null
         jq -e --arg device "$BOARD-64bit" \
             '.imager.devices | map(select(.tags == [$device])) | length == 1' \
             "$ROOT/os_list.json" > /dev/null

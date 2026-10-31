@@ -2,11 +2,11 @@
 
 AudioX is a small, purpose-built Raspberry Pi audio system, not an application installed on Raspberry Pi OS. Its image boots directly into an audio engine, a local framebuffer interface, and a browser-based control interface. There is no general-purpose desktop setup wizard.
 
-The project is work in progress. Raspberry Pi 4 Model B is the current hardware target; Pi 5 build defaults and downloads exist but are explicitly **untested on hardware**. A published image or successful build does not establish that a board, peripheral, or host OS has been validated. Read [Hardware and cabling](/guide/hardware) before powering a new setup.
+The project is work in progress. Raspberry Pi 4 Model B and Raspberry Pi 5 are hardware-tested targets. The Pi 5 framebuffer UI remains untested with a connected display. Board testing does not establish compatibility with every peripheral or host OS. Read [Hardware and cabling](/guide/hardware) before powering a new setup.
 
 ## What you need
 
-- A board matching the download: Pi 4 Model B, or a Pi 5 for experimental use.
+- A board matching the download: Pi 4 Model B or Pi 5.
 - A microSD card and a computer/card reader that can write it. Flashing erases the selected card.
 - A reliable, data-capable USB cable to the Pi's USB-C device connection, and a power arrangement suitable for the board and attached peripherals. A charging-only cable will not carry audio or the control network.
 - A computer with a browser, a USB NCM network driver, and a DHCP client for that adapter.
@@ -27,7 +27,7 @@ An AXU is not something to flash with an imaging tool. Conversely, do not upload
 
 ### Stable or Nightly?
 
-The [download page](https://wklab.net/audiox/#download) separates Stable and Nightly releases and offers Pi 4 and Pi 5 files. Stable is the release channel; Nightly tracks development and may be unstable. A Stable label does not override the Pi 5 hardware warning or the project's overall development status.
+The [download page](https://wklab.net/audiox/#download) separates Stable and Nightly releases and offers Pi 4 and Pi 5 files. Stable is the release channel; Nightly tracks development and may be unstable. A Stable label does not override the project's overall development status or the remaining Pi 5 framebuffer testing limitation.
 
 Use the board-matched image, AXU, and checksum from the **same release**. Versioned release downloads are preferable when recording a reproducible installation. Nightly history is retained for the latest 25 versioned builds; older nightly links can expire. Stable releases are not pruned by that policy.
 

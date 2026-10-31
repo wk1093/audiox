@@ -5,8 +5,8 @@ flexible routing, effects, a soundboard, MIDI controls, and named Lua automation
 Control it from a browser, a MIDI controller, or a supported touchscreen.
 
 **AudioX is under active development and is not yet stable.** Raspberry Pi 4
-Model B is the current hardware target; Pi 5 images and build presets are
-available but remain untested on hardware. Back up your setup before updating.
+Model B and Raspberry Pi 5 are hardware-tested targets. The Pi 5 framebuffer
+UI remains untested with a connected display. Back up your setup before updating.
 Automatic update reversion has early-boot limitations, so keep a card reader
 and a known-working image available.
 

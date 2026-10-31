@@ -4,6 +4,11 @@ AudioX can run without a display. Its framebuffer and touch UI are optional
 companions to the WebUI, useful for monitoring and playing sounds directly.
 They do not expose the full routing/effect/configuration editor.
 
+The Pi 5 framebuffer UI remains **untested on hardware** because Pi 5 testing
+was performed without a connected screen. Display rendering, touch interaction,
+and display hotplug still need validation on that board; audio and WebUI
+operation have been tested.
+
 Display compatibility depends on the framebuffer device, touch input, firmware
 overlays, and build configuration. Do not assume that every HDMI or DSI panel
 is plug-and-play: start with [hardware guidance](./hardware).

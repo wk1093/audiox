@@ -6,8 +6,8 @@ AudioX currently targets a Raspberry Pi running a custom software image with USB
 
 | Board | Repository status | Build defaults |
 | --- | --- | --- |
-| Raspberry Pi 4 Model B | Current hardware target; not a claim that every peripheral or host combination is tested | `make pi4_defconfig` (also `make defconfig`), `kernel8.img`, `fe980000.usb`, `vc4-fkms-v3d-pi4` |
-| Raspberry Pi 5 | Configuration and board-specific release artifacts exist; explicitly **untested on hardware** | `make pi5_defconfig`, `kernel_2712.img`, `1000480000.usb`, `vc4-kms-v3d-pi5` |
+| Raspberry Pi 4 Model B | Hardware-tested target; not a claim that every peripheral or host combination is tested | `make pi4_defconfig` (also `make defconfig`), `kernel8.img`, `fe980000.usb`, `vc4-fkms-v3d-pi4` |
+| Raspberry Pi 5 | Hardware-tested target; framebuffer UI remains untested with a connected display | `make pi5_defconfig`, `kernel_2712.img`, `1000480000.usb`, `vc4-kms-v3d-pi5` |
 | Other Raspberry Pi models/Compute Modules | No matching board preset or release path documented here | Do not assume the Pi 4 image is compatible |
 
 The kernel, device trees, firmware, overlays, USB controller, and modules must match the board. Pi 5's preset is not simply a faster Pi 4 preset: it uses different boot/display/controller defaults. Do not rename a Pi 4 download to make it look like a Pi 5 build.
@@ -29,7 +29,7 @@ Over that one data link AudioX can expose:
 
 MIDI and keyboard functions are disabled unless configured. See [Config](/guide/config), [MIDI](/guide/midi), and [Macros](/guide/macros).
 
-The Pi 5 preset selects its expected device controller, but the repository does not establish a hardware-tested Pi 5 cabling/power combination. Treat that path as experimental.
+The Pi 5 USB device path has been tested on hardware. Use the board-matched preset and a suitable power/data arrangement; this does not establish compatibility with every cable, hub, or power supply.
 
 **Use a data-capable cable.** Charge-only cables can power a board while leaving both audio and the network absent. A cable/adapter must support the host/device connection, not just fit mechanically. Do not use USB-A-to-USB-A cables to join the two machines' host ports.
 

@@ -87,7 +87,7 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Make it so that the bootloader can update the kernel as well.
   - [x] Is it possible to add a custom listener or hook into a kernel panic? Maybe automatically make a kernel panic trigger a reboot into the backup initramfs? (`panic=10` reboots, which counts as a failed trial boot)
 - [x] Somehow be able to update the bootloader itself. This could be done by having the main initram update the bootloader, since the bootloader updates the main initram, but they can't edit themselves. So maybe just update the bootloader first from the main initramfs right when the update is triggered, and then reboot into the new bootloader to update the main initramfs. Or I could make them two separate processes, where you could choose to update one or the other. That is probably better since the bootloader won't be updated as often, and we won't have to require a larger update file. The update file will eventually be a custom format that is kinda like a tar, it contains a bit of metadata, and then two separate files (or just one). The update metadata will contain a version number, and then it will also tell the program if it is a bootloader update, initram update, or both.
-- [x] Improve make config options, like being able to change board type, like switching between pi 4 (the only currently tested board) and other models. (Pi 5 defaults added, untested on hardware)
+- [x] Improve make config options, including board selection and hardware-tested Pi 4 and Pi 5 defaults.
 
 ## USB audio fixes and fault diagnostics - v1.10
 - [x] Correct boosted/distorted USB audio in both directions, including Windows; verify neutral signal levels without hidden gain.
@@ -139,8 +139,9 @@ The above last two features are mainly to improve my setup, but could probably b
 
 ## Pi 5 Testing - v1.12.x
 - [x] Test Pi 5 hardware for compatibility and performance with the current audio engine and WebUI.
-  - [ ] Config backup restore failed.
-  - [ ] Image doesn't have much storage space
+  - [x] Fix configuration backup restore failures.
+  - [x] Expand image storage to fill the SD card.
+- [ ] Test the framebuffer UI on Pi 5 with a connected screen; rendering, touch interaction, and display hotplug remain untested on that board.
 
 ## Effect Improvements - v1.13
 - [ ] Improve effect system to be more user friendly

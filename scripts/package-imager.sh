@@ -15,7 +15,7 @@ PRERELEASE_ID='[0-9A-Za-z-]+'
 
 case "$BOARD" in
     pi4) MODEL="4" ;;
-    pi5) MODEL="5 (untested)" ;;
+    pi5) MODEL="5" ;;
     *) echo "Unsupported board: $BOARD" >&2; exit 1 ;;
 esac
 case "$CHANNEL" in

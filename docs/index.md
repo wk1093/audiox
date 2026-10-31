@@ -6,7 +6,8 @@ from a browser, a MIDI controller, or a supported touchscreen.
 
 These guides describe the current firmware. AudioX is under active development;
 older installed versions may not include every control described here.
-Pi 5 images are available, but physical Pi 5 validation is still outstanding.
+Raspberry Pi 4 and Pi 5 are hardware-tested targets. The Pi 5 framebuffer UI
+remains untested with a connected display; see [Display and touch](./guide/display).
 
 ::: tip New device?
 Start with [Getting started](./guide/getting-started): choose an image, flash an

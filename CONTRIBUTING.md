@@ -2,7 +2,7 @@
 
 Thanks for checking out AudioX and for considering a contribution.
 
-This project is currently maintained by one person and has grown quickly. Help is very welcome, especially on bug fixes, reliability, tests, docs, and small focused features.
+This project has grown quickly and welcomes contributors and additional maintainers, especially for bug fixes, reliability, tests, docs, and small focused features.
 
 ## First things first
 
@@ -76,6 +76,88 @@ releases. Locally, plain `make` also defaults to initramfs; use `make image` or
 - Do not add new runtime dependencies unless necessary (you will probably need to discuss this with me, I am happy to add new dependencies if they are useful, but I want to avoid adding unnecessary bloat. I also prefer lightweight solutions, and enjoy the learning process of writing things from scratch).
 - Keep logs useful and brief. If the logs are too verbose, and the device is left on for a long time, the SD card can wear out quickly, and/or fill up the SD card and cause problems. I want to avoid this, so please be careful with logging.
 - Prefer deterministic behavior, explicit error handling, and safe fallbacks.
+
+## Branches and collaboration
+
+Use short-lived public branches and pull requests rather than a permanent
+development branch:
+
+- `main` is the integration branch and should stay tested and releasable.
+- `feat/descriptive-name` is for one feature or a closely related set of changes.
+- `fix/descriptive-name` is for a focused bug fix.
+- `docs/descriptive-name` and `test/descriptive-name` are useful for documentation
+  and test-only changes.
+- Release tags such as `v1.12.2` identify published versions. A separate release
+  branch is only needed when maintaining an older version alongside `main`.
+
+Start each branch from an up-to-date `main`, with a clean working tree:
+
+```bash
+# This checkout calls the public GitHub remote "github".
+git switch main
+git pull --ff-only github main
+git switch -c feat/my-feature
+
+# Work, make focused commits, and run the relevant tests.
+git add path/to/changed-file
+git commit
+git push -u github feat/my-feature
+```
+
+If your clone calls that remote `origin`, substitute `origin` for `github`.
+Contributors without repository write access should push to their own fork and
+open a PR against AudioX's `main`.
+
+Open a draft PR early when feedback would help. Explain the problem, intended
+behavior, testing, and any design decisions so another maintainer can follow the
+work. Keep unrelated changes in separate PRs and mark a draft ready for review
+when it is complete.
+
+Prefer squash merges with a clear title and a body containing one release-note
+entry per line, for example:
+
+```text
+Improve volume controls
+
+[feat] Allow volume adjustments up to 200%
+[fix] Correct unity-gain percentage display
+```
+
+Use `[feat]` for user-facing additions and `[fix]` for corrections; describe
+documentation or test-only changes plainly rather than inventing a feature.
+The squash message becomes the commit on `main`, but the original branch
+commits may remain visible in the PR even after deleting its branch. Treat
+anything pushed to a public remote as public permanently; clean up messages
+and check for private information before pushing.
+
+After a PR is merged and you have no uncommitted changes:
+
+```bash
+git switch main
+git pull --ff-only github main
+git branch -d feat/my-feature
+```
+
+For squash merges, Git may refuse `-d` because the original commits are not
+ancestors of `main`. Verify the PR was merged and no work remains to preserve
+before intentionally using `git branch -D feat/my-feature`. Delete the public
+remote branch through the PR page after merging.
+
+### Maintainer setup and legacy history
+
+Configure GitHub branch protection or a ruleset for `main` to require PRs and
+passing CI checks, disallow force pushes and deletion, and require review by
+another maintainer as the team grows. These are repository settings, not
+settings enabled by this document.
+
+The historical `dev` branch is archived on Gitea for reference, not used as an
+integration branch or merged into public feature branches. Start new work from
+public `main`; publishing or merging the old branch could expose private
+development history. Push named branches explicitly rather than using
+`git push --all` or `git push --mirror` to GitHub.
+
+Merge reviewed PRs on GitHub and use release tags. The archived Gitea history
+does not need to be deleted to adopt this workflow.
 
 ## Pull request guidelines
 

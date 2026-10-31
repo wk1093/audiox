@@ -11,6 +11,7 @@
 #include <fstream>
 #include <linux/input.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <string>
@@ -54,7 +55,18 @@ extern "C" int access(const char *path, int mode) noexcept {
     return syscall(SYS_faccessat, AT_FDCWD, path, mode);
 }
 
+static bool storageReadFails = false;
+static int testStorageUsage(const char *path, struct statvfs *space) {
+    if (storageReadFails) {
+        errno = EIO;
+        return -1;
+    }
+    return statvfs(path, space);
+}
+
+#define statvfs(...) testStorageUsage(__VA_ARGS__)
 #include "../src/http/api.cpp"
+#undef statvfs
 #include "../src/framebuffer/ui.cpp"
 
 namespace {
@@ -331,8 +343,27 @@ int main() {
         char expectedBoard[32];
         snprintf(expectedBoard, sizeof(expectedBoard), "\"board\":\"%s\"", audioxDetectBoard());
         assert(strstr(systemReply, expectedBoard));
+        struct statvfs space{};
+        assert(statvfs(ROOT_MOUNT_POINT, &space) == 0);
+        char expectedStorage[96];
+        snprintf(expectedStorage, sizeof(expectedStorage), "\"storage\":{\"total_bytes\":%llu,",
+                 (unsigned long long)((uint64_t)space.f_blocks * space.f_frsize));
+        assert(strstr(systemReply, expectedStorage));
+        assert(strstr(systemReply, "\"used_bytes\":"));
+        assert(strstr(systemReply, "\"free_bytes\":"));
+        assert(strstr(systemReply, "\"reserved_bytes\":"));
         close(response[0]);
         close(response[1]);
+        storageReadFails = true;
+        assert(socketpair(AF_UNIX, SOCK_STREAM, 0, response) == 0);
+        assert(handleSystemInfo(&http, response[0], "GET", "/api/system/info") == 0);
+        memset(systemReply, 0, sizeof(systemReply));
+        assert(read(response[1], systemReply, sizeof(systemReply) - 1) > 0);
+        assert(strstr(systemReply, "\"storage\":null"));
+        assert(strstr(systemReply, expectedBoard));
+        close(response[0]);
+        close(response[1]);
+        storageReadFails = false;
         assert(socketpair(AF_UNIX, SOCK_STREAM, 0, response) == 0);
         assert(handleApiDeleteRootfs(&http, response[0], "/api/rootfs/sfx/remove.wav") == 0);
         char reply[512] = {};

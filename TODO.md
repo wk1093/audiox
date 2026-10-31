@@ -138,7 +138,9 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Generate release notes from `[feat]` and `[fix]` commit markers, including multiple entries in one commit; nightly notes compare to the latest nightly or stable, and stable notes include all changes since the previous stable release.
 
 ## Pi 5 Testing - v1.12.x
-- [ ] Test Pi 5 hardware for compatibility and performance with the current audio engine and WebUI.
+- [x] Test Pi 5 hardware for compatibility and performance with the current audio engine and WebUI.
+  - [ ] Config backup restore failed.
+  - [ ] Image doesn't have much storage space
 
 ## Effect Improvements - v1.13
 - [ ] Improve effect system to be more user friendly

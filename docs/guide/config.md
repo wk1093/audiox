@@ -110,6 +110,25 @@ the upload and extracted/staged contents, not merely the compressed-looking file
 size in the browser. The `.axb` archive is an AudioX backup format, not a ZIP
 file; changing another archive's extension will not make it compatible.
 
+The browser checks available storage before starting the upload. The check
+requires twice the archive size plus 16 MiB for staging overhead; a rejection
+shows the required and available bytes without uploading or changing settings.
+For example, a 44.5 MiB backup requires at least 105 MiB free. Storage is checked
+again when the upload starts because available space may have changed.
+
+On boot, AudioX expands the image's storage partition and its ext4 filesystem
+to fill the SD card before applying a pending restore. This also handles cards
+flashed with older fixed-size images once the updated runtime is installed;
+reflashing is not required. The boot partition and existing files are preserved.
+The first expansion may delay startup; keep power connected until boot completes.
+Subsequent boots leave an already expanded filesystem unchanged.
+
+Automatic expansion supports the shipped two-primary-partition MBR layout on
+512-byte-sector disks up to the MBR size limit (approximately 2 TiB). Custom GPT,
+extra-partition, overlapping, or otherwise inconsistent layouts are left unchanged
+with a `[STORAGE]` boot warning. Expansion failures are reported and retried on
+the next boot; AudioX can still use the existing storage size.
+
 The backend validates the archive and stages the restore before reboot.
 Incomplete or rejected archives should leave the current setup unchanged.
 After a lost connection, the restore may already have been staged: check the

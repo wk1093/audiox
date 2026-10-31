@@ -22,6 +22,7 @@ The card shows:
 | CPU Clock | Reported current CPU frequency in MHz, or a dash if unavailable |
 | Uptime | Time since kernel boot, displayed in hours/minutes or days |
 | Memory | Used/total MB, calculated using available memory |
+| Storage | Used/total persistent storage in GiB or MiB, with free space and filesystem-reserved space below. The bar includes used and reserved space, so its remaining portion matches space available for uploads. This excludes the boot partition and RAM. |
 | Load (1m) | One-minute system load average; not a CPU-percent meter |
 | FFmpeg | Available converter's reported version/status |
 

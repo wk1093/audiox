@@ -1735,6 +1735,29 @@ async function loadVersion() {
   }
 }
 
+function renderStorageUsage(storage) {
+  const value = document.getElementById('sysinfo-storage');
+  const meter = document.getElementById('sysinfo-storage-meter');
+  const free = document.getElementById('sysinfo-storage-free');
+  const fields = ['total_bytes', 'used_bytes', 'free_bytes', 'reserved_bytes'];
+  if (!storage || !fields.every((key) => Number.isSafeInteger(storage[key]) && storage[key] >= 0)
+      || storage.total_bytes === 0
+      || storage.used_bytes + storage.free_bytes + storage.reserved_bytes !== storage.total_bytes) {
+    value.textContent = 'Unavailable';
+    meter.hidden = true;
+    free.textContent = 'Storage usage could not be read.';
+    return;
+  }
+  const format = (bytes) => bytes >= 1024 ** 3
+    ? `${(bytes / 1024 ** 3).toFixed(1)} GiB`
+    : `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
+  value.textContent = `${format(storage.used_bytes)} / ${format(storage.total_bytes)} used`;
+  meter.value = (storage.total_bytes - storage.free_bytes) / storage.total_bytes * 100;
+  meter.hidden = false;
+  free.textContent = `${format(storage.free_bytes)} free`
+    + (storage.reserved_bytes > 0 ? ` (${format(storage.reserved_bytes)} reserved)` : '');
+}
+
 async function loadSystemInfo() {
   try {
     const data = await AudioxUI.probeDevice();
@@ -1770,6 +1793,7 @@ async function loadSystemInfo() {
     const availMb = Math.max(0, Math.min(totalMb, availMbRaw));
     const usedMb = Math.max(0, totalMb - availMb);
     mEl.textContent = `${usedMb} / ${totalMb} MB`;
+    renderStorageUsage(data.storage);
 
     lEl.textContent = Number(data.load1 || 0).toFixed(2);
 
@@ -1778,6 +1802,7 @@ async function loadSystemInfo() {
     }
     AudioxUI.resolve('system-info');
   } catch (err) {
+    renderStorageUsage(null);
     setStatus(`device info load error: ${err}`, 'warn', 'system-info');
   }
 }

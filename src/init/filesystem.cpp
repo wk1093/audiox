@@ -3,6 +3,7 @@
 #include "system.hpp"
 #include "config/context.hpp"
 #include "config/backup.hpp"
+#include "storage_expand.hpp"
 
 #include <stdio.h>
 #include <sys/mount.h>
@@ -29,10 +30,13 @@ int mountRootfs(void *_context) {
     }
 
     if (ensureDir(ROOT_MOUNT_POINT, 0755) != RET_OK) return RET_ERR;
+    (void)audiox::storage::growPartition(CONFIG_DEVICE_PATH);
     if (mount(CONFIG_DEVICE_PATH, ROOT_MOUNT_POINT, "ext4", MS_NOATIME, NULL) < 0 && errno != EBUSY) {
         printf("[INIT] [ERR] mount %s -> %s failed: %s\n", CONFIG_DEVICE_PATH, ROOT_MOUNT_POINT, strerror(errno));
         return RET_ERR;
     }
+
+    (void)audiox::storage::growFilesystem(CONFIG_DEVICE_PATH, ROOT_MOUNT_POINT);
 
     char error[256];
     if (audiox::backup::applyPending(ROOT_MOUNT_POINT, error, sizeof(error)) < 0) {

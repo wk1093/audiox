@@ -6,6 +6,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <cmath>
+#include <sys/stat.h>
 
 namespace {
 
@@ -259,8 +261,10 @@ int ConfigStore::readVolumesFile(VolumeEntry *out, uint32_t *count_out, uint32_t
 
         char *endp = NULL;
         double g = strtod(value, &endp);
-        if (!endp || endp == value) {
-            continue;
+        if (!endp || endp == value || *endp != '\0' || !std::isfinite(g)) {
+            printf("[CONFIG] [WARN] invalid volume for %s in %s\n", key, VOLUMES_FILE_PATH);
+            fclose(fp);
+            return RET_ERR;
         }
         if (g < 0.0) g = 0.0;
         if (g > 2.0) g = 2.0;
@@ -270,7 +274,12 @@ int ConfigStore::readVolumesFile(VolumeEntry *out, uint32_t *count_out, uint32_t
         ++(*count_out);
     }
 
-    fclose(fp);
+    const bool failed = ferror(fp);
+    const int closeRc = fclose(fp);
+    if (failed || closeRc != 0) {
+        printf("[CONFIG] [WARN] failed to read %s: %s\n", VOLUMES_FILE_PATH, strerror(errno));
+        return RET_ERR;
+    }
     return RET_OK;
 }
 
@@ -279,23 +288,51 @@ int ConfigStore::writeVolumesFile(const VolumeEntry *entries, uint32_t count) {
         return RET_ERR;
     }
     if (count > VOLUME_ENTRIES_MAX) {
-        count = VOLUME_ENTRIES_MAX;
+        printf("[CONFIG] [WARN] volume table exceeds capacity\n");
+        return RET_ERR;
     }
-
-    int fd = open(VOLUMES_FILE_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    for (uint32_t i = 0; i < count; ++i) {
+        if (!std::isfinite(entries[i].gain) || entries[i].gain < 0.0f || entries[i].gain > 2.0f) {
+            printf("[CONFIG] [WARN] invalid gain while saving %s\n", VOLUMES_FILE_PATH);
+            return RET_ERR;
+        }
+    }
+    char temporary[] = VOLUMES_FILE_PATH ".tmp.XXXXXX";
+    int fd = mkstemp(temporary);
     if (fd < 0) {
         printf("[CONFIG] [WARN] failed to open %s for writing: %s\n", VOLUMES_FILE_PATH, strerror(errno));
         return RET_ERR;
     }
 
-    dprintf(fd, "# audiox volumes v1\n");
-    for (uint32_t i = 0; i < count; ++i) {
+    bool ok = fchmod(fd, 0644) == 0 && dprintf(fd, "# audiox volumes v1\n") >= 0;
+    for (uint32_t i = 0; ok && i < count; ++i) {
         if (!entries[i].thingId[0]) {
             continue;
         }
-        dprintf(fd, "%s=%.4f\n", entries[i].thingId, (double)entries[i].gain);
+        ok = dprintf(fd, "%s=%.4f\n", entries[i].thingId, (double)entries[i].gain) >= 0;
     }
-
-    close(fd);
+    if (ok) ok = fsync(fd) == 0;
+    int error = errno;
+    if (close(fd) < 0 && ok) { ok = false; error = errno; }
+    if (ok && rename(temporary, VOLUMES_FILE_PATH) < 0) { ok = false; error = errno; }
+    if (!ok) {
+        printf("[CONFIG] [WARN] failed to save %s: %s\n", VOLUMES_FILE_PATH, strerror(error));
+        if (unlink(temporary) < 0 && errno != ENOENT) {
+            printf("[CONFIG] [WARN] failed to remove %s: %s\n", temporary, strerror(errno));
+        }
+        return RET_ERR;
+    }
+    int directory = open(ROOT_MOUNT_POINT, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (directory < 0) {
+        printf("[CONFIG] [WARN] cannot open volume directory for sync: %s\n", strerror(errno));
+        return RET_ERR;
+    }
+    ok = fsync(directory) == 0;
+    error = errno;
+    if (close(directory) < 0 && ok) { ok = false; error = errno; }
+    if (!ok) {
+        printf("[CONFIG] [WARN] failed to sync volume directory: %s\n", strerror(error));
+        return RET_ERR;
+    }
     return RET_OK;
 }

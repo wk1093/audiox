@@ -1,4 +1,32 @@
 # Included by the root Makefile; invoke targets from the repository root.
+.PHONY: test test-native test-web test-release test-audio-graph test-audio-graph-mailbox test-audio-graph-tsan
+test: test-native test-web test-release
+
+test-native: test-audio-engine test-audio-runtime test-audio-meters test-audio-graph test-audio-graph-mailbox \
+	test-audio-pcm-recover test-bluetooth-hci test-bluetooth-a2dp test-display-hotplug test-soundboard-config \
+	test-boot-recovery test-config-backup test-system-logs test-system test-gadget-setup test-mdns \
+	test-gadget-volume test-diagnostics test-midi-usb test-midi-script test-midi-docs test-watchdog test-resolve-modules
+
+test-web:
+	node --test tests/*.js
+
+test-release:
+	bash tests/release_workflows_test.sh
+
+test-audio-graph-mailbox: $(OUT_DIR)/host/audiox-audio-graph-mailbox-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-audio-graph-mailbox-test: tests/audio_graph_mailbox_test.cpp $(wildcard include/audio/*.hpp include/config/*.hpp)
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" "$<" -pthread
+
+test-audio-graph-tsan: $(OUT_DIR)/host/audiox-audio-graph-mailbox-tsan
+	@"$<"
+
+$(OUT_DIR)/host/audiox-audio-graph-mailbox-tsan: tests/audio_graph_mailbox_test.cpp $(wildcard include/audio/*.hpp include/config/*.hpp)
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -O1 -g -fsanitize=thread -Iinclude -o "$@" "$<" -pthread
+
 DNSMASQ_TEST_RUNNER ?= $(shell command -v qemu-aarch64 2>/dev/null)
 HOST_AUDIO_CFLAGS ?= $(shell pkg-config --cflags alsa sndfile 2>/dev/null)
 HOST_AUDIO_LIBS ?= $(shell pkg-config --libs alsa sndfile 2>/dev/null)
@@ -83,7 +111,7 @@ test-display-hotplug: $(OUT_DIR)/host/audiox-display-hotplug-test
 test-audio-meters: $(OUT_DIR)/host/audiox-audio-meters-test
 	@"$<"
 
-$(OUT_DIR)/host/audiox-audio-meters-test: tests/audio_meters_test.cpp src/audio/graph.cpp $(wildcard include/audio/*.hpp include/bluetooth/*.hpp include/config/*.hpp)
+$(OUT_DIR)/host/audiox-audio-meters-test: tests/audio_meters_test.cpp src/audio/graph.cpp include/json.hpp $(wildcard include/audio/*.hpp include/bluetooth/*.hpp include/config/*.hpp)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-format-truncation -Iinclude \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections \
@@ -106,7 +134,21 @@ SOUNDBOARD_CONFIG_TEST_SRCS = tests/soundboard_config_test.cpp src/context.cpp \
 	src/http/server.cpp src/http/logs.cpp src/init/recovery.cpp src/touch/touch.cpp \
 	$(filter-out tools/audiox-audio-bench.cpp src/audio/engine.cpp src/audio/graph_processor.cpp,$(AUDIO_BENCH_SRCS))
 
-$(OUT_DIR)/host/audiox-soundboard-config-test: $(SOUNDBOARD_CONFIG_TEST_SRCS) src/http/api.cpp src/framebuffer/ui.cpp $(wildcard include/config/*.hpp include/midi/*.hpp include/audio/*.hpp include/audio/effects/*.hpp include/http/*.hpp include/touch/*.hpp include/framebuffer/*.hpp) include/defs.hpp include/watchdog_heartbeat.hpp $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
+test-audio-graph: $(OUT_DIR)/host/audiox-audio-graph-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-audio-graph-test: tests/audio_graph_test.cpp $(filter-out tests/soundboard_config_test.cpp,$(SOUNDBOARD_CONFIG_TEST_SRCS)) \
+		src/http/api.cpp src/audio/graph.cpp src/audio/hotplug.cpp src/config/router.cpp src/bluetooth/hci.cpp include/json.hpp \
+		$(wildcard include/audio/*.hpp include/config/*.hpp include/bluetooth/*.hpp) $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-function -Wno-format-truncation -Wno-unused-parameter -Iinclude -I$(HOST_LUA_INCLUDE_DIR) \
+		-DROOT_MOUNT_POINT='"."' -ffunction-sections -fdata-sections -Wl,--gc-sections \
+		-Wl,--wrap=opendir -Wl,--wrap=stat -Wl,--wrap=fsync -Wl,--wrap=close \
+		-o "$@" tests/audio_graph_test.cpp $(filter-out tests/soundboard_config_test.cpp,$(SOUNDBOARD_CONFIG_TEST_SRCS)) \
+		src/audio/graph.cpp src/audio/hotplug.cpp src/config/router.cpp src/bluetooth/hci.cpp $(HOST_LUA_STATIC_LIB) \
+		$(shell pkg-config --cflags --libs alsa) -pthread -lm
+
+$(OUT_DIR)/host/audiox-soundboard-config-test: $(SOUNDBOARD_CONFIG_TEST_SRCS) src/http/api.cpp src/framebuffer/ui.cpp $(wildcard include/config/*.hpp include/midi/*.hpp include/audio/*.hpp include/audio/effects/*.hpp include/http/*.hpp include/touch/*.hpp include/framebuffer/*.hpp) include/defs.hpp include/json.hpp include/watchdog_heartbeat.hpp $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-format-truncation -Wno-unused-parameter -Iinclude -I$(HOST_LUA_INCLUDE_DIR) \
 		-DROOT_MOUNT_POINT='"."' -ffunction-sections -fdata-sections \
@@ -128,7 +170,7 @@ $(OUT_DIR)/host/audiox-config-backup-test: tests/config_backup_test.cpp src/conf
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/config_backup_test.cpp src/config/backup.cpp
 
-$(OUT_DIR)/host/audiox-config-backup-http-test: tests/config_backup_http_test.cpp src/config/backup.cpp src/http/server.cpp src/http/api.cpp include/config/backup.hpp include/http/context.hpp include/update_archive.hpp include/watchdog_heartbeat.hpp $(wildcard include/midi/*.hpp)
+$(OUT_DIR)/host/audiox-config-backup-http-test: tests/config_backup_http_test.cpp src/config/backup.cpp src/http/server.cpp src/http/api.cpp include/config/backup.hpp include/http/context.hpp include/json.hpp include/update_archive.hpp include/watchdog_heartbeat.hpp $(wildcard include/midi/*.hpp)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-format-truncation -Wno-unused-parameter -Iinclude \
 		-DROOT_MOUNT_POINT='"."' -ffunction-sections -fdata-sections -Wl,--gc-sections \

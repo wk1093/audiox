@@ -137,6 +137,9 @@ The above last two features are mainly to improve my setup, but could probably b
   - LV2 is not a good fit for this project (for now), but I will make a custom plugin system tailored to the audio engine's requirements. It will be a simple dynamic library (along with some metadata, packed into a single custom file format), loaded at runtime by the audio engine.
 - [x] Generate release notes from `[feat]` and `[fix]` commit markers, including multiple entries in one commit; nightly notes compare to the latest nightly or stable, and stable notes include all changes since the previous stable release.
 
+## Pi 5 Testing - v1.12.x
+- [ ] Test Pi 5 hardware for compatibility and performance with the current audio engine and WebUI.
+
 ## Effect Improvements - v1.13
 - [ ] Improve effect system to be more user friendly
   - [ ] Provide meaningful names for existing effects instead of fx1, fx2, etc.

@@ -1315,29 +1315,12 @@ static void consumeSoundboardTriggers(AudioContext *ctx, RuntimeGraph *rt) {
     ctx->sfxQueueRead.store(read, std::memory_order_release);
 }
 
-static bool tryReadPublishedGraph(const AudioContext *ctx,
-                                  AudioGraphState *out,
-                                  uint32_t *seqOut) {
+static bool tryReadPublishedGraph(AudioContext *ctx, AudioGraphState *out, bool includeCurrent) {
     if (!ctx || !out) {
         return false;
     }
 
-    uint32_t seq1 = ctx->routingGraphSeq.load(std::memory_order_acquire);
-    if ((seq1 & 1U) != 0U) {
-        return false;
-    }
-
-    *out = ctx->routingGraphPublished;
-
-    uint32_t seq2 = ctx->routingGraphSeq.load(std::memory_order_acquire);
-    if (seq1 != seq2 || (seq2 & 1U) != 0U) {
-        return false;
-    }
-
-    if (seqOut) {
-        *seqOut = seq2;
-    }
-    return true;
+    return ctx->routingGraphMailbox.consume(out, includeCurrent);
 }
 
 static bool waitForAlsaDeviceReady(AudioContext *ctx, uint64_t timeoutMs) {
@@ -2352,7 +2335,6 @@ static void *audioProcessingThreadMain(void *arg) {
         runtime.effectParamsSeq[i] = 0;
     }
     uint32_t lastGraphGeneration = 0;
-    uint32_t lastGraphSeq = 0;
     timespec nextDeadline = monotonicNow();
     addNs(&nextDeadline, blockPeriodNs());
 
@@ -2360,10 +2342,7 @@ static void *audioProcessingThreadMain(void *arg) {
 
     while (ctx->processingThreadRun.load(std::memory_order_acquire)) {
         AudioGraphState graphSnapshot = runtime.snapshot;
-        uint32_t readSeq = 0;
-        uint32_t seqNow = ctx->routingGraphSeq.load(std::memory_order_relaxed);
-        if (seqNow != lastGraphSeq && tryReadPublishedGraph(ctx, &graphSnapshot, &readSeq)) {
-            lastGraphSeq = readSeq;
+        if (tryReadPublishedGraph(ctx, &graphSnapshot, runtime.snapshot.generation == 0)) {
             if (graphSnapshot.generation != lastGraphGeneration) {
                 lastGraphGeneration = graphSnapshot.generation;
                 if (lastGraphGeneration > 0) {

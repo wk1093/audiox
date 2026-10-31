@@ -59,6 +59,7 @@ function fixture() {
     },
     setInterval: () => 1, clearInterval() {},
     renderSoundboardGrid() {},
+    startMeterPolling() {}, stopMeterPolling() {},
     setStatus: (...args) => notices.push(args),
     fetch: async (url, options) => {
       if (url === '/api/midi/last_note') return { ok: !learnFailure, status: 503,

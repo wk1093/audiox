@@ -34,7 +34,7 @@ int main() {
     assert(strcmp(json,
         "{\"meters\":[{\"id\":\"bt_A4C6F0A57AA7_in\",\"levels\":[0.5000,0.2500]},"
         "{\"id\":\"bt_B8841102C99C_out\",\"levels\":[1.0000,0.0000]},"
-        "{\"id\":\"fx_\\u0022\\u005c\\u000a\",\"levels\":[0.0000]}]}\n") == 0);
+        "{\"id\":\"fx_\\\"\\\\\\u000a\",\"levels\":[0.0000]}]}\n") == 0);
 
     // The full supported graph and channel count must fit the HTTP response.
     graph.thingCount = AUDIO_GRAPH_MAX_THINGS;

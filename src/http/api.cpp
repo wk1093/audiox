@@ -9,8 +9,10 @@
 #include "init.hpp"
 #include "boot_recovery.hpp"
 #include "midi/context.hpp"
+#include "json.hpp"
 
 #include <ctype.h>
+#include <cmath>
 
 #include <dirent.h>
 #include <errno.h>
@@ -1453,34 +1455,27 @@ static int handleAudioVolumes(HttpServer *server,
 			continue;
 		}
 		float gain = audio->getThingGain(things[i].id);
-		char escapedName[256] = {};
-		const char *src = things[i].name;
-		size_t ei = 0;
-		while (*src && ei + 2 < sizeof(escapedName)) {
-			if (*src == '"' || *src == '\\') {
-				escapedName[ei++] = '\\';
-			}
-			escapedName[ei++] = *src++;
-		}
-		escapedName[ei] = '\0';
 		n = snprintf(out + off,
 					 sizeof(out) - off,
 					 "%s{\"id\":\"%s\",\"name\":\"%s\",\"gain\":%.4f}",
 					 first ? "" : ",",
-					 things[i].id,
-					 escapedName,
+					 audiox::json::escape(things[i].id).c_str(),
+					 audiox::json::escape(things[i].name).c_str(),
 					 (double)gain);
 		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
-			break;
+			static const char err[] = "encode failed\n";
+			return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
 		}
 		off += (size_t)n;
 		first = 0;
 	}
 
 	n = snprintf(out + off, sizeof(out) - off, "]}\n");
-	if (n > 0 && (size_t)n < sizeof(out) - off) {
-		off += (size_t)n;
+	if (n <= 0 || (size_t)n >= sizeof(out) - off) {
+		static const char err[] = "encode failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
 	}
+	off += (size_t)n;
 
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, off);
 }
@@ -1519,18 +1514,19 @@ static int handleAudioVolumeSet(HttpServer *server,
 
 	char *endp = NULL;
 	double gainVal = strtod(gainBuf, &endp);
-	if (!endp || endp == gainBuf || gainVal < 0.0 || gainVal > 2.0) {
+	if (!endp || endp == gainBuf || *endp != '\0' || !std::isfinite(gainVal) || gainVal < 0.0 || gainVal > 2.0) {
 		static const char bad[] = "gain must be 0.0-2.0\n";
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
 	}
 	float gain = (float)gainVal;
 
-	server->app->audio->setThingGain(idBuf, gain);
-
 	// Persist to volumes.txt.
 	VolumeEntry entries[VOLUME_ENTRIES_MAX];
 	uint32_t count = 0;
-	server->app->config->readVolumesFile(entries, &count, VOLUME_ENTRIES_MAX);
+	if (server->app->config->readVolumesFile(entries, &count, VOLUME_ENTRIES_MAX) == RET_ERR) {
+		static const char err[] = "failed to read volumes\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
 
 	int found = 0;
 	for (uint32_t i = 0; i < count; ++i) {
@@ -1540,12 +1536,20 @@ static int handleAudioVolumeSet(HttpServer *server,
 			break;
 		}
 	}
-	if (!found && count < VOLUME_ENTRIES_MAX) {
+	if (!found && count >= VOLUME_ENTRIES_MAX) {
+		static const char err[] = "volume table full\n";
+		return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (!found) {
 		copy_bound(entries[count].thingId, sizeof(entries[count].thingId), idBuf);
 		entries[count].gain = gain;
 		++count;
 	}
-	server->app->config->writeVolumesFile(entries, count);
+	if (server->app->config->writeVolumesFile(entries, count) != RET_OK) {
+		static const char err[] = "failed to save volumes\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	server->app->audio->setThingGain(idBuf, gain);
 
 	char out[128];
 	int n = snprintf(out, sizeof(out), "{\"ok\":true,\"id\":\"%s\",\"gain\":%.4f}\n", idBuf, (double)gain);
@@ -1947,6 +1951,23 @@ static int handleEffectSet(HttpServer *server,
 		static const char bad[] = "invalid effect id\n";
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
 	}
+	char paramBuf[24] = {};
+	char valueBuf[32] = {};
+	const bool hasParam = body_get_value(body, body_len, "param", paramBuf, sizeof(paramBuf));
+	const bool hasValue = body_get_value(body, body_len, "value", valueBuf, sizeof(valueBuf));
+	float value = 0.0f;
+	if (hasParam != hasValue || (hasParam && !effect_param_valid(paramBuf))) {
+		static const char bad[] = "invalid effect param\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+	if (hasValue) {
+		char *ep = nullptr;
+		value = strtof(valueBuf, &ep);
+		if (ep == valueBuf || *ep != '\0' || !std::isfinite(value)) {
+			static const char bad[] = "invalid effect value\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+		}
+	}
 	audiox::effects::SlotParams previousParams = {};
 	const bool hadPreviousParams = server->app->audio->getEffectParams(idBuf, &previousParams) == RET_OK;
 	int routingShapeChanged = 0;
@@ -1975,20 +1996,7 @@ static int handleEffectSet(HttpServer *server,
 		}
 	}
 
-	char paramBuf[24] = {};
-	char valueBuf[32] = {};
-	if (body_get_value(body, body_len, "param", paramBuf, sizeof(paramBuf)) &&
-		body_get_value(body, body_len, "value", valueBuf, sizeof(valueBuf))) {
-		if (!effect_param_valid(paramBuf)) {
-			static const char bad[] = "invalid effect param\n";
-			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
-		}
-		char *ep = NULL;
-		float value = strtof(valueBuf, &ep);
-		if (!ep || *ep != '\0') {
-			static const char bad[] = "invalid effect value\n";
-			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
-		}
+	if (hasParam) {
 		if (server->app->audio->setEffectParam(idBuf, paramBuf, value) == RET_OK) {
 			changed = 1;
 			if (strcmp(paramBuf, "channels") == 0) {
@@ -3214,7 +3222,7 @@ static int handleRoutingThings(HttpServer *server,
 #define APPEND_THING(ID, NAME, INPUTS, OUTPUTS) \
 	do { \
 		n = snprintf(out + used, sizeof(out) - used, "%s{\"id\":\"%s\",\"name\":\"%s\",\"inputs\":%u,\"outputs\":%u}", \
-			first ? "" : ",", ID, NAME, (unsigned)(INPUTS), (unsigned)(OUTPUTS)); \
+			first ? "" : ",", audiox::json::escape(ID).c_str(), audiox::json::escape(NAME).c_str(), (unsigned)(INPUTS), (unsigned)(OUTPUTS)); \
 		if (n < 0 || (size_t)n >= sizeof(out) - used) { \
 			static const char err[] = "encode failed\n"; \
 			return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1); \

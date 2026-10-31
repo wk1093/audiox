@@ -227,7 +227,7 @@ const EffectParamSpec *effectParamSpecFor(uint8_t type, const char *paramName, u
 }
 
 int setSlotParamValue(SlotParams *params, const char *paramName, float value) {
-    if (!params || !paramName || !paramName[0]) {
+    if (!params || !paramName || !paramName[0] || !isfinite(value)) {
         return RET_ERR;
     }
 
@@ -245,7 +245,7 @@ int setSlotParamValue(SlotParams *params, const char *paramName, float value) {
 }
 
 int setSlotParamNormalized(SlotParams *params, const char *paramName, float normalized) {
-    if (!params || !paramName || !paramName[0]) {
+    if (!params || !paramName || !paramName[0] || !isfinite(normalized)) {
         return RET_ERR;
     }
 

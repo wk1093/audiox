@@ -9,6 +9,8 @@ on:
       - 'root/**'
       - 'web/**'
       - 'scripts/**'
+      - 'tests/**'
+      - '.github/workflows/**'
       - '!scripts/mirror-updates.sh'
       - '!scripts/prepare-release.sh'
       - '!scripts/release-notes.py'
@@ -87,9 +89,27 @@ jobs:
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "date=$(git show -s --format=%cs HEAD)" >> "$GITHUB_OUTPUT"
 
+  test:
+    name: Host regression tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.channel == 'stable' && inputs.tag && format('refs/tags/{0}', inputs.tag) || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install host test dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libasound2-dev libsndfile1-dev libncurses-dev jq
+      - name: Run regression suites
+        run: make test
+      - name: Check graph publication with ThreadSanitizer
+        run: make test-audio-graph-tsan
+
   build:
     name: Build AudioX (${{ matrix.board }})
-    needs: prepare
+    needs: [prepare, test]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

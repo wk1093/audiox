@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <stdint.h>
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 #include "config/context.hpp"
@@ -327,7 +328,6 @@ AudioContext::AudioContext(Audiox *context) : app(context) {
     memset(&sfxPlayingBasenames, 0, sizeof(sfxPlayingBasenames));
     memset(&routingGraph, 0, sizeof(routingGraph));
     memset(&routingGraphPublished, 0, sizeof(routingGraphPublished));
-    routingGraphSeq.store(0, std::memory_order_relaxed);
     effectStatesSeq.store(1U, std::memory_order_relaxed);
     memset(&nodeChannelLevels, 0, sizeof(nodeChannelLevels));
 
@@ -509,7 +509,15 @@ void AudioContext::poll() {
     uint64_t now = audioMonotonicMs();
     if (now >= nextHotplugScanMs) {
         nextHotplugScanMs = now + AUDIOX_DEVICE_POLL_INTERVAL_MS;
-        (void)rescanDevices();
+        const int scanRc = rescanDevices();
+        bool topologyChanged = false;
+        {
+            std::lock_guard<std::mutex> lock(routingGraphMutex);
+            topologyChanged = routingGraph.topologyGeneration != deviceGeneration.load(std::memory_order_acquire);
+        }
+        if (scanRc != RET_ERR && topologyChanged && reloadRoutingGraph() == RET_ERR) {
+            printf("[AUDIO] [WARN] graph refresh after device hotplug failed; retrying next scan\n");
+        }
     }
     int card = -1;
     unsigned device = 0;
@@ -617,6 +625,10 @@ void AudioContext::loadVolumesFromConfig() {
 
 void AudioContext::setThingGain(const char *thingId, float gain) {
     if (!thingId || !thingId[0]) {
+        return;
+    }
+    if (!std::isfinite(gain)) {
+        printf("[AUDIO] [WARN] rejected non-finite gain for %s\n", thingId);
         return;
     }
     if (gain < 0.0f) gain = 0.0f;

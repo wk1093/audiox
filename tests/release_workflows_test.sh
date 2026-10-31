@@ -198,6 +198,14 @@ for name in "Package Imager image" "Upload Imager publishing files"; do
 done
 echo "PASS: workflow wiring separates artifact builds from explicit publication"
 
+grep -q '^  test:$' "$BUILD"
+grep -Fq 'needs: [prepare, test]' "$BUILD"
+grep -Fq 'run: make test' "$BUILD"
+grep -Fq 'run: make test-audio-graph-tsan' "$BUILD"
+grep -Fq -- "- 'tests/**'" "$BUILD"
+grep -Fq -- "- '.github/workflows/**'" "$BUILD"
+echo "PASS: regression tests gate image builds and run for test-only changes"
+
 fixture
 awk '
     /- name: Select publishing channel/ { selected = 1 }

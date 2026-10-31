@@ -1,4 +1,5 @@
 #include "bluetooth/context.hpp"
+#include "json.hpp"
 #include "bluetooth/a2dp.hpp"
 #include "bluetooth/route_id.hpp"
 
@@ -423,7 +424,7 @@ int BluetoothContext::buildStatusJson(char *out, size_t outSize) {
                      flag(inputUp),
                      flag(inputPlaying),
                      (unsigned)BT_MAX_LINKS,
-                     message);
+                     audiox::json::escape(message).c_str());
     if (n < 0 || (size_t)n >= outSize) {
         return RET_ERR;
     }
@@ -447,7 +448,7 @@ int BluetoothContext::buildStatusJson(char *out, size_t outSize) {
                      "\"auto_connect\":%s,\"audio_source\":%s,\"audio_sink\":%s}",
                      i > 0 ? "," : "",
                      address,
-                     device.name,
+                     audiox::json::escape(device.name).c_str(),
                      flag(device.paired),
                      flag(device.classic),
                      flag(deviceConnecting),

@@ -1,4 +1,5 @@
 #include "audio/context.hpp"
+#include "json.hpp"
 
 #include "bluetooth/context.hpp"
 #include "bluetooth/route_id.hpp"
@@ -442,10 +443,8 @@ static void publishRoutingGraph(AudioContext *ctx, const AudioGraphState &graph)
         return;
     }
 
-    uint32_t seq = ctx->routingGraphSeq.load(std::memory_order_relaxed);
-    ctx->routingGraphSeq.store(seq + 1, std::memory_order_release);
     ctx->routingGraphPublished = graph;
-    ctx->routingGraphSeq.store(seq + 2, std::memory_order_release);
+    ctx->routingGraphMailbox.publish(graph);
 }
 
 } // namespace
@@ -598,7 +597,7 @@ size_t AudioContext::copyRoutingThings(AudioGraphThingInfo *out, size_t cap) con
 
 int AudioContext::reloadRoutingGraph() {
     AudioGraphState next = {};
-    next.topologyGeneration = deviceGeneration;
+    next.topologyGeneration = deviceGeneration.load(std::memory_order_acquire);
     next.thingCount = (uint16_t)copyRoutingThings(next.things,
                                                   sizeof(next.things) / sizeof(next.things[0]));
 
@@ -674,12 +673,15 @@ int AudioContext::reloadRoutingGraph() {
     }
 
     if (routeCount > 0 && next.edgeCount == 0 && skipped > 0) {
-        snprintf(next.status,
-                 sizeof(next.status),
-                 "routing update rejected: no valid edges (%d invalid)",
-                 skipped);
-        printf("[AUDIO] [WARN] %s\n", next.status);
-        return RET_WARN;
+        std::lock_guard<std::mutex> lock(routingGraphMutex);
+        if (next.topologyGeneration == routingGraph.topologyGeneration) {
+            snprintf(next.status,
+                     sizeof(next.status),
+                     "routing update rejected: no valid edges (%d invalid)",
+                     skipped);
+            printf("[AUDIO] [WARN] %s\n", next.status);
+            return RET_WARN;
+        }
     }
 
     // Normalize any card-based device IDs in the stored routes to stable IDs.
@@ -770,7 +772,7 @@ int AudioContext::buildRoutingGraphJson(char *out, size_t outSize) const {
                      (unsigned)routingGraph.thingCount,
                      (unsigned)routingGraph.edgeCount,
                      (unsigned)routingGraph.skippedEdgeCount,
-                     routingGraph.status);
+                     audiox::json::escape(routingGraph.status).c_str());
     if (n < 0 || (size_t)n >= outSize) {
         return RET_ERR;
     }
@@ -788,15 +790,7 @@ int AudioContext::buildMetersJson(char *out, size_t outSize) const {
         for (uint16_t i = 0; i < routingGraphPublished.thingCount; ++i) {
             const AudioGraphThingInfo &thing = routingGraphPublished.things[i];
             json += i ? ",{\"id\":\"" : "{\"id\":\"";
-            for (const unsigned char ch : std::string(thing.id)) {
-                if (ch == '"' || ch == '\\' || ch < 0x20) {
-                    char escaped[7];
-                    snprintf(escaped, sizeof(escaped), "\\u%04x", (unsigned)ch);
-                    json += escaped;
-                } else {
-                    json += static_cast<char>(ch);
-                }
-            }
+            json += audiox::json::escape(thing.id);
             json += "\",\"levels\":[";
             const unsigned channels = std::min<unsigned>(thing.outputs ? thing.outputs : thing.inputs, 16);
             for (unsigned ch = 0; ch < channels; ++ch) {

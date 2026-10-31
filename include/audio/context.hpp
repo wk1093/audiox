@@ -48,6 +48,32 @@ struct AudioGraphState {
     AudioGraphEdgeInfo edges[AUDIO_GRAPH_MAX_EDGES];
 };
 
+// Serialized publishers and one audio-thread consumer exchange slot ownership.
+// The consumer keeps its slot until the next exchange; neither side ever
+// copies a slot owned by the other, even if several updates arrive per block.
+struct AudioGraphMailbox {
+    static_assert(std::atomic<unsigned>::is_always_lock_free);
+    AudioGraphState slots[3]{};
+    std::atomic<unsigned> middle{1};
+    unsigned back = 2;
+    unsigned front = 0;
+
+    void publish(const AudioGraphState &graph) {
+        slots[back] = graph;
+        back = middle.exchange(back | 4U, std::memory_order_acq_rel) & 3U;
+    }
+
+    bool consume(AudioGraphState *out, bool includeCurrent = false) {
+        if (!(middle.load(std::memory_order_acquire) & 4U)) {
+            if (includeCurrent) *out = slots[front];
+            return includeCurrent;
+        }
+        front = middle.exchange(front, std::memory_order_acq_rel) & 3U;
+        *out = slots[front];
+        return true;
+    }
+};
+
 struct AudioThing {
     virtual uint32_t getInputChCount() const = 0;
     virtual uint32_t getOutputChCount() const = 0;
@@ -153,9 +179,10 @@ struct AudioContext {
     std::atomic<int> processingThreadRun;
     audiox::usb::GadgetVolume gadgetVolume;
 
-    uint64_t nextHotplugScanMs;
+    std::atomic<uint64_t> nextHotplugScanMs;
     AudioHandle nextHandle;
-    uint32_t deviceGeneration;
+    std::atomic<uint32_t> deviceGeneration;
+    std::mutex rescanMutex;
     std::atomic<uint32_t> pendingSfxHoldStops;
     std::atomic<uint32_t> pendingSfxStopAll;
     AudioSfxClipSlot sfxSlots[AUDIO_SFX_SLOT_COUNT];
@@ -186,7 +213,7 @@ struct AudioContext {
     mutable std::mutex devicesMutex;
     AudioGraphState routingGraph;
     AudioGraphState routingGraphPublished;
-    std::atomic<uint32_t> routingGraphSeq;
+    AudioGraphMailbox routingGraphMailbox;
     mutable std::mutex routingGraphMutex;
     std::atomic<float> nodeChannelLevels[AUDIO_GRAPH_MAX_THINGS][16];
 

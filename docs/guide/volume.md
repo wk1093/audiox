@@ -17,6 +17,11 @@ current routing graph's list of nodes.
 3. The change is applied immediately and stored; there is no separate Save
    button. Choose **Refresh** to reload the displayed values.
 
+Slider changes are saved by atomically replacing `volumes.txt` before applying
+the new runtime gain. A failed save is reported as an error and does not apply
+the requested gain. The API rejects non-finite numbers and malformed numeric
+values rather than persisting them.
+
 The slider's scale is AudioX gain: 100% is unity gain, 0% is silence, and the
 slider's maximum (100%) is unity. The underlying gain model permits up to 2×,
 but the Volume page slider intentionally tops out at unity. Volume is a

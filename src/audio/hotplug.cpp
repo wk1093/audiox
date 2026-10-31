@@ -1,4 +1,5 @@
 #include "audio/context.hpp"
+#include "json.hpp"
 
 #include "audio/alsa_pcm.h"
 #include "config/context.hpp"
@@ -585,10 +586,10 @@ int AudioContext::buildDevicesJson(char *out, size_t out_sz) const {
             (unsigned)d.playbackChannels,
             (unsigned)d.captureChannels,
             (unsigned)d.isUsb,
-            d.nodeName,
-            d.devPath,
-            d.displayName,
-            d.stableCardId);
+            audiox::json::escape(d.nodeName).c_str(),
+            audiox::json::escape(d.devPath).c_str(),
+            audiox::json::escape(d.displayName).c_str(),
+            audiox::json::escape(d.stableCardId).c_str());
         if (n < 0 || (size_t)n >= out_sz - used) {
             return RET_ERR;
         }
@@ -605,13 +606,20 @@ int AudioContext::buildDevicesJson(char *out, size_t out_sz) const {
 }
 
 int AudioContext::rescanDevices() {
+    std::lock_guard<std::mutex> scanLock(rescanMutex);
     DIR *dir = opendir("/dev/snd");
     if (!dir) {
+        if (errno != ENOENT) {
+            printf("[AUDIO] [WARN] cannot scan /dev/snd: %s\n", strerror(errno));
+            return RET_ERR;
+        }
         std::lock_guard<std::mutex> lock(devicesMutex);
-        if (!devices.empty()) audiox::audioHealth.devicesChanged();
+        if (!devices.empty()) {
+            audiox::audioHealth.devicesChanged();
+            deviceGeneration.fetch_add(1, std::memory_order_release);
+        }
         devices.clear();
         pathToHandle.clear();
-        deviceGeneration++;
         return RET_WARN;
     }
 
@@ -704,7 +712,7 @@ int AudioContext::rescanDevices() {
 
         AudioDeviceInfo info{};
         info.handle = handle;
-        info.generation = deviceGeneration + 1;
+        info.generation = deviceGeneration.load(std::memory_order_relaxed);
         info.cardIndex = p.card;
         info.deviceIndex = p.device;
         info.hasPlayback = p.hasPlayback;
@@ -772,6 +780,8 @@ int AudioContext::rescanDevices() {
             if (previous == devices.end() ||
                 strcmp(entry.second.devPath, previous->second.devPath) != 0 ||
                 strcmp(entry.second.stableCardId, previous->second.stableCardId) != 0 ||
+                strcmp(entry.second.displayName, previous->second.displayName) != 0 ||
+                entry.second.isGadget != previous->second.isGadget ||
                 entry.second.playbackChannels != previous->second.playbackChannels ||
                 entry.second.captureChannels != previous->second.captureChannels ||
                 entry.second.hasPlayback != previous->second.hasPlayback ||
@@ -780,10 +790,15 @@ int AudioContext::rescanDevices() {
                 break;
             }
         }
-        if (changed) audiox::audioHealth.devicesChanged();
+        if (changed) {
+            audiox::audioHealth.devicesChanged();
+            deviceGeneration.fetch_add(1, std::memory_order_release);
+        }
+        for (auto &entry : next) {
+            entry.second.generation = deviceGeneration.load(std::memory_order_relaxed);
+        }
         devices.swap(next);
         pathToHandle.swap(nextPath);
-        deviceGeneration++;
     }
 
     return RET_OK;

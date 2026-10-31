@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -289,22 +290,22 @@ static int parseEffectStateLine(const char *value,
 
     ep = NULL;
     float gain = strtof(parts[3], &ep);
-    if (!ep || *ep != '\0') {
+    if (!ep || ep == parts[3] || *ep != '\0' || !std::isfinite(gain)) {
         return RET_ERR;
     }
     ep = NULL;
     float drive = strtof(parts[4], &ep);
-    if (!ep || *ep != '\0') {
+    if (!ep || ep == parts[4] || *ep != '\0' || !std::isfinite(drive)) {
         return RET_ERR;
     }
     ep = NULL;
     float clip = strtof(parts[5], &ep);
-    if (!ep || *ep != '\0') {
+    if (!ep || ep == parts[5] || *ep != '\0' || !std::isfinite(clip)) {
         return RET_ERR;
     }
     ep = NULL;
     float output = strtof(parts[6], &ep);
-    if (!ep || *ep != '\0') {
+    if (!ep || ep == parts[6] || *ep != '\0' || !std::isfinite(output)) {
         return RET_ERR;
     }
 
@@ -437,7 +438,7 @@ static int parseEffectParamLine(const char *value,
 
     char *ep = NULL;
     float parsed = strtof(parts[2], &ep);
-    if (!ep || *ep != '\0') {
+    if (!ep || ep == parts[2] || *ep != '\0' || !std::isfinite(parsed)) {
         return RET_ERR;
     }
 
@@ -754,9 +755,13 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
         } else if (strcmp(key, "cc_volume") == 0) {
             (void)parseCcVolumeLine(value, data.ccVolumeMappings, &data.ccVolumeMappingCount);
         } else if (strcmp(key, "fx_state") == 0) {
-            (void)parseEffectStateLine(value, data.effectStates, &data.effectStateCount);
+            if (parseEffectStateLine(value, data.effectStates, &data.effectStateCount) != RET_OK) {
+                printf("[CONFIG] [WARN] invalid fx_state in MIDI config\n");
+            }
         } else if (strcmp(key, "fx_param") == 0) {
-            (void)parseEffectParamLine(value, data.effectParams, &data.effectParamCount);
+            if (parseEffectParamLine(value, data.effectParams, &data.effectParamCount) != RET_OK) {
+                printf("[CONFIG] [WARN] invalid fx_param in MIDI config\n");
+            }
         } else if (strcmp(key, "fx_cc") == 0) {
             (void)parseEffectCcLine(value, data.effectCcMappings, &data.effectCcMappingCount);
         } else if (strcmp(key, "fx_toggle") == 0) {
@@ -1078,7 +1083,9 @@ static int readFxParamsPath(const char *path, MidiEffectParam *out, uint32_t *co
         trimRight(value);
         value = trimLeft(value);
         if (strcmp(key, "fx_param") == 0) {
-            (void)parseEffectParamLine(value, out, count_out);
+            if (parseEffectParamLine(value, out, count_out) != RET_OK) {
+                printf("[CONFIG] [WARN] invalid fx_param in %s\n", path);
+            }
         }
     }
     int err = ferror(fp);
@@ -1115,6 +1122,20 @@ MidiMapData ConfigStore::readMidiMapFile() const {
 int ConfigStore::writeMidiMapFile(MidiMapData *data) {
     if (!data) {
         return RET_ERR;
+    }
+    for (uint32_t i = 0; i < std::min<uint32_t>(data->effectStateCount, MIDI_EFFECT_STATES_MAX); ++i) {
+        const auto &state = data->effectStates[i];
+        if (!std::isfinite(state.gain) || !std::isfinite(state.drive) ||
+            !std::isfinite(state.clip) || !std::isfinite(state.output)) {
+            printf("[CONFIG] [WARN] rejected non-finite effect state\n");
+            return RET_ERR;
+        }
+    }
+    for (uint32_t i = 0; i < std::min<uint32_t>(data->effectParamCount, MIDI_EFFECT_PARAMS_MAX); ++i) {
+        if (!std::isfinite(data->effectParams[i].value)) {
+            printf("[CONFIG] [WARN] rejected non-finite effect parameter\n");
+            return RET_ERR;
+        }
     }
     if (data->chordCount > MIDI_CHORDS_MAX) {
         printf("[CONFIG] [WARN] Too many key chord mappings\n");

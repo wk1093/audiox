@@ -15,6 +15,12 @@ metrics. Scroll the device list when there are more devices than fit on screen.
 Meters indicate signal activity; they are not a calibrated loudness measurement
 or a guarantee that a downstream speaker is receiving audio.
 
+Audio bars use the same logarithmic -60 to 0 dBFS scale as the web Volume
+meters, with local attack/release smoothing. Signals at or below -60 dBFS
+appear empty and full scale fills the bar. For example, -20 dBFS fills about
+two-thirds of the bar, making quiet signals easier to see. This changes only
+the display, not audio gain. CPU and RAM bars still show linear percentages.
+
 Each paired Bluetooth audio device has its own row, including input-only
 phones, output-only headphones, and devices supporting both directions.
 Stereo input and output meters are separate; the row indicates whether the

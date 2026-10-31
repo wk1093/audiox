@@ -13,7 +13,9 @@ current routing graph's list of nodes.
 ## Set a level
 
 1. Open **Volume** and find the node by its display name and ID.
-2. Drag its slider. The displayed value is from **0%** to **100%**.
+   Effect cards show their effect type (for example, **Reverb** or **Noise Gate**)
+   with the stable `fx_N` ID underneath to distinguish effects of the same type.
+2. Drag its slider. The displayed value is from **0%** to **200%**.
 3. The change is applied immediately and stored; there is no separate Save
    button. Choose **Refresh** to reload the displayed values.
 
@@ -23,13 +25,17 @@ the requested gain. The API rejects non-finite numbers and malformed numeric
 values rather than persisting them.
 
 The slider's scale is AudioX gain: 100% is unity gain, 0% is silence, and the
-slider's maximum (100%) is unity. The underlying gain model permits up to 2×,
-but the Volume page slider intentionally tops out at unity. Volume is a
+slider's maximum (200%) is 2× gain. Boosting above unity can cause clipping.
+Volume is a
 per-routing-node control, not an independent hardware mixer. Gain is applied
 to a node's outgoing routes; changing a terminal destination that has no
 outgoing route does not attenuate the signal arriving at that destination.
 For practical output-level control, adjust the source or an intermediate node
 in the path.
+
+If MIDI or an API client sets gain above unity, both the slider and percentage
+label show the actual gain (for example, 150%). Viewing or refreshing the page
+does not change that gain.
 
 ## Live meters
 
@@ -59,8 +65,8 @@ Levels are linear per-channel peaks clamped to 0–1, not dB values.
    removes the existing mapping.
 
 A CC value from 0 to 127 sets gain across the backend's full 0–2 range. Thus
-the MIDI mapping can reach 200% gain even though the web slider tops out at
-100%. Assignment matches CC number; there is no per-MIDI-channel selector.
+the MIDI mapping can reach 200% gain, matching the web slider's maximum.
+Assignment matches CC number; there is no per-MIDI-channel selector.
 Each CC and each volume target can have only one volume mapping, so assigning
 a CC already in use or assigning a second CC to the same target replaces the
 conflicting volume assignment.
@@ -116,7 +122,7 @@ its own processing branch before it joins a shared route.
   press **Assign CC**, then send a new CC event. If the mapping succeeds but
   the value looks stale, choose **Refresh**.
 - **The MIDI range seems higher than the slider:** that is expected. A CC
-  spans 0–200% gain; the browser slider spans 0–100%.
+  spans 0–200% gain, matching the browser slider.
 - **A level returns after restart:** the web slider's level is persistent.
   MIDI controller movements change runtime gain but do not save each new CC
   value as the slider's stored level.

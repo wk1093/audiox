@@ -83,7 +83,7 @@ unavailable. The commands require access to your device, not this docs site.
 | `POST /api/effect/midi_light/set`, `/delete` | Effect enabled/bypassed lighting |
 
 HTTP volume changes use **gain**, with a 0.0-2.0 API/runtime range; the WebUI
-slider itself stops at 100% (unity), while MIDI CC can reach 200%.
+slider and MIDI CC both span 0-200%, with 100% at unity and 200% at 2x gain.
 Lua's `volume.set` uses **percent**, restricted to 0-100. Do not send a percentage
 as an HTTP gain or assume a Lua parameter is normalized.
 

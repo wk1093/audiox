@@ -222,6 +222,18 @@ int main() {
         assert(smoothMeterLevel(headphones, 0, 1, 0.75f, 1) == 0.75f);
         assert(smoothMeterLevel(headphones, 0, 0, 0.5f, 1) == 0.5f);
         assert(findMeterSmoothingState(phone, 0, 1, 1)->level == 0.25f);
+        assert(audioMeterFraction(0.0f) == 0.0f);
+        assert(audioMeterFraction(-1.0f) == 0.0f);
+        assert(audioMeterFraction(0.0001f) == 0.0f);
+        assert(audioMeterFraction(0.001f) == 0.0f);
+        assert(fabsf(audioMeterFraction(0.01f) - 1.0f / 3.0f) < 0.0001f);
+        assert(fabsf(audioMeterFraction(0.1f) - 2.0f / 3.0f) < 0.0001f);
+        assert(fabsf(audioMeterFraction(0.5f) - 0.899657f) < 0.0001f);
+        assert(audioMeterFraction(1.0f) == 1.0f);
+        assert(audioMeterFraction(2.0f) == 1.0f);
+        assert(audioMeterFraction(NAN) == 0.0f);
+        assert(audioMeterFraction(INFINITY) == 0.0f);
+        assert(std::isfinite(smoothMeterLevel(phone, 0, 1, NAN, 2)));
         TouchContext touch(&app);
         assert(app.fb == &fb && app.touch == &touch);
         assert(fb.isReady() && fb.pageflip_enabled && maps == 1);

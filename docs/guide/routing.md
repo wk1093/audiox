@@ -151,6 +151,14 @@ skipped. A route that used to work can therefore become inactive after
 unplugging a device or changing a Cut effect's channel count. Reconnect the
 device or correct the affected channels, then save again.
 
+There is a limit of 128 active runtime paths, including paths expanded through
+the routing helper. Direct wires take priority, followed by helper paths in saved
+incoming/outgoing wire order. If helper fan-out exceeds the limit, AudioX loads
+the first 128 paths and reports the skipped count in the reload response and a
+web UI warning. The saved wires remain intact, so reducing fan-out can restore
+previously skipped paths. The API's `edges` count is the expanded active-path
+count; `skippedEdges` includes both invalid saved wires and excess helper paths.
+
 Keep signal flow one-way from inputs through processing to outputs. AudioX
 orders processing nodes for chained effects, but it does not provide a
 feedback-loop design or a cycle-warning workflow. Avoid connecting a path back

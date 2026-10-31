@@ -1946,50 +1946,7 @@ static void rebuildRuntimeGraph(AudioContext *ctx,
         (graph.topologyGeneration != rt->snapshot.topologyGeneration) ||
         !sameThingLayout(graph, rt->snapshot);
 
-    AudioGraphState compiledGraph = graph;
-    int helperIndex = -1;
-    for (uint16_t i = 0; i < compiledGraph.thingCount; ++i) {
-        if (strcmp(compiledGraph.things[i].id, "routing_helper") == 0) {
-            helperIndex = (int)i;
-            break;
-        }
-    }
-    if (helperIndex >= 0) {
-        AudioGraphEdgeInfo compiledEdges[AUDIO_GRAPH_MAX_EDGES] = {};
-        uint16_t compiledEdgeCount = 0;
-        for (uint16_t i = 0; i < compiledGraph.edgeCount; ++i) {
-            const AudioGraphEdgeInfo &edge = compiledGraph.edges[i];
-            if (strcmp(edge.src, "routing_helper") != 0 &&
-                strcmp(edge.dst, "routing_helper") != 0 &&
-                compiledEdgeCount < AUDIO_GRAPH_MAX_EDGES) {
-                compiledEdges[compiledEdgeCount++] = edge;
-            }
-        }
-        for (uint16_t inIndex = 0; inIndex < graph.edgeCount; ++inIndex) {
-            const AudioGraphEdgeInfo &incoming = graph.edges[inIndex];
-            if (strcmp(incoming.dst, "routing_helper") != 0) {
-                continue;
-            }
-            for (uint16_t outIndex = 0; outIndex < graph.edgeCount; ++outIndex) {
-                const AudioGraphEdgeInfo &outgoing = graph.edges[outIndex];
-                if (strcmp(outgoing.src, "routing_helper") != 0 ||
-                    incoming.dstChannel != outgoing.srcChannel ||
-                    compiledEdgeCount >= AUDIO_GRAPH_MAX_EDGES) {
-                    continue;
-                }
-                AudioGraphEdgeInfo direct = {};
-                memcpy(direct.src, incoming.src, sizeof(direct.src));
-                memcpy(direct.dst, outgoing.dst, sizeof(direct.dst));
-                direct.srcChannel = incoming.srcChannel;
-                direct.dstChannel = outgoing.dstChannel;
-                compiledEdges[compiledEdgeCount++] = direct;
-            }
-        }
-        memcpy(compiledGraph.edges, compiledEdges, sizeof(compiledEdges));
-        compiledGraph.edgeCount = compiledEdgeCount;
-    }
-
-    rt->snapshot = compiledGraph;
+    rt->snapshot = graph;
     rt->sourceNodeCount = 0;
     rt->processNodeCount = 0;
     rt->sinkNodeCount = 0;

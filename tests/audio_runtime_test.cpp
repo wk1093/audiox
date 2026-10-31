@@ -1,4 +1,5 @@
 #include "../src/audio/processing.cpp"
+#include "audio/routing_compile.hpp"
 
 #include <cassert>
 #include <vector>
@@ -167,4 +168,38 @@ int main() {
     headphones.setActive(false);
     assert(headphones.available() == 0);
     puts("Per-device Bluetooth routing node tests passed");
+
+    AudioGraphState helperGraph{};
+    helperGraph.generation = 1;
+    helperGraph.thingCount = 3;
+    strcpy(helperGraph.things[0].id, "soundboard_out");
+    helperGraph.things[0].outputs = 2;
+    strcpy(helperGraph.things[1].id, "test_out");
+    helperGraph.things[1].inputs = 2;
+    strcpy(helperGraph.things[2].id, "routing_helper");
+    helperGraph.things[2].inputs = helperGraph.things[2].outputs = 2;
+    for (unsigned i = 0; i < 12; ++i) {
+        auto &incoming = helperGraph.edges[helperGraph.edgeCount++];
+        strcpy(incoming.src, "soundboard_out");
+        strcpy(incoming.dst, "routing_helper");
+        auto &outgoing = helperGraph.edges[helperGraph.edgeCount++];
+        strcpy(outgoing.src, "routing_helper");
+        strcpy(outgoing.dst, "test_out");
+    }
+    assert(audiox::graph::expandRoutingHelper(&helperGraph) == 16);
+    auto helperRuntime = std::make_unique<RuntimeGraph>();
+    auto helperCapture = std::make_unique<AlsaCaptureBackend>();
+    helperCapture->reset();
+    rebuildRuntimeGraph(context.get(), helperRuntime.get(), helperCapture.get(), helperGraph);
+    assert(helperRuntime->sourceRouteCount == AUDIO_GRAPH_MAX_EDGES);
+    assert(helperRuntime->processRouteCount == 0);
+    assert(helperRuntime->processNodeCount == 0);
+    context->sfxQueue[1] = {0, 0, 1.0f};
+    context->sfxQueueWrite.store(2);
+    context->sfxSlotRefs[0].store(1);
+    processGraphBlock(context.get(), helperRuntime.get(), helperCapture.get());
+    assert(helperRuntime->inputs[1][0][0] > 0.1f);
+    assert(helperRuntime->inputs[1][1][0] == 0.0f);
+    closeAllStreams(helperRuntime.get(), helperCapture.get());
+    puts("Expanded helper paths render through the runtime without a second expansion");
 }

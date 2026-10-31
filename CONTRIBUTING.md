@@ -81,6 +81,8 @@ Before opening a PR:
    include a C++17 compiler, pkg-config, ALSA/libsndfile/ncurses/SBC development
    headers, Node.js 22+, Python 3, Bash, and jq; Make builds its host Lua library.
    `make test-native` and `make test-web` run individual suites.
+   `make test-build-dependencies` runs the Bash-only Makefile and incremental
+   header dependency checks without Node.js.
    `make test-audio-graph-tsan` checks graph publication with ThreadSanitizer.
    The separate `make test-dnsmasq-config` target additionally needs the target
    dnsmasq build and qemu-aarch64 (or host dnsmasq). Build the relevant firmware
@@ -104,6 +106,9 @@ allocating, or retrying. Do not add a second consumer to this mailbox. UI reader
 use a separate mutex-protected copy. ALSA rescans advance the topology generation
 only when devices actually change; the control loop then republishes the graph
 so saved routes resume on hotplug without periodically reopening unchanged PCMs.
+Helper expansion also runs on the control side, before publication. The runtime
+receives at most 128 compiled paths; skipped helper paths are counted and
+reported rather than silently discarded on the audio thread.
 
 ## Reporting issues
 

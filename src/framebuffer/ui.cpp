@@ -378,7 +378,7 @@ static inline float smoothMeterLevel(uint64_t handle,
                                      float targetLevel,
                                      uint64_t nowMs) {
     MeterSmoothingState *state = findMeterSmoothingState(handle, channelIndex, isCapture, nowMs);
-    float clampedTarget = clampFloat(targetLevel, 0.0f, 1.0f);
+    float clampedTarget = std::isfinite(targetLevel) ? clampFloat(targetLevel, 0.0f, 1.0f) : 0.0f;
     if (!state) {
         return clampedTarget;
     }
@@ -396,6 +396,13 @@ static inline float smoothMeterLevel(uint64_t handle,
     state->lastUpdateMs = nowMs;
     state->lastSeenMs = nowMs;
     return state->level;
+}
+
+static inline float audioMeterFraction(float level) {
+    if (!std::isfinite(level) || level <= 0.001f) {
+        return 0.0f;
+    }
+    return clampFloat((20.0f * log10f(level) + 60.0f) / 60.0f, 0.0f, 1.0f);
 }
 
 static inline void drawChannelMeterGroup(FramebufferContext *fb,
@@ -421,7 +428,7 @@ static inline void drawChannelMeterGroup(FramebufferContext *fb,
         fb->drawRect(x, barY, w, kMeterBarH, 42, 52, 68);
         float level = getAudioChannelLevel(fb, handle, ch, isCapture);
         level = smoothMeterLevel(handle, ch, isCapture, level, nowMs);
-        drawMeterFillColor(fb, x, barY, w, kMeterBarH, level, fillR, fillG, fillB);
+        drawMeterFillColor(fb, x, barY, w, kMeterBarH, audioMeterFraction(level), fillR, fillG, fillB);
     }
 }
 

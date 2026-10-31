@@ -192,6 +192,15 @@ int main() {
 
         char effect[64];
         assert(audio->createEffect("gain", effect, sizeof(effect)) == RET_OK);
+        for (const auto &entry : {
+                 std::pair<const char *, const char *>{"gain", "Gain"},
+                 {"distortion", "Distortion"}, {"pitch", "Pitch"},
+                 {"reverb", "Reverb"}, {"gate", "Noise Gate"}, {"cut", "Cut"}}) {
+            assert(audio->setEffectType(effect, audiox::effects::effectTypeFromString(entry.first)) == RET_OK);
+            const auto response = request([&](int fd) { return handleAudioVolumes(&http, fd, "GET", ""); });
+            assert(response.find(std::string("\"id\":\"") + effect + "\",\"name\":\"" + entry.second + "\"") != std::string::npos);
+        }
+        assert(audio->setEffectType(effect, audiox::effects::EFFECT_GAIN) == RET_OK);
         for (const char *invalid : {"nan", "inf", "-inf", "1junk", ""}) {
             std::string body = std::string("id=") + effect + "&enabled=0&param=gain&value=" + invalid;
             auto response = request([&](int fd) { return handleEffectSet(&http, fd, "POST", "", body.data(), body.size()); });
@@ -215,6 +224,62 @@ int main() {
         map.effectStates[0].gain = std::numeric_limits<float>::infinity();
         assert(config.writeMidiMapFile(&map) == RET_ERR);
         assert(readFile("midi_map.txt") == previousMap && readFile("fx_params.txt") == previousFx);
+
+        char sources[12][64]{};
+        char sinks[16][64]{};
+        for (auto &id : sources) assert(audio->createEffect("gain", id, sizeof(id)) == RET_OK);
+        for (auto &id : sinks) assert(audio->createEffect("gain", id, sizeof(id)) == RET_OK);
+        auto helperRoutes = [&](unsigned incoming, unsigned outgoing) {
+            std::string routes = "node=routing_helper\n";
+            for (unsigned i = 0; i < incoming; ++i)
+                routes += std::string("edge=") + sources[i] + ",routing_helper,0,0\n";
+            for (unsigned i = 0; i < outgoing; ++i)
+                routes += std::string("edge=routing_helper,") + sinks[i] + ",0,0\n";
+            return routes;
+        };
+        for (const auto shape : {std::pair<unsigned, unsigned>{12, 10}, {8, 16}, {12, 12}}) {
+            const auto routes = helperRoutes(shape.first, shape.second);
+            writeFile("routing.txt", routes);
+            const unsigned paths = shape.first * shape.second;
+            const unsigned dropped = paths > AUDIO_GRAPH_MAX_EDGES ? paths - AUDIO_GRAPH_MAX_EDGES : 0;
+            assert(audio->reloadRoutingGraph() == (dropped ? RET_WARN : RET_OK));
+            const auto &graph = audio->routingGraph;
+            assert(graph.edgeCount == paths - dropped && graph.skippedEdgeCount == dropped);
+            for (unsigned i = 0; i < graph.edgeCount; ++i) {
+                assert(strcmp(graph.edges[i].src, sources[i / shape.second]) == 0);
+                assert(strcmp(graph.edges[i].dst, sinks[i % shape.second]) == 0);
+            }
+            assert(readFile("routing.txt") == routes);
+            AudioGraphState compiled{};
+            assert(audio->routingGraphMailbox.consume(&compiled));
+            assert(memcmp(&compiled, &graph, sizeof(compiled)) == 0);
+        }
+        std::string mixed = helperRoutes(12, 12) +
+            "edge=soundboard_out," + sinks[0] + ",1,1\nedge=missing,missing,0,0\n";
+        writeFile("routing.txt", mixed);
+        auto response = request([&](int fd) { return handleRoutingReload(&http, fd, "POST", ""); });
+        assert(response.find("200 OK") != std::string::npos);
+        assert(response.find("\"edges\":128") != std::string::npos);
+        assert(response.find("\"skippedEdges\":18") != std::string::npos);
+        assert(response.find("17 skipped path(s)") != std::string::npos);
+        assert(strcmp(audio->routingGraph.edges[0].src, "soundboard_out") == 0);
+        assert(audio->routingGraph.edges[0].srcChannel == 1);
+        assert(readFile("routing.txt") == mixed);
+        std::string stereo = "node=routing_helper\n";
+        for (unsigned i = 0; i < 12; ++i) {
+            stereo += std::string("edge=") + sources[i] + ",routing_helper,0," + std::to_string(i % 2) + "\n";
+            stereo += std::string("edge=routing_helper,") + sinks[i] + "," + std::to_string(i % 2) + ",0\n";
+        }
+        writeFile("routing.txt", stereo);
+        assert(audio->reloadRoutingGraph() == RET_OK);
+        assert(audio->routingGraph.edgeCount == 72 && audio->routingGraph.skippedEdgeCount == 0);
+        for (unsigned i = 0; i < 72; ++i) {
+            assert(strcmp(audio->routingGraph.edges[i].src, sources[i / 6]) == 0);
+            assert(strcmp(audio->routingGraph.edges[i].dst, sinks[2 * (i % 6) + (i / 6) % 2]) == 0);
+        }
+        writeFile("routing.txt", helperRoutes(12, 0));
+        assert(audio->reloadRoutingGraph() == RET_OK);
+        assert(audio->routingGraph.edgeCount == 0 && audio->routingGraph.skippedEdgeCount == 0);
     }
     for (const char *file : {"config.txt", "routing.txt", "volumes.txt", "midi_map.txt", "fx_params.txt"}) assert(unlink(file) == 0);
     assert(chdir(original) == 0);

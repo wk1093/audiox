@@ -1675,13 +1675,19 @@ window.deleteEffectThing = deleteEffectThing;
 window.loadRoutingFile = loadRoutingFile;
 window.loadRoutingThingsWithOptions = loadRoutingThingsWithOptions;
 
-async function reloadRoutingFast() {
+async function reloadRoutingFast(successMessage = null) {
   try {
     const res = await fetch('/api/routing/reload', { method: 'POST' });
     const txt = await res.text();
     if (!res.ok) {
       setStatus(`routing reload failed: ${res.status} ${txt.trim()}`, 'warn');
       return false;
+    }
+    const graph = JSON.parse(txt);
+    if (Number(graph.skippedEdges) > 0) {
+      setStatus(`routing loaded with warnings: ${graph.status}`, 'warn');
+    } else if (successMessage) {
+      setStatus(successMessage, 'ok');
     }
     return true;
   } catch (err) {
@@ -1704,12 +1710,11 @@ async function saveRouting() {
       return false;
     }
 
-    const reloaded = await reloadRoutingFast();
+    const reloaded = await reloadRoutingFast('routing saved and reloaded');
     if (!reloaded) {
       return false;
     }
 
-    setStatus('routing saved and reloaded', 'ok');
     AudioxUI.setUnsaved('routing', false);
     return true;
   } catch (err) {
@@ -3221,11 +3226,11 @@ function ccForThing(thingId) {
 }
 
 function gainToPercent(gain) {
-  return Math.round(Number(gain) * 50);
+  return Math.round(Number(gain) * 100);
 }
 
 function percentToGain(pct) {
-  return Number(pct) / 50;
+  return Number(pct) / 100;
 }
 
 function renderVolGrid() {
@@ -3264,13 +3269,13 @@ function renderVolGrid() {
     const slider = document.createElement('input');
     slider.type = 'range';
     slider.min = '0';
-    slider.max = '100';
+    slider.max = '200';
     slider.step = '1';
-    slider.value = String(gainToPercent(gain));
+    slider.value = String(Math.max(0, Math.min(200, gainToPercent(gain))));
 
     const pctEl = document.createElement('div');
     pctEl.className = 'vol-pct';
-    pctEl.textContent = `${slider.value}%`;
+    pctEl.textContent = `${gainToPercent(gain)}%`;
 
     let saveTimer = null;
     slider.addEventListener('input', () => {

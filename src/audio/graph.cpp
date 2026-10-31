@@ -1,4 +1,5 @@
 #include "audio/context.hpp"
+#include "audio/routing_compile.hpp"
 #include "json.hpp"
 
 #include "bluetooth/context.hpp"
@@ -506,7 +507,13 @@ size_t AudioContext::copyRoutingThings(AudioGraphThingInfo *out, size_t cap) con
             continue;
         }
         char label[160];
-        snprintf(label, sizeof(label), "FX %s", fxStates[i].thingId);
+        const char *typeName = audiox::effects::effectTypeToString(fxStates[i].type);
+        if (fxStates[i].type == audiox::effects::EFFECT_GATE) {
+            snprintf(label, sizeof(label), "Noise Gate");
+        } else {
+            snprintf(label, sizeof(label), "%s", typeName);
+            label[0] = static_cast<char>(toupper(static_cast<unsigned char>(label[0])));
+        }
         uint32_t channels = 2;
         if (fxStates[i].type == audiox::effects::EFFECT_CUT) {
             for (uint8_t param = 0; param < fxStates[i].paramCount; ++param) {
@@ -740,6 +747,15 @@ int AudioContext::reloadRoutingGraph() {
         }
     }
 
+    const uint16_t droppedPaths = audiox::graph::expandRoutingHelper(&next);
+    if (droppedPaths > 0) {
+        skipped += droppedPaths;
+        next.skippedEdgeCount = static_cast<uint16_t>(skipped);
+        snprintf(next.status, sizeof(next.status),
+                 "routing helper capacity: %u active paths, %u skipped path(s); %u total skipped",
+                 (unsigned)next.edgeCount, (unsigned)droppedPaths, (unsigned)next.skippedEdgeCount);
+    }
+
     {
         std::lock_guard<std::mutex> lock(routingGraphMutex);
         next.generation = routingGraph.generation + 1;
@@ -754,7 +770,7 @@ int AudioContext::reloadRoutingGraph() {
         publishRoutingGraph(this, routingGraph);
     }
 
-    printf("[AUDIO] [INFO] %s\n", next.status);
+    printf("[AUDIO] [%s] %s\n", droppedPaths > 0 ? "WARN" : "INFO", next.status);
     return skipped > 0 ? RET_WARN : RET_OK;
 }
 

@@ -1,6 +1,8 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const routing = require('../web/routing.js');
+const fs = require('node:fs');
+const vm = require('node:vm');
 
 const nodes = [
   { id: 'output', kind: 'device', inputs: 2, outputs: 0, width: 260, height: 100 },
@@ -60,4 +62,29 @@ test('fit remains contained for tiny viewports and very large layouts', () => {
     assert.ok((box.x + box.width + view.offset[0]) * view.scale <= width);
     assert.ok((box.y + box.height + view.offset[1]) * view.scale <= height);
   }
+});
+
+test('saving routing preserves capacity warnings instead of overwriting them with success', async () => {
+  const source = fs.readFileSync(require.resolve('../web/app.js'), 'utf8');
+  const notices = [];
+  const unsaved = [];
+  let graph = { ok: true, skippedEdges: 16, status: 'routing helper capacity: 128 active paths, 16 skipped path(s)' };
+  const context = vm.createContext({
+    routingPath: '/routing.txt',
+    formatRoutingText: () => 'saved wires',
+    setStatus: (...args) => notices.push(args),
+    AudioxUI: { setUnsaved: (...args) => unsaved.push(args) },
+    fetch: async url => ({ ok: true, text: async () => url === '/routing.txt' ? '' : JSON.stringify(graph) }),
+  });
+  vm.runInContext(source.slice(source.indexOf('async function reloadRoutingFast('),
+    source.indexOf('async function loadVersion(')), context);
+  assert.equal(await context.saveRouting(), true);
+  assert.deepEqual(notices.at(-1), [`routing loaded with warnings: ${graph.status}`, 'warn']);
+  assert.deepEqual(unsaved.at(-1), ['routing', false]);
+  graph = { ok: true, skippedEdges: 0 };
+  assert.equal(await context.saveRouting(), true);
+  assert.deepEqual(notices.at(-1), ['routing saved and reloaded', 'ok']);
+  context.fetch = async () => ({ ok: true, text: async () => 'invalid JSON' });
+  assert.equal(await context.reloadRoutingFast(), false);
+  assert.match(notices.at(-1)[0], /routing reload error/);
 });

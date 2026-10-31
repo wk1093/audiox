@@ -58,6 +58,14 @@ extern "C" char *__wrap_realpath(const char *path, char *out) {
     return __real_realpath(path, out);
 }
 
+extern "C" char *__real___realpath_chk(const char *, char *, size_t);
+extern "C" char *__wrap___realpath_chk(const char *path, char *out, size_t size) {
+    // Fortified glibc calls bypass the plain realpath linker wrapper.
+    if (strcmp(path, "/sys/dev/block/240:2") == 0)
+        return __real___realpath_chk((root + "/audiox-test-disk/partition").c_str(), out, size);
+    return __real___realpath_chk(path, out, size);
+}
+
 extern "C" int __real_fstat(int, struct stat *);
 extern "C" int __wrap_fstat(int fd, struct stat *info) {
     int rc = __real_fstat(fd, info);

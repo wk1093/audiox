@@ -6,8 +6,8 @@ description: Pair Bluetooth audio devices, stream in or out, and troubleshoot co
 # Bluetooth audio
 
 AudioX supports Bluetooth Classic audio roles in both directions. Each paired
-device gets its own Routing nodes: **BT <name> In** (`bt_<MAC>_in`) carries
-audio received from that device, and **BT <name> Out** (`bt_<MAC>_out`) sends
+device gets its own Routing nodes: **BT \<name\> In** (`bt_<MAC>_in`) carries
+audio received from that device, and **BT \<name\> Out** (`bt_<MAC>_out`) sends
 audio to it. A phone, which only sends audio, gets only an In node; a
 headphone or speaker gets only an Out node once AudioX has identified it. A
 device whose role is not known yet shows both. Pairing a device does not

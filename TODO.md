@@ -142,8 +142,11 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Fix configuration backup restore failures.
   - [x] Expand image storage to fill the SD card.
 
-## Effect Improvements - v1.13
+## Effect, Soundboard, and Engine Improvements - v1.13
 - [ ] Option in config to use raspi AUX port as an output source (for people without an audio interface, since custom hardware is still WIP)
+- [ ] Soundboard modes: Normal mode is current behavior, grid mode allows the user to specify a grid size (matching their midi controller) and use an intuitive midi learn (where they need to press specific edges or corners of their grid so AudioX can learn how the grid is laid out) and then every sound is in one of the grids, when you add a new sound you have to specify where it will go, and you can have blank space in between. There should also be a conversion tool for existing "normal" mode setups to the grid without having to remap everything. This grid mode should also affect the fbui soundboard, and the webui to not use a list of sounds, and insteal also display a grid.
+
+ 
 - [ ] Improve effect system to be more user friendly
   - [ ] Provide meaningful names for existing effects instead of fx1, fx2, etc.
   - [ ] Improve parameter UI

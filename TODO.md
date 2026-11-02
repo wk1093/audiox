@@ -143,6 +143,7 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Expand image storage to fill the SD card.
 
 ## Effect Improvements - v1.13
+- [ ] Option in config to use raspi AUX port as an output source (for people without an audio interface, since custom hardware is still WIP)
 - [ ] Improve effect system to be more user friendly
   - [ ] Provide meaningful names for existing effects instead of fx1, fx2, etc.
   - [ ] Improve parameter UI

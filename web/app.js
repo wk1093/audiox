@@ -65,6 +65,7 @@ const state = {
   soundboardLayout: { mode: 'normal', rows: 4, columns: 4, corners: [null, null, null, null], cells: [] },
   soundboardCellsBySfx: {},
   soundboardGridSaving: false,
+  soundboardOpenSettings: new Set(),
   framebufferView: 'meters',
   stopAllMidiNote: null,
   samplerToggleMidiNote: null,
@@ -2666,6 +2667,40 @@ async function reloadSoundboardBank() {
   }
 }
 
+function groupSoundboardTileSettings(actions, midi, file, label, isTarget) {
+  const settings = document.createElement('details');
+  settings.className = 'sb-tile-settings sb-edit-only';
+  settings.open = state.soundboardOpenSettings.has(file) || isTarget;
+  const summary = document.createElement('summary');
+  summary.textContent = isTarget ? 'Waiting for MIDI\u2026' : 'Settings';
+  summary.setAttribute('aria-label', `Settings for ${label}`);
+  const controls = document.createElement('div');
+  controls.className = 'sb-tile-controls';
+  for (const control of [...actions.children]) {
+    if (!control.classList.contains('sb-edit-only')) continue;
+    if (control.tagName === 'SELECT') {
+      const field = document.createElement('label');
+      field.textContent = control.classList.contains('sb-grid-cell-select') ? 'Grid position' : 'Playback';
+      field.appendChild(control);
+      controls.appendChild(field);
+    } else {
+      controls.appendChild(control);
+    }
+  }
+  const clear = midi.querySelector('.sb-midi-clear');
+  if (clear) {
+    clear.className = 'flat';
+    clear.textContent = 'Clear MIDI mapping';
+    controls.appendChild(clear);
+  }
+  settings.append(summary, controls);
+  settings.addEventListener('toggle', () => {
+    if (settings.open) state.soundboardOpenSettings.add(file);
+    else state.soundboardOpenSettings.delete(file);
+  });
+  actions.appendChild(settings);
+}
+
 function renderSoundboardGrid() {
   soundboardOrder.cancel();
   soundboardGridDrag.cancel();
@@ -2793,6 +2828,7 @@ function renderSoundboardGrid() {
       trigger.textContent = label;
       trigger.addEventListener('click', action.action === 'stop_all' ? triggerStopAll : triggerSamplerToggle);
       actionsEl.appendChild(trigger);
+      groupSoundboardTileSettings(actionsEl, midiEl, file, label, isTarget);
       card.classList.add('sb-action-card');
       card.append(nameEl, midiEl, actionsEl);
       (state.soundboardCellsBySfx[file] ? sbGridEl : unassignedList).appendChild(card);
@@ -2923,6 +2959,7 @@ function renderSoundboardGrid() {
     });
     actionsEl.appendChild(replaceBtn);
     actionsEl.appendChild(replaceInput);
+    groupSoundboardTileSettings(actionsEl, midiEl, file, label, isTarget);
 
     card.appendChild(nameEl);
     card.appendChild(midiEl);

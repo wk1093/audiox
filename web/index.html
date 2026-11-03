@@ -170,9 +170,11 @@
           <button id="btn-fb-view" class="flat" type="button" aria-pressed="false">Show Soundboard on Display</button>
         </div>
 
-        <section class="card stack sb-edit-only" id="sb-grid-settings">
-          <h2>Soundboard layout</h2>
-          <p class="small">Drag sounds between grid cells and the unassigned list. Occupied cells swap sounds. Learn the four MIDI corners to make moves update controller pad mappings and lighting.</p>
+        <div class="sb-edit-tools sb-edit-only">
+        <details class="card sb-setup-panel" id="sb-grid-settings">
+          <summary>Layout &amp; MIDI setup</summary>
+          <div class="stack sb-panel-content">
+          <p class="small">Choose your layout and connect grid positions to your controller.</p>
           <div class="cfg-row">
             <label for="sb-layout-mode">Layout</label>
             <select id="sb-layout-mode">
@@ -194,10 +196,12 @@
             </div>
             <p id="sb-grid-learn-status" class="small" role="status">Learn the four physical pad corners to connect grid cells to MIDI notes.</p>
           </div>
-        </section>
+          </div>
+        </details>
 
-        <section class="card stack sb-edit-only">
-          <h2>Add Sound</h2>
+        <details class="card sb-setup-panel" id="sb-add-sound">
+          <summary>Add Sound</summary>
+          <div class="stack sb-panel-content">
           <div class="cfg-row" style="margin-top: 0;">
             <label for="upload_name">Filename</label>
             <input id="upload_name" type="text" placeholder="kick.wav" data-unsaved-key="sound-upload">
@@ -214,7 +218,9 @@
             <button id="btn-upload-real" class="primary">Upload</button>
             <button id="btn-upload-clear">Clear</button>
           </div>
-        </section>
+          </div>
+        </details>
+        </div>
 
         <p id="sb-order-status" class="small sb-edit-only" role="status">Drag sound cards to reorder them (on touch, drag the sound name). With a keyboard, focus a name and press Space, use arrow keys, then Enter to save. Changes also update the device display.</p>
         <div id="sb-grid" class="sb-grid"></div>

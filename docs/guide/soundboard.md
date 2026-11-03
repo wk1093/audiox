@@ -12,8 +12,10 @@ controls without the file-management controls getting in the way.
 
 Choose **Edit** to show:
 
-- **Add Sound**, with an optional filename and an audio-file picker.
-- Each card's **Play/Hold** selector, **Assign MIDI**, **Replace**, and **Remove**.
+- Collapsible **Add Sound** and **Layout & MIDI setup** panels.
+- Compact cards with playback previews and an expandable **Settings** section
+  for grid position, **Play/Hold**, **Assign MIDI**, **Clear MIDI mapping**,
+  **Replace**, and **Remove**. Open settings stay open when the grid refreshes.
 - **Refresh**, which reloads the file list and related state.
 - Reordering controls, including keyboard-accessible sound names.
 
@@ -23,7 +25,7 @@ clear their mappings.
 ## Upload a sound
 
 1. Choose **Edit**.
-2. Under **Add Sound**, pick an audio file.
+2. Expand **Add Sound** and pick an audio file.
 3. Optionally enter a descriptive filename, such as `intro.wav`.
 4. Choose **Upload** and wait for conversion and the cache reload to complete.
 5. Test the sound at a low output level.
@@ -77,7 +79,7 @@ Lua macro. To stop unrelated live audio, change its route or volume.
 ## Map a MIDI pad
 
 1. Connect the controller to the Pi.
-2. In **Edit**, choose a sound's **Assign MIDI**.
+2. In **Edit**, expand the sound's **Settings** and choose **Assign MIDI**.
 3. Press the desired pad **after** entering assignment mode.
 4. Check the note shown on the card.
 
@@ -112,7 +114,7 @@ when ordering is unavailable.
 
 ## Normal and grid layouts
 
-In **Edit**, choose **Normal list** or **MIDI grid** under Soundboard layout.
+In **Edit**, expand **Layout & MIDI setup** and choose **Normal list** or **MIDI grid**.
 Normal list is the default and keeps the existing reorder workflow. Grid mode
 supports up to 8 rows by 8 columns, including empty cells. Switching an existing
 list to grid places its sounds in their current order; it keeps their MIDI
@@ -120,7 +122,8 @@ assignments. If the grid is smaller than the library, remaining sounds appear
 under **Unassigned sounds and actions**. New uploads are unassigned unless you choose a cell.
 In Edit mode, drag any sound to an empty cell to move it. Drop onto another sound
 to swap their positions; an unassigned sound displaces the target into the
-unassigned list. On touchscreens, drag the sound name. Each card's cell selector
+unassigned list. On touchscreens, drag the sound name. Each card's **Settings**
+contains a cell selector that
 provides the same placement and swap controls for keyboard users.
 
 Drag a sound into **Unassigned sounds and actions**, or choose **Unassigned** in its selector,

@@ -892,6 +892,44 @@ select {
 }
 
 .mode-switch { display: flex; gap: 4px; }
+.sb-edit-tools {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  align-items: start;
+  gap: 12px;
+}
+
+.sb-setup-panel > summary,
+.sb-tile-settings > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.sb-panel-content { margin-top: 14px; }
+.sb-tile-settings { grid-column: 1 / -1; }
+.sb-tile-settings > summary {
+  padding: 8px 4px;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.sb-tile-controls {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.sb-tile-controls label {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.soundboard-layout:not(.play-mode) .sb-card { min-height: 0; }
+.soundboard-layout:not(.play-mode) .sb-card-actions { grid-template-columns: 1fr; }
+.soundboard-layout:not(.play-mode) .sb-card-actions > .sb-play { min-height: 40px; }
 .play-mode .sb-edit-only { display: none; }
 .play-mode .sb-card { min-height: 140px; }
 .play-mode .sb-card-actions { grid-template-columns: 1fr; }

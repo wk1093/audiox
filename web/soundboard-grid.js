@@ -71,7 +71,7 @@
     };
     container.addEventListener('pointerdown', (event) => {
       if (!enabled() || drag || event.button !== 0 ||
-          event.target.closest('button, input, select, a')) return;
+          event.target.closest('button, input, select, a, summary, .sb-tile-settings')) return;
       const card = event.target.closest('.sb-card');
       if (!card || !container.contains(card)) return;
       if (event.pointerType === 'touch' && !event.target.closest('.sb-card-name')) return;

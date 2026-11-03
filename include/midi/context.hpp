@@ -47,6 +47,7 @@ struct MidiContext {
     MidiScriptState macroStates[MIDI_CHORDS_MAX]{};
     char macroErrors[MIDI_CHORDS_MAX][192]{};
     bool macroValid[MIDI_CHORDS_MAX]{};
+    uint8_t macroEventMasks[MIDI_CHORDS_MAX]{};
     bool macroUsesKeyboard[MIDI_CHORDS_MAX]{};
     bool macroPressed[MIDI_CHORDS_MAX]{};
     int macroLight[MIDI_CHORDS_MAX]{};
@@ -87,10 +88,13 @@ struct MidiContext {
 
     void setLightsDimmed(bool dimmed);
     void refreshLightingFromState();
+    void toggleSamplerMode();
     int reloadSoundboardMappings();
     void syncMacros();
     void stopMacros();
     bool triggerMacro(unsigned index, uint8_t velocity = 127, bool fromWeb = false);
+    bool queueMacroEvent(unsigned index, MidiScriptEvent event);
+    void dispatchMacroEvent(MidiScriptEvent event);
     void pollMacros(uint64_t now);
     bool queueControllerMidi(const uint8_t *bytes, size_t count);
     bool flushControllerMidi();

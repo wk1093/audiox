@@ -137,7 +137,7 @@ node is silent. Routes for a device that is no longer paired disappear from
 the graph but stay saved, and return if you pair it again. Saving routing does
 not remove them. Older single `bluetooth_in`/`bluetooth_out` routes are
 converted to per-device routes automatically. Volume settings, MIDI
-mappings, and macros that used those older IDs must be pointed at the new
+mappings, and scripts that used those older IDs must be pointed at the new
 per-device IDs.
 
 The Soundboard currently uses only the first sample channel of a clip, even

@@ -121,9 +121,9 @@ int main() {
         strcpy(audio->devices.begin()->second.displayName, "USB \"Studio\"\\\n\t\001");
         const std::string escaped = "USB \\\"Studio\\\"\\\\\\u000a\\u0009\\u0001";
         const auto things = request([&](int fd) { return handleRoutingThings(&http, fd, "GET", ""); });
-        assert(things.find(escaped + " Out") != std::string::npos);
+        assert(things.find("To " + escaped) != std::string::npos);
         const auto volumes = request([&](int fd) { return handleAudioVolumes(&http, fd, "GET", ""); });
-        assert(volumes.find(escaped + " Out") != std::string::npos);
+        assert(volumes.find("To " + escaped) != std::string::npos);
         char devices[4096];
         assert(audio->buildDevicesJson(devices, sizeof(devices)) == RET_OK);
         assert(std::string(devices).find(escaped) != std::string::npos);
@@ -194,13 +194,69 @@ int main() {
         assert(audio->createEffect("gain", effect, sizeof(effect)) == RET_OK);
         for (const auto &entry : {
                  std::pair<const char *, const char *>{"gain", "Gain"},
-                 {"distortion", "Distortion"}, {"pitch", "Pitch"},
-                 {"reverb", "Reverb"}, {"gate", "Noise Gate"}, {"cut", "Cut"}}) {
+                 {"distortion", "Distortion"}, {"pitch", "Pitch Shift"},
+                 {"reverb", "Reverb"}, {"gate", "Noise Gate"}, {"cut", "Mute"}}) {
             assert(audio->setEffectType(effect, audiox::effects::effectTypeFromString(entry.first)) == RET_OK);
             const auto response = request([&](int fd) { return handleAudioVolumes(&http, fd, "GET", ""); });
-            assert(response.find(std::string("\"id\":\"") + effect + "\",\"name\":\"" + entry.second + "\"") != std::string::npos);
+            assert(response.find(std::string("\"id\":\"") + effect + "\",\"name\":\"" + entry.second + " " + (effect + 3) + "\"") != std::string::npos);
         }
         assert(audio->setEffectType(effect, audiox::effects::EFFECT_GAIN) == RET_OK);
+        auto renameEffect = [&](const std::string &name, const char *id = nullptr) {
+            std::string body = std::string("id=") + (id ? id : effect) + "&name_hex=" + midiHexEncode(name.c_str());
+            return request([&](int fd) { return handleEffectName(&http, fd, "POST", body.data(), body.size()); });
+        };
+        const std::string customName = "Mic \"Space\", caf\xc3\xa9 & +";
+        assert(renameEffect(customName).find("200 OK") != std::string::npos);
+        auto checkEffectName = [&](const std::string &expected) {
+            const auto response = request([&](int fd) { return handleEffects(&http, fd, "GET", ""); });
+            assert(response.find("\"name\":\"" + audiox::json::escape(expected.c_str()) + "\"") != std::string::npos);
+            const auto routes = request([&](int fd) { return handleRoutingThings(&http, fd, "GET", ""); });
+            assert(routes.find("\"name\":\"" + audiox::json::escape(expected.c_str()) + "\"") != std::string::npos);
+            const auto volumes = request([&](int fd) { return handleAudioVolumes(&http, fd, "GET", ""); });
+            assert(volumes.find("\"name\":\"" + audiox::json::escape(expected.c_str()) + "\"") != std::string::npos);
+        };
+        checkEffectName(customName);
+        const auto parametersBeforeRename = readFile("fx_params.txt");
+        assert(audio->setEffectParam(effect, "level", 0.42f) == RET_OK);
+        std::string maximumName;
+        for (unsigned i = 0; i < 31; ++i) maximumName += "\xc3\xa9";
+        maximumName += 'a';
+        assert(maximumName.size() == 63);
+        assert(renameEffect(maximumName).find("200 OK") != std::string::npos);
+        checkEffectName(maximumName);
+        assert(renameEffect(customName).find("200 OK") != std::string::npos);
+        assert(readFile("fx_params.txt") == parametersBeforeRename);
+        audiox::effects::SlotParams renamedParams{};
+        assert(audio->getEffectParams(effect, &renamedParams) == RET_OK);
+        assert(fabs(renamedParams.values[0] - 0.42f) < 0.00001f);
+        const auto namedMap = readFile("midi_map.txt");
+        const auto routingBeforeRename = readFile("routing.txt");
+        assert(namedMap.find("fx_name=") != std::string::npos);
+        auto reloadedNames = config.readMidiMapFile();
+        assert(!strcmp(reloadedNames.effectStates[0].name, customName.c_str()));
+        for (const std::string &invalid : {std::string(64, 'x'), std::string("bad\nname"),
+                                          std::string("\xc0\xaf"), std::string("\xed\xa0\x80")}) {
+            assert(renameEffect(invalid).find("400 Bad Request") != std::string::npos);
+            assert(readFile("midi_map.txt") == namedMap);
+        }
+        assert(renameEffect("missing", "fx_missing").find("404 Not Found") != std::string::npos);
+        assert(rename("midi_map.txt", "midi_map.saved") == 0);
+        assert(mkdir("midi_map.txt", 0700) == 0);
+        assert(renameEffect("unsaved").find("500 Internal Server Error") != std::string::npos);
+        assert(rmdir("midi_map.txt") == 0);
+        assert(rename("midi_map.saved", "midi_map.txt") == 0);
+        checkEffectName(customName);
+        assert(readFile("routing.txt") == routingBeforeRename);
+        // Parameter and bypass persistence must not overwrite the custom name.
+        std::string update = std::string("id=") + effect + "&param=level&value=0.75";
+        auto updated = request([&](int fd) { return handleEffectSet(&http, fd, "POST", "", update.data(), update.size()); });
+        assert(updated.find("200 OK") != std::string::npos);
+        assert(audio->setEffectEnabled(effect, 0) == RET_OK);
+        assert(audio->persistEffectBypass(effect) == RET_OK);
+        checkEffectName(customName);
+        assert(renameEffect("").find("200 OK") != std::string::npos);
+        checkEffectName(std::string("Gain ") + (effect + 3));
+        assert(audio->setEffectEnabled(effect, 1) == RET_OK);
         for (const char *invalid : {"nan", "inf", "-inf", "1junk", ""}) {
             std::string body = std::string("id=") + effect + "&enabled=0&param=gain&value=" + invalid;
             auto response = request([&](int fd) { return handleEffectSet(&http, fd, "POST", "", body.data(), body.size()); });

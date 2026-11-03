@@ -12,6 +12,9 @@
 #define MIDI_MAP_REAL_FILE_PATH ROOT_MOUNT_POINT "/midi_map.txt"
 #define FX_PARAMS_FILE_PATH ROOT_MOUNT_POINT "/fx_params.txt"
 #define VOLUMES_FILE_PATH ROOT_MOUNT_POINT "/volumes.txt"
+inline constexpr const char *SCRIPT_CONFIG_FILES[] = {
+    "config.txt", "config.staging.txt", "routing.txt", "midi_map.txt", "fx_params.txt", "volumes.txt"
+};
 #define SFX_ROOT_DIR ROOT_MOUNT_POINT "/sfx"
 
 #define MIDI_MAPPINGS_MAX 64
@@ -19,6 +22,12 @@
 #define MIDI_SOUND_LIGHTS_MAX MIDI_MAPPINGS_MAX
 #define MIDI_SOUND_MODES_MAX MIDI_MAPPINGS_MAX
 #define SOUNDBOARD_ORDER_MAX 64
+#define SOUNDBOARD_GRID_ROWS_MAX 8
+#define SOUNDBOARD_GRID_COLUMNS_MAX 8
+#define SOUNDBOARD_GRID_CELLS_MAX (SOUNDBOARD_GRID_ROWS_MAX * SOUNDBOARD_GRID_COLUMNS_MAX)
+#define SOUNDBOARD_GRID_ELEMENTS_MAX (SOUNDBOARD_GRID_CELLS_MAX + 2)
+#define SOUNDBOARD_GRID_STOP_ALL_ID "__stop_all__"
+#define SOUNDBOARD_GRID_SAMPLER_TOGGLE_ID "__sampler_toggle__"
 #define MIDI_ACTION_MAPPINGS_MAX MIDI_MAPPINGS_MAX
 #define MIDI_CC_VOLUME_MAPPINGS_MAX 16
 #define MIDI_EFFECT_STATES_MAX 16
@@ -46,6 +55,7 @@ struct MidiEffectState {
     float drive;
     float clip;
     float output;
+    char name[64];
 };
 
 struct MidiEffectParam {
@@ -141,6 +151,25 @@ struct SoundboardOrderEntry {
     char sfxPath[MIDI_SFX_PATH_MAX];
 };
 
+enum SoundboardLayoutMode : uint8_t {
+    SOUNDBOARD_LAYOUT_NORMAL = 0,
+    SOUNDBOARD_LAYOUT_GRID = 1,
+};
+
+enum SoundboardGridCorner : uint8_t {
+    SOUNDBOARD_GRID_TOP_LEFT = 0,
+    SOUNDBOARD_GRID_TOP_RIGHT = 1,
+    SOUNDBOARD_GRID_BOTTOM_LEFT = 2,
+    SOUNDBOARD_GRID_BOTTOM_RIGHT = 3,
+    SOUNDBOARD_GRID_CORNER_COUNT = 4,
+};
+
+struct SoundboardGridCell {
+    char sfxPath[MIDI_SFX_PATH_MAX];
+    uint8_t row;
+    uint8_t column;
+};
+
 struct MidiActionMapping {
     uint8_t note;
     uint8_t action; // MidiActionType
@@ -162,6 +191,14 @@ struct MidiMapData {
     MidiSoundMode soundModes[MIDI_SOUND_MODES_MAX];
     uint32_t soundOrderCount;
     SoundboardOrderEntry soundOrder[SOUNDBOARD_ORDER_MAX];
+    uint8_t soundboardLayout;
+    uint8_t gridRows;
+    uint8_t gridColumns;
+    uint8_t gridInitialized;
+    uint8_t gridCornerMask;
+    uint8_t gridCornerNotes[SOUNDBOARD_GRID_CORNER_COUNT];
+    uint32_t gridCellCount;
+    SoundboardGridCell gridCells[SOUNDBOARD_GRID_CELLS_MAX];
     uint32_t actionMappingCount;
     MidiActionMapping actionMappings[MIDI_ACTION_MAPPINGS_MAX];
     uint8_t samplerKeyboardEnabled;
@@ -181,6 +218,12 @@ struct MidiMapData {
     MidiEffectLightMapping effectLightMappings[MIDI_EFFECT_LIGHT_MAPPINGS_MAX];
 };
 
+bool soundboardGridNote(const MidiMapData *data, uint8_t row, uint8_t column, uint8_t *note);
+uint8_t soundboardGridAction(const char *element);
+bool midiEffectNameValid(const char *name);
+void midiEffectDisplayName(const MidiMapData &map, const char *id, const char *type,
+                           char *out, size_t capacity);
+
 struct ConfigStore {
     // For interacting with the config files
     Audiox *app;
@@ -189,6 +232,8 @@ struct ConfigStore {
     ConfigData readConfigFile() const;
     int readStagingConfigFile(ConfigData *out) const;
     int writeConfigFile(ConfigData *cfg);
+    int readScriptConfig(const char *name, char *out, size_t capacity, size_t *length) const;
+    int writeScriptConfig(const char *name, const char *text, size_t length);
 
     // midi_map.txt: note→sfx mappings + lighting config (separate from config.txt)
     MidiMapData readMidiMapFile() const;

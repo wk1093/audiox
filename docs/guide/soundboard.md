@@ -12,8 +12,10 @@ controls without the file-management controls getting in the way.
 
 Choose **Edit** to show:
 
-- **Add Sound**, with an optional filename and an audio-file picker.
-- Each card's **Play/Hold** selector, **Assign MIDI**, **Replace**, and **Remove**.
+- Collapsible **Add Sound** and **Layout & MIDI setup** panels.
+- Compact cards with playback previews and an expandable **Settings** section
+  for grid position, **Play/Hold**, **Assign MIDI**, **Clear MIDI mapping**,
+  **Replace**, and **Remove**. Open settings stay open when the grid refreshes.
 - **Refresh**, which reloads the file list and related state.
 - Reordering controls, including keyboard-accessible sound names.
 
@@ -23,7 +25,7 @@ clear their mappings.
 ## Upload a sound
 
 1. Choose **Edit**.
-2. Under **Add Sound**, pick an audio file.
+2. Expand **Add Sound** and pick an audio file.
 3. Optionally enter a descriptive filename, such as `intro.wav`.
 4. Choose **Upload** and wait for conversion and the cache reload to complete.
 5. Test the sound at a low output level.
@@ -72,12 +74,12 @@ velocity zero. This deliberately handles controllers with inconsistent release
 note numbers; it is not independent polyphonic key holding.
 
 **Stop All** stops soundboard voices, not every live audio route, effect, or
-Lua macro. To stop unrelated live audio, change its route or volume.
+Lua script. To stop unrelated live audio, change its route or volume.
 
 ## Map a MIDI pad
 
 1. Connect the controller to the Pi.
-2. In **Edit**, choose a sound's **Assign MIDI**.
+2. In **Edit**, expand the sound's **Settings** and choose **Assign MIDI**.
 3. Press the desired pad **after** entering assignment mode.
 4. Check the note shown on the card.
 
@@ -85,7 +87,7 @@ Choose the assignment control again to cancel waiting. Use the small remove
 button beside an assigned MIDI note to clear the mapping.
 
 Ordinary soundboard mappings use a **note number**, not a note-plus-channel.
-Macros use explicit channel/note bindings instead. Reserve separate note
+Scripts use explicit channel/note bindings instead. Reserve separate note
 numbers for sounds, Stop All, effect bypass, and Sampler Toggle where possible;
 overlapping mappings can have precedence effects. Read [MIDI](./midi) before
 building a shared controller layout.
@@ -110,6 +112,49 @@ stale order rather than discarding that change. Refresh and retry.
 Older firmware may allow playback but not shared ordering; the WebUI explains
 when ordering is unavailable.
 
+## Normal and grid layouts
+
+In **Edit**, expand **Layout & MIDI setup** and choose **Normal list** or **MIDI grid**.
+Normal list is the default and keeps the existing reorder workflow. Grid mode
+supports up to 8 rows by 8 columns, including empty cells. Switching an existing
+list to grid places its sounds in their current order; it keeps their MIDI
+assignments. If the grid is smaller than the library, remaining sounds appear
+under **Unassigned sounds and actions**. New uploads are unassigned unless you choose a cell.
+In Edit mode, drag any sound to an empty cell to move it. Drop onto another sound
+to swap their positions; an unassigned sound displaces the target into the
+unassigned list. On touchscreens, drag the sound name. Each card's **Settings**
+contains a cell selector that
+provides the same placement and swap controls for keyboard users.
+
+Drag a sound into **Unassigned sounds and actions**, or choose **Unassigned** in its selector,
+to remove its cell and sound-trigger MIDI mappings without deleting the file.
+Unassigned sounds remain playable in the browser but do not occupy touchscreen
+pads. Empty cells and unassigned sounds persist across reloads and layout-mode
+switches. Shrinking the grid unassigns sounds outside its new bounds and clears
+their sound-trigger mappings; resizing also resets MIDI corner learning.
+The WebUI and touchscreen display use the same saved positions.
+
+To match a physical MIDI pad grid, learn the **top-left**, **top-right**,
+**bottom-left**, and **bottom-right** pads in Edit mode. Each button waits for
+the next MIDI note. AudioX interpolates the notes between those corners and
+requires a unique, evenly numbered grid; arbitrary note layouts cannot be
+inferred from four corners. Once learned, assigning a sound to a grid cell also
+assigns that cell's MIDI note to the sound. Moving a sound can therefore replace
+another sound's mapping for that pad. Swaps update both sounds' MIDI assignments
+and controller LEDs. Before calibration, grid moves preserve existing MIDI
+mappings. When all four corners are learned, already placed MIDI-mapped sounds
+are moved to their corresponding cells where possible; deliberately unassigned
+sounds stay unassigned.
+
+**Stop All** and **Sampler Toggle** are also available in the unassigned area.
+Drag them into any cell or use their cell selectors; swaps with sounds and each
+other work the same way. On a calibrated grid, placement moves the action's MIDI
+binding to that pad and updates its lighting. Unassigning an action clears its
+MIDI bindings but leaves the browser control available. Action tiles are also
+shown and usable on the touchscreen. Sampler Toggle changes the runtime sample
+selection mode described in [MIDI](./midi#play-a-sound-at-different-pitches), not
+the saved sampler-keyboard enable setting.
+
 ## Replace and remove
 
 **Replace** opens a file picker and uploads new audio under the existing
@@ -120,7 +165,7 @@ refer to that filename. Wait for conversion and bank reload before testing it.
 per-sound lighting overrides, playback-mode override, and saved ordering entry.
 Startup and soundboard reload clean up references to missing sound files too.
 
-Lua source code is not rewritten when a clip is removed or renamed. A macro
+Lua source code is not rewritten when a clip is removed or renamed. A script
 that calls `sound.play("old.wav")` must be edited separately.
 
 ## Soundboard on the device display

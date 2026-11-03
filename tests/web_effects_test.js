@@ -1,0 +1,181 @@
+const assert = require('node:assert/strict');
+const { test } = require('node:test');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync(require.resolve('../web/effects.js'), 'utf8');
+
+function fixture() {
+  class Element {
+    constructor(tag) {
+      this.tagName = tag.toUpperCase();
+      this.children = [];
+      this.listeners = {};
+      this.style = {};
+      this.value = '';
+    }
+    set innerHTML(_) { this.children = []; }
+    append(...children) { this.children.push(...children); }
+    appendChild(child) { this.children.push(child); }
+    addEventListener(name, callback) { this.listeners[name] = callback; }
+    setAttribute(name, value) { this[name] = value; }
+    contains(target) { return this === target || this.children.some(child => child.contains?.(target)); }
+  }
+  const document = { createElement: tag => new Element(tag), activeElement: null };
+  const notices = [], calls = [], timers = new Map();
+  let effects = [], failure = false, timerId = 0;
+  const ui = { formatMessage: text => text, resolve() {}, confirm: async () => true };
+  const context = vm.createContext({ document, window: { AudioxUI: ui }, AudioxUI: ui,
+    URLSearchParams, TextEncoder, setInterval() {}, clearInterval() {},
+    setTimeout: fn => { timers.set(++timerId, fn); return timerId; },
+    clearTimeout: id => timers.delete(id),
+    fetch: async (url, options) => {
+      calls.push({ url, ...options });
+      if (failure) return { ok: false, status: 500, text: async () => 'disk failure' };
+      if (url === '/api/effect/name') {
+        const fields = new URLSearchParams(options.body);
+        const name = Buffer.from(fields.get('name_hex'), 'hex').toString('utf8');
+        effects = effects.map(fx => fx.id === fields.get('id')
+          ? { ...fx, custom_name: name, name: name || `Gain ${fx.id.slice(3)}` } : fx);
+      }
+      if (url === '/api/effect/set') {
+        const fields = new URLSearchParams(options.body);
+        effects = effects.map(fx => fx.id !== fields.get('id') ? fx : {
+          ...fx, enabled: fields.has('enabled') ? fields.get('enabled') === '1' : fx.enabled,
+          params: fields.has('param') ? { ...fx.params, [fields.get('param')]: Number(fields.get('value')) } : fx.params,
+        });
+      }
+      return { ok: true, text: async () => JSON.stringify({ effects }) };
+    },
+  });
+  vm.runInContext(source, context);
+  const manager = context.window.AudioxEffects.createManager((...args) => notices.push(args));
+  const panel = new Element('div');
+  manager.mountPanel(panel, new Element('p'));
+  return { manager, panel, document, calls, notices, api: context.window.AudioxEffects,
+    setEffects: value => { effects = value; }, fail: () => { failure = true; },
+    flush: async () => { const pending = [...timers.values()]; timers.clear(); for (const fn of pending) await fn(); } };
+}
+
+function find(element, predicate) {
+  if (predicate(element)) return element;
+  for (const child of element.children) { const result = find(child, predicate); if (result) return result; }
+}
+
+const gain = {
+  id: 'fx_7', type: 'gain', name: 'Mic level', custom_name: 'Mic level', enabled: true,
+  params: { level: 1 }, param_meta: [{ name: 'level', label: 'Level', min: 0, max: 4, default: 1 }],
+};
+
+test('effects use saved or readable names, never internal IDs in their graph titles', async () => {
+  const f = fixture();
+  assert.equal(f.api.effectName({ id: 'fx_3', type: 'gate' }), 'Noise Gate 3');
+  assert.equal(f.api.effectName({ id: 'fx_4', type: 'cut' }), 'Mute 4');
+  f.setEffects([gain]);
+  await f.manager.loadEffects();
+  const node = { properties: { thingId: gain.id }, addWidget() {} };
+  f.manager.registerNode(node);
+  assert.equal(node.title, 'Mic level');
+  assert.equal(find(f.panel, el => el.className === 'fx-card-head').textContent, 'Mic level');
+  const advanced = find(f.panel, el => el.tagName === 'DETAILS' && el.children[0]?.textContent === 'Advanced and delete');
+  assert.match(advanced.children[1].textContent, /fx_7/);
+  const midi = find(f.panel, el => el.className === 'fx-midi-details');
+  assert.equal(midi.open, undefined);
+});
+
+test('rename saves UTF-8 safely, updates graph, and preserves routing IDs', async () => {
+  const f = fixture();
+  f.setEffects([gain]);
+  await f.manager.loadEffects();
+  const node = { properties: { thingId: gain.id }, addWidget() {} };
+  f.manager.registerNode(node);
+  await f.manager.setName(gain.id, 'Voice "café" & +');
+  const fields = new URLSearchParams(f.calls.find(call => call.url === '/api/effect/name').body);
+  assert.equal(fields.get('id'), gain.id);
+  assert.equal(Buffer.from(fields.get('name_hex'), 'hex').toString('utf8'), 'Voice "café" & +');
+  assert.equal(node.title, 'Voice "café" & +');
+  await f.manager.setName(gain.id, '');
+  assert.equal(node.title, 'Gain 7');
+  const count = f.calls.length;
+  await assert.rejects(f.manager.setName(gain.id, 'é'.repeat(32)), /63 UTF-8 bytes/);
+  await assert.rejects(f.manager.setName(gain.id, 'bad\nname'), /control characters/);
+  assert.equal(f.calls.length, count);
+  f.fail();
+  await assert.rejects(f.manager.setName(gain.id, 'unsaved'), /500.*disk failure/);
+  assert.equal(node.title, 'Gain 7');
+  assert.equal(f.manager.mutationInFlight, 0);
+});
+
+test('parameter controls pair sliders and numeric fields with help, units and reset', async () => {
+  const f = fixture();
+  f.setEffects([gain]);
+  await f.manager.loadEffects();
+  const control = find(f.panel, el => el.className === 'fx-parameter');
+  assert.match(control.children[0].textContent, /Level \(x\)/);
+  assert.match(control.children[1].textContent, /1 is unchanged/);
+  const [slider, number, reset] = control.children[2].children;
+  assert.equal(number['aria-describedby'], control.children[1].id);
+  number.value = '2.5';
+  number.listeners.change();
+  assert.equal(slider.value, '2.5');
+  await f.flush();
+  assert.equal(new URLSearchParams(f.calls.at(-1).body).get('value'), '2.5000');
+  assert.match(f.notices.at(-1)[0], /Mic level: Level saved/);
+  number.value = '5';
+  number.listeners.change();
+  await f.flush();
+  assert.match(f.notices.at(-1)[0], /between 0 and 4/);
+  reset.listeners.click();
+  await f.flush();
+  assert.equal(number.value, '1');
+  assert.equal(new URLSearchParams(f.calls.at(-1).body).get('value'), '1.0000');
+});
+
+test('noise floor keeps four decimals, channels stay integral, and failures are visible', async () => {
+  const f = fixture();
+  const pitch = { ...gain, type: 'pitch', params: { noise_floor: 0.001 },
+    param_meta: [{ name: 'noise_floor', label: 'Noise Floor', min: 0.0001, max: 0.02, default: 0.001 }] };
+  const [meta] = f.api.dynamicParamList(pitch);
+  assert.equal(meta.precision, 4);
+  assert.equal(meta.step, 0.0001);
+  assert.ok(meta.description.length > 20);
+  f.setEffects([pitch]);
+  await f.manager.loadEffects();
+  await f.manager.setParam(gain.id, 'noise_floor', 0.0011);
+  assert.equal(new URLSearchParams(f.calls.at(-1).body).get('value'), '0.0011');
+  f.fail();
+  f.manager.queueParamUpdate(gain.id, 'noise_floor', 0.0012);
+  await f.flush();
+  assert.match(f.notices.at(-1)[0], /500.*disk failure/);
+  const channels = f.api.dynamicParamList({ type: 'cut', params: { channels: 2 },
+    param_meta: [{ name: 'channels', min: 1, max: 16, default: 2 }] })[0];
+  assert.equal(channels.step, 1);
+  assert.equal(channels.precision, 0);
+});
+
+test('background refresh does not destroy a focused name or parameter draft', async () => {
+  const f = fixture();
+  f.setEffects([gain]);
+  await f.manager.loadEffects();
+  const name = find(f.panel, el => el.type === 'text');
+  name.value = 'Draft';
+  name.listeners.input();
+  f.document.activeElement = name;
+  const count = f.calls.length;
+  f.setEffects([{ ...gain, name: 'Remote' }]);
+  await f.manager.loadEffects();
+  assert.equal(f.calls.length, count);
+  assert.equal(name.value, 'Draft');
+  f.document.activeElement = null;
+  await f.manager.loadEffects();
+  assert.equal(find(f.panel, el => el.className === 'fx-card-head').textContent, 'Remote');
+  assert.equal(find(f.panel, el => el.type === 'text').value, 'Draft');
+});
+
+test('failed enable leaves the displayed state unchanged', async () => {
+  const f = fixture();
+  f.setEffects([gain]);
+  await f.manager.loadEffects();
+  f.fail();
+  await assert.rejects(f.manager.setEnabled(gain.id, false), /500/);
+  assert.equal(f.manager.effectsById.get(gain.id).enabled, true);
+});

@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include <string>
+#include <memory>
 #include <vector>
 
 namespace {
@@ -492,28 +493,25 @@ size_t AudioContext::copyRoutingThings(AudioGraphThingInfo *out, size_t cap) con
     }
 
     size_t count = 0;
-    appendThing(out, cap, &count, "soundboard_out", "Soundboard Out", 0, 2);
+    appendThing(out, cap, &count, "soundboard_out", "Soundboard", 0, 2);
     RouterConfig router = app && app->config ? app->config->router() : RouterConfig();
     if (router.hasRoutingHelper()) {
-        appendThing(out, cap, &count, "routing_helper", "Routing Helper", 2, 2);
+        appendThing(out, cap, &count, "routing_helper", "Audio Mixer", 2, 2);
     }
     AudioEffectSlotState fxStates[32] = {};
     int fxCount = listEffects(fxStates, sizeof(fxStates) / sizeof(fxStates[0]));
     if (fxCount < 0) {
         fxCount = 0;
     }
+    auto effectMap = std::make_unique<MidiMapData>();
+    if (app && app->config) *effectMap = app->config->readMidiMapFile();
     for (int i = 0; i < fxCount; ++i) {
         if (!fxStates[i].thingId[0]) {
             continue;
         }
         char label[160];
         const char *typeName = audiox::effects::effectTypeToString(fxStates[i].type);
-        if (fxStates[i].type == audiox::effects::EFFECT_GATE) {
-            snprintf(label, sizeof(label), "Noise Gate");
-        } else {
-            snprintf(label, sizeof(label), "%s", typeName);
-            label[0] = static_cast<char>(toupper(static_cast<unsigned char>(label[0])));
-        }
+        midiEffectDisplayName(*effectMap, fxStates[i].thingId, typeName, label, sizeof(label));
         uint32_t channels = 2;
         if (fxStates[i].type == audiox::effects::EFFECT_CUT) {
             for (uint8_t param = 0; param < fxStates[i].paramCount; ++param) {
@@ -528,10 +526,10 @@ size_t AudioContext::copyRoutingThings(AudioGraphThingInfo *out, size_t cap) con
         appendThing(out, cap, &count, fxStates[i].thingId, label, channels, channels);
     }
     if (!haveGadgetPlayback) {
-        appendThing(out, cap, &count, "usb_gadget_out", "USB Gadget Out", cfg.playbackChannels, 0);
+        appendThing(out, cap, &count, "usb_gadget_out", "To computer (USB)", cfg.playbackChannels, 0);
     }
     if (!haveGadgetCapture) {
-        appendThing(out, cap, &count, "usb_gadget_in", "USB Gadget In", 0, cfg.captureChannels);
+        appendThing(out, cap, &count, "usb_gadget_in", "From computer (USB)", 0, cfg.captureChannels);
     }
 
     for (size_t i = 0; i < deviceCount; ++i) {
@@ -545,7 +543,8 @@ size_t AudioContext::copyRoutingThings(AudioGraphThingInfo *out, size_t cap) con
                 snprintf(id, sizeof(id), "alsa_card%u_dev%u_in",
                          (unsigned)infos[i].cardIndex, (unsigned)infos[i].deviceIndex);
             }
-            snprintf(label, sizeof(label), "%s In", infos[i].displayName);
+            snprintf(label, sizeof(label), "From %s", infos[i].displayName);
+            if (infos[i].isGadget) snprintf(label, sizeof(label), "From computer (USB)");
             appendThing(out,
                         cap,
                         &count,
@@ -562,7 +561,8 @@ size_t AudioContext::copyRoutingThings(AudioGraphThingInfo *out, size_t cap) con
                 snprintf(id, sizeof(id), "alsa_card%u_dev%u_out",
                          (unsigned)infos[i].cardIndex, (unsigned)infos[i].deviceIndex);
             }
-            snprintf(label, sizeof(label), "%s Out", infos[i].displayName);
+            snprintf(label, sizeof(label), "To %s", infos[i].displayName);
+            if (infos[i].isGadget) snprintf(label, sizeof(label), "To computer (USB)");
             appendThing(out,
                         cap,
                         &count,
@@ -589,11 +589,11 @@ size_t AudioContext::copyRoutingThings(AudioGraphThingInfo *out, size_t cap) con
                 snprintf(display, sizeof(display), "%s", address);
             }
             if (btDevices[i].input && bt::formatRouteId(btDevices[i].address.b, true, id, sizeof(id))) {
-                snprintf(label, sizeof(label), "BT %s In", display);
+                snprintf(label, sizeof(label), "From %s (Bluetooth)", display);
                 appendThing(out, cap, &count, id, label, 0, 2);
             }
             if (btDevices[i].output && bt::formatRouteId(btDevices[i].address.b, false, id, sizeof(id))) {
-                snprintf(label, sizeof(label), "BT %s Out", display);
+                snprintf(label, sizeof(label), "To %s (Bluetooth)", display);
                 appendThing(out, cap, &count, id, label, 2, 0);
             }
         }

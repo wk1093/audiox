@@ -187,6 +187,50 @@ static int parseSoundModeLine(const char *value,
     return RET_OK;
 }
 
+static int parseSoundboardGridCellLine(const char *value,
+                                       SoundboardGridCell *out,
+                                       uint32_t *count_in_out) {
+    if (!value || !out || !count_in_out || *count_in_out >= SOUNDBOARD_GRID_CELLS_MAX) {
+        return RET_ERR;
+    }
+
+    char sfxPath[MIDI_SFX_PATH_MAX]{};
+    unsigned row = 0;
+    unsigned column = 0;
+    char extra = '\0';
+    if (sscanf(value, "%159[^,],%u,%u%c", sfxPath, &row, &column, &extra) != 3 ||
+        !sfxPath[0] || row >= SOUNDBOARD_GRID_ROWS_MAX || column >= SOUNDBOARD_GRID_COLUMNS_MAX) {
+        return RET_ERR;
+    }
+
+    SoundboardGridCell &cell = out[(*count_in_out)++];
+    copyBounded(cell.sfxPath, sizeof(cell.sfxPath), sfxPath);
+    cell.row = (uint8_t)row;
+    cell.column = (uint8_t)column;
+    return RET_OK;
+}
+
+static int parseSoundboardGridCornerLine(const char *value, MidiMapData *data) {
+    if (!value || !data) return RET_ERR;
+    char cornerName[24]{};
+    unsigned note = 0;
+    char extra = '\0';
+    if (sscanf(value, "%23[^,],%u%c", cornerName, &note, &extra) != 2 || note > 127) {
+        return RET_ERR;
+    }
+    static const char *const names[SOUNDBOARD_GRID_CORNER_COUNT] = {
+        "top_left", "top_right", "bottom_left", "bottom_right",
+    };
+    for (uint8_t i = 0; i < SOUNDBOARD_GRID_CORNER_COUNT; ++i) {
+        if (strcmp(cornerName, names[i]) == 0) {
+            data->gridCornerNotes[i] = (uint8_t)note;
+            data->gridCornerMask |= (uint8_t)(1U << i);
+            return RET_OK;
+        }
+    }
+    return RET_ERR;
+}
+
 static uint8_t midiActionFromString(const char *value) {
     if (!value) {
         return MIDI_ACTION_NONE;
@@ -611,6 +655,8 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
     bool explicitSamplerEnabled = false;
     data.samplerKeyboardChannel = 0;
     data.samplerRootNote = 60;
+    data.gridRows = 4;
+    data.gridColumns = 4;
     // defaults: channel 0, all states off (vel=0)
 
     FILE *fp = fopen(path, "r");
@@ -618,7 +664,7 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
         return (errno == ENOENT) ? RET_WARN : RET_ERR;
     }
 
-    char line[MIDI_SCRIPT_MAX * 2 + 384];
+    char line[MIDI_SCRIPT_STORAGE_MAX * 2 + 384];
     while (fgets(line, sizeof(line), fp)) {
         char *eq = strchr(line, '=');
         if (!eq) {
@@ -668,6 +714,28 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             if (value[0] && strlen(value) < MIDI_SFX_PATH_MAX && data.soundOrderCount < SOUNDBOARD_ORDER_MAX) {
                 copyBounded(data.soundOrder[data.soundOrderCount++].sfxPath, MIDI_SFX_PATH_MAX, value);
             }
+        } else if (strcmp(key, "soundboard_layout") == 0) {
+            char mode[16]{};
+            unsigned rows = 0;
+            unsigned columns = 0;
+            char extra = '\0';
+            if (sscanf(value, "%15[^,],%u,%u%c", mode, &rows, &columns, &extra) == 3 &&
+                rows >= 1 && rows <= SOUNDBOARD_GRID_ROWS_MAX &&
+                columns >= 1 && columns <= SOUNDBOARD_GRID_COLUMNS_MAX &&
+                rows * columns <= SOUNDBOARD_GRID_CELLS_MAX) {
+                if (strcmp(mode, "normal") == 0 || strcmp(mode, "grid") == 0) {
+                    data.soundboardLayout = strcmp(mode, "grid") == 0
+                        ? SOUNDBOARD_LAYOUT_GRID : SOUNDBOARD_LAYOUT_NORMAL;
+                    data.gridRows = (uint8_t)rows;
+                    data.gridColumns = (uint8_t)columns;
+                }
+            }
+        } else if (strcmp(key, "soundboard_grid_corner") == 0) {
+            (void)parseSoundboardGridCornerLine(value, &data);
+        } else if (strcmp(key, "soundboard_grid_initialized") == 0) {
+            data.gridInitialized = strcmp(value, "1") == 0;
+        } else if (strcmp(key, "soundboard_grid_cell") == 0) {
+            (void)parseSoundboardGridCellLine(value, data.gridCells, &data.gridCellCount);
         } else if (strcmp(key, "note_action") == 0) {
             (void)parseMidiActionLine(value, data.actionMappings, &data.actionMappingCount);
         } else if (strcmp(key, "automation") == 0) {
@@ -700,6 +768,26 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
                 }
             }
             printf("[CONFIG] [WARN] Invalid or excess automation entry\n");
+        } else if (strcmp(key, "automation_events") == 0 ||
+                   strcmp(key, "automation_config_write") == 0 ||
+                   strcmp(key, "automation_hooks") == 0) {
+            unsigned id = 0, mask = 0;
+            char extra = '\0';
+            bool found = false;
+            bool writePermission = strcmp(key, "automation_config_write") == 0;
+            bool hookMode = strcmp(key, "automation_hooks") == 0;
+            if (sscanf(value, "%u,%u%c", &id, &mask, &extra) == 2 &&
+                mask <= (writePermission || hookMode ? 1 : MIDI_SCRIPT_EVENTS_MASK)) {
+                for (uint32_t j = 0; j < data.chordCount; ++j) {
+                    if (data.chords[j].id == id) {
+                        if (writePermission) data.chords[j].configWriteAllowed = mask != 0;
+                        else if (hookMode) data.chords[j].hookMode = mask != 0;
+                        else data.chords[j].eventMask = static_cast<uint8_t>(mask);
+                        found = true;
+                    }
+                }
+            }
+            if (!found) printf("[CONFIG] [WARN] Invalid %s entry (must follow its automation)\n", key);
         } else if (strcmp(key, "key_macro") == 0) {
             unsigned channel, note, idle, pressed;
             char keys[64]{};
@@ -758,6 +846,23 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             if (parseEffectStateLine(value, data.effectStates, &data.effectStateCount) != RET_OK) {
                 printf("[CONFIG] [WARN] invalid fx_state in MIDI config\n");
             }
+        } else if (strcmp(key, "fx_name") == 0) {
+            char *comma = strchr(value, ',');
+            bool valid = false;
+            if (comma) {
+                *comma = '\0';
+                char name[64]{};
+                if (midiHexDecode(comma + 1, name, sizeof(name)) && midiEffectNameValid(name)) {
+                    for (uint32_t i = 0; i < data.effectStateCount; ++i) {
+                        if (!strcmp(data.effectStates[i].effectId, value)) {
+                            copyBounded(data.effectStates[i].name, sizeof(data.effectStates[i].name), name);
+                            valid = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!valid) printf("[CONFIG] [WARN] invalid fx_name (must follow its fx_state)\n");
         } else if (strcmp(key, "fx_param") == 0) {
             if (parseEffectParamLine(value, data.effectParams, &data.effectParamCount) != RET_OK) {
                 printf("[CONFIG] [WARN] invalid fx_param in MIDI config\n");
@@ -779,6 +884,13 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
     fclose(fp);
 
     assignMacroIdentities(data);
+    for (uint32_t i = 0; i < data.chordCount; ++i) {
+        char error[192]{};
+        if (!midiMigrateScript(data.chords[i], error, sizeof(error)))
+            printf("[CONFIG] [WARN] Cannot convert script %u: %s\n", data.chords[i].id, error);
+    }
+    if (data.soundboardLayout == SOUNDBOARD_LAYOUT_GRID || data.gridCellCount > 0)
+        data.gridInitialized = 1;
     *out = data;
     return RET_OK;
 }
@@ -840,7 +952,10 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         if (dprintf(fd, "automation=%u,%u,%u,%u,%u,%u,%s,%s,%s\n",
                     chord.id, chord.midiEnabled ? 1 : 0, chord.channel, chord.note,
                     chord.idleVelocity, chord.pressedVelocity, midiHexEncode(chord.name).c_str(),
-                    chord.keys[0] ? chord.keys : "-", hex.c_str()) < 0) {
+                    chord.keys[0] ? chord.keys : "-", hex.c_str()) < 0 ||
+            dprintf(fd, "automation_events=%u,%u\n", chord.id, chord.eventMask) < 0 ||
+            dprintf(fd, "automation_config_write=%u,%u\n", chord.id, chord.configWriteAllowed ? 1 : 0) < 0 ||
+            dprintf(fd, "automation_hooks=%u,%u\n", chord.id, chord.hookMode ? 1 : 0) < 0) {
             printf("[CONFIG] [WARN] Cannot write macro mapping\n");
             close(fd);
             return RET_ERR;
@@ -906,6 +1021,37 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
             return RET_ERR;
         }
     }
+    if (dprintf(fd, "soundboard_grid_initialized=%u\nsoundboard_layout=%s,%u,%u\n",
+                (unsigned)(data->gridInitialized || data->soundboardLayout == SOUNDBOARD_LAYOUT_GRID ||
+                           data->gridCellCount > 0),
+                data->soundboardLayout == SOUNDBOARD_LAYOUT_GRID ? "grid" : "normal",
+                (unsigned)(data->gridRows ? data->gridRows : 4),
+                (unsigned)(data->gridColumns ? data->gridColumns : 4)) < 0) {
+        printf("[CONFIG] [WARN] failed to write soundboard layout: %s\n", strerror(errno));
+        close(fd);
+        return RET_ERR;
+    }
+    for (uint8_t i = 0; i < SOUNDBOARD_GRID_CORNER_COUNT; ++i) {
+        if ((data->gridCornerMask & (uint8_t)(1U << i)) == 0) continue;
+        static const char *const names[SOUNDBOARD_GRID_CORNER_COUNT] = {
+            "top_left", "top_right", "bottom_left", "bottom_right",
+        };
+        if (dprintf(fd, "soundboard_grid_corner=%s,%u\n", names[i],
+                    (unsigned)data->gridCornerNotes[i]) < 0) {
+            printf("[CONFIG] [WARN] failed to write soundboard grid calibration: %s\n", strerror(errno));
+            close(fd);
+            return RET_ERR;
+        }
+    }
+    for (uint32_t i = 0; i < data->gridCellCount && i < SOUNDBOARD_GRID_CELLS_MAX; ++i) {
+        if (!data->gridCells[i].sfxPath[0]) continue;
+        if (dprintf(fd, "soundboard_grid_cell=%s,%u,%u\n", data->gridCells[i].sfxPath,
+                    (unsigned)data->gridCells[i].row, (unsigned)data->gridCells[i].column) < 0) {
+            printf("[CONFIG] [WARN] failed to write soundboard grid cell: %s\n", strerror(errno));
+            close(fd);
+            return RET_ERR;
+        }
+    }
 
     uint32_t actionCount = data->actionMappingCount;
     if (actionCount > MIDI_ACTION_MAPPINGS_MAX) {
@@ -966,6 +1112,10 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
                     (double)data->effectStates[i].drive,
                     (double)data->effectStates[i].clip,
                     (double)data->effectStates[i].output);
+            if (data->effectStates[i].name[0]) {
+                dprintf(fd, "fx_name=%s,%s\n", data->effectStates[i].effectId,
+                        midiHexEncode(data->effectStates[i].name).c_str());
+            }
         }
     }
 
@@ -1095,6 +1245,44 @@ static int readFxParamsPath(const char *path, MidiEffectParam *out, uint32_t *co
 
 } // namespace
 
+bool midiEffectNameValid(const char *name) {
+    if (!name || strnlen(name, 64) >= 64) return false;
+    const auto *p = reinterpret_cast<const unsigned char *>(name);
+    while (*p) {
+        if (*p < 32 || *p == 127) return false;
+        if (*p < 128) { ++p; continue; }
+        unsigned value = 0, bytes = 0, minimum = 0;
+        if (*p >= 0xc2 && *p <= 0xdf) { value = *p & 31; bytes = 1; minimum = 0x80; }
+        else if (*p >= 0xe0 && *p <= 0xef) { value = *p & 15; bytes = 2; minimum = 0x800; }
+        else if (*p >= 0xf0 && *p <= 0xf4) { value = *p & 7; bytes = 3; minimum = 0x10000; }
+        else return false;
+        ++p;
+        for (unsigned i = 0; i < bytes; ++i, ++p) {
+            if ((*p & 0xc0) != 0x80) return false;
+            value = (value << 6) | (*p & 63);
+        }
+        if (value < minimum || value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff) ||
+            (value >= 0x80 && value <= 0x9f)) return false;
+    }
+    return true;
+}
+
+void midiEffectDisplayName(const MidiMapData &map, const char *id, const char *type,
+                           char *out, size_t capacity) {
+    for (uint32_t i = 0; i < std::min<uint32_t>(map.effectStateCount, MIDI_EFFECT_STATES_MAX); ++i) {
+        if (!strcmp(map.effectStates[i].effectId, id) && map.effectStates[i].name[0]) {
+            copyBounded(out, capacity, map.effectStates[i].name);
+            return;
+        }
+    }
+    const char *label = !strcmp(type, "gate") ? "Noise Gate" :
+                        !strcmp(type, "cut") ? "Mute" :
+                        !strcmp(type, "distortion") ? "Distortion" :
+                        !strcmp(type, "pitch") ? "Pitch Shift" :
+                        !strcmp(type, "reverb") ? "Reverb" : "Gain";
+    snprintf(out, capacity, "%s %s", label, !strncmp(id, "fx_", 3) ? id + 3 : id);
+}
+
 MidiMapData ConfigStore::readMidiMapFile() const {
     MidiMapData data = {};
     int rc = readMidiMapPath(MIDI_MAP_REAL_FILE_PATH, &data);
@@ -1125,9 +1313,11 @@ int ConfigStore::writeMidiMapFile(MidiMapData *data) {
     }
     for (uint32_t i = 0; i < std::min<uint32_t>(data->effectStateCount, MIDI_EFFECT_STATES_MAX); ++i) {
         const auto &state = data->effectStates[i];
-        if (!std::isfinite(state.gain) || !std::isfinite(state.drive) ||
+        if (strnlen(state.name, sizeof(state.name)) == sizeof(state.name) ||
+            !midiEffectNameValid(state.name) ||
+            !std::isfinite(state.gain) || !std::isfinite(state.drive) ||
             !std::isfinite(state.clip) || !std::isfinite(state.output)) {
-            printf("[CONFIG] [WARN] rejected non-finite effect state\n");
+            printf("[CONFIG] [WARN] rejected invalid effect name or non-finite effect state\n");
             return RET_ERR;
         }
     }
@@ -1146,7 +1336,13 @@ int ConfigStore::writeMidiMapFile(MidiMapData *data) {
         uint8_t report[8];
         auto &chord = data->chords[i];
         char error[192]{};
+        if (!midiMigrateScript(chord, error, sizeof(error))) {
+            printf("[CONFIG] [WARN] Cannot convert script %u: %s\n", chord.id, error);
+            return RET_ERR;
+        }
         if (chord.channel > 15 || chord.note > 127 ||
+            (!chord.hookMode && chord.eventMask > MIDI_SCRIPT_LEGACY_EVENTS_MASK) ||
+            (chord.hookMode && !chord.script[0]) ||
             chord.idleVelocity > 127 || chord.pressedVelocity > 127 ||
             strnlen(chord.keys, sizeof(chord.keys)) == sizeof(chord.keys) ||
             strnlen(chord.script, sizeof(chord.script)) == sizeof(chord.script) ||
@@ -1157,10 +1353,13 @@ int ConfigStore::writeMidiMapFile(MidiMapData *data) {
             printf("[CONFIG] [WARN] Invalid macro mapping: %s\n", error);
             return RET_ERR;
         }
+        if (chord.hookMode && !midiInspectHooks(chord.script, chord.eventMask, error, sizeof(error))) {
+            printf("[CONFIG] [WARN] Invalid callback mapping: %s\n", error);
+            return RET_ERR;
+        }
         for (uint32_t j = 0; j < i; ++j) {
             if (chord.id == data->chords[j].id ||
-                (chord.midiEnabled && data->chords[j].midiEnabled &&
-                 chord.channel == data->chords[j].channel && chord.note == data->chords[j].note)) {
+                midiMacroTriggersOverlap(chord, data->chords[j])) {
                 printf("[CONFIG] [WARN] Duplicate macro trigger\n");
                 return RET_ERR;
             }
@@ -1221,7 +1420,7 @@ int ConfigStore::purgeMissingSoundMappings(MidiMapData *data) {
 
     MidiMapData cleaned = *data;
     bool changed = false;
-    auto purge = [&](auto &entries, uint32_t &count) -> int {
+    auto purge = [&](auto &entries, uint32_t &count, bool gridElements = false) -> int {
         if (count > sizeof(entries) / sizeof(entries[0])) {
             printf("[CONFIG] [WARN] invalid sound mapping count: %u\n", (unsigned)count);
             return RET_ERR;
@@ -1230,6 +1429,10 @@ int ConfigStore::purgeMissingSoundMappings(MidiMapData *data) {
         for (uint32_t i = 0; i < count; ++i) {
             char path[512];
             const char *sfx = entries[i].sfxPath;
+            if (gridElements && soundboardGridAction(sfx) != MIDI_ACTION_NONE) {
+                entries[kept++] = entries[i];
+                continue;
+            }
             int n = sfx[0] == '/' ? snprintf(path, sizeof(path), "%s", sfx)
                                   : snprintf(path, sizeof(path), "%s/%s", SFX_ROOT_DIR, sfx);
             if (n <= 0 || (size_t)n >= sizeof(path)) {
@@ -1258,7 +1461,8 @@ int ConfigStore::purgeMissingSoundMappings(MidiMapData *data) {
     if (purge(cleaned.mappings, cleaned.mappingCount) != RET_OK ||
         purge(cleaned.soundLights, cleaned.soundLightCount) != RET_OK ||
         purge(cleaned.soundModes, cleaned.soundModeCount) != RET_OK ||
-        purge(cleaned.soundOrder, cleaned.soundOrderCount) != RET_OK) {
+        purge(cleaned.soundOrder, cleaned.soundOrderCount) != RET_OK ||
+        purge(cleaned.gridCells, cleaned.gridCellCount, true) != RET_OK) {
         return RET_ERR;
     }
     if (changed && writeMidiMapFile(&cleaned) != RET_OK) {

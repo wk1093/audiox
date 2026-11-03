@@ -22,7 +22,7 @@ They are not paths on the computer running your browser.
 | `config.txt` | Active USB configuration and persistent view/playback preferences |
 | `config.staging.txt` | Staged configuration saved before USB reload |
 | `routing.txt` | Saved signal connections and routing-helper configuration |
-| `midi_map.txt` | Sound/action/CC mappings, sampler, lighting, effects, sound order, and named macro definitions |
+| `midi_map.txt` | Sound/action/CC mappings, sampler, lighting, effects, sound order, and named script definitions |
 | `fx_params.txt` | Saved effect parameter data used by the firmware |
 | `volumes.txt` | Saved gains keyed by audio thing ID |
 | `bluetooth/paired.txt` | Saved Bluetooth pairing records, Auto-connect flags, and sensitive key material |
@@ -76,8 +76,9 @@ unavailable. The commands require access to your device, not this docs site.
 | `POST /api/routing/helper/create` or `/delete` | Create/remove the routing helper |
 | `GET /api/audio/volumes` | Audio thing IDs/names and current gains |
 | `POST /api/audio/volume/set` | Set and save a gain using `id` and `gain` |
-| `GET /api/effects` | Existing effects, parameter metadata, and MIDI assignments |
+| `GET /api/effects` | Existing effects, display `name`, saved `custom_name`, parameter metadata, and MIDI assignments |
 | `POST /api/effect/create`, `/set`, `/delete` | Manage an effect or its parameters |
+| `POST /api/effect/name` | Save `id` and `name_hex` (UTF-8 encoded as hex, up to 63 decoded bytes); empty name restores automatic naming |
 | `POST /api/effect/midi_cc/set`, `/delete` | Effect parameter CC mapping |
 | `POST /api/effect/midi_toggle/set`, `/delete` | Effect bypass-note mapping |
 | `POST /api/effect/midi_light/set`, `/delete` | Effect enabled/bypassed lighting |
@@ -96,6 +97,10 @@ See [Routing](./routing) for connection syntax and graph limitations, and
 | --- | --- |
 | `GET /api/soundboard/order` | Complete ordered WAV filename list, one per line |
 | `POST /api/soundboard/order` | Save a complete newline-separated order; stale lists can return 409 |
+| `GET /api/soundboard/layout` | Read list/grid mode, dimensions, learned MIDI corners, and cell assignments |
+| `POST /api/soundboard/layout` | Set `mode`, `rows`/`columns`, a `corner`/`note`, or an `sfx`/`row`/`column` assignment (occupied cells swap); use `action=stop_all` or `action=sampler_toggle` instead of `sfx` for action tiles. `unassign=1` clears the element's cell and MIDI bindings |
+| `GET /api/midi/sampler_mode` | Read runtime sample-selection mode (`active`) |
+| `POST /api/midi/sampler_mode` | Toggle runtime sample-selection mode, also used by the sampler grid tile |
 | `POST /api/soundboard/trigger/<target>` | Start a one-shot sound |
 | `POST /api/soundboard/press/<target>` | Start the shared held voice |
 | `POST /api/soundboard/release/<target>` | Release the held voice |
@@ -120,17 +125,17 @@ trigger targets.
 
 Per-sound lighting mutation fields are `sfx`, `mapped_vel`, and `playing_vel`.
 Inspect the current API behavior before depending on clearing individual
-overrides. The WebUI currently exposes global lighting and effect/macro lighting,
+overrides. The WebUI currently exposes global lighting and effect/script lighting,
 not a per-sound lighting form.
 
-## Named macros
+## Named scripts
 
 | Request | Purpose |
 | --- | --- |
-| `GET /api/macros` | Return `{ "macros": [...] }` including IDs and runtime errors |
-| `POST /api/macros` | Create or update a saved definition |
-| `DELETE /api/macros` | Remove by `id` |
-| `POST /api/macros/run` | Queue the saved macro using `id` |
+| `GET /api/scripts` | Return `{ "scripts": [...] }` including IDs and runtime errors |
+| `POST /api/scripts` | Create or update a saved callback script |
+| `DELETE /api/scripts` | Remove by `id` |
+| `POST /api/scripts/run` | Queue the saved script's `run` hook using `id` |
 
 A create/update body contains:
 
@@ -140,23 +145,28 @@ name_hex=<UTF-8 name encoded as hex>
 midi_enabled=0 or 1
 channel=0..15
 note=0..127
-keys=<plain chord, empty for script>
-script_hex=<UTF-8 Lua source encoded as hex, empty for chord>
+script_hex=<UTF-8 callback source encoded as hex, up to 17,408 decoded bytes>
+config_write_ack=0 or 1
 idle_velocity=0..127
 pressed_velocity=0..127
 ```
 
-Fields can be newline-separated or joined with `&`. Chord `+` separators are
-literal plus signs: do not run the whole body through a form encoder that changes
-them. Names and script source are hex to keep punctuation and UTF-8 separate
+Fields can be newline-separated or joined with `&`.
+Names and script source are hex to keep punctuation and UTF-8 separate
 from field separators. Delete/Run use `id=<positive integer>`.
 
-The list includes plain `name`, boolean `midi_enabled`, and hex-encoded
+The list includes plain `name`, boolean `midi_enabled`, derived `event_mask`,
+`hook_mode: true`, saved `config_write_allowed`, and hex-encoded
 `script_hex` / `runtime_error_hex`. Decode error text as text, not HTML.
+Saving inspects unconditional top-level `hook()` registrations without running
+handlers. Run is rejected without a `run` hook. Configuration permission
+requires explicit acknowledgment. The old `/api/macros` and `/api/midi/chords`
+routes remain compatibility bridges that automatically convert legacy input;
+`/api/macros` retains its original `macros` response property.
 
 Saving syntax-valid Lua does not guarantee every branch will execute
 successfully. Device requirements and actual effect/volume targets are checked
-at runtime; see [Macros](./macros) and the [Lua reference](/lua/api).
+at runtime; see [Scripts](./macros) and the [Lua reference](/lua/api).
 
 ## Bluetooth, configuration, and system
 

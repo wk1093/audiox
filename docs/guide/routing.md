@@ -15,22 +15,24 @@ restored when AudioX restarts.
 1. Open **Routing**. AudioX loads the current audio devices, effects, and saved
    connections. If the list is empty, check that the audio subsystem has started
    and reload the page.
-2. Find an input node, such as **USB Gadget In**, a **BT … In** node for a
-   paired Bluetooth device, or an `… In` ALSA device. Find a destination such
-   as **USB Gadget Out**, a **BT … Out** node, or an `… Out` ALSA device.
+2. Find a source such as **From computer (USB)**, **From Phone (Bluetooth)**,
+   or **Soundboard**. Find a destination such as **To computer (USB)** or
+   **To Headphones (Bluetooth)**. Other audio devices use **From [device]**
+   and **To [device]**. Names describe the signal's direction relative to AudioX.
 3. Drag from an output socket on the source node to an input socket on the
-   destination. The socket labels are one-based (`out 1`, `in 1`); the channel
-   numbers shown in route details and saved files are zero-based (`[0]` is the
-   first channel).
-4. To change a connection, click its wire or its row in **Routes**, then remove
-   it. To remove a wire directly, click near the wire. Device nodes cannot be
+   destination. Stereo sockets use **Left** / **Right**;
+   single-channel nodes use **Mono**; larger devices use **Channel 1**, etc.
+   Internal file channels remain zero-based.
+4. To remove a connection, click near its wire. Device nodes cannot be
    deleted. Remove effects from **Effects**; remove a routing helper from its
    node menu.
 5. Choose **Save Routing**. AudioX writes the connections and reloads the graph;
    the new routing is live without a reboot.
 
-The **Routing Overview** counts nodes and routes and identifies a selected node
-or route. Selecting a route shows its source and destination channel. The graph
+Routing uses the full-width graph, without an overview or technical route-list
+sidebar. For advanced inspection, read `/api/rootfs/routing.txt` or use
+`config.read("routing.txt")` inside a script callback. Long files may need to
+be split into bounded log messages. The graph
 canvas itself does not show live per-node level meters. AudioX's device display
 has a separate meters view; its display mode can be switched from the
 Soundboard page.
@@ -86,9 +88,11 @@ converted to one route per paired device with that role. If no such device is
 paired yet, the old lines are kept until one is.
 
 The ALSA ID pattern is illustrative; the card ID and device number depend on
-the connected hardware. Use the exact ID shown in your graph. Effect IDs are
-also dynamic: use the ID on the created effect node rather than assuming it
-will be `fx_1`.
+the connected hardware. IDs are hidden from ordinary controls. For scripts
+or manual file edits, find them in Volume's **Advanced** disclosure or query
+`/api/routing/things`. Effect IDs also appear under **Effects > Advanced and
+delete**; do not assume an effect's ID is `fx_1`. Saved effect names appear
+consistently in the graph.
 
 The Config channel labels use AudioX's playback/capture stream direction,
 which is the reverse of how a USB host describes those same streams:
@@ -102,12 +106,11 @@ which is the reverse of how a USB host describes those same streams:
 
 For example, to listen to host playback through an ALSA device, route from
 `usb_gadget_in` to that device's `…_out` node. To record Bluetooth input on
-the host, route from the device's `bt_<MAC>_in` node to `usb_gadget_out`. The USB node names
-describe AudioX/gadget stream direction, not the host application's playback
-or recording action.
+the host, route from **From [device] (Bluetooth)** to **To computer (USB)**.
+Friendly labels do not change the underlying routing IDs.
 
 Multiple routes can leave a source or feed an input. Inputs receiving several
-routes are summed. The **Routing Helper** is a two-channel pass-through node;
+routes are summed. The **Audio Mixer** (internally `routing_helper`) is a two-channel pass-through node;
 it forwards each input channel to the matching output channel. It is useful
 for organizing a patch, but it does not mix channels or add gain. Its
 configuration is represented by a separate line:
@@ -119,7 +122,7 @@ edge=routing_helper,fx_1,0,0
 edge=fx_1,usb_gadget_out,0,0
 ```
 
-Create a helper by adding **Routing Helper** from the graph's Add menu. Saving
+Create a helper by adding **Audio Mixer** from the graph's Add menu. Saving
 the graph saves both its enabled state and its edges. Removing the helper
 removes the node; review and save any remaining routes that you want to keep.
 
@@ -129,8 +132,7 @@ removes the node; review and save any remaining routes that you want to keep.
   in columns. Drag node headers to position them manually.
 - **Fit** scales and centers all nodes in the current graph area. The `+`,
   `−`, and percentage buttons zoom; scrolling over the canvas also zooms.
-- **Fullscreen** expands the graph area. **Details** shows or hides the node,
-  route, and selection information.
+- **Fullscreen** expands the graph area.
 
 Layout and zoom are presentation controls, not routes. **Save Routing** saves
 connections and helper presence; it does not save node positions.
@@ -184,7 +186,7 @@ into an earlier node.
   [Troubleshooting](./troubleshooting.md) guides for audio health and logs.
 
 Related guides: [Getting started](./getting-started.md),
-[Soundboard](./soundboard.md), [MIDI](./midi.md), [Macros](./macros.md),
+[Soundboard](./soundboard.md), [MIDI](./midi.md), [Scripts](./macros.md),
 [Configuration](./config.md), [Hardware](./hardware.md), and
 [Development](./development.md). The planned [Reference](./reference.md) will
 group the relevant API endpoints and configuration files.

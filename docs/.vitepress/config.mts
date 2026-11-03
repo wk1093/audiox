@@ -42,7 +42,7 @@ export default defineConfig({
           { text: 'Volume', link: '/guide/volume' },
           { text: 'Soundboard', link: '/guide/soundboard' },
           { text: 'MIDI', link: '/guide/midi' },
-          { text: 'Macros and automation', link: '/guide/macros' },
+          { text: 'Scripts and automation', link: '/guide/macros' },
           { text: 'Display and touch', link: '/guide/display' },
         ],
       },

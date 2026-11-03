@@ -12,8 +12,27 @@ effects, assign MIDI controls, set LED values, or delete an effect.
 
 WebUI effect changes take effect as you make them and are written to AudioX's
 persistent effect configuration. Lua effect changes are runtime-only.
-There is no separate Save button for the parameter sliders. A newly created effect receives an `fx_N` ID; use that ID
-when identifying the same effect in Routing, Effects, or automation.
+There is no separate Save button for parameter changes.
+
+## Names and precise controls
+
+Effects start with readable names such as **Reverb 3** or **Noise Gate 4**.
+On **Effects**, enter a name such as **Mic Reverb** and choose **Save name**.
+The name is saved across restarts and appears in Routing,
+Volume, and effect notifications. Clear the name and save to restore the
+automatic name. Names allow 63 UTF-8 bytes and cannot contain control characters.
+Names need not be unique; use distinct names when building larger patches.
+
+Each parameter has a slider, a precise numeric input, a unit where applicable,
+and an explanation below its label (also available on hover). **Reset** restores
+that parameter's factory default and saves it. Gain values use multipliers:
+`1x` is unchanged. Mix values remain fractions from 0 to 1, not percentages.
+The pitch noise-floor control retains four decimal places for fine adjustment.
+
+Expand **MIDI controls and pad lighting** only when assigning hardware controls.
+**Advanced and delete** holds the stable `fx_N` scripting/routing ID and Delete.
+Renaming never changes IDs, script references, audio parameters, or connections.
+The Volume card's **Advanced** disclosure also shows its scripting/routing ID.
 
 ## Add, connect, and edit an effect
 
@@ -23,9 +42,9 @@ when identifying the same effect in Routing, Effects, or automation.
    connect channel 0 to channel 0, channel 1 to channel 1, and so on.
 3. Adjust the parameter sliders displayed on the effect node. Changes are
    applied after a short debounce and saved automatically.
-4. On **Effects**, use **Bypass**/**Enable** for ordinary effects. A Cut node
-   uses **Mute**/**Unmute** instead. This panel also contains MIDI mapping,
-   LED color, and delete controls.
+4. On **Effects**, use **Bypass**/**Enable** for ordinary effects. A Mute (Cut) node
+   uses **Mute**/**Unmute** instead. Tune parameters here as well; expand the
+   MIDI or advanced sections for mapping, lighting, and deletion.
 
 Deleting an effect from the Effects page removes its saved effect state and its
 node from Routing. Check the graph and save the route changes you intend to
@@ -68,6 +87,7 @@ longer exist. A newly created Cut is in its passing (not muted) state.
 ## MIDI controls and effect LEDs
 
 Connect the MIDI controller you want to use, then open **Effects**:
+Expand the effect's **MIDI controls and pad lighting** section.
 
 - In a parameter row, choose **Map** and move the desired controller. AudioX
   captures the next incoming CC number and maps it to that parameter. The CC's
@@ -84,22 +104,24 @@ Mappings are selected by MIDI CC or note number; the Effects page does not
 offer a per-channel filter. As with other MIDI features, use the currently
 selected controller. Mapping and LED edits are persisted as you apply them.
 See [MIDI](./midi.md) for controller setup and
-[Macros](./macros.md) for automation.
+[Scripts](./macros.md) for automation.
 
 ## Control effects from Lua
 
-**Yes: Lua macros can toggle effects, explicitly enable/bypass them, and change
+**Yes: Lua scripts can toggle effects, explicitly enable/bypass them, and change
 their parameters.** A web-triggered effect script does not need a MIDI controller
 or the USB keyboard function.
 
 Create and connect the effect in Routing first. Find its exact `fx_N` ID in
-`GET /api/effects`, then use it in a Lua sequence on **Macros**:
+`GET /api/effects`, then use it in a callback on **Scripts**:
 
 ```lua
 -- Replace fx_1 with the ID of an existing Reverb effect.
-effects.enable("fx_1", true)
-effects.set("fx_1", "feedback", 0.7)
-effects.set("fx_1", "wet_mix", 0.4)
+hook("run", function(event)
+    effects.enable("fx_1", true)
+    effects.set("fx_1", "feedback", 0.7)
+    effects.set("fx_1", "wet_mix", 0.4)
+end)
 ```
 
 `effects.toggle("fx_1")` flips the current enabled state.
@@ -152,6 +174,6 @@ See the [Lua API](/lua/api#effects-and-volume) and
   [Routing](./routing.md) and [Troubleshooting](./troubleshooting.md).
 
 Related guides: [Getting started](./getting-started.md),
-[Routing](./routing.md), [MIDI](./midi.md), [Macros](./macros.md),
+[Routing](./routing.md), [MIDI](./midi.md), [Scripts](./macros.md),
 [Configuration](./config.md), and [Development](./development.md). The
 [Reference](./reference.md) groups effect API and configuration file details.

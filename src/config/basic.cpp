@@ -153,6 +153,96 @@ static int readConfigPath(const char *path, ConfigData *out, int warnIfMissing) 
 
 } // namespace
 
+namespace {
+bool scriptConfigPath(const char *name, char *path, size_t size) {
+    if (!name) return false;
+    for (const char *allowed : SCRIPT_CONFIG_FILES) {
+        if (strcmp(name, allowed) == 0) {
+            int n = snprintf(path, size, "%s/%s", ROOT_MOUNT_POINT, name);
+            return n > 0 && static_cast<size_t>(n) < size;
+        }
+    }
+    return false;
+}
+}
+
+int ConfigStore::readScriptConfig(const char *name, char *out, size_t capacity, size_t *length) const {
+    char path[256]{};
+    if (!out || !length || !capacity || !scriptConfigPath(name, path, sizeof(path))) {
+        printf("[CONFIG] [WARN] Lua requested an invalid configuration file\n");
+        return RET_ERR;
+    }
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+    struct stat st{};
+    if (fd < 0 || fstat(fd, &st) < 0 || !S_ISREG(st.st_mode) ||
+        st.st_size > static_cast<off_t>(MIDI_SCRIPT_CONFIG_READ_MAX)) {
+        printf("[CONFIG] [WARN] Lua cannot read %s: %s\n", path,
+               fd < 0 ? strerror(errno) : "not a readable regular file within 64 KiB");
+        if (fd >= 0) close(fd);
+        return RET_ERR;
+    }
+    size_t used = 0;
+    bool ok = true;
+    while (used < capacity) {
+        ssize_t n = read(fd, out + used, capacity - used);
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0) { ok = false; break; }
+        if (!n) break;
+        used += static_cast<size_t>(n);
+    }
+    if (used == capacity || memchr(out, '\0', used)) ok = false;
+    if (close(fd) < 0) ok = false;
+    if (!ok) {
+        printf("[CONFIG] [WARN] Lua configuration read failed or exceeded the text limit: %s\n", path);
+        return RET_ERR;
+    }
+    out[used] = '\0';
+    *length = used;
+    return RET_OK;
+}
+
+int ConfigStore::writeScriptConfig(const char *name, const char *text, size_t length) {
+    char path[256]{};
+    if (!midiScriptConfigTextValid(text, length) ||
+        !scriptConfigPath(name, path, sizeof(path))) {
+        printf("[CONFIG] [WARN] Invalid Lua configuration write\n");
+        return RET_ERR;
+    }
+    char temporary[288]{};
+    snprintf(temporary, sizeof(temporary), "%s.lua-XXXXXX", path);
+    int fd = mkstemp(temporary);
+    if (fd < 0) {
+        printf("[CONFIG] [WARN] Cannot stage Lua configuration: %s\n", strerror(errno));
+        return RET_ERR;
+    }
+    bool ok = fchmod(fd, 0644) == 0;
+    size_t written = 0;
+    while (ok && written < length) {
+        ssize_t n = write(fd, text + written, length - written);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { ok = false; break; }
+        written += static_cast<size_t>(n);
+    }
+    if (ok && fsync(fd) < 0) ok = false;
+    if (close(fd) < 0) ok = false;
+    if (ok && rename(temporary, path) < 0) ok = false;
+    if (ok) {
+        int directory = open(ROOT_MOUNT_POINT, O_RDONLY | O_DIRECTORY);
+        if (directory < 0) ok = false;
+        else {
+            if (fsync(directory) < 0) ok = false;
+            if (close(directory) < 0) ok = false;
+        }
+    }
+    if (!ok) {
+        printf("[CONFIG] [WARN] Lua configuration save failed (%s): %s\n", path, strerror(errno));
+        if (unlink(temporary) < 0 && errno != ENOENT)
+            printf("[CONFIG] [WARN] Lua staging cleanup failed: %s\n", strerror(errno));
+        return RET_ERR;
+    }
+    printf("[CONFIG] [LUA] Saved %s; reload/restart may be required\n", name);
+    return RET_OK;
+}
 
 ConfigData ConfigStore::readConfigFile() const {
     ConfigData cfg = {};
@@ -210,6 +300,41 @@ uint8_t soundboardModeFromString(const char *value) {
         return SOUNDBOARD_MODE_HOLD;
     }
     return SOUNDBOARD_MODE_PLAY;
+}
+
+uint8_t soundboardGridAction(const char *element) {
+    if (!element) return MIDI_ACTION_NONE;
+    if (strcmp(element, SOUNDBOARD_GRID_STOP_ALL_ID) == 0) return MIDI_ACTION_STOP_ALL;
+    if (strcmp(element, SOUNDBOARD_GRID_SAMPLER_TOGGLE_ID) == 0) return MIDI_ACTION_SAMPLER_TOGGLE;
+    return MIDI_ACTION_NONE;
+}
+
+bool soundboardGridNote(const MidiMapData *data, uint8_t row, uint8_t column, uint8_t *note) {
+    if (!data || !note || data->gridRows < 2 || data->gridRows > SOUNDBOARD_GRID_ROWS_MAX ||
+        data->gridColumns < 2 || data->gridColumns > SOUNDBOARD_GRID_COLUMNS_MAX ||
+        row >= data->gridRows || column >= data->gridColumns ||
+        (data->gridCornerMask & 0x0f) != 0x0f) {
+        return false;
+    }
+
+    const int topLeft = data->gridCornerNotes[SOUNDBOARD_GRID_TOP_LEFT];
+    const int topRight = data->gridCornerNotes[SOUNDBOARD_GRID_TOP_RIGHT];
+    const int bottomLeft = data->gridCornerNotes[SOUNDBOARD_GRID_BOTTOM_LEFT];
+    const int bottomRight = data->gridCornerNotes[SOUNDBOARD_GRID_BOTTOM_RIGHT];
+    const int columnSteps = (int)data->gridColumns - 1;
+    const int rowSteps = (int)data->gridRows - 1;
+    const int horizontalDelta = topRight - topLeft;
+    const int verticalDelta = bottomLeft - topLeft;
+    if (horizontalDelta % columnSteps != 0 || verticalDelta % rowSteps != 0 ||
+        topLeft + horizontalDelta + verticalDelta != bottomRight) {
+        return false;
+    }
+
+    const int inferred = topLeft + (horizontalDelta / columnSteps) * column +
+                         (verticalDelta / rowSteps) * row;
+    if (inferred < 0 || inferred > 127) return false;
+    *note = (uint8_t)inferred;
+    return true;
 }
 
 ConfigStore::ConfigStore(Audiox *context) : app(context) {

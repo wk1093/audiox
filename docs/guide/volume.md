@@ -6,18 +6,32 @@ description: Set per-node AudioX gain and map MIDI CC controls to volume.
 # Volume
 
 The **Volume** page adjusts the gain associated with each currently available
-Routing node. It also lets you assign one MIDI CC to one node. Open **Routing**
+Routing node in a mixer-style row of channel strips. It also lets you assign
+one MIDI CC to one node. Open **Routing**
 first if the Volume page says there are no active devices; Volume uses the
 current routing graph's list of nodes.
 
 ## Set a level
 
-1. Open **Volume** and find the node by its display name and ID.
-   Effect cards show their effect type (for example, **Reverb** or **Noise Gate**)
-   with the stable `fx_N` ID underneath to distinguish effects of the same type.
-2. Drag its slider. The displayed value is from **0%** to **200%**.
+1. Open **Volume** and find the channel strip by its readable name. Scroll
+   horizontally to reach additional strips; on a touchscreen, swipe the mixer.
+   Effect cards use the saved name from **Effects** (for example, **Mic Reverb**),
+   or a default such as **Reverb 3**. Expand **Advanced** only when you need
+   the stable scripting/routing ID.
+2. Move the vertical fader up to raise gain or down to lower it. The displayed
+   value is from **0%** to **200%**. The meter bars beside the fader rise from
+   the bottom. Keyboard users can focus a fader and use the arrow keys.
 3. The change is applied immediately and stored; there is no separate Save
-   button. Choose **Refresh** to reload the displayed values.
+   button. **Unity** resets a strip to **100%** (0 dB gain). Choose **Refresh**
+   to reload the displayed values.
+
+Effect channels are hidden by default. Enable **Show effect channels** to
+adjust their outgoing gain or MIDI mapping. Hiding them does **not** disable
+their saved gain, MIDI mappings, or script automation; the page reports how
+many hidden effect channels have non-unity gain. The visibility choice is kept
+while navigating within the current page session, but resets on a browser
+reload. The audio routing engine already skips per-sample gain multiplication
+at exactly unity, including for effect nodes.
 
 Slider changes are saved by atomically replacing `volumes.txt` before applying
 the new runtime gain. A failed save is reported as an error and does not apply
@@ -39,18 +53,29 @@ does not change that gain.
 
 ## Live meters
 
-Each card shows per-channel signal levels, including each paired Bluetooth
-device's input and output nodes. Meters refresh up to four times per second
-while the Volume page is visible; switching pages or hiding the browser tab
-stops polling. They are slower snapshots than the local framebuffer meters
-and may miss short transients.
+Each strip shows tightly packed, independently animated bars for each channel,
+without per-channel text. A single compact reading below the bars averages the
+channels' linear peak levels, then converts that average to dBFS. This includes
+each paired Bluetooth device's input and output nodes. The average is not an
+RMS loudness measurement; one loud channel can be diluted by quieter channels.
+The individual bars retain each channel's own level. For nodes with many
+channels, scroll the bar bank horizontally to see the remaining channels.
+Meters fetch up to four snapshots per second.
+Between snapshots, the bars animate with a fast rise and slower fall to make
+changing levels easier to follow. Numeric dBFS readings show the latest
+snapshot, not the animated value. Reduced-motion preferences disable this
+animation. Switching pages or hiding the browser tab stops polling and
+animation and clears the bars until fresh levels arrive. These are slower
+snapshots than the local framebuffer meters and may miss short transients;
+smoothing does not add measurements or hold missed peaks.
 
 The bars use a -60 to 0 dBFS scale. Source and processing nodes show their
 output signal before outgoing-route gain; destination nodes show incoming
 signal. They monitor the routing graph, not acoustic loudness or confirmation
 that a disconnected speaker is receiving audio. Node/channel changes refresh
 the cards automatically. A failed request clears the meters and displays
-**Meters unavailable** rather than leaving stale levels on screen.
+**Meters unavailable** rather than leaving stale levels on screen. No routine
+polling/status message is shown while meters are working.
 
 The snapshot API is `GET /api/audio/meters`, returning
 `{"meters":[{"id":"bt_A4C6F0A57AA7_in","levels":[0.5,0.25]}]}`.
@@ -80,20 +105,20 @@ receiving.
 
 For automation, use the graph ID (for example, `usb_gadget_in`,
 `soundboard_out`, `bt_A4C6F0A57AA7_in`, or an effect ID such as `fx_1`), not the
-display name. The [Macros](./macros.md) `volume.set` helper takes a percentage
+display name. The [Scripts](./macros.md) `volume.set` helper takes a percentage
 from 0 to 100 and has a unity-gain maximum. A hardware MIDI CC volume mapping
 has the wider 0–200% range described above. The planned
 [Reference](./reference.md) will group API and persisted-file details.
 
 For example, to set the gain on audio entering AudioX from the phone
-`A4:C6:F0:A5:7A:A7` to 50% from a macro, target its source-node ID:
+`A4:C6:F0:A5:7A:A7` to 50% from a script, target its source-node ID:
 
 ```lua
 volume.set("bt_A4C6F0A57AA7_in", 50)
 ```
 
 Each paired Bluetooth device has its own volume entry. Volume settings,
-MIDI mappings, and macros that targeted the older shared `bluetooth_in` or
+MIDI mappings, and scripts that targeted the older shared `bluetooth_in` or
 `bluetooth_out` IDs need to be pointed at the per-device `bt_<MAC>_in` or
 `bt_<MAC>_out` ID.
 
@@ -102,7 +127,7 @@ MIDI mappings, and macros that targeted the older shared `bluetooth_in` or
 Volume rows are generated from the active Routing graph. They can include
 source, processing, helper, and destination nodes, and can change when devices
 appear or disappear or when an effect's routing shape changes. For an ALSA
-device, use the ID shown below its display name to distinguish it from another
+device, expand **Advanced** to find its ID and distinguish it from another
 device with a similar name.
 
 Because gain scales outgoing routes, source and intermediate nodes are the
@@ -128,5 +153,5 @@ its own processing branch before it joins a shared route.
   value as the slider's stored level.
 
 Related guides: [Routing](./routing.md), [MIDI](./midi.md),
-[Macros](./macros.md), [Configuration](./config.md),
+[Scripts](./macros.md), [Configuration](./config.md),
 [Soundboard](./soundboard.md), and [Troubleshooting](./troubleshooting.md).

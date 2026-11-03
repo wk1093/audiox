@@ -40,7 +40,8 @@ test('each WebUI page has a device guide', () => {
   const pages = [...html.matchAll(/data-page="([^"]+)"/g)].map(match => match[1]);
   assert.ok(pages.length >= 9);
   for (const page of pages) {
-    const file = path.join(docs, 'guide', `${page}.md`);
+    const guide = page === 'scripts' ? 'macros' : page;
+    const file = path.join(docs, 'guide', `${guide}.md`);
     assert.ok(existsSync(file), `Missing guide for ${page}`);
     assert.ok(readFileSync(file, 'utf8').length > 1000, `Incomplete guide for ${page}`);
   }

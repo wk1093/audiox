@@ -1,4 +1,3 @@
-const edgeListEl = document.getElementById('edge-list');
 const graphWrapEl = document.getElementById('graph-wrap');
 const graphCanvasEl = document.getElementById('graph-canvas');
 const zoomLabelEl = document.getElementById('zoom-label');
@@ -13,11 +12,6 @@ const volGridEl = document.getElementById('vol-grid');
 const volCcStatusEl = document.getElementById('vol-cc-status');
 const effectsMapGridEl = document.getElementById('effects-map-grid');
 const effectsMapStatusEl = document.getElementById('effects-map-status');
-const inspectorEl = document.getElementById('route-inspector');
-const nodeCountEl = document.getElementById('metric-node-count');
-const routeCountEl = document.getElementById('metric-route-count');
-const selectedNodeEl = document.getElementById('metric-selected-node');
-const selectedRouteEl = document.getElementById('metric-selected-route');
 const logsSourceEl = document.getElementById('logs-source');
 const logsLevelEl = document.getElementById('logs-level');
 const logsTextEl = document.getElementById('logs-text');
@@ -38,7 +32,6 @@ const state = {
   // routing.txt untouched so the routing comes back when the device returns.
   dormantEdges: [],
   positions: {},
-  selectedNodeId: null,
   selectedEdgeIdx: -1,
   autoArrange: true,
   soundboardEditing: false,
@@ -62,6 +55,10 @@ const state = {
   thingsSignature: '',
   effectsPollInFlight: false,
   soundboardModesBySfx: {},
+  soundboardLayout: { mode: 'normal', rows: 4, columns: 4, corners: [null, null, null, null], cells: [] },
+  soundboardCellsBySfx: {},
+  soundboardGridSaving: false,
+  soundboardOpenSettings: new Set(),
   framebufferView: 'meters',
   stopAllMidiNote: null,
   samplerToggleMidiNote: null,
@@ -74,14 +71,23 @@ const state = {
   volAssignTarget: null,
   volCcPollTimer: null,
   volCcLastSeq: 0,
+  volShowEffects: false,
   systemPollTimer: null,
   systemPollInFlight: false,
 };
 
 const soundboardOrder = AudioxSoundboardOrder.attach(sbGridEl, {
-  enabled: () => state.soundboardEditing && state.soundboardOrderSupported &&
+  enabled: () => state.soundboardEditing && state.soundboardLayout.mode !== 'grid' &&
+    state.soundboardOrderSupported &&
     !state.soundboardOrderSaving && !AudioxUI.isBusy(),
   save: saveSoundboardOrder,
+  status: document.getElementById('sb-order-status'),
+});
+
+const soundboardGridDrag = AudioxSoundboardGrid.attach(document.getElementById('soundboard-layout'), {
+  enabled: () => state.soundboardEditing && state.soundboardLayout.mode === 'grid' &&
+    !state.soundboardGridSaving && !AudioxUI.isBusy(),
+  save: saveSoundboardGridCell,
   status: document.getElementById('sb-order-status'),
 });
 
@@ -160,8 +166,7 @@ if (effectsManager) {
 }
 
 function setActiveTab(tab) {
-  if (tab !== 'macros') {
-    stopChordRecording();
+  if (tab !== 'scripts') {
     cancelChordLearn();
   }
   state.activeTab = tab;
@@ -196,7 +201,7 @@ function setActiveTab(tab) {
   if (tab === 'bluetooth') {
     loadBluetoothDevices();
   }
-  if (tab === 'macros') {
+  if (tab === 'scripts') {
     loadMidiChords();
   }
   if (tab === 'midi') {
@@ -608,62 +613,6 @@ function getConfigFromForm() {
   };
 }
 
-function renderInspector() {
-  nodeCountEl.textContent = String(state.nodes.length);
-  routeCountEl.textContent = String(state.edges.length);
-  selectedNodeEl.textContent = state.selectedNodeId || '-';
-
-  if (state.selectedEdgeIdx >= 0 && state.selectedEdgeIdx < state.edges.length) {
-    const edge = state.edges[state.selectedEdgeIdx];
-    selectedRouteEl.textContent = `${edge.src}[${edge.srcChannel}] -> ${edge.dst}[${edge.dstChannel}]`;
-    inspectorEl.textContent = `Selected route: ${edge.src}[${edge.srcChannel}] -> ${edge.dst}[${edge.dstChannel}]`;
-    return;
-  }
-
-  selectedRouteEl.textContent = '-';
-  if (state.selectedNodeId) {
-    inspectorEl.textContent = `Selected node: ${state.selectedNodeId}.`;
-    return;
-  }
-
-  inspectorEl.textContent = '';
-}
-
-function renderEdgesList() {
-  edgeListEl.innerHTML = '';
-  if (!state.edges.length) {
-    edgeListEl.textContent = 'no routes';
-    renderInspector();
-    return;
-  }
-
-  state.edges.forEach((edge, idx) => {
-    const row = document.createElement('div');
-    row.className = `edge-item ${idx === state.selectedEdgeIdx ? 'selected' : ''}`.trim();
-
-    const txt = document.createElement('div');
-    txt.textContent = `${edge.src}[${edge.srcChannel}] -> ${edge.dst}[${edge.dstChannel}]`;
-
-    const btn = document.createElement('button');
-    btn.textContent = 'remove';
-    btn.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      removeEdgeByIndex(idx);
-    });
-
-    row.appendChild(txt);
-    row.appendChild(btn);
-    row.addEventListener('click', () => {
-      state.selectedEdgeIdx = (state.selectedEdgeIdx === idx) ? -1 : idx;
-      renderEdgesList();
-      renderInspector();
-    });
-    edgeListEl.appendChild(row);
-  });
-
-  renderInspector();
-}
-
 function normalizeThingId(v) {
   return String(v || '').trim();
 }
@@ -699,7 +648,7 @@ async function createRoutingHelper() {
   const res = await fetch('/api/routing/helper/create', { method: 'POST' });
   const txt = await res.text();
   if (!res.ok) {
-    throw new Error(`routing helper create failed: ${res.status} ${txt.trim()}`);
+    throw new Error(`Audio Mixer creation failed: ${res.status} ${txt.trim()}`);
   }
 }
 
@@ -707,7 +656,7 @@ async function deleteRoutingHelper() {
   const res = await fetch('/api/routing/helper/delete', { method: 'POST' });
   const txt = await res.text();
   if (!res.ok) {
-    throw new Error(`routing helper delete failed: ${res.status} ${txt.trim()}`);
+    throw new Error(`Audio Mixer deletion failed: ${res.status} ${txt.trim()}`);
   }
 }
 
@@ -731,7 +680,8 @@ async function deleteEffectThing(thingId) {
   if (!id || !isEffectThingId(id) || !effectsManager) {
     return false;
   }
-  if (!await AudioxUI.confirm(`Delete effect ${id}? Its settings and routing connections will be removed.`, {
+  const name = effectsManager.displayName(id);
+  if (!await AudioxUI.confirm(`Delete ${name}? Its settings and routing connections will be removed.`, {
     title: 'Delete effect?', label: 'Delete effect',
   })) return false;
 
@@ -749,7 +699,7 @@ async function deleteEffectThing(thingId) {
     await loadRoutingThingsWithOptions({ silent: true, force: true });
     await loadRoutingFile();
     await effectsManager.loadEffects();
-    setStatus(`effect ${id} deleted`, 'ok');
+    setStatus(`${name} deleted`, 'ok');
     return true;
   } catch (err) {
     setStatus(String(err), 'warn');
@@ -858,7 +808,6 @@ function syncEdgesFromGraph() {
     state.selectedEdgeIdx = state.edges.length - 1;
   }
 
-  renderEdgesList();
   state.graphCanvas.setDirty(true, true);
 }
 
@@ -881,7 +830,6 @@ function addEdgeFromConnection(srcNode, srcSlot, dstNode, dstSlot) {
   state.edges.push(edge);
   AudioxUI.setUnsaved('routing');
   syncEdgesFromGraph();
-  renderEdgesList();
   setStatus('route added (not saved yet)', 'ok');
   return true;
 }
@@ -1122,13 +1070,13 @@ function ensureRoutingGraph() {
     function AudioxRoutingHelperNode() {
       this.size = [220, 80];
       this.properties = { routingHelperTemplate: true, nodeKind: 'template' };
-      this.title = 'Add Routing Helper';
+      this.title = 'Add Audio Mixer';
       this.addInput('in 1', 'audio');
       this.addInput('in 2', 'audio');
       this.addOutput('out 1', 'audio');
       this.addOutput('out 2', 'audio');
     }
-    AudioxRoutingHelperNode.title = 'Routing Helper';
+    AudioxRoutingHelperNode.title = 'Audio Mixer';
     AudioxRoutingHelperNode.filter = 'audiox';
     window.LiteGraph.registerNodeType('audiox/routing_helper', AudioxRoutingHelperNode);
   }
@@ -1197,13 +1145,13 @@ function ensureRoutingGraph() {
     function AudioxEffectCutNode() {
       this.size = [220, 80];
       this.properties = { effectTypeTemplate: 'cut', nodeKind: 'template' };
-      this.title = 'Add Cut';
+      this.title = 'Add Mute (Cut)';
       this.addInput('in 1', 'audio');
       this.addInput('in 2', 'audio');
       this.addOutput('out 1', 'audio');
       this.addOutput('out 2', 'audio');
     }
-    AudioxEffectCutNode.title = 'Cut';
+    AudioxEffectCutNode.title = 'Mute (Cut)';
     AudioxEffectCutNode.filter = 'audiox';
     window.LiteGraph.registerNodeType('audiox/effect_cut', AudioxEffectCutNode);
   }
@@ -1245,14 +1193,14 @@ function ensureRoutingGraph() {
         content: 'Remove Node',
         callback: async () => {
           if (isRoutingHelperNode(node)) {
-            if (!await AudioxUI.confirm('Delete the routing helper? Any connections through it will be removed.', {
-              title: 'Delete routing helper?', label: 'Delete helper',
+            if (!await AudioxUI.confirm('Delete the Audio Mixer? Any connections through it will be removed.', {
+              title: 'Delete Audio Mixer?', label: 'Delete mixer',
             })) return;
             try {
               await deleteRoutingHelper();
               await loadRoutingThingsWithOptions({ silent: true, force: true });
               await loadRoutingFile();
-              setStatus('routing helper deleted', 'ok');
+              setStatus('Audio Mixer deleted', 'ok');
             } catch (err) {
               setStatus(String(err), 'warn');
             }
@@ -1267,16 +1215,6 @@ function ensureRoutingGraph() {
         },
       },
     ];
-  };
-
-  state.graphCanvas.onNodeSelected = (node) => {
-    state.selectedNodeId = normalizeThingId(node?.properties?.thingId);
-    renderInspector();
-  };
-
-  state.graphCanvas.onNodeDeselected = () => {
-    state.selectedNodeId = null;
-    renderInspector();
   };
 
   state.graphCanvas.onNodeMoved = (node) => {
@@ -1310,7 +1248,7 @@ function ensureRoutingGraph() {
             state.positions.routing_helper = pos;
           }
           rebuildRoutingGraph();
-          setStatus('routing helper created', 'ok');
+          setStatus('Audio Mixer created', 'ok');
         })
         .catch((err) => setStatus(String(err), 'warn'));
       return;
@@ -1483,11 +1421,11 @@ function rebuildRoutingGraph() {
     node._inputChannelBySlot = [];
 
     for (let ch = 0; ch < thing.inputs; ch += 1) {
-      node.addInput(`in ${ch + 1}`, 'audio');
+      node.addInput(window.AudioxRouting.channelLabel(ch, thing.inputs), 'audio');
       node._inputChannelBySlot.push(ch);
     }
     for (let ch = 0; ch < thing.outputs; ch += 1) {
-      node.addOutput(`out ${ch + 1}`, 'audio');
+      node.addOutput(window.AudioxRouting.channelLabel(ch, thing.outputs), 'audio');
     }
 
     const pos = state.positions[thing.id] || { x: 40, y: 60 };
@@ -1899,15 +1837,16 @@ async function saveConfig() {
 }
 
 let editingMacroId = null;
+const defaultScriptSource = 'hook("run", function(event)\n  log("Hello from AudioX")\nend)\n';
 let macroCount = 0;
 
 async function loadMidiChords() {
   try {
-    const res = await fetch('/api/macros', { cache: 'no-store' });
+    const res = await fetch('/api/scripts', { cache: 'no-store' });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
-    renderMidiChords((await res.json()).macros);
+    renderMidiChords((await res.json()).scripts);
   } catch (err) {
-    setStatus(`Macro load failed: ${err}`, 'warn', 'midi-chords');
+    setStatus(`Script load failed: ${err}`, 'warn', 'midi-chords');
   }
 }
 
@@ -1918,7 +1857,7 @@ function renderMidiChords(chords) {
   for (const chord of chords) {
     const row = document.createElement('div');
     const label = document.createElement('span');
-    label.textContent = `${chord.name} — ${chord.midi_enabled ? `Channel ${chord.channel}, note ${chord.note}` : 'Web only'}: ${chord.script_hex ? 'Lua sequence' : chord.keys} ` +
+    label.textContent = `${chord.name} — ${chord.midi_enabled ? `Channel ${chord.channel}, note ${chord.note}` : 'Event hooks'} ` +
       `(LED idle ${chord.idle_velocity ?? 0}, pressed ${chord.pressed_velocity ?? 0})`;
     if (chord.runtime_error_hex) {
       label.textContent += ` — Last execution failed: ${chordHexDecode(chord.runtime_error_hex)}`;
@@ -1927,22 +1866,19 @@ function renderMidiChords(chords) {
     edit.textContent = 'Edit';
     edit.addEventListener('click', async () => {
       if (AudioxUI.hasUnsavedChanges('macro-editor') && !await AudioxUI.confirm(
-        'Discard unsaved macro changes and edit this saved macro?', {
-          title: 'Discard macro changes?', label: 'Discard and edit',
+        'Discard unsaved script changes and edit this saved script?', {
+          title: 'Discard script changes?', label: 'Discard and edit',
         })) return;
-      stopChordRecording();
       cancelChordLearn();
       editingMacroId = chord.id;
       document.getElementById('macro-name').value = chord.name;
       document.getElementById('macro-midi-enabled').checked = chord.midi_enabled;
       document.getElementById('chord-channel').value = chord.channel;
       document.getElementById('chord-note').value = chord.note;
-      document.getElementById('chord-keys').value = chord.keys;
-      document.getElementById('chord-mode').value = chord.script_hex ? 'script' : 'chord';
       document.getElementById('chord-script').value = chordHexDecode(chord.script_hex || '');
+      document.getElementById('macro-config-write').checked = Boolean(chord.config_write_allowed);
       document.getElementById('chord-idle-velocity').value = chord.idle_velocity ?? 0;
       document.getElementById('chord-pressed-velocity').value = chord.pressed_velocity ?? 0;
-      updateChordMode();
       updateMacroBinding();
       AudioxUI.setUnsaved('macro-editor', false);
       document.getElementById('btn-chord-save').textContent = 'Save Changes';
@@ -1951,13 +1887,15 @@ function renderMidiChords(chords) {
     const remove = document.createElement('button');
     remove.textContent = 'Remove';
     remove.addEventListener('click', async () => {
-      if (!await AudioxUI.confirm(`Delete the saved macro "${chord.name}"? This cannot be undone.`, {
-        title: 'Delete macro?', label: 'Delete macro',
+      if (!await AudioxUI.confirm(`Delete the saved script "${chord.name}"? This cannot be undone.`, {
+        title: 'Delete script?', label: 'Delete script',
       })) return;
       await saveMidiChord('DELETE', chord, remove);
     });
     const run = document.createElement('button');
     run.textContent = 'Run';
+    run.disabled = !(chord.event_mask & 128);
+    if (run.disabled) run.title = 'Add hook("run", function(event) ... end) to enable Run';
     run.addEventListener('click', () => runMacro(chord.id, run));
     row.className = 'stack';
     const actions = document.createElement('div');
@@ -1972,21 +1910,28 @@ async function saveMidiChord(method, chord, button) {
   if (button.disabled) return;
   button.disabled = true;
   try {
+    const configurationScript = method === 'POST' &&
+      (Boolean(chord.config_write_allowed) || chordHexDecode(chord.script_hex || '').includes('config'));
+    if (configurationScript && !await AudioxUI.confirm(
+      'This script accesses configuration and may overwrite persistent settings, including MIDI bindings, routing and startup configuration. Writes replace whole files and are not format-validated. Back up your settings first; reload or restart may be required. Save this script?', {
+        title: 'Allow configuration writes?', label: 'Save configuration script',
+      })) return;
     const payload = method === 'DELETE' ? `id=${chord.id}` :
       (chord.id ? `id=${chord.id}&` : '') +
       `name_hex=${chordHexEncode(chord.name)}&midi_enabled=${chord.midi_enabled ? 1 : 0}` +
-      `&channel=${chord.channel}&note=${chord.note}&keys=${chord.keys}` +
+      `&channel=${chord.channel}&note=${chord.note}` +
       `&idle_velocity=${chord.idle_velocity ?? 0}&pressed_velocity=${chord.pressed_velocity ?? 0}` +
+      `&config_write_ack=${configurationScript ? 1 : 0}` +
       `&script_hex=${chord.script_hex || ''}`;
-    const res = await fetch('/api/macros', {
+    const res = await fetch('/api/scripts', {
       method, headers: { 'Content-Type': 'text/plain' }, body: payload,
     });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
     if (method === 'POST' || editingMacroId === chord.id) resetMacroEditor();
-    setStatus(method === 'DELETE' ? 'Macro removed' : 'Macro saved', 'ok', 'midi-chords');
+    setStatus(method === 'DELETE' ? 'Script removed' : 'Script saved', 'ok', 'midi-chords');
     await loadMidiChords();
   } catch (err) {
-    setStatus(`Macro save failed: ${err}`, 'warn', 'midi-chords');
+    setStatus(`Script save failed: ${err}`, 'warn', 'midi-chords');
   } finally {
     button.disabled = false;
   }
@@ -1996,14 +1941,14 @@ async function runMacro(id, button) {
   if (button.disabled) return;
   button.disabled = true;
   try {
-    const res = await fetch('/api/macros/run', {
+    const res = await fetch('/api/scripts/run', {
       method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: `id=${id}`,
     });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
-    setStatus('Macro queued (not confirmation of completion)', 'ok', 'midi-chords');
+    setStatus('Script queued (not confirmation of completion)', 'ok', 'midi-chords');
     await loadMidiChords();
   } catch (err) {
-    setStatus(`Macro run failed: ${err}`, 'warn', 'midi-chords');
+    setStatus(`Script run failed: ${err}`, 'warn', 'midi-chords');
   } finally {
     button.disabled = false;
   }
@@ -2017,21 +1962,18 @@ function updateMacroBinding() {
 }
 
 function resetMacroEditor() {
-  stopChordRecording();
   cancelChordLearn();
   editingMacroId = null;
   document.getElementById('macro-name').value = '';
   document.getElementById('macro-midi-enabled').checked = false;
   document.getElementById('chord-channel').value = '0';
   document.getElementById('chord-note').value = '60';
-  document.getElementById('chord-keys').value = '';
-  document.getElementById('chord-script').value = '';
-  document.getElementById('chord-mode').value = 'chord';
+  document.getElementById('chord-script').value = defaultScriptSource;
+  document.getElementById('macro-config-write').checked = false;
   document.getElementById('chord-idle-velocity').value = '0';
   document.getElementById('chord-pressed-velocity').value = '0';
-  document.getElementById('btn-chord-save').textContent = 'Save Macro';
+  document.getElementById('btn-chord-save').textContent = 'Save Script';
   AudioxUI.setUnsaved('macro-editor', false);
-  updateChordMode();
   updateMacroBinding();
 }
 
@@ -2043,101 +1985,10 @@ function chordHexDecode(hex) {
   return new TextDecoder().decode(Uint8Array.from(hex.match(/../g) || [], (byte) => parseInt(byte, 16)));
 }
 
-function updateChordMode() {
-  stopChordRecording();
-  const script = document.getElementById('chord-mode').value === 'script';
-  document.getElementById('chord-capture-editor').hidden = script;
-  document.getElementById('chord-script-editor').hidden = !script;
-}
-
-let chordRecording = null;
-
-function stopChordRecording(keep = false) {
-  if (!chordRecording) return;
-  const input = document.getElementById('chord-keys');
-  if (!keep) input.value = chordRecording.previous;
-  input.readOnly = false;
-  chordRecording = null;
-  const button = document.getElementById('btn-chord-record');
-  button.textContent = 'Record Chord';
-  button.setAttribute('aria-pressed', 'false');
-  document.getElementById('chord-capture-status').textContent = keep ?
-    `Captured ${input.value}. Save Macro to apply.` : 'Recording cancelled. Previous chord restored.';
-}
-
-function chordKeyFromCode(code) {
-  if (/^Key[A-Z]$/.test(code)) return code.slice(3);
-  if (/^Digit[0-9]$/.test(code)) return code.slice(5);
-  if (/^F(?:[1-9]|1[0-9]|2[0-4])$/.test(code)) return code;
-  return {
-    Enter: 'ENTER', Escape: 'ESC', Backspace: 'BACKSPACE', Tab: 'TAB', Space: 'SPACE',
-    Delete: 'DELETE', ArrowRight: 'RIGHT', ArrowLeft: 'LEFT', ArrowDown: 'DOWN', ArrowUp: 'UP',
-    Home: 'HOME', End: 'END', PageUp: 'PAGEUP', PageDown: 'PAGEDOWN',
-  }[code] || null;
-}
-
-document.getElementById('btn-chord-record').addEventListener('click', () => {
-  if (chordRecording) {
-    stopChordRecording();
-    return;
-  }
-  const input = document.getElementById('chord-keys');
-  chordRecording = { previous: input.value, keys: [], held: new Set(), modifiers: new Set() };
-  input.readOnly = true;
-  const button = document.getElementById('btn-chord-record');
-  button.textContent = 'Cancel Recording';
-  button.setAttribute('aria-pressed', 'true');
-  document.getElementById('chord-capture-status').textContent = 'Listening: press your shortcut, then release its keys.';
-  input.focus();
-});
-document.getElementById('btn-chord-record').addEventListener('pointerdown', (event) => {
-  if (chordRecording) event.preventDefault();
-});
-
-document.getElementById('chord-keys').addEventListener('keydown', (event) => {
-  if (!chordRecording) return;
-  event.preventDefault();
-  event.stopPropagation();
-  if (event.repeat || event.isComposing) return;
-  if (event.ctrlKey) chordRecording.modifiers.add('CTRL');
-  if (event.shiftKey) chordRecording.modifiers.add('SHIFT');
-  if (event.altKey) chordRecording.modifiers.add('ALT');
-  if (event.metaKey) chordRecording.modifiers.add('GUI');
-  if (/^(Control|Shift|Alt|Meta)(Left|Right)$/.test(event.code)) return;
-  const key = chordKeyFromCode(event.code);
-  if (!key || (chordRecording.keys.length === 6 && !chordRecording.keys.includes(key))) {
-    stopChordRecording();
-    document.getElementById('chord-capture-status').textContent = 'Unsupported key or more than six keys. Previous chord restored; record again to retry.';
-    return;
-  }
-  chordRecording.held.add(event.code);
-  if (!chordRecording.keys.includes(key)) chordRecording.keys.push(key);
-  const keys =
-    ['CTRL', 'SHIFT', 'ALT', 'GUI'].filter((modifier) => chordRecording.modifiers.has(modifier))
-      .concat(chordRecording.keys).join('+');
-  if (keys.length > 63) {
-    stopChordRecording();
-    document.getElementById('chord-capture-status').textContent = 'Chord exceeds 63 characters. Previous chord restored.';
-    return;
-  }
-  document.getElementById('chord-keys').value = keys;
-  AudioxUI.setUnsaved('macro-editor');
-});
-
-document.getElementById('chord-keys').addEventListener('keyup', (event) => {
-  if (!chordRecording) return;
-  event.preventDefault();
-  event.stopPropagation();
-  chordRecording.held.delete(event.code);
-  if (chordRecording.keys.length && !chordRecording.held.size) stopChordRecording(true);
-});
-document.getElementById('chord-keys').addEventListener('blur', () => stopChordRecording());
-window.addEventListener('blur', () => stopChordRecording());
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) stopMeterPolling();
   else if (state.activeTab === 'volume') startMeterPolling();
   if (document.hidden) {
-    stopChordRecording();
     cancelChordLearn();
   }
 });
@@ -2167,7 +2018,7 @@ document.getElementById('btn-chord-learn').addEventListener('click', async () =>
     const res = await fetch('/api/midi/last_note', { cache: 'no-store' });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
     const data = await res.json();
-    if (state.activeTab !== 'macros' || document.hidden ||
+    if (state.activeTab !== 'scripts' || document.hidden ||
         !document.getElementById('macro-midi-enabled').checked) return;
     const seq = Number(data.last_seq);
     if (!Number.isInteger(seq) || seq < 0) throw new Error('device did not report a valid MIDI event sequence');
@@ -2183,28 +2034,21 @@ document.getElementById('btn-chord-learn').addEventListener('click', async () =>
   }
 });
 
-document.getElementById('chord-mode').addEventListener('change', updateChordMode);
 document.getElementById('macro-midi-enabled').addEventListener('change', updateMacroBinding);
 document.getElementById('btn-macro-new').addEventListener('click', async () => {
   if (AudioxUI.hasUnsavedChanges('macro-editor') && !await AudioxUI.confirm(
-    'Discard unsaved macro changes and start a new macro?', {
-      title: 'Discard macro changes?', label: 'Discard and start new',
+    'Discard unsaved script changes and start a new script?', {
+      title: 'Discard script changes?', label: 'Discard and start new',
     })) return;
   resetMacroEditor();
 });
 document.getElementById('btn-chord-load').addEventListener('click', loadMidiChords);
 document.getElementById('btn-chord-save').addEventListener('click', () => {
-  if (chordRecording) {
-    setStatus('Finish or cancel recording before saving.', 'warn', 'midi-chords');
-    return;
-  }
   const channel = Number(document.getElementById('chord-channel').value);
   const name = document.getElementById('macro-name').value.trim();
   const midi_enabled = document.getElementById('macro-midi-enabled').checked;
   const note = Number(document.getElementById('chord-note').value);
-  const keys = document.getElementById('chord-keys').value.trim().toUpperCase();
-  const script = document.getElementById('chord-mode').value === 'script' ?
-    document.getElementById('chord-script').value : '';
+  const script = document.getElementById('chord-script').value;
   const idle = Number(document.getElementById('chord-idle-velocity').value);
   const pressed = Number(document.getElementById('chord-pressed-velocity').value);
   if (!name || name.includes('\0') || new TextEncoder().encode(name).length > 63 ||
@@ -2213,14 +2057,15 @@ document.getElementById('btn-chord-save').addEventListener('click', () => {
       !Number.isInteger(note) || note < 0 || note > 127 ||
       !Number.isInteger(idle) || idle < 0 || idle > 127 ||
       !Number.isInteger(pressed) || pressed < 0 || pressed > 127 ||
-      (document.getElementById('chord-mode').value === 'script' ? !script.trim() :
-        (!/^[A-Z0-9]+(?:\+[A-Z0-9]+)*$/.test(keys) || keys.length > 63)) ||
-      new TextEncoder().encode(script).length >= 2048) {
-    setStatus('Enter a name (1-63 UTF-8 bytes), channel 0-15, note/LED values 0-127, and a chord (up to 63 characters) or Lua script (up to 2,047 UTF-8 bytes). Maximum 16 macros.', 'warn', 'midi-chords');
+      !script.trim() || script.includes('\0') ||
+      new TextEncoder().encode(script).length > 17408) {
+    setStatus('Enter a name (1-63 UTF-8 bytes), channel 0-15, note/LED values 0-127, and a Lua callback script (up to 17,408 UTF-8 bytes). Maximum 16 scripts.', 'warn', 'midi-chords');
     return;
   }
-  return saveMidiChord('POST', { id: editingMacroId, name, midi_enabled, channel, note, keys: script ? '' : keys, idle_velocity: idle,
-    pressed_velocity: pressed, script_hex: chordHexEncode(script) }, document.getElementById('btn-chord-save'));
+  return saveMidiChord('POST', { id: editingMacroId, name, midi_enabled, channel, note, idle_velocity: idle,
+    pressed_velocity: pressed,
+    config_write_allowed: script && document.getElementById('macro-config-write').checked,
+    script_hex: chordHexEncode(script) }, document.getElementById('btn-chord-save'));
 });
 
 async function reloadConfig() {
@@ -2286,6 +2131,18 @@ async function triggerStopAll() {
   }
 }
 
+async function triggerSamplerToggle() {
+  try {
+    const res = await fetch('/api/midi/sampler_mode', { method: 'POST' });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`${res.status} ${text.trim()}`);
+    const data = JSON.parse(text);
+    setStatus(`Sampler selection mode ${data.active ? 'on' : 'off'}.`, 'ok');
+  } catch (error) {
+    setStatus(`Sampler toggle failed: ${error}`, 'warn');
+  }
+}
+
 function renderStopAllMidiStatus() {
   if (!sbStopAllMidiEl) {
     return;
@@ -2323,6 +2180,156 @@ async function loadSoundboardModes() {
     }
     renderSoundboardGrid();
   } catch (_) {}
+}
+
+function updateSoundboardLayoutState(data) {
+  const rows = Number(data?.rows);
+  const columns = Number(data?.columns);
+  const corners = Array.isArray(data?.corners) && data.corners.length === 4
+    ? data.corners.map((note) => Number.isInteger(note) ? note : null)
+    : [null, null, null, null];
+  state.soundboardLayout = {
+    mode: data?.mode === 'grid' ? 'grid' : 'normal',
+    rows: Number.isInteger(rows) && rows >= 1 && rows <= 8 ? rows : 4,
+    columns: Number.isInteger(columns) && columns >= 1 && columns <= 8 ? columns : 4,
+    corners,
+    cells: Array.isArray(data?.cells) ? data.cells : [],
+  };
+  state.soundboardCellsBySfx = AudioxSoundboardGrid.cellsBySound(state.soundboardLayout,
+    AudioxSoundboardGrid.elements(state.sfxFiles));
+  const modeSelect = document.getElementById('sb-layout-mode');
+  const rowsInput = document.getElementById('sb-grid-rows');
+  const columnsInput = document.getElementById('sb-grid-columns');
+  modeSelect.value = state.soundboardLayout.mode;
+  rowsInput.value = String(state.soundboardLayout.rows);
+  columnsInput.value = String(state.soundboardLayout.columns);
+  document.getElementById('sb-grid-options').hidden = state.soundboardLayout.mode !== 'grid';
+  document.querySelectorAll('.sb-grid-only').forEach((el) => { el.hidden = state.soundboardLayout.mode !== 'grid'; });
+  const learned = state.soundboardLayout.corners
+    .map((note, index) => Number.isInteger(note) ? `${['top-left', 'top-right', 'bottom-left', 'bottom-right'][index]} MIDI ${note}` : null)
+    .filter(Boolean);
+  document.getElementById('sb-grid-learn-status').textContent = learned.length
+    ? `Learned: ${learned.join(', ')}.`
+    : 'Learn the four physical pad corners to connect grid cells to MIDI notes.';
+  document.getElementById('sb-order-status').textContent = state.soundboardLayout.mode === 'grid'
+    ? 'Drag sounds to empty cells, onto other sounds to swap, or to Unassigned sounds. On touch, drag the sound name. The cell selector also supports keyboard placement. Learn MIDI corners to update controller pad mappings.'
+    : 'Drag sound cards to reorder them (on touch, drag the sound name). With a keyboard, focus a name and press Space, use arrow keys, then Enter to save. Changes also update the device display.';
+  renderSoundboardCellSelectors();
+  renderSoundboardGrid();
+}
+
+async function loadSoundboardLayout() {
+  try {
+    const res = await fetch('/api/soundboard/layout', { method: 'GET' });
+    const txt = await res.text();
+    if (!res.ok) {
+      if (res.status === 404) {
+        updateSoundboardLayoutState({ mode: 'normal', rows: 4, columns: 4 });
+        return;
+      }
+      throw new Error(`Could not load soundboard layout: ${res.status} ${txt}`);
+    }
+    updateSoundboardLayoutState(JSON.parse(txt));
+  } catch (error) {
+    setStatus(error, 'warn', 'soundboard-layout');
+  }
+}
+
+function renderSoundboardCellSelectors() {
+  const layout = state.soundboardLayout;
+  const uploadSelect = document.getElementById('sb-upload-cell');
+  uploadSelect.replaceChildren(new Option('Unassigned', ''));
+  if (layout.mode !== 'grid') return;
+  const occupied = new Set(Object.values(state.soundboardCellsBySfx)
+    .map((cell) => `${cell.row}:${cell.column}`));
+  for (let row = 0; row < layout.rows; row += 1) {
+    for (let column = 0; column < layout.columns; column += 1) {
+      const option = new Option(`Row ${row + 1}, column ${column + 1}`, `${row}:${column}`);
+      if (occupied.has(option.value)) {
+        option.disabled = true;
+        option.textContent += ' (occupied)';
+      }
+      uploadSelect.appendChild(option);
+    }
+  }
+}
+
+async function saveSoundboardLayout(fields, statusLabel = 'Soundboard layout saved.') {
+  try {
+    const res = await fetch('/api/soundboard/layout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: new URLSearchParams(fields).toString(),
+    });
+    const txt = await res.text();
+    if (!res.ok) throw new Error(`${res.status} ${txt.trim()}`);
+    updateSoundboardLayoutState(JSON.parse(txt));
+    setStatus(statusLabel, 'ok', 'soundboard-layout');
+    return true;
+  } catch (error) {
+    setStatus(`Soundboard layout save failed: ${error}`, 'warn', 'soundboard-layout');
+    await loadSoundboardLayout();
+    return false;
+  }
+}
+
+async function saveSoundboardGridCell(sfx, row, column) {
+  if (state.soundboardGridSaving) return false;
+  const current = state.soundboardCellsBySfx[sfx];
+  if (current?.row === row && current?.column === column) return true;
+  state.soundboardGridSaving = true;
+  soundboardGridDrag.cancel();
+  try {
+    const action = AudioxSoundboardGrid.actionFor(sfx);
+    const element = action ? { action: action.action } : { sfx };
+    const label = action?.label || sfx;
+    const fields = row === null ? { ...element, unassign: '1' } :
+      { ...element, row: String(row), column: String(column) };
+    const saved = await saveSoundboardLayout(fields, row === null ? `Unassigned ${label}.` :
+      `Moved ${label} to row ${row + 1}, column ${column + 1}.`);
+    if (saved) {
+      await loadMappings();
+      await loadMidiActions();
+    }
+    return saved;
+  } finally {
+    state.soundboardGridSaving = false;
+    renderSoundboardGrid();
+  }
+}
+
+async function beginSoundboardGridLearn(corner) {
+  const target = `__grid_${corner}__`;
+  if (state.mappingAssignTarget === target) {
+    state.mappingAssignTarget = null;
+    if (state.mappingPollTimer) clearInterval(state.mappingPollTimer);
+    state.mappingPollTimer = null;
+    document.getElementById('sb-grid-learn-status').textContent = 'Grid MIDI learn cancelled.';
+    return;
+  }
+  try {
+    const response = await fetch('/api/midi/last_note', { method: 'GET' });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`${response.status} ${text.trim()}`);
+    const data = JSON.parse(text);
+    const sequence = Number(data.last_seq);
+    if (!Number.isInteger(sequence) || sequence < 0) throw new Error('device did not report a valid MIDI event sequence');
+    state.mappingAssignTarget = target;
+    state.mappingLastSeq = sequence;
+    if (!state.mappingPollTimer) state.mappingPollTimer = setInterval(pollMappingCapture, 220);
+    document.getElementById('sb-grid-learn-status').textContent =
+      `Press the ${corner.replace('_', ' ')} pad corner. Click its Learn button again to cancel.`;
+  } catch (error) {
+    setStatus(`Grid MIDI learn failed: ${error}`, 'warn', 'soundboard-layout');
+  }
+}
+
+async function saveSoundboardGridCorner(corner, note) {
+  const saved = await saveSoundboardLayout({ corner, note: String(note) },
+    `Learned ${corner.replace('_', ' ')} as MIDI note ${note}.`);
+  document.getElementById('sb-grid-learn-status').textContent = saved
+    ? `Learned ${corner.replace('_', ' ')} as MIDI ${note}. Assigning a sound to a calibrated cell maps its pad automatically.`
+    : 'Grid MIDI learn failed. Check that the four corner notes form a unique, evenly numbered grid.';
 }
 
 async function saveSoundboardModeForSfx(sfx, mode) {
@@ -2422,6 +2429,8 @@ async function listSfxFiles() {
 
     if (!state.soundboardOrderSupported) files.sort();
     state.sfxFiles = files;
+    state.soundboardCellsBySfx = AudioxSoundboardGrid.cellsBySound(state.soundboardLayout,
+      AudioxSoundboardGrid.elements(files));
     renderSoundboardGrid();
     AudioxUI.resolve('soundboard-list');
     return files;
@@ -2491,35 +2500,99 @@ async function reloadSoundboardBank() {
   }
 }
 
+function groupSoundboardTileSettings(actions, midi, file, label, isTarget) {
+  const settings = document.createElement('details');
+  settings.className = 'sb-tile-settings sb-edit-only';
+  settings.open = state.soundboardOpenSettings.has(file) || isTarget;
+  const summary = document.createElement('summary');
+  summary.textContent = isTarget ? 'Waiting for MIDI\u2026' : 'Settings';
+  summary.setAttribute('aria-label', `Settings for ${label}`);
+  const controls = document.createElement('div');
+  controls.className = 'sb-tile-controls';
+  for (const control of [...actions.children]) {
+    if (!control.classList.contains('sb-edit-only')) continue;
+    if (control.tagName === 'SELECT') {
+      const field = document.createElement('label');
+      field.textContent = control.classList.contains('sb-grid-cell-select') ? 'Grid position' : 'Playback';
+      field.appendChild(control);
+      controls.appendChild(field);
+    } else {
+      controls.appendChild(control);
+    }
+  }
+  const clear = midi.querySelector('.sb-midi-clear');
+  if (clear) {
+    clear.className = 'flat';
+    clear.textContent = 'Clear MIDI mapping';
+    controls.appendChild(clear);
+  }
+  settings.append(summary, controls);
+  settings.addEventListener('toggle', () => {
+    if (settings.open) state.soundboardOpenSettings.add(file);
+    else state.soundboardOpenSettings.delete(file);
+  });
+  actions.appendChild(settings);
+}
+
 function renderSoundboardGrid() {
   soundboardOrder.cancel();
-  sbGridEl.classList.toggle('can-reorder', state.soundboardEditing && state.soundboardOrderSupported &&
+  soundboardGridDrag.cancel();
+  const gridMode = state.soundboardLayout.mode === 'grid';
+  const rows = state.soundboardLayout.rows;
+  const columns = state.soundboardLayout.columns;
+  state.soundboardCellsBySfx = AudioxSoundboardGrid.cellsBySound(state.soundboardLayout,
+    AudioxSoundboardGrid.elements(state.sfxFiles));
+  sbGridEl.classList.toggle('grid-mode', gridMode);
+  sbGridEl.style.setProperty('--sb-columns', String(columns));
+  sbGridEl.classList.toggle('can-reorder', !gridMode && state.soundboardEditing && state.soundboardOrderSupported &&
     !state.soundboardOrderSaving);
   sbGridEl.innerHTML = '';
+  const unassignedList = document.getElementById('sb-unassigned-list');
+  unassignedList.replaceChildren();
+  document.getElementById('sb-unassigned').hidden = !gridMode;
   if (!state.sfxFiles.length) {
     const empty = document.createElement('div');
     empty.className = 'small';
     empty.textContent = 'No sounds uploaded yet.';
+    if (!gridMode) {
+      sbGridEl.appendChild(empty);
+      return;
+    }
+    empty.style.gridColumn = `1 / ${columns + 1}`;
+    empty.style.gridRow = String(rows + 1);
     sbGridEl.appendChild(empty);
-    return;
   }
 
-  for (const file of state.sfxFiles) {
-    const mappedNote = state.midiMappingsBySfx[file];
-    const hasMidi = mappedNote !== undefined;
+  const occupiedCells = new Set();
+  for (const file of gridMode ? AudioxSoundboardGrid.elements(state.sfxFiles) : state.sfxFiles) {
+    const action = AudioxSoundboardGrid.actionFor(file);
+    const label = action?.label || file;
+    const mappedNote = action ? (action.action === 'stop_all' ? state.stopAllMidiNote : state.samplerToggleMidiNote)
+      : state.midiMappingsBySfx[file];
+    const hasMidi = mappedNote !== undefined && mappedNote !== null;
     const isTarget = state.mappingAssignTarget === file;
     const mode = (state.soundboardModesBySfx[file] === 'hold') ? 'hold' : 'play';
 
     const card = document.createElement('div');
     card.className = `sb-card${isTarget ? ' assign-target' : ''}`;
     card.dataset.file = file;
+    if (gridMode) {
+      const cell = state.soundboardCellsBySfx[file];
+      if (cell) {
+        card.dataset.gridRow = String(cell.row);
+        card.dataset.gridColumn = String(cell.column);
+        card.style.gridColumn = String(cell.column + 1);
+        card.style.gridRow = String(cell.row + 1);
+        occupiedCells.add(`${cell.row}:${cell.column}`);
+      }
+    }
 
     const nameEl = document.createElement('div');
     nameEl.className = 'sb-card-name';
-    nameEl.title = file;
-    nameEl.textContent = file;
-    nameEl.tabIndex = state.soundboardEditing && state.soundboardOrderSupported ? 0 : -1;
-    if (state.soundboardEditing && state.soundboardOrderSupported) {
+    nameEl.title = label;
+    nameEl.textContent = label;
+    nameEl.tabIndex = state.soundboardEditing && !gridMode && state.soundboardOrderSupported ? 0 : -1;
+    if (state.soundboardEditing && !gridMode && state.soundboardOrderSupported) {
       nameEl.setAttribute('role', 'button');
       nameEl.setAttribute('aria-label', `Reorder ${file}`);
       nameEl.setAttribute('aria-pressed', 'false');
@@ -2537,7 +2610,10 @@ function renderSoundboardGrid() {
       clearBtn.title = 'Remove MIDI mapping';
       clearBtn.addEventListener('click', (ev) => {
         ev.stopPropagation();
-        deleteMapping(mappedNote);
+        if (action) {
+          const remove = action.action === 'stop_all' ? deleteStopAllActionMapping : deleteSamplerToggleActionMapping;
+          remove().then(renderSoundboardGrid);
+        } else deleteMapping(mappedNote);
       });
       midiEl.appendChild(noteSpan);
       midiEl.appendChild(clearBtn);
@@ -2547,6 +2623,50 @@ function renderSoundboardGrid() {
 
     const actionsEl = document.createElement('div');
     actionsEl.className = 'sb-card-actions';
+
+    if (gridMode) {
+      const cellSelect = document.createElement('select');
+      cellSelect.className = 'sb-edit-only sb-grid-cell-select';
+      cellSelect.setAttribute('aria-label', `Grid cell for ${label}`);
+      cellSelect.appendChild(new Option('Unassigned', ''));
+      cellSelect.disabled = state.soundboardGridSaving;
+      for (let row = 0; row < rows; row += 1) {
+        for (let column = 0; column < columns; column += 1) {
+          const option = new Option(`Row ${row + 1}, column ${column + 1}`, `${row}:${column}`);
+          const occupiedByOther = Object.entries(state.soundboardCellsBySfx)
+            .some(([otherSfx, otherCell]) => otherSfx !== file &&
+              otherCell.row === row && otherCell.column === column);
+          if (occupiedByOther) {
+            option.textContent += ' (swap)';
+          }
+          cellSelect.appendChild(option);
+        }
+      }
+      const cell = state.soundboardCellsBySfx[file];
+      if (cell) cellSelect.value = `${cell.row}:${cell.column}`;
+      cellSelect.addEventListener('change', async () => {
+        if (!cellSelect.value) {
+          await saveSoundboardGridCell(file, null);
+          return;
+        }
+        const [row, column] = cellSelect.value.split(':').map(Number);
+        await saveSoundboardGridCell(file, row, column);
+      });
+      actionsEl.appendChild(cellSelect);
+    }
+
+    if (action) {
+      const trigger = document.createElement('button');
+      trigger.className = `sb-play ${action.action === 'stop_all' ? 'warn' : 'primary'}`;
+      trigger.textContent = label;
+      trigger.addEventListener('click', action.action === 'stop_all' ? triggerStopAll : triggerSamplerToggle);
+      actionsEl.appendChild(trigger);
+      groupSoundboardTileSettings(actionsEl, midiEl, file, label, isTarget);
+      card.classList.add('sb-action-card');
+      card.append(nameEl, midiEl, actionsEl);
+      (state.soundboardCellsBySfx[file] ? sbGridEl : unassignedList).appendChild(card);
+      continue;
+    }
 
     const modeSelect = document.createElement('select');
     modeSelect.className = 'sb-edit-only';
@@ -2672,11 +2792,35 @@ function renderSoundboardGrid() {
     });
     actionsEl.appendChild(replaceBtn);
     actionsEl.appendChild(replaceInput);
+    groupSoundboardTileSettings(actionsEl, midiEl, file, label, isTarget);
 
     card.appendChild(nameEl);
     card.appendChild(midiEl);
     card.appendChild(actionsEl);
-    sbGridEl.appendChild(card);
+    (gridMode && !state.soundboardCellsBySfx[file] ? unassignedList : sbGridEl).appendChild(card);
+  }
+
+  if (gridMode) {
+    for (let row = 0; row < rows; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        if (occupiedCells.has(`${row}:${column}`)) continue;
+        const placeholder = document.createElement('div');
+        placeholder.className = 'sb-grid-empty';
+        placeholder.dataset.gridRow = String(row);
+        placeholder.dataset.gridColumn = String(column);
+        placeholder.textContent = `Empty · ${row + 1}, ${column + 1}`;
+        placeholder.setAttribute('aria-label', `Empty grid cell, row ${row + 1}, column ${column + 1}`);
+        placeholder.style.gridColumn = String(column + 1);
+        placeholder.style.gridRow = String(row + 1);
+        sbGridEl.appendChild(placeholder);
+      }
+    }
+    if (!unassignedList.children.length) {
+      const empty = document.createElement('p');
+      empty.className = 'small';
+      empty.textContent = 'No unassigned sounds or actions. Drop a tile here to unassign it.';
+      unassignedList.appendChild(empty);
+    }
   }
 }
 
@@ -2733,6 +2877,7 @@ async function replaceSfxFile(filename, fileObj) {
 async function uploadSfxFile() {
   const file = document.getElementById('upload_file').files[0];
   const manualName = document.getElementById('upload_name').value;
+  const selectedCell = document.getElementById('sb-upload-cell').value;
   if (!file) {
     setStatus('pick a file first', 'warn');
     return;
@@ -2759,9 +2904,17 @@ async function uploadSfxFile() {
     }
 
     await listSfxFiles();
+    await loadSoundboardLayout();
+    let cellSaved = true;
+    if (selectedCell && state.soundboardLayout.mode === 'grid') {
+      const [row, column] = selectedCell.split(':').map(Number);
+      cellSaved = await saveSoundboardGridCell(targetName, row, column);
+    }
     await reloadSoundboardBank();
     AudioxUI.setUnsaved('sound-upload', false);
-    setStatus(`uploaded ${targetName}`, 'ok');
+    setStatus(cellSaved ? `uploaded ${targetName}` :
+      `uploaded ${targetName}, but the selected grid cell could not be assigned. Choose a free cell.`,
+    cellSaved ? 'ok' : 'warn');
   } catch (err) {
     setStatus(`upload error: ${err}`, 'warn');
   }
@@ -2792,11 +2945,7 @@ async function loadMidiActions() {
     const res = await fetch('/api/midi/actions', { method: 'GET' });
     const txt = await res.text();
     if (!res.ok) {
-      state.stopAllMidiNote = null;
-      state.samplerToggleMidiNote = null;
-      renderStopAllMidiStatus();
-      renderSamplerToggleMidiStatus();
-      return;
+      throw new Error(`${res.status} ${txt.trim()}`);
     }
 
     const data = JSON.parse(txt);
@@ -2820,12 +2969,10 @@ async function loadMidiActions() {
     }
     renderStopAllMidiStatus();
     renderSamplerToggleMidiStatus();
-  } catch (_) {
-    state.stopAllMidiNote = null;
-    state.samplerToggleMidiNote = null;
-    renderStopAllMidiStatus();
-    renderSamplerToggleMidiStatus();
+  } catch (error) {
+    setStatus(`Could not load MIDI action mappings: ${error}`, 'warn');
   }
+  renderSoundboardGrid();
 }
 
 async function saveActionMapping(note, actionName) {
@@ -2996,7 +3143,8 @@ async function pollMappingCapture() {
     const res = await fetch('/api/midi/last_note', { method: 'GET' });
     const txt = await res.text();
     if (!res.ok) {
-      if (targetAtStart === '__macro__') throw new Error(`${res.status}: ${txt}`);
+      if (targetAtStart === '__macro__' || String(targetAtStart).startsWith('__grid_'))
+        throw new Error(`${res.status}: ${txt}`);
       return;
     }
     if (targetAtStart !== state.mappingAssignTarget) return;
@@ -3007,10 +3155,12 @@ async function pollMappingCapture() {
     const note = Number(data.last_note);
 
     const isMacroTarget = state.mappingAssignTarget === '__macro__';
+    const isGridTarget = state.mappingAssignTarget.startsWith('__grid_');
     const isSbTarget = !isMacroTarget && state.mappingAssignTarget !== '__action_stop_all__' &&
-                       state.mappingAssignTarget !== '__action_sampler_toggle__';
+                       state.mappingAssignTarget !== '__action_sampler_toggle__' && !isGridTarget;
     const statusEl2 = isMacroTarget ? document.getElementById('chord-learn-status') :
-      (isSbTarget ? sbMappingStatusEl : midiActionCaptureStatusEl);
+      (isGridTarget ? document.getElementById('sb-grid-learn-status') :
+        (isSbTarget ? sbMappingStatusEl : midiActionCaptureStatusEl));
 
     if (!connected) {
       if (statusEl2) statusEl2.textContent = 'Waiting for MIDI device\u2026';
@@ -3040,6 +3190,9 @@ async function pollMappingCapture() {
       } else if (target === '__action_sampler_toggle__') {
         await saveSamplerToggleActionMapping(note);
         if (midiActionCaptureStatusEl) midiActionCaptureStatusEl.textContent = `Assigned note ${note} to sampler toggle.`;
+      } else if (target.startsWith('__grid_')) {
+        const corner = target.slice('__grid_'.length, -2);
+        await saveSoundboardGridCorner(corner, note);
       } else {
         await saveMapping(note, target);
         if (sbMappingStatusEl) sbMappingStatusEl.textContent = `Assigned note ${note} to "${target}".`;
@@ -3050,6 +3203,9 @@ async function pollMappingCapture() {
     if (targetAtStart === '__macro__') {
       cancelChordLearn();
       setStatus(`MIDI learn failed: ${err}`, 'warn', 'midi-chords');
+    } else if (String(targetAtStart).startsWith('__grid_')) {
+      document.getElementById('sb-grid-learn-status').textContent = `Grid MIDI learn failed: ${err}`;
+      setStatus(`Grid MIDI learn failed: ${err}`, 'warn', 'soundboard-layout');
     }
   }
 }
@@ -3117,6 +3273,7 @@ async function initializeGraphFromConfig() {
   await loadFramebufferView();
   await loadSoundboardModes();
   await listSfxFiles();
+  await loadSoundboardLayout();
   await loadMappings();
   await loadMidiActions();
   await loadSamplerConfig();
@@ -3141,10 +3298,52 @@ const volumeMeters = new Map();
 let meterPollTimer = null;
 let meterPollBusy = false;
 let meterTopology = null;
+const meterLevels = new WeakMap();
+const meterReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+let meterAnimationFrame = null;
+let meterAnimationTime = 0;
+
+function resetVolumeMeters() {
+  if (meterAnimationFrame !== null) cancelAnimationFrame(meterAnimationFrame);
+  meterAnimationFrame = null;
+  for (const [id, group] of volumeMeters) {
+    updateVolumeMeter(id, Array(group.children[0]?.children.length || 0).fill(0), true);
+  }
+}
+
+function animateVolumeMeters(now) {
+  meterAnimationFrame = null;
+  if (state.activeTab !== 'volume' || document.hidden) {
+    resetVolumeMeters();
+    return;
+  }
+  const elapsed = Math.max(0, now - meterAnimationTime);
+  meterAnimationTime = now;
+  let moving = false;
+  for (const group of volumeMeters.values()) {
+    for (const row of group.children[0]?.children || []) {
+      const meter = row.children[0];
+      const level = meterLevels.get(meter);
+      if (!level) continue;
+      // Smooth in dB, with a fast attack (35 ms) and gentler release (300 ms).
+      const duration = level.target > level.current ? 35 : 300;
+      level.current += (level.target - level.current) * -Math.expm1(-elapsed / duration);
+      if (meterReducedMotion.matches || Math.abs(level.target - level.current) < 0.05) {
+        level.current = level.target;
+      } else {
+        moving = true;
+      }
+      meter.value = (level.current + 60) / 60;
+      row.style.setProperty('--meter-level', `${meter.value * 100}%`);
+    }
+  }
+  if (moving) meterAnimationFrame = requestAnimationFrame(animateVolumeMeters);
+}
 
 function stopMeterPolling() {
   if (meterPollTimer !== null) clearInterval(meterPollTimer);
   meterPollTimer = null;
+  resetVolumeMeters();
 }
 
 function startMeterPolling() {
@@ -3154,34 +3353,60 @@ function startMeterPolling() {
   meterPollTimer = setInterval(pollMeters, 250);
 }
 
-function updateVolumeMeter(id, levels) {
+function updateVolumeMeter(id, levels, immediate = false) {
   const group = volumeMeters.get(id);
   if (!group) return;
-  if (group.children.length !== levels.length) {
+  if (!levels.length) {
     group.replaceChildren();
+    return;
+  }
+  if (group.children[0]?.children.length !== levels.length) {
+    group.replaceChildren();
+    const bars = document.createElement('div');
+    bars.className = 'vol-meter-bars';
+    const name = state.volumes?.find(vol => vol.id === id)?.name || id;
     levels.forEach((_, channel) => {
-      const row = document.createElement('label');
+      const row = document.createElement('div');
       row.className = 'vol-meter-row';
-      const label = document.createElement('span');
-      label.textContent = `Ch ${channel + 1}`;
       const meter = document.createElement('meter');
       meter.min = 0;
       meter.max = 1;
       meter.high = 0.95;
       meter.optimum = 0;
-      meter.setAttribute('aria-label', `${id} channel ${channel + 1}`);
-      const value = document.createElement('span');
-      row.append(label, meter, value);
-      group.appendChild(row);
+      meter.value = 0;
+      row.style.setProperty('--meter-level', '0%');
+      meterLevels.set(meter, { current: -60, target: -60 });
+      meter.setAttribute('aria-label', `${name} channel ${channel + 1} signal level`);
+      row.appendChild(meter);
+      bars.appendChild(row);
     });
+    const value = document.createElement('span');
+    value.className = 'vol-meter-reading';
+    group.append(bars, value);
   }
   levels.forEach((raw, channel) => {
     const level = Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : 0;
     const db = level > 0 ? 20 * Math.log10(level) : -Infinity;
-    const row = group.children[channel];
-    row.children[1].value = Math.max(0, (db + 60) / 60);
-    row.children[2].textContent = `${db > -60 ? db.toFixed(1) : '-inf'} dBFS`;
+    const row = group.children[0].children[channel];
+    const meter = row.children[0];
+    const display = meterLevels.get(meter);
+    display.target = Math.max(-60, db);
+    if (immediate || meterReducedMotion.matches) {
+      display.current = display.target;
+      meter.value = (display.current + 60) / 60;
+      row.style.setProperty('--meter-level', `${meter.value * 100}%`);
+    }
+    meter.setAttribute('aria-valuetext', `${db > -60 ? db.toFixed(1) : '-inf'} dBFS`);
   });
+  const level = levels.reduce((sum, raw) =>
+    sum + (Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : 0), 0) / levels.length;
+  const db = level > 0 ? 20 * Math.log10(level) : -Infinity;
+  group.children[1].textContent = `${db > -60 ? db.toFixed(1) : '-inf'} dB`;
+  group.children[1].title = `Average channel peak: ${db > -60 ? db.toFixed(1) : '-inf'} dBFS`;
+  if (!immediate && !meterReducedMotion.matches && meterAnimationFrame === null && levels.length) {
+    meterAnimationTime = performance.now();
+    meterAnimationFrame = requestAnimationFrame(animateVolumeMeters);
+  }
 }
 
 async function pollMeters() {
@@ -3209,15 +3434,18 @@ async function pollMeters() {
       if (!liveIds.has(id)) group.replaceChildren();
     }
     data.meters.forEach(meter => updateVolumeMeter(meter.id, meter.levels));
-    const message = 'Live levels: 4 updates/s, -60 to 0 dBFS.';
-    if (status && status.textContent !== message) status.textContent = message;
+    if (status) {
+      status.textContent = '';
+      status.hidden = true;
+    }
   } catch (err) {
     if (state.activeTab !== 'volume' || document.hidden) return;
-    for (const [id, group] of volumeMeters) {
-      updateVolumeMeter(id, Array(group.children.length).fill(0));
-    }
+    resetVolumeMeters();
     const message = `Meters unavailable: ${AudioxUI.formatMessage(err)}`;
-    if (status && status.textContent !== message) status.textContent = message;
+    if (status) {
+      status.textContent = message;
+      status.hidden = false;
+    }
   } finally {
     meterPollBusy = false;
   }
@@ -3262,16 +3490,28 @@ function renderVolGrid() {
   if (!volGridEl) return;
   volumeMeters.clear();
   volGridEl.innerHTML = '';
+  const effects = state.volumes.filter(vol => isEffectThingId(vol.id));
+  const visibleVolumes = state.volumes.filter(vol => state.volShowEffects || !isEffectThingId(vol.id));
+  const effectSummary = document.getElementById('vol-effect-summary');
+  if (effectSummary) {
+    const adjusted = effects.filter(vol => vol.gain !== 1).length;
+    effectSummary.textContent = !state.volShowEffects && effects.length
+      ? `${effects.length} effect ${effects.length === 1 ? 'channel' : 'channels'} hidden${adjusted ? `; ${adjusted} with adjusted gain` : ''}. Saved gain, MIDI mappings, and script control remain active.`
+      : '';
+    effectSummary.hidden = !effectSummary.textContent;
+  }
 
-  if (!state.volumes.length) {
+  if (!visibleVolumes.length) {
     const empty = document.createElement('div');
     empty.className = 'small';
-    empty.textContent = 'No active devices. Open the Routing tab first.';
+    empty.textContent = state.volumes.length
+      ? 'Only effect channels are available. Enable Show effect channels to see them.'
+      : 'No active devices. Open the Routing tab first.';
     volGridEl.appendChild(empty);
     return;
   }
 
-  for (const vol of state.volumes) {
+  for (const vol of visibleVolumes) {
     const { id, name, gain } = vol;
     const cc = ccForThing(id);
     const isTarget = state.volAssignTarget === id;
@@ -3284,9 +3524,14 @@ function renderVolGrid() {
     nameEl.title = name;
     nameEl.textContent = name;
 
-    const idEl = document.createElement('div');
+    const idEl = document.createElement('details');
     idEl.className = 'vol-card-id';
-    idEl.textContent = id;
+    const idSummary = document.createElement('summary');
+    idSummary.textContent = 'Advanced';
+    const idText = document.createElement('span');
+    idText.textContent = `Script / routing ID: ${id}`;
+    idEl.appendChild(idSummary);
+    idEl.appendChild(idText);
 
     const sliderRow = document.createElement('div');
     sliderRow.className = 'vol-slider-row';
@@ -3297,22 +3542,53 @@ function renderVolGrid() {
     slider.max = '200';
     slider.step = '1';
     slider.value = String(Math.max(0, Math.min(200, gainToPercent(gain))));
+    slider.setAttribute('aria-label', `${name} outgoing gain`);
+    slider.setAttribute('aria-orientation', 'vertical');
 
     const pctEl = document.createElement('div');
     pctEl.className = 'vol-pct';
     pctEl.textContent = `${gainToPercent(gain)}%`;
+    slider.setAttribute('aria-valuetext', pctEl.textContent);
 
     let saveTimer = null;
+    const showGain = value => {
+      slider.value = String(gainToPercent(value));
+      pctEl.textContent = `${gainToPercent(value)}%`;
+      slider.setAttribute('aria-valuetext', pctEl.textContent);
+    };
     slider.addEventListener('input', () => {
       pctEl.textContent = `${slider.value}%`;
+      slider.setAttribute('aria-valuetext', pctEl.textContent);
       clearTimeout(saveTimer);
-      saveTimer = setTimeout(() => {
-        setVolumeGain(id, percentToGain(slider.value));
+      saveTimer = setTimeout(async () => {
+        const requested = percentToGain(slider.value);
+        if (await setVolumeGain(id, requested) === false && percentToGain(slider.value) === requested) {
+          showGain(vol.gain);
+        }
       }, 120);
     });
 
     sliderRow.appendChild(slider);
     sliderRow.appendChild(pctEl);
+    const scale = document.createElement('div');
+    scale.className = 'vol-fader-scale';
+    scale.setAttribute('aria-hidden', 'true');
+    for (const tick of ['200', '100', '0']) {
+      const mark = document.createElement('span');
+      mark.textContent = tick;
+      scale.appendChild(mark);
+    }
+    sliderRow.appendChild(scale);
+    const unityBtn = document.createElement('button');
+    unityBtn.className = 'flat vol-unity';
+    unityBtn.textContent = 'Unity';
+    unityBtn.title = 'Reset outgoing gain to 100% (0 dB)';
+    unityBtn.setAttribute('aria-label', `Reset ${name} to unity gain`);
+    unityBtn.addEventListener('click', async () => {
+      clearTimeout(saveTimer);
+      showGain(1);
+      if (await setVolumeGain(id, 1) === false && slider.value === '100') showGain(vol.gain);
+    });
 
     const ccRow = document.createElement('div');
     ccRow.className = 'vol-cc-row';
@@ -3362,13 +3638,17 @@ function renderVolGrid() {
     if (cc === null) ccRow.appendChild(ccBadge);
 
     card.appendChild(nameEl);
-    card.appendChild(idEl);
     const meters = document.createElement('div');
     meters.className = 'vol-meters';
     volumeMeters.set(id, meters);
-    card.appendChild(meters);
-    card.appendChild(sliderRow);
+    const controls = document.createElement('div');
+    controls.className = 'vol-channel-controls';
+    controls.appendChild(sliderRow);
+    controls.appendChild(meters);
+    card.appendChild(controls);
+    card.appendChild(unityBtn);
     card.appendChild(ccRow);
+    card.appendChild(idEl);
     volGridEl.appendChild(card);
   }
 }
@@ -3383,14 +3663,16 @@ async function setVolumeGain(thingId, gain) {
     const txt = (await res.text()).trim();
     if (!res.ok) {
       setStatus(`volume set failed: ${res.status} ${txt}`, 'warn');
-      return;
+      return false;
     }
     // Update local state
     const v = state.volumes.find((e) => e.id === thingId);
     if (v) v.gain = gain;
-    setStatus(`${thingId} volume set to ${Math.round(gain * 50)}%`, 'ok');
+    setStatus(`${v?.name || thingId} volume set to ${gainToPercent(gain)}%`, 'ok');
+    return true;
   } catch (err) {
     setStatus(`volume set error: ${err}`, 'warn');
+    return false;
   }
 }
 
@@ -3512,10 +3794,6 @@ document.getElementById('btn-route-arrange').addEventListener('click', () => {
   arrangeRoutingGraph();
 });
 document.getElementById('btn-zoom-fit').addEventListener('click', fitRoutingGraph);
-document.getElementById('btn-route-details').addEventListener('click', (event) => {
-  const visible = document.querySelector('.routing-grid').classList.toggle('show-details');
-  event.currentTarget.setAttribute('aria-expanded', String(visible));
-});
 
 const graphShellEl = document.querySelector('.graph-shell');
 const fullscreenButton = document.getElementById('btn-graph-fullscreen');
@@ -3639,11 +3917,12 @@ document.getElementById('btn-upload-real').addEventListener('click', () => runLo
 
 function setSoundboardEditing(editing) {
   soundboardOrder.cancel();
+  soundboardGridDrag.cancel();
   state.soundboardEditing = editing;
   document.getElementById('soundboard-layout').classList.toggle('play-mode', !editing);
   sbGridEl.querySelectorAll('.sb-card-name').forEach((name) => {
-    name.tabIndex = editing && state.soundboardOrderSupported ? 0 : -1;
-    if (editing && state.soundboardOrderSupported) {
+    name.tabIndex = editing && state.soundboardLayout.mode !== 'grid' && state.soundboardOrderSupported ? 0 : -1;
+    if (editing && state.soundboardLayout.mode !== 'grid' && state.soundboardOrderSupported) {
       name.setAttribute('role', 'button');
       name.setAttribute('aria-label', `Reorder ${name.textContent}`);
       name.setAttribute('aria-pressed', 'false');
@@ -3653,7 +3932,8 @@ function setSoundboardEditing(editing) {
       name.removeAttribute('aria-pressed');
     }
   });
-  sbGridEl.classList.toggle('can-reorder', editing && state.soundboardOrderSupported);
+  sbGridEl.classList.toggle('can-reorder', editing && state.soundboardLayout.mode !== 'grid' &&
+    state.soundboardOrderSupported);
   for (const [id, active] of [['btn-sb-play-mode', !editing], ['btn-sb-edit-mode', editing]]) {
     const button = document.getElementById(id);
     button.setAttribute('aria-pressed', String(active));
@@ -3666,12 +3946,43 @@ function setSoundboardEditing(editing) {
     state.mappingPollTimer = null;
     renderSoundboardGrid();
   }
+  if (!editing && String(state.mappingAssignTarget || '').startsWith('__grid_')) {
+    state.mappingAssignTarget = null;
+    if (state.mappingPollTimer) clearInterval(state.mappingPollTimer);
+    state.mappingPollTimer = null;
+    document.getElementById('sb-grid-learn-status').textContent = 'Grid MIDI learn cancelled.';
+  }
   sbMappingStatusEl.textContent = editing
-    ? 'Manage sounds, playback modes, and MIDI assignments.'
+    ? (state.soundboardLayout.mode === 'grid'
+      ? 'Manage sounds, grid positions, playback modes, and MIDI assignments.'
+      : 'Manage sounds, playback modes, and MIDI assignments.')
     : 'Tap a sound to play. Switch to Edit to manage sounds and MIDI.';
 }
 document.getElementById('btn-sb-play-mode').addEventListener('click', () => setSoundboardEditing(false));
 document.getElementById('btn-sb-edit-mode').addEventListener('click', () => setSoundboardEditing(true));
+document.getElementById('sb-layout-mode').addEventListener('change', async (event) => {
+  const { rows, columns } = state.soundboardLayout;
+  const saved = await saveSoundboardLayout({
+    mode: event.currentTarget.value,
+    rows: String(rows),
+    columns: String(columns),
+  }, `Soundboard switched to ${event.currentTarget.value} layout.`);
+  if (!saved) event.currentTarget.value = state.soundboardLayout.mode;
+});
+for (const id of ['sb-grid-rows', 'sb-grid-columns']) {
+  document.getElementById(id).addEventListener('change', async () => {
+    const rows = document.getElementById('sb-grid-rows').value;
+    const columns = document.getElementById('sb-grid-columns').value;
+    await saveSoundboardLayout({
+      mode: state.soundboardLayout.mode,
+      rows,
+      columns,
+    }, `Soundboard grid set to ${rows} rows by ${columns} columns.`);
+  });
+}
+document.querySelectorAll('.sb-grid-learn').forEach((button) => {
+  button.addEventListener('click', () => beginSoundboardGridLearn(button.dataset.corner));
+});
 
 document.getElementById('btn-upload-clear').addEventListener('click', () => {
   document.getElementById('upload_name').value = '';
@@ -3683,6 +3994,7 @@ document.getElementById('btn-upload-clear').addEventListener('click', () => {
 document.getElementById('btn-sb-refresh').addEventListener('click', async () => {
   await reloadSoundboardBank();
   await listSfxFiles();
+  await loadSoundboardLayout();
   await loadMappings();
   await loadSoundboardModes();
   setStatus('soundboard refreshed', 'ok');
@@ -3736,6 +4048,16 @@ document.getElementById('btn-sb-clear-sampler-toggle').addEventListener('click',
 });
 
 document.getElementById('btn-vol-refresh').addEventListener('click', loadVolumes);
+document.getElementById('vol-show-effects').addEventListener('change', (event) => {
+  state.volShowEffects = event.currentTarget.checked;
+  if (!state.volShowEffects && isEffectThingId(state.volAssignTarget)) {
+    state.volAssignTarget = null;
+    if (state.volCcPollTimer) clearInterval(state.volCcPollTimer);
+    state.volCcPollTimer = null;
+    if (volCcStatusEl) volCcStatusEl.textContent = 'Effect channel MIDI assignment cancelled.';
+  }
+  renderVolGrid();
+});
 
 document.getElementById('btn-sampler-config-save').addEventListener('click', saveSamplerConfig);
 document.getElementById('btn-sampler-config-load').addEventListener('click', loadSamplerConfig);

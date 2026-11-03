@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 #include <pthread.h>
 #include <atomic>
 #include <memory>
@@ -207,6 +208,34 @@ struct AudioContext {
     uint32_t sfxPlayingCount;
     char sfxPlayingBasenames[AUDIO_SFX_SLOT_COUNT][MIDI_SFX_PATH_MAX];
     mutable std::mutex sfxPlayingMutex;
+    struct ScriptSoundEvent {
+        char sound[MIDI_SFX_PATH_MAX]{};
+        bool started{false};
+    };
+    ScriptSoundEvent scriptSoundEvents[128]{};
+    std::atomic<unsigned> scriptSoundWrite{0};
+    std::atomic<unsigned> scriptSoundRead{0};
+    std::atomic<unsigned> scriptSoundDropped{0};
+    void publishScriptSoundEvent(const char *sound, bool started) {
+        const unsigned writeIndex = scriptSoundWrite.load(std::memory_order_relaxed);
+        if (writeIndex - scriptSoundRead.load(std::memory_order_acquire) >= 128) {
+            scriptSoundDropped.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        ScriptSoundEvent &event = scriptSoundEvents[writeIndex % 128];
+        size_t length = strnlen(sound, sizeof(event.sound) - 1);
+        memcpy(event.sound, sound, length);
+        event.sound[length] = '\0';
+        event.started = started;
+        scriptSoundWrite.store(writeIndex + 1, std::memory_order_release);
+    }
+    bool popScriptSoundEvent(ScriptSoundEvent *event) {
+        const unsigned readIndex = scriptSoundRead.load(std::memory_order_relaxed);
+        if (!event || readIndex == scriptSoundWrite.load(std::memory_order_acquire)) return false;
+        *event = scriptSoundEvents[readIndex % 128];
+        scriptSoundRead.store(readIndex + 1, std::memory_order_release);
+        return true;
+    }
 
     std::unordered_map<std::string, AudioHandle> pathToHandle;
     std::unordered_map<AudioHandle, AudioDeviceInfo> devices;

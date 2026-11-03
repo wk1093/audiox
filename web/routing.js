@@ -41,7 +41,13 @@
     };
   }
 
-  const exported = { columnForNode, layoutNodes, fitNodes };
+  function channelLabel(channel, count) {
+    if (count === 1) return 'Mono';
+    if (count === 2) return channel === 0 ? 'Left' : 'Right';
+    return `Channel ${channel + 1}`;
+  }
+
+  const exported = { columnForNode, layoutNodes, fitNodes, channelLabel };
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
   else root.AudioxRouting = exported;
 })(globalThis);

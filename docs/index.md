@@ -34,7 +34,7 @@ SD card, connect to the WebUI, and make your first audible route.
 | Adjust levels or assign a MIDI knob | [Volume](./guide/volume) |
 | Upload, play, order, and map short clips | [Soundboard](./guide/soundboard) |
 | Configure controller actions, sampler playback, lights, and USB passthrough | [MIDI](./guide/midi) |
-| Run a named shortcut or scripted scene from the WebUI/MIDI | [Macros](./guide/macros) |
+| Run a named shortcut or scripted scene from the WebUI/MIDI | [Scripts](./guide/macros) |
 | Use local meters and touch pads | [Display and touch](./guide/display) |
 
 ## Keep a working setup
@@ -54,7 +54,7 @@ SD card, connect to the WebUI, and make your first audible route.
 
 ## Program automations with Lua
 
-Named macros can run functions, make decisions, maintain bounded runtime state,
+Named scripts can run functions, make decisions, maintain bounded runtime state,
 and queue keyboard, sound, MIDI, effect, or volume actions.
 Start with [Lua scripting](./lua/), then use the
 [API reference](./lua/api) and [cookbook](./lua/cookbook).

@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <fstream>
 #include <linux/input.h>
+#include <memory>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/socket.h>
@@ -212,8 +213,8 @@ int main() {
     data.actionMappingCount = 1;
     data.actionMappings[0] = {39, MIDI_ACTION_STOP_ALL};
     data.effectStateCount = 2;
-    data.effectStates[0] = {"fx_7", "cut", 1, 0, 0, 0, 0};
-    data.effectStates[1] = {"fx_8", "gain", 1, 1, 0, 0, 0};
+    data.effectStates[0] = {"fx_7", "cut", 1, 0, 0, 0, 0, ""};
+    data.effectStates[1] = {"fx_8", "gain", 1, 1, 0, 0, 0, ""};
     data.effectParamCount = 1;
     data.effectParams[0] = {"fx_7", "channels", 6};
     data.effectToggleMappingCount = 1;
@@ -221,11 +222,13 @@ int main() {
     assert(config.writeMidiMapFile(&data) == RET_OK);
 
     {
-        AudioContext audio(&app);
+        auto audioStorage = std::make_unique<AudioContext>(&app);
+        auto &audio = *audioStorage;
         audiox::effects::SlotParams cut = {};
         assert(audio.getEffectParams("fx_7", &cut) == RET_OK);
         assert(cut.type == audiox::effects::EFFECT_CUT && cut.enabled == 1 && cut.values[0] == 6);
-        MidiContext midi(&app);
+        auto midiStorage = std::make_unique<MidiContext>(&app);
+        auto &midi = *midiStorage;
         assert(midi.cachedMidiMap.mappingCount == 3);
         assert(midi.cachedMidiMap.soundLightCount == 2);
         assert(midi.cachedMidiMap.soundModeCount == 2);
@@ -323,6 +326,208 @@ int main() {
         orderRequest("POST", "\n", "400 Bad Request");
         orderRequest("DELETE", "", "405 Method Not Allowed");
         orderRequest("GET", "", "remove.wav\nkeep.wav\n");
+        uint8_t gridLedVelocity[128]{};
+        auto layoutRequest = [&](const char *method, const char *body, const char *expected) {
+            int sockets[2];
+            assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+            assert(handleSoundboardLayout(&http, sockets[0], method, body, strlen(body)) == 0);
+            char reply[8192] = {};
+            assert(read(sockets[1], reply, sizeof(reply) - 1) > 0);
+            assert(strstr(reply, expected));
+            close(sockets[0]);
+            close(sockets[1]);
+            assert(fcntl(leds[0], F_SETFL, O_NONBLOCK) == 0);
+            uint8_t message[3];
+            ssize_t bytes = 0;
+            while ((bytes = read(leds[0], message, sizeof(message))) > 0) {
+                assert(bytes == 3);
+                gridLedVelocity[message[1]] = message[2];
+            }
+            assert(bytes == -1 && errno == EAGAIN);
+            assert(fcntl(leds[0], F_SETFL, 0) == 0);
+            return std::string(reply);
+        };
+        MidiMapData beforeLayout = config.readMidiMapFile();
+        layoutRequest("GET", "", "\"mode\":\"normal\"");
+        layoutRequest("POST", "mode=grid&rows=2&columns=2", "\"mode\":\"grid\"");
+        MidiMapData grid = config.readMidiMapFile();
+        assert(grid.soundboardLayout == SOUNDBOARD_LAYOUT_GRID);
+        assert(grid.gridRows == 2 && grid.gridColumns == 2);
+        assert(grid.mappingCount == beforeLayout.mappingCount);
+        for (uint32_t i = 0; i < grid.mappingCount; ++i) {
+            assert(grid.mappings[i].note == beforeLayout.mappings[i].note);
+            assert(strcmp(grid.mappings[i].sfxPath, beforeLayout.mappings[i].sfxPath) == 0);
+        }
+        layoutRequest("POST", "corner=top_left&note=38", "200 OK");
+        layoutRequest("POST", "corner=top_right&note=39", "200 OK");
+        layoutRequest("POST", "corner=bottom_left&note=46", "200 OK");
+        layoutRequest("POST", "corner=bottom_right&note=47", "200 OK");
+        layoutRequest("GET", "", "\"sfx\":\"keep.wav\",\"row\":0,\"column\":0");
+        grid = config.readMidiMapFile();
+        uint8_t inferredNote = 0;
+        assert(soundboardGridNote(&grid, 1, 1, &inferredNote) && inferredNote == 47);
+        layoutRequest("POST", "sfx=keep.wav&row=1&column=0", "200 OK");
+        grid = config.readMidiMapFile();
+        assert(grid.gridCellCount == 2);
+        assert(grid.mappingCount == 3);
+        assert(grid.soundLightCount == beforeLayout.soundLightCount);
+        assert(grid.soundModeCount == beforeLayout.soundModeCount);
+        refreshSoundboardFiles(&config, 3500);
+        assert(soundboardUi.gridMode && soundboardUi.gridRows == 2 && soundboardUi.gridColumns == 2);
+        assert(soundboardFileAtGridCell(soundboardUi, 1, 0) == 1);
+        bool keepMappedToGridPad = false;
+        for (uint32_t i = 0; i < grid.mappingCount; ++i)
+            if (strcmp(grid.mappings[i].sfxPath, "keep.wav") == 0 && grid.mappings[i].note == 46)
+                keepMappedToGridPad = true;
+        assert(keepMappedToGridPad);
+        layoutRequest("POST", "sfx=remove.wav&row=1&column=0", "200 OK");
+        grid = config.readMidiMapFile();
+        assert(grid.mappingCount == 2);
+        assert(midi.cachedMidiMap.mappingCount == grid.mappingCount);
+        bool removeSwapped = false, keepSwapped = false;
+        for (uint32_t i = 0; i < grid.mappingCount; ++i) {
+            if (strcmp(grid.mappings[i].sfxPath, "remove.wav") == 0 && grid.mappings[i].note == 46)
+                removeSwapped = true;
+            if (strcmp(grid.mappings[i].sfxPath, "keep.wav") == 0 && grid.mappings[i].note == 39)
+                keepSwapped = true;
+        }
+        assert(removeSwapped && keepSwapped);
+        assert(gridLedVelocity[36] == 0 && gridLedVelocity[37] == 0);
+        assert(gridLedVelocity[46] == 11);
+        refreshSoundboardFiles(&config, 6000);
+        assert(soundboardFileAtGridCell(soundboardUi, 1, 0) == 0);
+        assert(soundboardFileAtGridCell(soundboardUi, 0, 1) == 1);
+        layoutRequest("POST", "sfx=keep.wav&unassign=1", "200 OK");
+        grid = config.readMidiMapFile();
+        assert(grid.gridCellCount == 1 && grid.mappingCount == 1);
+        assert(strcmp(grid.mappings[0].sfxPath, "remove.wav") == 0);
+        assert(layoutRequest("GET", "", "200 OK").find("\"sfx\":\"keep.wav\"") == std::string::npos);
+        layoutRequest("POST", "mode=normal", "200 OK");
+        layoutRequest("POST", "mode=grid", "200 OK");
+        assert(config.readMidiMapFile().gridCellCount == 1);
+        touch("sfx/grid-new.wav");
+        assert(layoutRequest("GET", "", "200 OK").find("\"sfx\":\"grid-new.wav\"") == std::string::npos);
+        assert(unlink("sfx/grid-new.wav") == 0);
+        layoutRequest("POST", "sfx=keep.wav&row=1&column=0", "200 OK");
+        grid = config.readMidiMapFile();
+        assert(grid.gridCellCount == 1 && grid.mappingCount == 1);
+        assert(strcmp(grid.gridCells[0].sfxPath, "keep.wav") == 0);
+        assert(strcmp(grid.mappings[0].sfxPath, "keep.wav") == 0 && grid.mappings[0].note == 46);
+        layoutRequest("POST", "sfx=keep.wav&unassign=1", "200 OK");
+        assert(config.readMidiMapFile().gridCellCount == 0);
+        layoutRequest("POST", "mode=normal", "200 OK");
+        layoutRequest("POST", "mode=grid", "200 OK");
+        assert(config.readMidiMapFile().gridCellCount == 0);
+        refreshSoundboardFiles(&config, 9000);
+        assert(soundboardUi.gridMode && soundboardFileAtGridCell(soundboardUi, 1, 0) == -1);
+        assert(soundboardFileAtGridCell(soundboardUi, 0, 0) == -1);
+        layoutRequest("POST", "corner=top_right&note=40", "400 Bad Request");
+        layoutRequest("POST", "", "400 Bad Request");
+        layoutRequest("POST", "rows=2", "400 Bad Request");
+        layoutRequest("POST", "sfx=keep.wav&unassign=0", "400 Bad Request");
+        layoutRequest("POST", "sfx=keep.wav&unassign=1&row=0&column=0", "400 Bad Request");
+        layoutRequest("POST", "sfx=keep.wav&row=1&column=0", "200 OK");
+        layoutRequest("POST", "mode=grid&rows=1&columns=1", "200 OK");
+        grid = config.readMidiMapFile();
+        assert(grid.gridCornerMask == 0 && grid.gridCellCount == 0 && grid.mappingCount == 0);
+        layoutRequest("POST", "mode=normal", "\"mode\":\"normal\"");
+        assert(config.readMidiMapFile().soundboardLayout == SOUNDBOARD_LAYOUT_NORMAL);
+        MidiMapData actionGrid = beforeLayout;
+        actionGrid.soundboardLayout = SOUNDBOARD_LAYOUT_GRID;
+        actionGrid.gridInitialized = 1;
+        actionGrid.gridRows = actionGrid.gridColumns = 2;
+        actionGrid.gridCornerMask = 15;
+        actionGrid.gridCornerNotes[0] = 38;
+        actionGrid.gridCornerNotes[1] = 39;
+        actionGrid.gridCornerNotes[2] = 46;
+        actionGrid.gridCornerNotes[3] = 47;
+        actionGrid.gridCellCount = 1;
+        actionGrid.gridCells[0] = {"keep.wav", 0, 0};
+        assert(config.writeMidiMapFile(&actionGrid) == RET_OK);
+        layoutRequest("POST", "action=stop_all&row=0&column=1", "200 OK");
+        layoutRequest("POST", "action=sampler_toggle&row=1&column=1", "200 OK");
+        grid = config.readMidiMapFile();
+        assert(grid.gridCellCount == 3 && grid.actionMappingCount == 2);
+        assert(config.purgeMissingSoundMappings(&grid) == RET_OK && grid.gridCellCount == 3);
+        layoutRequest("POST", "action=stop_all&row=0&column=0", "200 OK");
+        grid = config.readMidiMapFile();
+        bool stopAt38 = false, keepAt39 = false;
+        for (uint32_t i = 0; i < grid.actionMappingCount; ++i)
+            if (grid.actionMappings[i].action == MIDI_ACTION_STOP_ALL && grid.actionMappings[i].note == 38)
+                stopAt38 = true;
+        for (uint32_t i = 0; i < grid.mappingCount; ++i)
+            if (strcmp(grid.mappings[i].sfxPath, "keep.wav") == 0 && grid.mappings[i].note == 39)
+                keepAt39 = true;
+        assert(stopAt38 && keepAt39 && gridLedVelocity[38] == 5);
+        refreshSoundboardFiles(&config, 12000);
+        const int stopIndex = soundboardFileAtGridCell(soundboardUi, 0, 0);
+        const int samplerIndex = soundboardFileAtGridCell(soundboardUi, 1, 1);
+        assert(stopIndex >= 0 && samplerIndex >= 0);
+        assert(soundboardGridAction(soundboardUi.files[stopIndex]) == MIDI_ACTION_STOP_ALL);
+        assert(soundboardGridAction(soundboardUi.files[samplerIndex]) == MIDI_ACTION_SAMPLER_TOGGLE);
+        layoutRequest("POST", "action=sampler_toggle&row=0&column=0", "200 OK");
+        grid = config.readMidiMapFile();
+        bool samplerAt38 = false, stopAt47 = false;
+        for (uint32_t i = 0; i < grid.actionMappingCount; ++i) {
+            if (grid.actionMappings[i].action == MIDI_ACTION_SAMPLER_TOGGLE && grid.actionMappings[i].note == 38)
+                samplerAt38 = true;
+            if (grid.actionMappings[i].action == MIDI_ACTION_STOP_ALL && grid.actionMappings[i].note == 47)
+                stopAt47 = true;
+        }
+        assert(samplerAt38 && stopAt47);
+        layoutRequest("POST", "action=sampler_toggle&unassign=1", "200 OK");
+        grid = config.readMidiMapFile();
+        assert(grid.gridCellCount == 2 && grid.actionMappingCount == 1);
+        assert(grid.actionMappings[0].action == MIDI_ACTION_STOP_ALL);
+        layoutRequest("POST", "action=unknown&row=0&column=0", "400 Bad Request");
+        layoutRequest("POST", "action=stop_all&sfx=keep.wav&row=0&column=0", "400 Bad Request");
+        auto samplerRequest = [&](const char *method, const char *expected) {
+            int sockets[2];
+            assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+            assert(handleMidiSamplerMode(&http, sockets[0], method) == 0);
+            char reply[512]{};
+            assert(read(sockets[1], reply, sizeof(reply) - 1) > 0);
+            assert(strstr(reply, expected));
+            close(sockets[0]);
+            close(sockets[1]);
+            // Drain any lighting changes produced by the runtime mode toggle.
+            layoutRequest("GET", "", "200 OK");
+        };
+        samplerRequest("GET", "\"active\":false");
+        samplerRequest("POST", "\"active\":true");
+        assert(midi.samplerModeActive == 1);
+        samplerRequest("POST", "\"active\":false");
+        samplerRequest("PUT", "405 Method Not Allowed");
+        app.midi = nullptr;
+        samplerRequest("POST", "503 Service Unavailable");
+        app.midi = &midi;
+        MidiMapData freshGrid = beforeLayout;
+        freshGrid.gridInitialized = 0;
+        freshGrid.gridCellCount = 0;
+        assert(config.writeMidiMapFile(&freshGrid) == RET_OK);
+        layoutRequest("POST", "mode=grid&rows=1&columns=1", "200 OK");
+        grid = config.readMidiMapFile();
+        assert(grid.gridCellCount == 1 && grid.gridRows == 1 && grid.gridColumns == 1);
+        assert(grid.mappingCount == beforeLayout.mappingCount);
+        char capacityFiles[SOUNDBOARD_GRID_ELEMENTS_MAX][MIDI_SFX_PATH_MAX]{};
+        for (unsigned i = 0; i < SOUNDBOARD_GRID_CELLS_MAX; ++i)
+            snprintf(capacityFiles[i], MIDI_SFX_PATH_MAX, "sound-%u.wav", i);
+        strcpy(capacityFiles[SOUNDBOARD_GRID_CELLS_MAX], SOUNDBOARD_GRID_STOP_ALL_ID);
+        strcpy(capacityFiles[SOUNDBOARD_GRID_CELLS_MAX + 1], SOUNDBOARD_GRID_SAMPLER_TOGGLE_ID);
+        MidiMapData capacityGrid{};
+        capacityGrid.gridRows = capacityGrid.gridColumns = 8;
+        SoundboardGridCell capacityCells[SOUNDBOARD_GRID_CELLS_MAX]{};
+        uint32_t capacityCount = 0;
+        assert(buildSoundboardGridCells(capacityGrid, capacityFiles, SOUNDBOARD_GRID_ELEMENTS_MAX,
+            capacityCells, &capacityCount, false, true) == RET_OK);
+        assert(capacityCount == SOUNDBOARD_GRID_CELLS_MAX);
+        for (uint32_t i = 0; i < capacityCount; ++i)
+            assert(soundboardGridAction(capacityCells[i].sfxPath) == MIDI_ACTION_NONE);
+        assert(config.writeMidiMapFile(&beforeLayout) == RET_OK);
+        midi.cachedMidiMap = beforeLayout;
+        soundboardUi.lastFilesMs = 0;
+        refreshSoundboardFiles(&config, 1000);
+        soundboardUi.lastFilesMs = 0;
         touch("sfx/new.WAV");
         assert(mkdir("sfx/not-a-file.wav", 0755) == 0);
         orderRequest("GET", "", "remove.wav\nkeep.wav\nnew.WAV\n");
@@ -434,6 +639,7 @@ int main() {
             assert(handleMidiChords(&http, sockets[0], method, body, strlen(body)) == 0);
             char text[4096]{};
             assert(read(sockets[1], text, sizeof(text) - 1) > 0);
+            if (!strstr(text, expected)) fprintf(stderr, "Expected %s; response: %s\n", expected, text);
             assert(strstr(text, expected));
             close(sockets[0]);
             close(sockets[1]);
@@ -454,7 +660,9 @@ int main() {
         assert(config.readMidiMapFile().chords[0].id == legacyMacro.chords[0].id);
         assert(readMidiConfig().find("automation=") != std::string::npos);
         assert(!legacyMacro.chords[0].idleVelocity && !legacyMacro.chords[0].pressedVelocity);
-        assert(!legacyMacro.chords[0].script[0]);
+        assert(legacyMacro.chords[0].hookMode && !legacyMacro.chords[0].keys[0]);
+        assert(strstr(legacyMacro.chords[0].script, "tap(\"ALT+TAB\")"));
+        assert(legacyMacro.chords[0].eventMask == 129);
         {
             std::ofstream malformed("midi_map.txt", std::ios::app);
             malformed << "key_macro=1,61,1,2,BAD\"KEY," << midiHexEncode("tap(\"A\")") << "\n";
@@ -462,6 +670,28 @@ int main() {
             assert(malformed);
         }
         assert(config.readMidiMapFile().chordCount == 1);
+        assert(config.writeMidiMapFile(&noMacros) == RET_OK);
+        {
+            std::ofstream legacy("midi_map.txt", std::ios::app);
+            legacy << "key_macro=1,61,3,7,-," << midiHexEncode("return -- trailing comment") << "\n";
+            legacy << "automation=900,1,2,63,4,8," << midiHexEncode("Imported") << ",-,"
+                   << midiHexEncode("state.value=event.type") << "\n";
+            legacy << "automation_events=900,126\nautomation_config_write=900,1\n";
+            legacy.close();
+            const auto originalText = readMidiConfig();
+            auto imported = std::make_unique<MidiMapData>(config.readMidiMapFile());
+            assert(imported->chordCount == 2);
+            assert(imported->chords[0].hookMode && imported->chords[0].eventMask == 129);
+            assert(imported->chords[0].idleVelocity == 3 && imported->chords[0].pressedVelocity == 7);
+            assert(!imported->chords[0].configWriteAllowed);
+            assert(imported->chords[1].id == 900 && imported->chords[1].eventMask == 254);
+            assert(imported->chords[1].configWriteAllowed && imported->chords[1].hookMode);
+            assert(readMidiConfig() == originalText);
+            assert(config.writeMidiMapFile(imported.get()) == RET_OK);
+            auto reread = std::make_unique<MidiMapData>(config.readMidiMapFile());
+            assert(midiMacroEqual(imported->chords[0], reread->chords[0]));
+            assert(midiMacroEqual(imported->chords[1], reread->chords[1]));
+        }
         assert(config.writeMidiMapFile(&noMacros) == RET_OK);
         chordRequest("POST", "channel=0&note=62&keys=CTRL+SHIFT+F13", "200 OK");
         assert(config.readMidiMapFile().chordCount == 1);
@@ -474,13 +704,13 @@ int main() {
             std::string(MIDI_SCRIPT_MAX - 1 - 2 - scriptTail.size(), 'x') + scriptTail;
         std::string longRequest = "channel=0&note=62&keys=&script_hex=" + midiHexEncode(maxScript.c_str());
         chordRequest("POST", longRequest.c_str(), "200 OK");
-        assert(!strcmp(config.readMidiMapFile().chords[0].script, maxScript.c_str()));
+        assert(strstr(config.readMidiMapFile().chords[0].script, maxScript.c_str()));
         std::string tooLong = maxScript + "\n";
         longRequest = "channel=0&note=62&keys=&script_hex=" + midiHexEncode(tooLong.c_str());
         chordRequest("POST", longRequest.c_str(), "400 Bad Request");
-        assert(!strcmp(config.readMidiMapFile().chords[0].script, maxScript.c_str()));
+        assert(strstr(config.readMidiMapFile().chords[0].script, maxScript.c_str()));
         chordRequest("POST", "channel=0&note=62&keys=CTRL+F14", "200 OK");
-        chordRequest("GET", "", "\"keys\":\"CTRL+F14\"");
+        chordRequest("GET", "", midiHexEncode("tap(\"CTRL+F14\")").c_str());
         chordRequest("PUT", "", "405 Method Not Allowed");
         ConfigData usbConfig = config.readConfigFile();
         assert(!usbConfig.midiPassthrough && !usbConfig.keyboardMacros);
@@ -544,7 +774,7 @@ int main() {
         chordRequest("POST", "channel=0&note=62&keys=&script_hex=00", "400 Bad Request");
         std::string badScript = "channel=0&note=62&keys=&script_hex=" + midiHexEncode("if then");
         chordRequest("POST", badScript.c_str(), "400 Bad Request");
-        assert(!strcmp(config.readMidiMapFile().chords[0].keys, "CTRL+F14"));
+        assert(strstr(config.readMidiMapFile().chords[0].script, "tap(\"CTRL+F14\")"));
 
         const char *script = "light(9)\ntap(\"CTRL+C\")\nwait(40)\nlight(4)\ntap(\"CTRL+V\")";
         std::string macroBody = "channel=0&note=62&keys=&idle_velocity=2&pressed_velocity=7&script_hex=" +
@@ -552,7 +782,7 @@ int main() {
         chordRequest("POST", macroBody.c_str(), "200 OK");
         auto savedMacro = config.readMidiMapFile();
         assert(savedMacro.chords[0].idleVelocity == 2 && savedMacro.chords[0].pressedVelocity == 7);
-        assert(!strcmp(savedMacro.chords[0].script, script));
+        assert(strstr(savedMacro.chords[0].script, script));
         chordRequest("GET", "", "\"idle_velocity\":2,\"pressed_velocity\":7,\"script_hex\":");
 
         auto drainLights = [&]() {
@@ -931,10 +1161,11 @@ int main() {
 
         // Named web automations do not need either USB Keyboard or a controller.
         midi.keyboardEnabled = false;
-        auto macroRequest = [&](const char *method, const std::string &body, const char *expected, bool run = false) {
+        auto macroRequest = [&](const char *method, const std::string &body, const char *expected,
+                                bool run = false, bool scripts = false) {
             int sockets[2];
             assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
-            assert(handleMidiChords(&http, sockets[0], method, body.data(), body.size(), true, run) == 0);
+            assert(handleMidiChords(&http, sockets[0], method, body.data(), body.size(), true, run, scripts) == 0);
             std::string responseText;
             char responseBuffer[4096];
             ssize_t count;
@@ -1036,14 +1267,222 @@ int main() {
         assert(!midi.keyboardEnabled && midi.activeMacro == -1);
         assert(midi.macroStates[1].count == 1 && midi.macroStates[1].entries[0].integerValue == 1);
         assert(!midi.macroErrors[1][0]);
+        assert(config.readMidiMapFile().chords[1].eventMask == 129);
+        auto hookScript = [&](uint8_t mask, const char *source, bool binding = false) {
+            std::string body = "id=" + std::to_string(midiId) + "&name_hex=" +
+                midiHexEncode("Event hook") + "&midi_enabled=" + (binding ? "1" : "0") +
+                "&channel=5&note=66&keys=&event_mask=" + std::to_string(mask) +
+                "&script_hex=" + midiHexEncode(source);
+            macroRequest("POST", body, "200 OK");
+            assert(config.readMidiMapFile().chords[1].eventMask == (mask | 128));
+        };
+        hookScript(6, "state.count=(state.count or 0)+1; state.kind=event.type; "
+                      "state.value=event.value; assert(not event.pressed)", true);
+        macroRequest("POST", midiBody, "200 OK");
+        uint32_t separatePressId = config.readMidiMapFile().chords[2].id;
+        macroRequest("POST", midiBody, "409 Conflict");
+        macroRequest("DELETE", "id=" + std::to_string(separatePressId), "200 OK");
+        auto receiveMidi = [&](const uint8_t (&message)[3]) {
+            assert(write(automationInput[1], message, sizeof(message)) == 3);
+            testNowMs += 20;
+            midi.poll();
+        };
+        auto hookState = [&](const char *key) -> const MidiScriptStateEntry & {
+            for (unsigned i = 0; i < midi.macroStates[1].count; ++i)
+                if (!strcmp(midi.macroStates[1].entries[i].key, key)) return midi.macroStates[1].entries[i];
+            assert(false);
+            return midi.macroStates[1].entries[0];
+        };
+        receiveMidi({0x95, 66, 100});
+        assert(!midi.macroStates[1].count);
+        receiveMidi({0x85, 66, 9});
+        assert(hookState("count").integerValue == 1);
+        receiveMidi({0x95, 66, 0});
+        assert(hookState("count").integerValue == 2);
+        receiveMidi({0xb5, 65, 42});
+        assert(hookState("count").integerValue == 2);
+        receiveMidi({0xb5, 66, 42});
+        assert(hookState("count").integerValue == 3 && hookState("value").integerValue == 42);
+        assert(!midi.macroErrors[1][0]);
+
+        hookScript(24, "assert(event.source=='audio' and event.sound=='keep.wav'); "
+                       "state.count=(state.count or 0)+1; state.pressed=event.pressed");
+        audio.publishScriptSoundEvent("keep.wav", true);
+        audio.publishScriptSoundEvent("keep.wav", false);
+        for (unsigned i = 0; i < 3; ++i) {
+            testNowMs += 20;
+            midi.poll();
+        }
+        assert(hookState("count").integerValue == 2);
+        assert(!hookState("pressed").booleanValue);
+
+        hookScript(96, "assert(event.source=='device' and "
+                       "event.pressed==(event.type=='device_connect')); state.kind=event.type; state.device=event.device");
+        MidiScriptEvent connection{};
+        connection.kind = MidiScriptEventKind::DeviceConnect;
+        strcpy(connection.device, testMidiPath);
+        midi.dispatchMacroEvent(connection);
+        testNowMs += 20;
+        midi.poll();
+        assert(!strcmp(hookState("kind").stringValue, "device_connect"));
+        midi.disconnect();
+        testNowMs += 20;
+        midi.pollMacros(testNowMs);
+        assert(!strcmp(hookState("kind").stringValue, "device_disconnect"));
+        assert(!midi.macroErrors[1][0]);
+        close(automationInput[1]);
+
+        auto saveCallbacks = [&](const std::string &source, const char *status = "200 OK") {
+            std::string body = "id=" + std::to_string(midiId) +
+                "&name_hex=" + midiHexEncode("Multi-hook addon") +
+                "&midi_enabled=1&channel=5&note=66&script_hex=" +
+                midiHexEncode(source.c_str());
+            macroRequest("POST", body, status, false, true);
+        };
+        std::string strictScript = "id=" + std::to_string(midiId) +
+            "&name_hex=" + midiHexEncode("Strict callbacks") +
+            "&midi_enabled=0&channel=5&note=66&script_hex=" +
+            midiHexEncode("hook('run',function() end)");
+        macroRequest("POST", strictScript + "&hook_mode=0", "400 Bad Request", false, true);
+        macroRequest("POST", strictScript + "&keys=CTRL+A", "400 Bad Request", false, true);
+        saveCallbacks("log('top-level sequence')", "400 Bad Request");
+        saveCallbacks("", "400 Bad Request");
+        saveCallbacks("hook('sound_finish',function(e) state.count=(state.count or 0)+1 end)");
+        auto callbacksSaved = config.readMidiMapFile();
+        assert(callbacksSaved.chords[1].hookMode && callbacksSaved.chords[1].eventMask == 16);
+        macroRequest("GET", "", "\"hook_mode\":true");
+        macroRequest("GET", "", "{\"scripts\":[", false, true);
+        macroRequest("POST", "id=" + std::to_string(midiId), "callback script has no run hook", true);
+        assert(!midi.macroQueueCount);
+        saveCallbacks("hook('bogus',function() end)", "400 Bad Request");
+        saveCallbacks("log('must not execute'); hook('run',function() end)", "400 Bad Request");
+        assert(config.readMidiMapFile().chords[1].eventMask == 16);
+        std::string addon =
+            "local seen=0; "
+            "local function count(e) seen=seen+1; assert(seen==1); "
+            "state.count=(state.count or 0)+1; state.kind=e.type end; "
+            "hook('run',count); hook('note_off',count); hook('cc',count); "
+            "hook('sound_finish',count); hook('device_connect',count)";
+        addon += "\n--" + std::string(MIDI_SCRIPT_STORAGE_MAX - 1 - addon.size() - 3, 'x');
+        assert(addon.size() == MIDI_SCRIPT_STORAGE_MAX - 1);
+        saveCallbacks(addon);
+        callbacksSaved = config.readMidiMapFile();
+        assert(callbacksSaved.chords[1].eventMask == 182);
+        assert(!strcmp(callbacksSaved.chords[1].script, addon.c_str()));
+        assert(midi.macroEventMasks[1] == 182);
+        macroRequest("GET", "", midiHexEncode(addon.c_str()).c_str());
+        saveCallbacks(addon + "x", "400 Bad Request");
+        assert(!strcmp(config.readMidiMapFile().chords[1].script, addon.c_str()));
+        for (unsigned i = 1; i <= 2; ++i) {
+            macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true, true);
+            testNowMs += 20;
+            midi.pollMacros(testNowMs);
+            assert(hookState("count").integerValue == i);
+            assert(!strcmp(hookState("kind").stringValue, "run") && !midi.macroErrors[1][0]);
+        }
+        MidiScriptEvent addonRelease{5, 66, 0, false};
+        addonRelease.kind = MidiScriptEventKind::NoteOff;
+        midi.dispatchMacroEvent(addonRelease);
+        testNowMs += 20;
+        midi.pollMacros(testNowMs);
+        assert(hookState("count").integerValue == 3 && !strcmp(hookState("kind").stringValue, "note_off"));
+        addonRelease.kind = MidiScriptEventKind::ControlChange;
+        midi.dispatchMacroEvent(addonRelease);
+        testNowMs += 20;
+        midi.pollMacros(testNowMs);
+        assert(hookState("count").integerValue == 4 && !strcmp(hookState("kind").stringValue, "cc"));
+        MidiScriptEvent addonFinish{};
+        addonFinish.kind = MidiScriptEventKind::SoundFinish;
+        addonFinish.pressed = false;
+        midi.dispatchMacroEvent(addonFinish);
+        testNowMs += 20;
+        midi.pollMacros(testNowMs);
+        assert(hookState("count").integerValue == 5 && !strcmp(hookState("kind").stringValue, "sound_finish"));
+        midi.dispatchMacroEvent(connection);
+        testNowMs += 20;
+        midi.pollMacros(testNowMs);
+        assert(hookState("count").integerValue == 6 && !strcmp(hookState("kind").stringValue, "device_connect"));
+        assert(!midi.macroErrors[1][0]);
+
+        std::string configScript = "id=" + std::to_string(midiId) +
+            "&name_hex=" + midiHexEncode("Config hook") +
+            "&midi_enabled=0&channel=0&note=0&keys=&script_hex=" +
+            midiHexEncode("config.write('volumes.txt','sfx=0.5\\n')");
+        macroRequest("POST", configScript, "409 Conflict");
+        macroRequest("POST", configScript + "&config_write_ack=2", "400 Bad Request");
+        macroRequest("POST", configScript + "&config_write_ack=1", "200 OK");
+        assert(config.readMidiMapFile().chords[1].configWriteAllowed);
+        macroRequest("GET", "", "\"config_write_allowed\":true");
+        assert(access("volumes.txt", F_OK) != 0);
+        macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+        testNowMs += 20;
+        midi.pollMacros(testNowMs);
+        char configText[128]{};
+        size_t configLength = 0;
+        assert(config.readScriptConfig("volumes.txt", configText, sizeof(configText), &configLength) == RET_OK);
+        assert(!strcmp(configText, "sfx=0.5\n"));
+        assert(!midi.macroErrors[1][0]);
+        assert(unlink("volumes.txt") == 0);
+        hookScript(1, "state.count=(state.count or 0)+1");
         for (unsigned i = 0; i < MIDI_CHORDS_MAX; ++i)
             macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
         macroRequest("POST", "id=" + std::to_string(midiId), "409 Conflict", true);
         midi.disconnect();
-        close(automationInput[1]);
         close(midiInput[1]);
         close(usbKeyboard[1]);
         testClockEnabled = false;
+    }
+
+    {
+        char configText[MIDI_SCRIPT_CONFIG_READ_MAX + 1]{};
+        size_t configLength = 0;
+        assert(config.readScriptConfig("bluetooth.txt", configText, sizeof(configText), &configLength) == RET_ERR);
+        assert(config.readScriptConfig("../config.txt", configText, sizeof(configText), &configLength) == RET_ERR);
+        assert(config.readScriptConfig("volumes.txt", configText, sizeof(configText), &configLength) == RET_ERR);
+        assert(symlink("config.txt", "volumes.txt") == 0);
+        assert(config.readScriptConfig("volumes.txt", configText, sizeof(configText), &configLength) == RET_ERR);
+        assert(unlink("volumes.txt") == 0);
+        assert(mkdir("volumes.txt", 0700) == 0);
+        assert(config.writeScriptConfig("volumes.txt", "sfx=1\n", 6) == RET_ERR);
+        assert(rmdir("volumes.txt") == 0);
+        assert(config.writeScriptConfig("volumes.txt", "sfx=1\n", 6) == RET_OK);
+        MidiScriptState state{};
+        MidiScriptPlan plan{};
+        char error[256]{};
+        MidiScriptEvent event{};
+        assert(midiEvaluateScript("assert(config.read('volumes.txt')=='sfx=1\\n'); "
+                                  "assert(config.lines('volumes.txt')[1]=='sfx=1')",
+                                  event, state, plan, error, sizeof(error), &config));
+        assert(!midiEvaluateScript("for i=1,5 do config.read('volumes.txt') end",
+                                   event, state, plan, error, sizeof(error), &config));
+        assert(strstr(error, "read limit"));
+        assert(!midiEvaluateScript("config.write('volumes.txt','sfx=0\\n'); error('abort')",
+                                   event, state, plan, error, sizeof(error), &config, true));
+        assert(config.readScriptConfig("volumes.txt", configText, sizeof(configText), &configLength) == RET_OK);
+        assert(!strcmp(configText, "sfx=1\n"));
+        FILE *fp = fopen("volumes.txt", "w");
+        assert(fp);
+        std::string line = std::string(511, 'x') + "\n";
+        for (unsigned i = 0; i < 128; ++i)
+            assert(fwrite(line.data(), 1, line.size(), fp) == line.size());
+        assert(fclose(fp) == 0);
+        assert(config.readScriptConfig("volumes.txt", configText, sizeof(configText), &configLength) == RET_OK);
+        assert(configLength == MIDI_SCRIPT_CONFIG_READ_MAX);
+        assert(midiEvaluateScript("assert(#config.read('volumes.txt')==65536)",
+                                  event, state, plan, error, sizeof(error), &config));
+        assert(midiEvaluateScript("local lines=config.lines('volumes.txt'); assert(#lines==128 and #lines[1]==511)",
+                                  event, state, plan, error, sizeof(error), &config));
+        fp = fopen("volumes.txt", "w");
+        assert(fp);
+        std::string oversized(MIDI_SCRIPT_CONFIG_READ_MAX + 1, 'x');
+        assert(fwrite(oversized.data(), 1, oversized.size(), fp) == oversized.size());
+        assert(fclose(fp) == 0);
+        assert(config.readScriptConfig("volumes.txt", configText, sizeof(configText), &configLength) == RET_ERR);
+        fp = fopen("volumes.txt", "w");
+        assert(fp && fwrite("x\0y", 1, 3, fp) == 3);
+        assert(fclose(fp) == 0);
+        assert(config.readScriptConfig("volumes.txt", configText, sizeof(configText), &configLength) == RET_ERR);
+        assert(unlink("volumes.txt") == 0);
     }
 
     assert(unlink("sfx/keep.wav") == 0);

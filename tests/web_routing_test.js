@@ -12,6 +12,45 @@ const nodes = [
   { id: 'input2', kind: 'device', inputs: 2, outputs: 2, width: 280, height: 300 },
 ];
 
+test('routing channels use mono, left/right, or one-based channel names', () => {
+  assert.equal(routing.channelLabel(0, 1), 'Mono');
+  assert.equal(routing.channelLabel(0, 2), 'Left');
+  assert.equal(routing.channelLabel(1, 2), 'Right');
+  assert.equal(routing.channelLabel(7, 8), 'Channel 8');
+});
+
+test('routing is graph-only with no technical sidebar or Details toggle', () => {
+  const source = fs.readFileSync(require.resolve('../web/app.js'), 'utf8');
+  const html = fs.readFileSync(require.resolve('../web/index.html'), 'utf8');
+  const css = fs.readFileSync(require.resolve('../web/styles.css'), 'utf8');
+  const page = html.split('data-page="routing"')[1].split('data-page="bluetooth"')[0];
+  assert.doesNotMatch(page, /<aside|Routing Overview|routing-details|edge-list|route-inspector|btn-route-details/);
+  assert.match(page, /id="graph-canvas"/);
+  for (const id of ['btn-route-save', 'btn-route-arrange', 'btn-zoom-fit', 'btn-graph-fullscreen'])
+    assert.ok(page.includes(`id="${id}"`));
+  assert.doesNotMatch(source, /renderEdgesList|renderInspector|routingThingLabel|routeLabel|selectedNodeId|btn-route-details/);
+  assert.doesNotMatch(css, /side-stack|show-details|btn-route-details|\.edge-list|\.edge-item/);
+});
+
+test('clicking a graph wire still removes it and marks routing unsaved without a sidebar', () => {
+  const source = fs.readFileSync(require.resolve('../web/app.js'), 'utf8');
+  const notices = [], unsaved = [];
+  let redraws = 0;
+  const state = { graph: { getNodeOnPos: () => null }, graphCanvas: { ds: { scale: 1 } },
+    edges: [{ src: 'soundboard_out', dst: 'usb_gadget_out', srcChannel: 0, dstChannel: 0 }] };
+  const context = vm.createContext({ state, linkDistance: () => 4,
+    AudioxUI: { setUnsaved: (...args) => unsaved.push(args) },
+    syncEdgesFromGraph: () => redraws++, setStatus: (...args) => notices.push(args) });
+  vm.runInContext(source.slice(source.indexOf('function removeNearestLinkAt('),
+    source.indexOf('function removeEdgeByIndex(')), context);
+  assert.equal(context.removeNearestLinkAt(100, 100), true);
+  assert.equal(state.edges.length, 0);
+  assert.equal(redraws, 1);
+  assert.deepEqual(unsaved, [['routing']]);
+  assert.match(notices[0][0], /route removed.*not saved/);
+  assert.equal(context.removeNearestLinkAt(100, 100), false);
+});
+
 test('default graph layout uses input, helper, effect, output columns regardless of API order', () => {
   const positions = routing.layoutNodes(nodes);
   assert.equal(positions.input.x, positions.input2.x);

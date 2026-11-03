@@ -5,29 +5,38 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(require.resolve('../web/app.js'), 'utf8');
 
-function fixture(gain = 1) {
+function fixture(gain = 1, volumes = [{ id: 'phone', name: 'Phone', gain }]) {
   class Element {
     children = [];
     listeners = {};
+    attributes = {};
+    classList = { add() {} };
+    set innerHTML(value) { this.children = []; }
     appendChild(child) { this.children.push(child); }
     addEventListener(name, callback) { this.listeners[name] = callback; }
+    setAttribute(name, value) { this.attributes[name] = value; }
   }
   const grid = new Element();
+  const summary = new Element();
   const saves = [];
   const context = vm.createContext({
     volGridEl: grid,
-    state: { volumes: [{ id: 'phone', name: 'Phone', gain }], ccVolumes: [] },
+    state: { volumes, ccVolumes: [], volShowEffects: false },
     volumeMeters: new Map(),
-    document: { createElement: () => new Element() },
+    document: { createElement: () => new Element(), getElementById: () => summary },
     clearTimeout() {},
     setTimeout(callback, delay) { assert.equal(delay, 120); callback(); return 1; },
     setVolumeGain: (id, value) => saves.push({ id, value }),
   });
+  vm.runInContext(source.slice(source.indexOf('function isEffectThingId('),
+    source.indexOf('function isRoutingHelperNode(')), context);
   vm.runInContext(source.slice(source.indexOf('function ccForThing('),
     source.indexOf('\nasync function ', source.indexOf('function renderVolGrid('))), context);
   context.renderVolGrid();
-  const row = grid.children[0].children[3];
-  return { context, slider: row.children[0], label: row.children[1], saves };
+  const controls = grid.children[0].children.find(child => child.className === 'vol-channel-controls');
+  const row = controls?.children[0];
+  const unity = grid.children[0].children.find(child => child.className === 'flat vol-unity');
+  return { context, grid, summary, controls, unity, slider: row?.children[0], label: row?.children[1], saves };
 }
 
 test('volume percentages map silence, half gain and unity without doubling gain', () => {
@@ -36,6 +45,113 @@ test('volume percentages map silence, half gain and unity without doubling gain'
     assert.equal(context.gainToPercent(gain), percent);
     assert.equal(context.percentToGain(String(percent)), gain);
   }
+});
+
+test('mixer strips place vertical outgoing faders beside meters with accessible labels and unity reset', async () => {
+  const f = fixture(0.5);
+  const controls = f.controls;
+  assert.equal(controls.className, 'vol-channel-controls');
+  assert.equal(controls.children[0].className, 'vol-slider-row');
+  assert.equal(controls.children[1].className, 'vol-meters');
+  assert.equal(f.slider.attributes['aria-orientation'], 'vertical');
+  assert.equal(f.slider.attributes['aria-label'], 'Phone outgoing gain');
+  assert.equal(f.slider.attributes['aria-valuetext'], '50%');
+  await f.unity.listeners.click();
+  assert.equal(f.slider.value, '100');
+  assert.equal(f.label.textContent, '100%');
+  assert.deepEqual(f.saves, [{ id: 'phone', value: 1 }]);
+  const css = fs.readFileSync(require.resolve('../web/styles.css'), 'utf8');
+  assert.match(css, /\.vol-grid\s*\{[^}]*overflow-x:\s*auto/);
+  assert.match(css, /\.vol-slider-row input\[type="range"\]\s*\{[^}]*writing-mode:\s*vertical-lr;[^}]*direction:\s*rtl/s);
+});
+
+test('effect channels are hidden by default without changing saved gains or MIDI mappings', () => {
+  const volumes = [
+    { id: 'phone', name: 'Phone', gain: 1 },
+    { id: 'fx_1', name: 'Reverb', gain: 0.5 },
+    { id: 'routing_helper', name: 'Audio Mixer', gain: 1 },
+    { id: 'fx_2', name: 'Gain', gain: 1 },
+  ];
+  const f = fixture(1, volumes);
+  f.context.state.ccVolumes = [{ id: 'fx_1', cc: 7 }];
+  const before = JSON.stringify(f.context.state);
+  f.context.renderVolGrid();
+  assert.equal(f.grid.children.length, 2);
+  assert.match(f.summary.textContent, /2 effect channel.*hidden; 1 with adjusted gain/);
+  assert.equal(f.context.volumeMeters.has('fx_1'), false);
+  assert.equal(JSON.stringify(f.context.state), before);
+  f.context.state.volShowEffects = true;
+  f.context.renderVolGrid();
+  assert.equal(f.grid.children.length, 4);
+  assert.equal(f.summary.hidden, true);
+  assert.equal(f.context.volumeMeters.has('fx_1'), true);
+  assert.equal(f.context.state.volumes[1].gain, 0.5);
+  assert.equal(f.context.state.ccVolumes[0].cc, 7);
+  assert.equal(f.saves.length, 0);
+});
+
+test('an effect-only graph explains how to reveal hidden channels', () => {
+  const f = fixture(1, [{ id: 'fx_1', name: 'Reverb', gain: 1 }]);
+  assert.match(f.grid.children[0].textContent, /Enable Show effect channels/);
+  f.context.state.volShowEffects = true;
+  f.context.renderVolGrid();
+  assert.equal(f.grid.children[0].className, 'vol-card');
+});
+
+test('hiding effect channels cancels their pending MIDI assignment without changing mappings', () => {
+  const f = fixture();
+  let change;
+  const cancelled = [];
+  const status = {};
+  f.context.document.getElementById = () => ({ addEventListener: (type, callback) => {
+    assert.equal(type, 'change');
+    change = callback;
+  } });
+  f.context.clearInterval = id => cancelled.push(id);
+  f.context.volCcStatusEl = status;
+  f.context.renderVolGrid = () => {};
+  f.context.state.volAssignTarget = 'fx_7';
+  f.context.state.volCcPollTimer = 42;
+  f.context.state.ccVolumes = [{ id: 'fx_7', cc: 7 }];
+  const start = source.indexOf("document.getElementById('vol-show-effects').addEventListener");
+  vm.runInContext(source.slice(start, source.indexOf("\ndocument.getElementById(", start + 1)), f.context);
+  change({ currentTarget: { checked: false } });
+  assert.equal(f.context.state.volShowEffects, false);
+  assert.equal(f.context.state.volAssignTarget, null);
+  assert.equal(f.context.state.volCcPollTimer, null);
+  assert.deepEqual(cancelled, [42]);
+  assert.match(status.textContent, /cancelled/);
+  assert.equal(f.context.state.ccVolumes[0].cc, 7);
+  change({ currentTarget: { checked: true } });
+  assert.equal(f.context.state.volShowEffects, true);
+});
+
+test('a failed unity reset restores the saved level rather than pretending it was applied', async () => {
+  const f = fixture(0.5);
+  f.context.setVolumeGain = async () => false;
+  await f.unity.listeners.click();
+  assert.equal(f.slider.value, '50');
+  assert.equal(f.label.textContent, '50%');
+  assert.equal(f.slider.attributes['aria-valuetext'], '50%');
+});
+
+test('volume save reports actual percentages and friendly names, and explicitly reports failures', async () => {
+  const messages = [];
+  const context = vm.createContext({
+    state: { volumes: [{ id: 'phone', name: 'My phone', gain: 1 }] },
+    gainToPercent: gain => Math.round(gain * 100),
+    setStatus: (...args) => messages.push(args),
+    fetch: async () => ({ ok: true, text: async () => 'ok' }),
+  });
+  vm.runInContext(source.slice(source.indexOf('async function setVolumeGain('),
+    source.indexOf('async function pollVolCcCapture(')), context);
+  assert.equal(await context.setVolumeGain('phone', 1.5), true);
+  assert.equal(context.state.volumes[0].gain, 1.5);
+  assert.deepEqual(messages[0], ['My phone volume set to 150%', 'ok']);
+  context.fetch = async () => ({ ok: false, status: 500, text: async () => 'write failed' });
+  assert.equal(await context.setVolumeGain('phone', 1), false);
+  assert.equal(context.state.volumes[0].gain, 1.5);
+  assert.match(messages[1][0], /500 write failed/);
 });
 
 test('volume slider sends 0–2 gain, with 100% at unity and 200% at double gain', () => {

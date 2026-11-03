@@ -143,14 +143,23 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Expand image storage to fill the SD card.
 
 ## Effect, Soundboard, and Engine Improvements - v1.13
-- [ ] Soundboard modes: Normal mode is current behavior, grid mode allows the user to specify a grid size (matching their midi controller) and use an intuitive midi learn (where they need to press specific edges or corners of their grid so AudioX can learn how the grid is laid out) and then every sound is in one of the grids, when you add a new sound you have to specify where it will go, and you can have blank space in between. There should also be a conversion tool for existing "normal" mode setups to the grid without having to remap everything. This grid mode should also affect the fbui soundboard, and the webui to not use a list of sounds, and insteal also display a grid.
-- [ ] Improve Lua api to have more functionality, reading (and maybe writing, if I do add writing, I will also add a warning on save when a script contains any write calls) all configuration files, and more interaction and events to hook into.
-- [ ] Improve effect system to be more user friendly
-  - [ ] Provide meaningful names for existing effects instead of fx1, fx2, etc.
-  - [ ] Improve parameter UI
-  - [ ] Provide tooltips or descriptions for each parameter to help users understand their function
-  - [ ] 
-- [ ] Also while we are at it, hide the internal routing names from the user, and provide more intuitive labels for the routing paths.
+- [x] Soundboard modes: Normal mode retains current behavior; grid mode supports configurable size, MIDI corner learning, explicit sound placement, blank cells, and conversion of existing MIDI mappings without remapping. The framebuffer and WebUI both display the configured grid.
+- [x] Improve soundboard edit UI
+- [x] Expand Lua with bounded configuration reads and atomic queued writes, save-time permission warnings, and MIDI release/CC, sound voice lifecycle and selected MIDI controller connection hooks. Configuration access uses a six-file allowlist; pairing credentials remain inaccessible. Physical hardware validation remains needed.
+- [x] Add multi-hook Lua callback scripts with explicit state-only persistence and code-derived subscriptions; expand source, memory, instruction, action and typing budgets while retaining sandbox and audio-thread isolation.
+- [x] Rename automation to Scripts, remove sequence/shortcut editor modes, and automatically convert existing saved entries to callback source without changing their bindings or permissions.
+- [x] Improve effect system to be more user friendly
+  - [x] Provide readable defaults and editable saved names in Effects, Routing, Volume, and notifications; retain stable IDs in advanced details for scripts.
+  - [x] Improve parameter UI with precise values, units, per-parameter reset, and collapsible MIDI/lighting controls.
+  - [x] Provide tooltips and inline descriptions for each built-in parameter, including fine noise-floor adjustments.
+- [x] Hide internal routing names behind advanced details; use From/To device labels and Mono/Left/Right/channel names without changing stored route IDs.
+- [x] Remove the Routing overview/route-list sidebar and Details toggle; keep graph editing full-width and technical inspection available through APIs and scripts.
+- [x] Smooth WebUI level meters with frame-rate, fast-attack/slow-release animation while retaining bounded polling, immediate error clearing, and reduced-motion support.
+- [x] Lay out Volume as horizontally scrollable mixer strips with vertical faders/meters and unity reset; hide effect channels by default without changing saved gain or automation.
+- [x] Refine mixer styling with compact custom faders, tightly packed per-channel segmented bars without per-channel text, one averaged reading per strip, and error-only meter status.
+  - [x] Fix Firefox collapsing the channel-bar bank; verify mono, stereo, and 16-channel layouts in Firefox and Chromium at desktop/mobile widths.
+
+## Plugin System and more built-in effects - v1.14
 - [ ] Implement custom plugin system for effects, allowing users to create and load their own effect modules into the audio engine.
   - [ ] Create API
   - [ ] Define plugin metadata format (axm)

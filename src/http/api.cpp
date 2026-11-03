@@ -39,6 +39,7 @@
 #define HTTP_SOUNDBOARD_MODE_PATH HTTP_API_PREFIX "soundboard/mode"
 #define HTTP_SOUNDBOARD_MODES_PATH HTTP_API_PREFIX "soundboard/modes"
 #define HTTP_SOUNDBOARD_ORDER_PATH HTTP_API_PREFIX "soundboard/order"
+#define HTTP_SOUNDBOARD_LAYOUT_PATH HTTP_API_PREFIX "soundboard/layout"
 #define HTTP_SOUNDBOARD_MODE_SET_PATH HTTP_API_PREFIX "soundboard/mode/set"
 #define HTTP_SOUNDBOARD_RELOAD_PATH HTTP_API_PREFIX "soundboard/reload"
 #define HTTP_FRAMEBUFFER_VIEW_PATH HTTP_API_PREFIX "framebuffer/view"
@@ -76,6 +77,7 @@
 #define HTTP_MIDI_LIGHT_REFRESH_PATH HTTP_API_PREFIX "midi/light_refresh"
 #define HTTP_MIDI_LIGHT_DIM_PATH HTTP_API_PREFIX "midi/light_dim"
 #define HTTP_MIDI_SAMPLER_CONFIG_PATH HTTP_API_PREFIX "midi/sampler_config"
+#define HTTP_MIDI_SAMPLER_MODE_PATH HTTP_API_PREFIX "midi/sampler_mode"
 #define HTTP_MIDI_LAST_CC_PATH HTTP_API_PREFIX "midi/last_cc"
 #define HTTP_MIDI_CC_VOLUMES_PATH HTTP_API_PREFIX "midi/cc_volumes"
 #define HTTP_MIDI_CC_VOLUME_SET_PATH HTTP_API_PREFIX "midi/cc_volume/set"
@@ -830,6 +832,484 @@ static int handleSoundboardOrder(HttpServer *server, int cfd, const char *method
 	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", out, length);
 }
 
+static int parseSoundboardGridNumber(const char *text, unsigned min, unsigned max, unsigned *out) {
+	if (!text || !text[0] || !out) return RET_ERR;
+	char *end = nullptr;
+	unsigned long value = strtoul(text, &end, 10);
+	if (!end || *end != '\0' || value < min || value > max) return RET_ERR;
+	*out = (unsigned)value;
+	return RET_OK;
+}
+
+static bool soundboardGridCellAt(const SoundboardGridCell *cells, uint32_t count,
+								 uint8_t row, uint8_t column) {
+	for (uint32_t i = 0; i < count; ++i) {
+		if (cells[i].row == row && cells[i].column == column) return true;
+	}
+	return false;
+}
+
+static bool soundboardGridHasFile(const SoundboardGridCell *cells, uint32_t count, const char *sfx) {
+	for (uint32_t i = 0; i < count; ++i) {
+		if (strcmp(cells[i].sfxPath, sfx) == 0) return true;
+	}
+	return false;
+}
+
+static bool soundboardGridMappingMatches(const char *mappingPath, const char *sfx) {
+	char normalized[MIDI_SFX_PATH_MAX]{};
+	if (mapping_normalize_sfx(mappingPath, normalized, sizeof(normalized)) == RET_OK)
+		return strcmp(normalized, sfx) == 0;
+	if (strcmp(mappingPath, sfx) == 0) return true;
+	if (mappingPath[0] != '/') return false;
+	char path[sizeof(SFX_ROOT_DIR) + MIDI_SFX_PATH_MAX + 1]{};
+	snprintf(path, sizeof(path), "%s/%s", SFX_ROOT_DIR, sfx);
+	struct stat mapped{}, sound{};
+	return stat(mappingPath, &mapped) == 0 && stat(path, &sound) == 0 &&
+		mapped.st_dev == sound.st_dev && mapped.st_ino == sound.st_ino;
+}
+
+static int buildSoundboardGridCells(const MidiMapData &data,
+									const char (*files)[MIDI_SFX_PATH_MAX],
+									uint32_t fileCount,
+									SoundboardGridCell *out,
+									uint32_t *outCount,
+									bool preferMidiNotes, bool fillUnassigned = false) {
+	if (!files || !out || !outCount || fileCount > SOUNDBOARD_GRID_ELEMENTS_MAX ||
+		data.gridRows == 0 || data.gridRows > SOUNDBOARD_GRID_ROWS_MAX ||
+		data.gridColumns == 0 || data.gridColumns > SOUNDBOARD_GRID_COLUMNS_MAX) return RET_ERR;
+
+	*outCount = 0;
+	if (preferMidiNotes && (data.gridCornerMask & 0x0f) == 0x0f) {
+		const uint32_t soundMappings = std::min<uint32_t>(data.mappingCount, MIDI_MAPPINGS_MAX);
+		const uint32_t actionMappings = std::min<uint32_t>(data.actionMappingCount, MIDI_ACTION_MAPPINGS_MAX);
+		for (uint32_t i = 0; i < soundMappings + actionMappings; ++i) {
+			const char *mappingPath = nullptr;
+			uint8_t mappedNote = 0;
+			if (i < soundMappings) {
+				mappingPath = data.mappings[i].sfxPath;
+				mappedNote = data.mappings[i].note;
+			} else {
+				const MidiActionMapping &mapping = data.actionMappings[i - soundMappings];
+				mappedNote = mapping.note;
+				if (mapping.action == MIDI_ACTION_STOP_ALL) mappingPath = SOUNDBOARD_GRID_STOP_ALL_ID;
+				if (mapping.action == MIDI_ACTION_SAMPLER_TOGGLE) mappingPath = SOUNDBOARD_GRID_SAMPLER_TOGGLE_ID;
+			}
+			if (!mappingPath) continue;
+			if (!fillUnassigned) {
+				bool assigned = false;
+				for (uint32_t j = 0; j < data.gridCellCount && j < SOUNDBOARD_GRID_CELLS_MAX; ++j)
+					if (soundboardGridMappingMatches(mappingPath, data.gridCells[j].sfxPath))
+						assigned = true;
+				if (!assigned) continue;
+			}
+			uint8_t row = 0;
+			uint8_t column = 0;
+			bool foundCell = false;
+			for (uint8_t r = 0; r < data.gridRows && !foundCell; ++r) {
+				for (uint8_t c = 0; c < data.gridColumns; ++c) {
+					uint8_t note = 0;
+					if (soundboardGridNote(&data, r, c, &note) && note == mappedNote) {
+						row = r;
+						column = c;
+						foundCell = true;
+						break;
+					}
+				}
+			}
+			char normalized[MIDI_SFX_PATH_MAX]{};
+			for (uint32_t f = 0; f < fileCount; ++f)
+				if (soundboardGridMappingMatches(mappingPath, files[f])) {
+					copy_bound(normalized, sizeof(normalized), files[f]);
+					break;
+				}
+			if (foundCell && normalized[0] && !soundboardGridHasFile(out, *outCount, normalized) &&
+				!soundboardGridCellAt(out, *outCount, row, column)) {
+				SoundboardGridCell &cell = out[(*outCount)++];
+				copy_bound(cell.sfxPath, sizeof(cell.sfxPath), normalized);
+				cell.row = row;
+				cell.column = column;
+			}
+		}
+	}
+	for (uint32_t i = 0; i < data.gridCellCount && i < SOUNDBOARD_GRID_CELLS_MAX; ++i) {
+		SoundboardGridCell saved = data.gridCells[i];
+		if (saved.row >= data.gridRows || saved.column >= data.gridColumns ||
+			soundboardGridHasFile(out, *outCount, saved.sfxPath)) continue;
+		bool fileExists = false;
+		for (uint32_t f = 0; f < fileCount; ++f)
+			if (strcmp(files[f], saved.sfxPath) == 0) fileExists = true;
+		if (!fileExists) continue;
+		if (soundboardGridCellAt(out, *outCount, saved.row, saved.column)) {
+			if (!preferMidiNotes) continue;
+			bool placed = false;
+			for (uint8_t row = 0; row < data.gridRows && !placed; ++row) {
+				for (uint8_t column = 0; column < data.gridColumns; ++column) {
+					if (soundboardGridCellAt(out, *outCount, row, column)) continue;
+					saved.row = row;
+					saved.column = column;
+					placed = true;
+					break;
+				}
+			}
+			if (!placed) continue;
+		}
+		out[(*outCount)++] = saved;
+	}
+
+	for (uint32_t f = 0; f < fileCount; ++f) {
+		if (!fillUnassigned) break;
+		if (soundboardGridAction(files[f]) != MIDI_ACTION_NONE) continue;
+		if (soundboardGridHasFile(out, *outCount, files[f])) continue;
+		bool placed = false;
+		for (uint8_t row = 0; row < data.gridRows && !placed; ++row) {
+			for (uint8_t column = 0; column < data.gridColumns; ++column) {
+				if (soundboardGridCellAt(out, *outCount, row, column)) continue;
+				SoundboardGridCell &cell = out[(*outCount)++];
+				copy_bound(cell.sfxPath, sizeof(cell.sfxPath), files[f]);
+				cell.row = row;
+				cell.column = column;
+				placed = true;
+				break;
+			}
+		}
+		if (!placed) break;
+	}
+	return RET_OK;
+}
+
+static bool validSoundboardGridCalibration(const MidiMapData &data) {
+	if ((data.gridCornerMask & 0x0f) != 0x0f || data.gridRows < 2 || data.gridColumns < 2) return false;
+	uint8_t notes[SOUNDBOARD_GRID_CELLS_MAX]{};
+	uint32_t count = 0;
+	for (uint8_t row = 0; row < data.gridRows; ++row) {
+		for (uint8_t column = 0; column < data.gridColumns; ++column) {
+			uint8_t note = 0;
+			if (!soundboardGridNote(&data, row, column, &note)) return false;
+			for (uint32_t i = 0; i < count; ++i) if (notes[i] == note) return false;
+			notes[count++] = note;
+		}
+	}
+	return true;
+}
+
+static bool replaceSoundboardGridMidiMapping(MidiMapData *data, const char *sfx, uint8_t note) {
+	if (!data || !sfx) return false;
+	const uint8_t action = soundboardGridAction(sfx);
+	uint32_t actionsKept = 0;
+	for (uint32_t i = 0; i < data->actionMappingCount && i < MIDI_ACTION_MAPPINGS_MAX; ++i) {
+		if (data->actionMappings[i].note == note ||
+			(action != MIDI_ACTION_NONE && data->actionMappings[i].action == action)) continue;
+		data->actionMappings[actionsKept++] = data->actionMappings[i];
+	}
+	data->actionMappingCount = actionsKept;
+	uint32_t kept = 0;
+	for (uint32_t i = 0; i < data->mappingCount && i < MIDI_MAPPINGS_MAX; ++i) {
+		if (soundboardGridMappingMatches(data->mappings[i].sfxPath, sfx) ||
+			data->mappings[i].note == note) continue;
+		data->mappings[kept++] = data->mappings[i];
+	}
+	data->mappingCount = kept;
+	if (action != MIDI_ACTION_NONE) {
+		if (data->actionMappingCount >= MIDI_ACTION_MAPPINGS_MAX) return false;
+		data->actionMappings[data->actionMappingCount++] = {note, action};
+		return true;
+	}
+	if (data->mappingCount >= MIDI_MAPPINGS_MAX) return false;
+	data->mappings[data->mappingCount].note = note;
+	copy_bound(data->mappings[data->mappingCount].sfxPath,
+			   sizeof(data->mappings[data->mappingCount].sfxPath), sfx);
+	++data->mappingCount;
+	return true;
+}
+
+static void removeSoundboardGridMidiMappings(MidiMapData &data, const char *sfx) {
+	const uint8_t action = soundboardGridAction(sfx);
+	if (action != MIDI_ACTION_NONE) {
+		uint32_t kept = 0;
+		for (uint32_t i = 0; i < data.actionMappingCount && i < MIDI_ACTION_MAPPINGS_MAX; ++i)
+			if (data.actionMappings[i].action != action) data.actionMappings[kept++] = data.actionMappings[i];
+		data.actionMappingCount = kept;
+		return;
+	}
+	uint32_t kept = 0;
+	for (uint32_t i = 0; i < data.mappingCount && i < MIDI_MAPPINGS_MAX; ++i)
+		if (!soundboardGridMappingMatches(data.mappings[i].sfxPath, sfx))
+			data.mappings[kept++] = data.mappings[i];
+	data.mappingCount = kept;
+}
+
+static int handleSoundboardLayout(HttpServer *server, int cfd, const char *method,
+								  const char *body, size_t body_len) {
+	if (!server || !server->app || !server->app->config || !method) return -1;
+	if (strcmp(method, "GET") != 0 && strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0)
+		return sendMethodNotAllowed(server, cfd);
+
+	MidiMapData data = server->app->config->readMidiMapFile();
+	const MidiMapData original = data;
+	char files[SOUNDBOARD_GRID_ELEMENTS_MAX][MIDI_SFX_PATH_MAX]{};
+	uint32_t fileCount = 0;
+	if (server->app->config->listSoundboardFiles(files, SOUNDBOARD_GRID_CELLS_MAX, &fileCount) != RET_OK) {
+		static const char err[] = "Could not read the soundboard files.\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	copy_bound(files[fileCount++], MIDI_SFX_PATH_MAX, SOUNDBOARD_GRID_STOP_ALL_ID);
+	copy_bound(files[fileCount++], MIDI_SFX_PATH_MAX, SOUNDBOARD_GRID_SAMPLER_TOGGLE_ID);
+	if (strcmp(method, "GET") != 0) {
+		if (!body) {
+			static const char err[] = "Expected soundboard layout fields.\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+		}
+		char mode[16]{}, rowsText[8]{}, columnsText[8]{}, corner[24]{}, noteText[8]{};
+		char sfxValue[MIDI_SFX_PATH_MAX]{}, rowText[8]{}, columnText[8]{};
+		char unassignText[8]{};
+		char actionText[24]{};
+		bool hasMode = body_get_value(body, body_len, "mode", mode, sizeof(mode));
+		bool hasRows = body_get_value(body, body_len, "rows", rowsText, sizeof(rowsText));
+		bool hasColumns = body_get_value(body, body_len, "columns", columnsText, sizeof(columnsText));
+		bool hasCorner = body_get_value(body, body_len, "corner", corner, sizeof(corner));
+		bool hasNote = body_get_value(body, body_len, "note", noteText, sizeof(noteText));
+		bool hasSfx = body_get_value(body, body_len, "sfx", sfxValue, sizeof(sfxValue));
+		bool hasRow = body_get_value(body, body_len, "row", rowText, sizeof(rowText));
+		bool hasColumn = body_get_value(body, body_len, "column", columnText, sizeof(columnText));
+		bool hasUnassign = body_get_value(body, body_len, "unassign", unassignText, sizeof(unassignText));
+		bool hasAction = body_get_value(body, body_len, "action", actionText, sizeof(actionText));
+		if (hasAction) {
+			if (hasSfx || (strcmp(actionText, "stop_all") != 0 && strcmp(actionText, "sampler_toggle") != 0)) {
+				static const char err[] = "Invalid grid action.\n";
+				return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+			}
+			copy_bound(sfxValue, sizeof(sfxValue), strcmp(actionText, "stop_all") == 0
+				? SOUNDBOARD_GRID_STOP_ALL_ID : SOUNDBOARD_GRID_SAMPLER_TOGGLE_ID);
+			hasSfx = true;
+		}
+		if (!hasMode && !hasRows && !hasCorner && !hasSfx) {
+			static const char err[] = "No soundboard layout fields were provided.\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+		}
+
+		if (hasMode) {
+			if (strcmp(mode, "normal") != 0 && strcmp(mode, "grid") != 0) {
+				static const char err[] = "mode must be normal or grid\n";
+				return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+			}
+			data.soundboardLayout = strcmp(mode, "grid") == 0
+				? SOUNDBOARD_LAYOUT_GRID : SOUNDBOARD_LAYOUT_NORMAL;
+		}
+		if (hasRows != hasColumns) {
+			static const char err[] = "rows and columns must be set together\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+		}
+		if (hasRows) {
+			unsigned rows = 0, columns = 0;
+			if (parseSoundboardGridNumber(rowsText, 1, SOUNDBOARD_GRID_ROWS_MAX, &rows) != RET_OK ||
+				parseSoundboardGridNumber(columnsText, 1, SOUNDBOARD_GRID_COLUMNS_MAX, &columns) != RET_OK) {
+				static const char err[] = "Invalid grid size.\n";
+				return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+			}
+			if (data.gridRows != rows || data.gridColumns != columns) data.gridCornerMask = 0;
+			data.gridRows = (uint8_t)rows;
+			data.gridColumns = (uint8_t)columns;
+		}
+		if (hasCorner != hasNote) {
+			static const char err[] = "corner and note must be set together\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+		}
+		if (hasCorner) {
+			static const char *const names[SOUNDBOARD_GRID_CORNER_COUNT] = {
+				"top_left", "top_right", "bottom_left", "bottom_right",
+			};
+			unsigned note = 0;
+			if (parseSoundboardGridNumber(noteText, 0, 127, &note) != RET_OK) {
+				static const char err[] = "Invalid MIDI note.\n";
+				return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+			}
+			int cornerIndex = -1;
+			for (int i = 0; i < SOUNDBOARD_GRID_CORNER_COUNT; ++i)
+				if (strcmp(corner, names[i]) == 0) cornerIndex = i;
+			if (cornerIndex < 0) {
+				static const char err[] = "Invalid grid corner.\n";
+				return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+			}
+			data.gridCornerNotes[cornerIndex] = (uint8_t)note;
+			data.gridCornerMask |= (uint8_t)(1U << cornerIndex);
+			if ((data.gridCornerMask & 0x0f) == 0x0f && !validSoundboardGridCalibration(data)) {
+				static const char err[] = "Corner notes do not describe a unique, evenly numbered MIDI grid.\n";
+				return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+			}
+			if (validSoundboardGridCalibration(data)) {
+				SoundboardGridCell converted[SOUNDBOARD_GRID_CELLS_MAX]{};
+				uint32_t convertedCount = 0;
+				if (buildSoundboardGridCells(data, files, fileCount, converted, &convertedCount, true) != RET_OK) {
+					static const char err[] = "Could not convert the current soundboard MIDI mappings to grid positions.\n";
+					return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+				}
+				data.gridCellCount = convertedCount;
+				memcpy(data.gridCells, converted, sizeof(converted));
+			}
+		}
+		if (hasSfx || hasRow || hasColumn || hasUnassign) {
+			char normalized[MIDI_SFX_PATH_MAX]{};
+			unsigned row = 0, column = 0;
+			const bool unassign = hasUnassign && strcmp(unassignText, "1") == 0;
+			if (!hasSfx || (hasUnassign && (!unassign || hasRow || hasColumn)) ||
+				mapping_normalize_sfx(sfxValue, normalized, sizeof(normalized)) != RET_OK ||
+				(!unassign && (!hasRow || !hasColumn ||
+				parseSoundboardGridNumber(rowText, 0, SOUNDBOARD_GRID_ROWS_MAX - 1, &row) != RET_OK ||
+				parseSoundboardGridNumber(columnText, 0, SOUNDBOARD_GRID_COLUMNS_MAX - 1, &column) != RET_OK ||
+				row >= data.gridRows || column >= data.gridColumns))) {
+				static const char err[] = "Invalid soundboard cell assignment.\n";
+				return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+			}
+			bool fileExists = false;
+			for (uint32_t i = 0; i < fileCount; ++i)
+				if (strcmp(files[i], normalized) == 0) fileExists = true;
+			if (!fileExists) {
+				static const char err[] = "Sound file not found. Refresh the soundboard and try again.\n";
+				return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+			}
+			SoundboardGridCell cells[SOUNDBOARD_GRID_CELLS_MAX]{};
+			uint32_t count = 0;
+			if (buildSoundboardGridCells(data, files, fileCount, cells, &count, false) != RET_OK) {
+				static const char err[] = "Invalid grid.\n";
+				return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+			}
+			data.gridCellCount = count;
+			memcpy(data.gridCells, cells, sizeof(cells));
+			uint32_t index = 0;
+			while (index < data.gridCellCount &&
+				   strcmp(data.gridCells[index].sfxPath, normalized) != 0) ++index;
+			const bool wasAssigned = index < data.gridCellCount;
+			SoundboardGridCell source{};
+			if (wasAssigned) source = data.gridCells[index];
+			char displaced[MIDI_SFX_PATH_MAX]{};
+			for (uint32_t i = 0; !unassign && i < data.gridCellCount; ++i) {
+				if (i == index || data.gridCells[i].row != row || data.gridCells[i].column != column) continue;
+				copy_bound(displaced, sizeof(displaced), data.gridCells[i].sfxPath);
+				if (wasAssigned) {
+					data.gridCells[i].row = source.row;
+					data.gridCells[i].column = source.column;
+				} else {
+					data.gridCells[i] = data.gridCells[--data.gridCellCount];
+					index = data.gridCellCount;
+				}
+				break;
+			}
+			if (unassign) {
+				if (wasAssigned) data.gridCells[index] = data.gridCells[--data.gridCellCount];
+				removeSoundboardGridMidiMappings(data, normalized);
+			} else {
+				if (index == data.gridCellCount) {
+					if (data.gridCellCount >= SOUNDBOARD_GRID_CELLS_MAX) {
+						static const char err[] = "Soundboard grid assignment table is full.\n";
+						return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+					}
+					++data.gridCellCount;
+				}
+				copy_bound(data.gridCells[index].sfxPath, sizeof(data.gridCells[index].sfxPath), normalized);
+				data.gridCells[index].row = (uint8_t)row;
+				data.gridCells[index].column = (uint8_t)column;
+				if (displaced[0] && !wasAssigned) removeSoundboardGridMidiMappings(data, displaced);
+				uint8_t mappedNote = 0;
+				if (data.soundboardLayout == SOUNDBOARD_LAYOUT_GRID &&
+					validSoundboardGridCalibration(data)) {
+					removeSoundboardGridMidiMappings(data, normalized);
+					if (displaced[0]) removeSoundboardGridMidiMappings(data, displaced);
+					soundboardGridNote(&data, (uint8_t)row, (uint8_t)column, &mappedNote);
+					bool mapped = replaceSoundboardGridMidiMapping(&data, normalized, mappedNote);
+					if (displaced[0] && wasAssigned) {
+						soundboardGridNote(&data, source.row, source.column, &mappedNote);
+						mapped = mapped && replaceSoundboardGridMidiMapping(&data, displaced, mappedNote);
+					}
+					if (!mapped) {
+						static const char err[] = "MIDI mapping table is full; the grid cell was not saved.\n";
+						return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+					}
+				}
+			}
+		}
+
+		if (data.soundboardLayout == SOUNDBOARD_LAYOUT_GRID || hasRows) {
+			SoundboardGridCell converted[SOUNDBOARD_GRID_CELLS_MAX]{};
+			uint32_t convertedCount = 0;
+			const bool converting = data.soundboardLayout == SOUNDBOARD_LAYOUT_GRID &&
+				!data.gridInitialized && data.gridCellCount == 0;
+			if (buildSoundboardGridCells(data, files, fileCount, converted, &convertedCount, false, converting) != RET_OK) {
+				static const char err[] = "Could not place all sounds in the selected grid.\n";
+				return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+			}
+			data.gridCellCount = convertedCount;
+			memcpy(data.gridCells, converted, sizeof(converted));
+			if (data.soundboardLayout == SOUNDBOARD_LAYOUT_GRID) data.gridInitialized = 1;
+		}
+		for (uint32_t i = 0; i < original.gridCellCount && i < SOUNDBOARD_GRID_CELLS_MAX; ++i)
+			if (!soundboardGridHasFile(data.gridCells, data.gridCellCount, original.gridCells[i].sfxPath))
+				removeSoundboardGridMidiMappings(data, original.gridCells[i].sfxPath);
+		if (server->app->config->writeMidiMapFile(&data) != RET_OK) {
+			static const char err[] = "Could not save the soundboard layout.\n";
+			return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+		}
+		if (server->app->midi) {
+			server->app->midi->cachedMidiMap = data;
+			server->app->midi->refreshLightingFromState();
+		}
+	}
+
+	SoundboardGridCell cells[SOUNDBOARD_GRID_CELLS_MAX]{};
+	uint32_t cellCount = 0;
+	if (data.soundboardLayout == SOUNDBOARD_LAYOUT_GRID &&
+		buildSoundboardGridCells(data, files, fileCount, cells, &cellCount, false) != RET_OK) {
+		static const char err[] = "Could not build the soundboard grid.\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	char out[HTTP_BODY_MAX];
+	size_t off = 0;
+	int n = snprintf(out, sizeof(out),
+		"{\"mode\":\"%s\",\"rows\":%u,\"columns\":%u,\"corners\":[",
+		data.soundboardLayout == SOUNDBOARD_LAYOUT_GRID ? "grid" : "normal",
+		(unsigned)data.gridRows, (unsigned)data.gridColumns);
+	if (n < 0 || (size_t)n >= sizeof(out)) {
+		static const char err[] = "Could not encode the soundboard layout.\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	off = (size_t)n;
+	for (uint8_t i = 0; i < SOUNDBOARD_GRID_CORNER_COUNT; ++i) {
+		const bool present = (data.gridCornerMask & (uint8_t)(1U << i)) != 0;
+		n = snprintf(out + off, sizeof(out) - off, "%s%s",
+			i ? "," : "", present ? "" : "null");
+		if (present) n = snprintf(out + off, sizeof(out) - off, "%s%u",
+			i ? "," : "", (unsigned)data.gridCornerNotes[i]);
+		if (n < 0 || (size_t)n >= sizeof(out) - off) {
+			static const char err[] = "Could not encode the soundboard layout.\n";
+			return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+		}
+		off += (size_t)n;
+	}
+	n = snprintf(out + off, sizeof(out) - off, "],\"cells\":[");
+	if (n < 0 || (size_t)n >= sizeof(out) - off) {
+		static const char err[] = "Could not encode the soundboard layout.\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	off += (size_t)n;
+	for (uint32_t i = 0; i < cellCount; ++i) {
+		const std::string escapedSfx = audiox::json::escape(cells[i].sfxPath);
+		n = snprintf(out + off, sizeof(out) - off, "%s{\"sfx\":\"%s\",\"row\":%u,\"column\":%u}",
+			i ? "," : "", escapedSfx.c_str(), (unsigned)cells[i].row, (unsigned)cells[i].column);
+		if (n < 0 || (size_t)n >= sizeof(out) - off) {
+			static const char err[] = "Could not encode the soundboard layout.\n";
+			return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+		}
+		off += (size_t)n;
+	}
+	n = snprintf(out + off, sizeof(out) - off, "]}\n");
+	if (n < 0 || (size_t)n >= sizeof(out) - off) {
+		static const char err[] = "Could not encode the soundboard layout.\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	off += (size_t)n;
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, off);
+}
+
 static int handleSoundboardModes(HttpServer *server,
 								 int cfd,
 								 const char *method,
@@ -1303,6 +1783,19 @@ static void upsertEffectStateFromRuntime(MidiMapData *map,
 		}
 	}
 	map->effectParamCount = writeCount;
+}
+
+static int handleMidiSamplerMode(HttpServer *server, int cfd, const char *method) {
+	if (!server || !server->app || !method) return -1;
+	if (strcmp(method, "GET") != 0 && strcmp(method, "POST") != 0)
+		return sendMethodNotAllowed(server, cfd);
+	if (!server->app->midi) {
+		static const char err[] = "MIDI sampler is unavailable.\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (strcmp(method, "POST") == 0) server->app->midi->toggleSamplerMode();
+	const char *out = server->app->midi->samplerModeActive ? "{\"active\":true}\n" : "{\"active\":false}\n";
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
 }
 
 static int handleMidiSamplerConfig(HttpServer *server,
@@ -1827,11 +2320,19 @@ static int handleEffects(HttpServer *server,
 			}
 		}
 
+		char displayName[64]{};
+		midiEffectDisplayName(map, slots[i].thingId, audiox::effects::effectTypeToString(params.type),
+			displayName, sizeof(displayName));
+		const char *customName = "";
+		for (uint32_t s = 0; s < map.effectStateCount; ++s)
+			if (!strcmp(map.effectStates[s].effectId, slots[i].thingId)) customName = map.effectStates[s].name;
 		n = snprintf(out + off,
 					 sizeof(out) - off,
-					 "%s{\"id\":\"%s\",\"type\":\"%s\",\"enabled\":%s,\"params\":{",
+					 "%s{\"id\":\"%s\",\"name\":\"%s\",\"custom_name\":\"%s\",\"type\":\"%s\",\"enabled\":%s,\"params\":{",
 					 first ? "" : ",",
 					 slots[i].thingId,
+					 audiox::json::escape(displayName).c_str(),
+					 audiox::json::escape(customName).c_str(),
 					 audiox::effects::effectTypeToString(params.type),
 					 params.enabled ? "true" : "false");
 		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
@@ -1927,6 +2428,38 @@ static int handleEffects(HttpServer *server,
 	}
 
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, off);
+}
+
+static int handleEffectName(HttpServer *server, int cfd, const char *method,
+                            const char *body, size_t bodyLen) {
+	if (!server || !server->app || !server->app->audio || !server->app->config) return -1;
+	if (strcmp(method, "POST")) return sendMethodNotAllowed(server, cfd);
+	auto reply = [&](const char *status, const char *text) {
+		return server->sendResponse(cfd, status, "text/plain; charset=utf-8", text, strlen(text));
+	};
+	char id[64]{}, hex[512]{}, name[64]{};
+	if (!body || bodyLen > 512 || memchr(body, '\0', bodyLen) ||
+		!body_get_value(body, bodyLen, "id", id, sizeof(id)) || !effect_id_valid(id) ||
+		!body_get_value(body, bodyLen, "name_hex", hex, sizeof(hex)) ||
+		!midiHexDecode(hex, name, sizeof(name)) || !midiEffectNameValid(name))
+		return reply("400 Bad Request", "Name must be valid UTF-8, at most 63 bytes, without control characters.\n");
+	audiox::effects::SlotParams params{};
+	if (server->app->audio->getEffectParams(id, &params) != RET_OK)
+		return reply("404 Not Found", "Effect not found.\n");
+	auto map = server->app->config->readMidiMapFile();
+	bool persisted = false;
+	for (uint32_t i = 0; i < map.effectStateCount; ++i)
+		if (!strcmp(map.effectStates[i].effectId, id)) persisted = true;
+	if (!persisted) upsertEffectStateFromRuntime(&map, id, params);
+	for (uint32_t i = 0; i < map.effectStateCount; ++i) {
+		if (strcmp(map.effectStates[i].effectId, id)) continue;
+		copy_bound(map.effectStates[i].name, sizeof(map.effectStates[i].name), name);
+		if (server->app->config->writeMidiMapFile(&map) != RET_OK)
+			return reply("500 Internal Server Error", "Could not save effect name.\n");
+		if (server->app->midi) server->app->midi->cachedMidiMap = map;
+		return reply("200 OK", "Effect name saved.\n");
+	}
+	return reply("409 Conflict", "Effect settings capacity reached.\n");
 }
 
 static int handleEffectSet(HttpServer *server,
@@ -4076,7 +4609,8 @@ static int handleMidiLightSoundDelete(HttpServer *server,
 }
 
 static int handleMidiChords(HttpServer *server, int cfd, const char *method,
-                           const char *body, size_t body_len, bool named = false, bool run = false) {
+                           const char *body, size_t body_len, bool named = false, bool run = false,
+                           bool scripts = false) {
 	if (!server || !server->app || !server->app->config) return -1;
 	auto reply = [&](const char *status, const char *text) {
 		return server->sendResponse(cfd, status, "text/plain; charset=utf-8", text, strlen(text));
@@ -4087,8 +4621,8 @@ static int handleMidiChords(HttpServer *server, int cfd, const char *method,
 	if (run && strcmp(method, "POST")) return sendMethodNotAllowed(server, cfd);
 	MidiMapData data = server->app->config->readMidiMapFile();
 	if (strcmp(method, "GET") != 0) {
-		if (!body || body_len > MIDI_SCRIPT_MAX * 2 + 512 || memchr(body, '\0', body_len)) {
-			return reply("400 Bad Request", "invalid macro request size or encoding\n");
+		if (!body || body_len > MIDI_SCRIPT_STORAGE_MAX * 2 + 512 || memchr(body, '\0', body_len)) {
+			return reply("400 Bad Request", "invalid script request size or encoding\n");
 		}
 		auto field = [&](const char *key, char *out, size_t capacity) {
 			int found = 0;
@@ -4117,11 +4651,11 @@ static int handleMidiChords(HttpServer *server, int cfd, const char *method,
 			unsigned long parsed = strtoul(idText, &end, 10);
 			if (idPresent != 1 || !idText[0] || idText[0] == '-' || *end || errno ||
 				!parsed || parsed > UINT32_MAX)
-				return reply("400 Bad Request", "invalid macro id\n");
+				return reply("400 Bad Request", "invalid script id\n");
 			id = static_cast<uint32_t>(parsed);
 		}
 		if (named && (run || !strcmp(method, "DELETE")) && !id)
-			return reply("400 Bad Request", "expected macro id\n");
+			return reply("400 Bad Request", "expected script id\n");
 		bool needsBinding = !named || (!run && strcmp(method, "DELETE"));
 		if (needsBinding && (field("channel", channelText, sizeof(channelText)) != 1 ||
 			field("note", noteText, sizeof(noteText)) != 1)) {
@@ -4136,16 +4670,19 @@ static int handleMidiChords(HttpServer *server, int cfd, const char *method,
 		uint32_t index = 0;
 		while (index < data.chordCount && (named ? data.chords[index].id != id :
 			(!data.chords[index].midiEnabled || data.chords[index].channel != channel ||
-			 data.chords[index].note != note))) ++index;
+			 data.chords[index].note != note || !(data.chords[index].eventMask & 1)))) ++index;
 		if (named && id && index == data.chordCount)
-			return reply("404 Not Found", "macro not found\n");
+			return reply("404 Not Found", "script not found\n");
 		if (run) {
 			auto *midi = server->app->midi;
 			if (!midi) return reply("503 Service Unavailable", "automation runtime unavailable\n");
 			midi->cachedMidiMap = data;
 			midi->syncMacros();
+			if (index < midi->compiledMacroCount && midi->compiledMacros[index].hookMode &&
+				midi->macroValid[index] && !(midi->macroEventMasks[index] & 128))
+				return reply("409 Conflict", "callback script has no run hook\n");
 			if (!midi->triggerMacro(index, 127, true))
-				return reply("409 Conflict", "macro is invalid or its trigger queue is full\n");
+				return reply("409 Conflict", "script is invalid or its trigger queue is full\n");
 			return reply("200 OK", "queued\n");
 		}
 		if (strcmp(method, "DELETE") == 0) {
@@ -4167,13 +4704,13 @@ static int handleMidiChords(HttpServer *server, int cfd, const char *method,
 					if (*p < 32 || *p == 127) return reply("400 Bad Request", "name cannot contain control characters\n");
 				chord.midiEnabled = !strcmp(enabled, "1");
 			}
-			char hex[MIDI_SCRIPT_MAX * 2]{}, velocity[32]{};
+			char hex[MIDI_SCRIPT_STORAGE_MAX * 2]{}, velocity[32]{};
 			chord.keys[0] = chord.script[0] = '\0';
 			int keysField = field("keys", chord.keys, sizeof(chord.keys));
 			int scriptField = field("script_hex", hex, sizeof(hex));
 			if (keysField < 0 || scriptField < 0 ||
 				!midiHexDecode(hex, chord.script, sizeof(chord.script))) {
-				return reply("400 Bad Request", "invalid macro keys or script encoding\n");
+				return reply("400 Bad Request", "invalid legacy shortcut or script encoding\n");
 			}
 			uint8_t report[8];
 			if ((!chord.script[0] && !midiChordReport(chord.keys, report)) ||
@@ -4181,9 +4718,46 @@ static int handleMidiChords(HttpServer *server, int cfd, const char *method,
 				return reply("400 Bad Request", "invalid chord; use e.g. CTRL+SHIFT+F13 (up to six keys)\n");
 			}
 			char error[192]{};
+			char hooks[4]{};
+			int hooksField = field("hook_mode", hooks, sizeof(hooks));
+			if (hooksField < 0 || (hooksField && strcmp(hooks, "0") && strcmp(hooks, "1")))
+				return reply("400 Bad Request", "hook_mode must be 0 or 1\n");
+			bool hookMode = hooksField == 1 && !strcmp(hooks, "1");
+			if (scripts) {
+				if ((hooksField && !hookMode) || chord.keys[0] || !chord.script[0])
+					return reply("400 Bad Request", "Scripts requires Lua hook callbacks, not sequences or keyboard chords\n");
+				hookMode = true;
+			}
+			if (chord.hookMode && !hookMode) chord.eventMask = 1;
+			chord.hookMode = hookMode;
+			if (chord.hookMode && (!named || !chord.script[0]))
+				return reply("400 Bad Request", "callbacks require a named Lua script\n");
 			if (chord.script[0] && !midiValidateScript(chord.script, error, sizeof(error))) {
 				return reply("400 Bad Request", error);
 			}
+			char eventMask[8]{}, acknowledge[4]{};
+			int maskField = field("event_mask", eventMask, sizeof(eventMask));
+			if (maskField < 0) return reply("400 Bad Request", "invalid event mask\n");
+			if (maskField) {
+				char *end = nullptr;
+				long mask = strtol(eventMask, &end, 10);
+				if (!eventMask[0] || *end || mask < 0 ||
+					mask > (chord.hookMode ? MIDI_SCRIPT_EVENTS_MASK : MIDI_SCRIPT_LEGACY_EVENTS_MASK))
+					return reply("400 Bad Request", "invalid event_mask for this script mode\n");
+				chord.eventMask = static_cast<uint8_t>(mask);
+			}
+			if (!named && chord.eventMask != 1)
+				return reply("400 Bad Request", "event subscriptions require the named scripts API\n");
+			if (chord.hookMode && !midiInspectHooks(chord.script, chord.eventMask, error, sizeof(error)))
+				return reply("400 Bad Request", error);
+			int ackField = field("config_write_ack", acknowledge, sizeof(acknowledge));
+			if (ackField < 0 || (ackField && strcmp(acknowledge, "0") && strcmp(acknowledge, "1")))
+				return reply("400 Bad Request", "config_write_ack must be 0 or 1\n");
+			chord.configWriteAllowed = ackField == 1 && !strcmp(acknowledge, "1");
+			if (strstr(chord.script, "config") && !chord.configWriteAllowed)
+				return reply("409 Conflict", "Configuration scripts can overwrite persistent settings. Confirm the configuration-write warning before saving.\n");
+			if (!midiMigrateScript(chord, error, sizeof(error)))
+				return reply("400 Bad Request", error);
 			auto readVelocity = [&](const char *name, uint8_t &target) {
 				int present = field(name, velocity, sizeof(velocity));
 				if (present < 0) return false;
@@ -4204,9 +4778,8 @@ static int handleMidiChords(HttpServer *server, int cfd, const char *method,
 			chord.channel = channel;
 			chord.note = note;
 			for (uint32_t j = 0; j < data.chordCount; ++j) {
-				if (j != index && chord.midiEnabled && data.chords[j].midiEnabled &&
-					data.chords[j].channel == chord.channel && data.chords[j].note == chord.note)
-					return reply("409 Conflict", "MIDI trigger already assigned to another macro\n");
+				if (j != index && midiMacroTriggersOverlap(chord, data.chords[j]))
+					return reply("409 Conflict", "MIDI trigger already assigned to another script\n");
 			}
 			data.chords[index] = chord;
 		}
@@ -4219,7 +4792,7 @@ static int handleMidiChords(HttpServer *server, int cfd, const char *method,
 			server->app->midi->refreshAllLighting();
 		}
 	}
-	std::string out = named ? "{\"macros\":[" : "{\"chords\":[";
+	std::string out = scripts ? "{\"scripts\":[" : named ? "{\"macros\":[" : "{\"chords\":[";
 	for (uint32_t i = 0; i < data.chordCount; ++i) {
 		const auto &chord = data.chords[i];
 		char row[160];
@@ -4240,7 +4813,8 @@ static int handleMidiChords(HttpServer *server, int cfd, const char *method,
 			}
 			out += "\",";
 		}
-		snprintf(row, sizeof(row), "\"idle_velocity\":%u,\"pressed_velocity\":%u,\"script_hex\":\"",
+		snprintf(row, sizeof(row), "\"event_mask\":%u,\"hook_mode\":%s,\"config_write_allowed\":%s,\"idle_velocity\":%u,\"pressed_velocity\":%u,\"script_hex\":\"",
+			chord.eventMask, chord.hookMode ? "true" : "false", chord.configWriteAllowed ? "true" : "false",
 			chord.idleVelocity, chord.pressedVelocity);
 		out += row;
 		out += midiHexEncode(chord.script);
@@ -4366,6 +4940,10 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_SOUNDBOARD_ORDER_PATH) == 0) {
 		return handleSoundboardOrder(server, cfd, method, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_SOUNDBOARD_LAYOUT_PATH) == 0) {
+		return handleSoundboardLayout(server, cfd, method, body, body_len);
 	}
 
 	if (strcmp(path, HTTP_SOUNDBOARD_MODE_SET_PATH) == 0) {
@@ -4583,9 +5161,17 @@ int handleApiRequest(HttpServer *server,
 		return handleMidiChords(server, cfd, method, body, body_len, true,
 			strcmp(path, HTTP_API_PREFIX "macros/run") == 0);
 	}
+	if (strcmp(path, HTTP_API_PREFIX "scripts") == 0 ||
+		strcmp(path, HTTP_API_PREFIX "scripts/run") == 0) {
+		return handleMidiChords(server, cfd, method, body, body_len, true,
+			strcmp(path, HTTP_API_PREFIX "scripts/run") == 0, true);
+	}
 
 	if (strcmp(path, HTTP_MIDI_SAMPLER_CONFIG_PATH) == 0) {
 		return handleMidiSamplerConfig(server, cfd, method, path, body, body_len);
+	}
+	if (strcmp(path, HTTP_MIDI_SAMPLER_MODE_PATH) == 0) {
+		return handleMidiSamplerMode(server, cfd, method);
 	}
 
 	if (strcmp(path, HTTP_MIDI_LAST_CC_PATH) == 0) {
@@ -4610,6 +5196,9 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_EFFECT_SET_PATH) == 0) {
 		return handleEffectSet(server, cfd, method, path, body, body_len);
+	}
+	if (strcmp(path, HTTP_API_PREFIX "effect/name") == 0) {
+		return handleEffectName(server, cfd, method, body, body_len);
 	}
 
 	if (strcmp(path, HTTP_EFFECT_CREATE_PATH) == 0) {

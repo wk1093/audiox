@@ -88,21 +88,22 @@ $(OUT_DIR)/host/audiox-bluetooth-a2dp-test: tests/bluetooth_a2dp_test.cpp src/bl
 test-midi-docs: $(OUT_DIR)/host/audiox-midi-docs-test
 	@"$<"
 
-$(OUT_DIR)/host/audiox-midi-docs-test: tests/midi_docs_test.cpp src/midi/script.cpp src/midi/usb.cpp \
-		include/midi/script.hpp include/midi/usb.hpp include/defs.hpp $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
+$(OUT_DIR)/host/audiox-midi-docs-test: tests/midi_docs_test.cpp src/midi/script.cpp src/midi/usb.cpp src/config/basic.cpp \
+		include/midi/script.hpp include/midi/usb.hpp include/config/context.hpp include/defs.hpp $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -fno-exceptions -fno-rtti -Iinclude -I$(HOST_LUA_INCLUDE_DIR) \
-		-o "$@" tests/midi_docs_test.cpp src/midi/script.cpp src/midi/usb.cpp $(HOST_LUA_STATIC_LIB) -lm
+		-ffunction-sections -fdata-sections -Wl,--gc-sections \
+		-o "$@" tests/midi_docs_test.cpp src/midi/script.cpp src/midi/usb.cpp src/config/basic.cpp $(HOST_LUA_STATIC_LIB) -lm
 
 test-midi-script: $(OUT_DIR)/host/audiox-midi-script-test
 	@"$<"
 
-$(OUT_DIR)/host/audiox-midi-script-test: tests/midi_script_test.cpp src/midi/script.cpp src/midi/usb.cpp \
-		include/midi/script.hpp include/midi/usb.hpp include/defs.hpp $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
+$(OUT_DIR)/host/audiox-midi-script-test: tests/midi_script_test.cpp src/midi/script.cpp src/midi/usb.cpp src/config/basic.cpp \
+		include/midi/script.hpp include/midi/usb.hpp include/config/context.hpp include/defs.hpp $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -fno-exceptions -fno-rtti -Iinclude -I$(HOST_LUA_INCLUDE_DIR) \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections \
-		-o "$@" tests/midi_script_test.cpp src/midi/script.cpp src/midi/usb.cpp $(HOST_LUA_STATIC_LIB) -lm
+		-o "$@" tests/midi_script_test.cpp src/midi/script.cpp src/midi/usb.cpp src/config/basic.cpp $(HOST_LUA_STATIC_LIB) -lm
 
 $(OUT_DIR)/host/audiox-midi-usb-test: tests/midi_usb_test.cpp src/midi/usb.cpp include/midi/usb.hpp include/midi/script.hpp include/defs.hpp
 	@mkdir -p "$(dir $@)"

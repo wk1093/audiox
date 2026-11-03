@@ -2,7 +2,7 @@
 
 The **Config** page controls the USB gadget presented to the host computer and
 the configuration backup/restore workflow. Audio routing, effect mappings,
-soundboard files, and macros have their own editors on other pages.
+soundboard files, and scripts have their own editors on other pages.
 
 ## USB audio settings
 
@@ -49,9 +49,9 @@ over USB networking, the browser may lose contact while the link reconnects.
 If Reload rejects a format, read the reported error, return to a known-working
 configuration, save, and reload again. A USB reload is not a whole-device reboot.
 
-The keyboard setting is disabled by default. It is needed only for macros that
+The keyboard setting is disabled by default. It is needed only for scripts that
 generate keyboard reports; volume/effect/logging scripts do not need it.
-See [Macros](./macros). USB MIDI passthrough is also disabled by default:
+See [Scripts](./macros). USB MIDI passthrough is also disabled by default:
 [MIDI forwarding modes](./midi#forward-midi-to-a-usb-host).
 
 ## Back up your setup
@@ -75,7 +75,7 @@ in the newly opened download tab.
 - Active and staged AudioX configuration.
 - Routing.
 - MIDI sound/action mappings, controller lighting, sampler settings, and named
-  macro definitions.
+  script definitions.
 - Saved effect settings and volumes.
 - Bluetooth pairing data.
 - Soundboard audio and its saved order.
@@ -86,7 +86,7 @@ or Lua's in-memory `state`. Dim-lights state and current playback are not saved.
 
 ::: warning Keep backups private
 Bluetooth pairing records contain keys. A backup can also include private audio
-clips and macro text. Store and share it as private device data, not a public
+clips and script text. Store and share it as private device data, not a public
 bug-report attachment.
 :::
 

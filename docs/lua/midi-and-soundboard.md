@@ -2,11 +2,11 @@
 
 Scripts can trigger preloaded AudioX soundboard files and send MIDI back to the
 connected controller. These are separate from MIDI input mapping: a firmware
-automation macro runs on web Run or a bound note-on, then plays its queued plan.
+automation script runs on web Run or subscribed events, then plays its queued plan.
 MIDI and lighting plans require the selected MIDI controller connected. Only
 keyboard action plans need USB Keyboard enabled and a connected USB host.
 Sound-only plans need neither; preload sounds before running. These are bounded
-event-triggered macros, not independent always-on automation.
+event-triggered scripts, not independent always-on automation.
 
 ## Play a sound
 
@@ -58,7 +58,7 @@ receive both messages. Messages share an ordered, nonblocking controller
 output queue with lighting, including when a write completes in multiple
 pieces. A `wait()` begins after pending bytes have been delivered.
 AudioX bounds controller output and does not block the audio loop while a
-device is busy. Macro-generated notes and sustain are best-effort released when
+device is busy. Script-generated notes and sustain are best-effort released when
 a sequence completes or is canceled, including on disconnect.
 
 ```lua
@@ -76,5 +76,5 @@ re-route arbitrary host messages. For full mapping and soundboard setup, see
 the [MIDI guide](/guide/midi) and [Soundboard guide](/guide/soundboard).
 
 A playback failure (for example, an unavailable loaded sound or controller
-output) cancels other pending macros and resets state. Actions already
+output) cancels other pending scripts and resets state. Actions already
 delivered cannot be undone.

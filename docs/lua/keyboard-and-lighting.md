@@ -4,7 +4,7 @@ The script keyboard API sends physical HID key reports to the USB host. Enable
 **USB Keyboard** in AudioX Config before relying on it. Only keyboard action
 plans need this setting and a connected USB host. Light/MIDI plans need the
 selected controller connected; sound/effects/volume plans need neither. These are
-firmware-side macros triggered by web Run or MIDI—not browser automation or
+firmware-side scripts triggered by web Run or MIDI—not browser automation or
 always-on scripts. The keyboard does not paste text or target a specific
 application; the host's currently focused app receives the keys.
 
@@ -57,7 +57,7 @@ delay, not a Lua sleep. A later keyboard action waits for earlier reports to
 be delivered and for taps or typed characters to release. Playback timing is a
 minimum and can run longer due to device scheduling or host USB backpressure.
 
-AudioX releases held keys when a sequence completes or is canceled. Macro
+AudioX releases held keys when a sequence completes or is canceled. Script
 edits, cancellation and restarts reset state. Losing the USB keyboard session
 cancels keyboard-dependent work, not all non-keyboard scripts. USB releases
 during a disconnect are best effort.
@@ -76,8 +76,8 @@ light(0)
 ```
 
 Lighting uses the configured pad's controller and does not change other pads.
-Keep idle and pressed velocities at default `0` for web-only macros with no
+Keep idle and pressed velocities at default `0` for web-only scripts with no
 default lighting. An explicit `light()` action requires an enabled MIDI binding
-and the selected controller connected, even when the macro is run from the web.
+and the selected controller connected, even when the script is run from the web.
 Without that binding, `light()` reports an explicit runtime error rather than
 choosing a default pad.

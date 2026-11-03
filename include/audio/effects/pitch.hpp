@@ -4,6 +4,9 @@
 
 namespace audiox::effects {
 
+bool pitchHasPendingAudio(const char *effectId, uint8_t channel, float threshold);
+void resetPitch(const char *effectId, uint8_t channel);
+
 void processPitch(const char *effectId,
                   uint8_t channel,
                   const float *in,

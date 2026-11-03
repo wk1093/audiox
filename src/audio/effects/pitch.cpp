@@ -224,13 +224,16 @@ inline void processFrame(PitchState *s, float pitchRatio, float noiseFloorRatio)
     memmove(s->inFifo, s->inFifo + hop, remain * sizeof(float));
 }
 
-PitchState *getStateFor(const char *effectId, uint8_t channel) {
+PitchState *getStateFor(const char *effectId, uint8_t channel, bool create = true) {
     static std::unordered_map<std::string, PitchState> table;
     std::string key = effectId ? effectId : "fx";
     key.push_back('#');
     key += std::to_string((unsigned)channel);
     auto it = table.find(key);
     if (it == table.end()) {
+        if (!create) {
+            return nullptr;
+        }
         PitchState &s = table[key];
         memset(&s, 0, sizeof(s));
         return &s;
@@ -239,6 +242,22 @@ PitchState *getStateFor(const char *effectId, uint8_t channel) {
 }
 
 } // namespace
+
+bool pitchHasPendingAudio(const char *effectId, uint8_t channel, float threshold) {
+    const PitchState *state = getStateFor(effectId, channel, false);
+    if (!state) return false;
+    for (uint32_t i = 0; i < PitchState::FFT_SIZE; ++i) {
+        if (!(fabsf(state->inFifo[i]) <= threshold) ||
+            !(fabsf(state->outFifo[i]) <= threshold) ||
+            !(fabsf(state->outputAccum[i]) <= threshold)) return true;
+    }
+    return !(fabsf(state->wetLpfZ) <= threshold);
+}
+
+void resetPitch(const char *effectId, uint8_t channel) {
+    PitchState *state = getStateFor(effectId, channel, false);
+    if (state) memset(state, 0, sizeof(*state));
+}
 
 void processPitch(const char *effectId,
                   uint8_t channel,

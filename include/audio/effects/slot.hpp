@@ -45,6 +45,9 @@ int setSlotParamNormalized(SlotParams *params, const char *paramName, float norm
 int getSlotParamValue(const SlotParams &params, const char *paramName, float *outValue);
 void setSlotDefaultsForType(SlotParams *params, uint8_t type);
 void clampSlotParams(SlotParams *params);
+bool slotHasPendingAudio(const char *effectId, uint8_t channel, const SlotParams &params,
+                         float threshold = 1.0e-12f);
+void resetSlotAudio(const char *effectId, uint8_t channel);
 void processSlot(const char *effectId,
                  uint8_t channel,
                  const SlotParams &params,

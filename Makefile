@@ -5,8 +5,6 @@ LIBS = -lm -pthread
 
 PKG_FETCH ?= curl -fsSL
 
-AUDIOX_USE_SHARED_GRAPH_PROCESSOR ?= 0
-
 # AUDIOX_QEMU=1 builds the QEMU debug variant (make debug): virtio disk
 # (/dev/vda) instead of the SD card, usbip-vudc instead of the dwc2 UDC, and a
 # generic arm64 kernel. Its build output goes to out/qemu; toolchain deps are
@@ -22,10 +20,7 @@ CPP_SRCS := $(sort $(shell find src -type f -name '*.cpp' 2>/dev/null))
 BOOTLOADER_SRC := src/init/bootloader.cpp
 RUNTIME_MAIN_SRC := src/init/init.cpp
 WATCHDOG_SRC := src/init/watchdog.cpp
-RUNTIME_CPP_SRCS := $(filter-out $(BOOTLOADER_SRC) $(RUNTIME_MAIN_SRC) $(WATCHDOG_SRC) src/audio/engine.cpp,$(CPP_SRCS))
-ifeq ($(AUDIOX_USE_SHARED_GRAPH_PROCESSOR),0)
-RUNTIME_CPP_SRCS := $(filter-out src/audio/graph_processor.cpp,$(RUNTIME_CPP_SRCS))
-endif
+RUNTIME_CPP_SRCS := $(filter-out $(BOOTLOADER_SRC) $(RUNTIME_MAIN_SRC) $(WATCHDOG_SRC),$(CPP_SRCS))
 RUNTIME_SRCS := $(RUNTIME_CPP_SRCS)
 RUNTIME_COMPILER := $(CXX)
 RUNTIME_FLAGS = $(CXXFLAGS)
@@ -102,9 +97,9 @@ RUNTIME_LIBS += $(LUA_STATIC_LIB) -lm
 #   PRERELEASE=       -> 1.10.1-nightly+<commit>
 # AUDIOX_VERSION_BUILD defaults to the 12-character git commit for nightly builds.
 AUDIOX_VERSION_MAJOR ?= 1
-AUDIOX_VERSION_MINOR ?= 13
-AUDIOX_VERSION_PATCH ?= 1
-AUDIOX_VERSION_PRERELEASE ?= 
+AUDIOX_VERSION_MINOR ?= 14
+AUDIOX_VERSION_PATCH ?= 0
+AUDIOX_VERSION_PRERELEASE ?= beta.1
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
 $(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
@@ -197,7 +192,6 @@ CONFIG_MENU_SRC = $(SCRIPTS_DIR)/audiox-menuconfig.cpp
 UPDATE_PACK_BIN = $(SHARED_OUT_DIR)/host/audiox-update-pack
 UPDATE_PACK_SRC = $(SCRIPTS_DIR)/audiox-update-pack.cpp
 UPDATE_ARCHIVE ?= $(OUT_DIR)/audiox-update.axu
-AUDIO_GRAPH_MODE_STAMP = $(OUT_DIR)/.audiox_graph_mode_$(AUDIOX_USE_SHARED_GRAPH_PROCESSOR)
 BOOT_CONFIG_FILE ?= $(OUT_DIR)/dev-config.txt
 BOOT_KERNEL_FILE = $(OUT_DIR)/bootfiles/$(KERNEL_IMAGE)
 BOOT_CMDLINE_FILE ?= $(OUT_DIR)/dev-cmdline.txt
@@ -271,7 +265,6 @@ DEPFLAGS = -MMD -MP
 
 RUNTIME_DEFINES = \
 	-DKERNEL_VERSION='"$(KV)"' \
-	-DAUDIOX_USE_SHARED_GRAPH_PROCESSOR=$(AUDIOX_USE_SHARED_GRAPH_PROCESSOR) \
 	-DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) \
 	-DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) \
 	-DAUDIOX_ENABLE_ALSA_LOGS=$(AUDIOX_ENABLE_ALSA_LOGS) \
@@ -327,13 +320,6 @@ $(AUDIOX_CONFIG_FILE): $(CONFIG_MENU_BIN) $(CURDIR)/Kconfig
 	@$(CONFIG_MENU_BIN) --olddefconfig "$(CURDIR)/Kconfig" "$(AUDIOX_CONFIG_FILE)"
 
 $(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ) $(WATCHDOG_OBJ) $(BOOTLOADER_OBJS): $(AUDIOX_CONFIG_FILE)
-
-$(AUDIO_GRAPH_MODE_STAMP):
-	@mkdir -p "$(OUT_DIR)"
-	@rm -f "$(OUT_DIR)"/.audiox_graph_mode_*
-	@touch "$@"
-
-$(RUNTIME_OBJ_DIR)/audio/processing.o: $(AUDIO_GRAPH_MODE_STAMP)
 
 $(CONFIG_MENU_BIN): $(CONFIG_MENU_SRC)
 	@mkdir -p "$(dir $@)"

@@ -2,15 +2,393 @@
 #include "audio/routing_compile.hpp"
 
 #include <cassert>
+#include <limits>
 #include <vector>
+
+struct _snd_pcm { int token; };
+static snd_pcm_t testPcm{};
+static int16_t captureSample;
+static unsigned captureReads;
+static unsigned playbackWrites;
+static int16_t playbackSample;
+
+extern "C" snd_pcm_sframes_t snd_pcm_readi(snd_pcm_t *pcm, void *buffer, snd_pcm_uframes_t frames) {
+    assert(pcm == &testPcm);
+    ++captureReads;
+    std::fill_n(static_cast<int16_t *>(buffer), frames * 2U, captureSample);
+    return static_cast<snd_pcm_sframes_t>(frames);
+}
+
+extern "C" snd_pcm_sframes_t snd_pcm_writei(snd_pcm_t *pcm, const void *buffer, snd_pcm_uframes_t frames) {
+    assert(pcm == &testPcm);
+    ++playbackWrites;
+    playbackSample = static_cast<const int16_t *>(buffer)[0];
+    return static_cast<snd_pcm_sframes_t>(frames);
+}
+
+extern "C" snd_pcm_state_t snd_pcm_state(snd_pcm_t *) { return SND_PCM_STATE_RUNNING; }
 
 AudioContext::AudioContext(Audiox *context) : app(context) {}
 AudioContext::~AudioContext() {}
-int AudioContext::getEffectParams(const char *, audiox::effects::SlotParams *) const {
-    return RET_ERR;
+int AudioContext::getEffectParams(const char *id, audiox::effects::SlotParams *out) const {
+    auto it = effectStates.find(id);
+    if (it == effectStates.end()) return RET_ERR;
+    *out = it->second;
+    return RET_OK;
+}
+
+static void testIdleSleep() {
+    auto context = std::make_unique<AudioContext>(nullptr);
+    auto runtime = std::make_unique<RuntimeGraph>();
+    auto capture = std::make_unique<AlsaCaptureBackend>();
+    context->pendingSfxStopAll.store(0);
+    context->pendingSfxHoldStops.store(0);
+    context->sfxQueueRead.store(0);
+    context->sfxQueueWrite.store(0);
+    context->sfxIsPlaying.store(0);
+    context->sfxPlayingSeq.store(0);
+    context->sfxPlayingCount = 0;
+    context->effectStatesSeq.store(0);
+    context->sfxSlots[0] = {};
+    context->sfxSlotRefs[0].store(0);
+    capture->reset();
+    runtime->holdVoiceIndex = -1;
+    runtime->snapshot.thingCount = 3;
+    strcpy(runtime->snapshot.things[0].id, "mic_in");
+    runtime->snapshot.things[0].outputs = 2;
+    strcpy(runtime->snapshot.things[1].id, "idle_effect");
+    runtime->snapshot.things[1].inputs = runtime->snapshot.things[1].outputs = 2;
+    strcpy(runtime->snapshot.things[2].id, "test_out");
+    runtime->snapshot.things[2].inputs = 2;
+    runtime->nodeKind[0] = NODE_SOURCE;
+    runtime->nodeKind[1] = NODE_EFFECT;
+    runtime->nodeKind[2] = NODE_SINK;
+    runtime->sourceNodes[0] = 0;
+    runtime->sourceNodeCount = 1;
+    runtime->processNodes[0] = 1;
+    runtime->processNodeCount = 1;
+    runtime->sinkNodes[0] = 2;
+    runtime->sinkNodeCount = 1;
+    runtime->sourceRoutes[0] = {0, 1, 0, 0};
+    runtime->sourceRoutes[1] = {0, 1, 1, 1};
+    runtime->sourceRouteCount = 2;
+    runtime->processRoutes[0] = {1, 2, 0, 0};
+    runtime->processRoutes[1] = {1, 2, 1, 1};
+    runtime->processRouteCount = 2;
+    buildProcessRouteIndex(runtime.get());
+    for (unsigned node = 0; node < 3; ++node) context->nodeGainAtomics[node].store(1.0f);
+    auto &effect = context->effectStates["idle_effect"];
+    effect.enabled = 1;
+    effect.type = audiox::effects::EFFECT_CUT;
+    audiox::effects::setSlotDefaultsForType(&effect, effect.type);
+
+    capture->count = 1;
+    capture->nodeToStream[0] = 0;
+    auto &input = capture->streams[0];
+    input.pcm = &testPcm;
+    input.channels = 2;
+    input.format = SND_PCM_FORMAT_S16_LE;
+    initAdaptiveSrc(&input.src, 0.5f, 1.0f);
+    runtime->playbackCount = 1;
+    auto &output = runtime->playback[0];
+    output.pcm = &testPcm;
+    output.nodeIndex = 2;
+    output.channels = 2;
+    output.format = SND_PCM_FORMAT_S16_LE;
+
+    captureSample = 16384;
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 100);
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 5099);
+    assert(!runtime->sleeping && runtime->dspBlocksProcessed == 2);
+    auto hiddenReverb = effect;
+    hiddenReverb.type = audiox::effects::EFFECT_REVERB;
+    audiox::effects::setSlotDefaultsForType(&hiddenReverb, hiddenReverb.type);
+    float hiddenInput[BUFFER_FRAMES]{};
+    float hiddenOutput[BUFFER_FRAMES]{};
+    hiddenInput[0] = 1.0f;
+    audiox::effects::processSlot("idle_effect", 0, hiddenReverb,
+                                 hiddenInput, hiddenOutput, BUFFER_FRAMES);
+    assert(audiox::effects::slotHasPendingAudio("idle_effect", 0, hiddenReverb));
+    output.pendingFrames = BUFFER_FRAMES;
+    output.pendingBlock[0] = 16384;
+    FILE *sleepLogs = tmpfile();
+    assert(sleepLogs);
+    fflush(stdout);
+    const int savedStdout = dup(STDOUT_FILENO);
+    assert(savedStdout >= 0);
+    assert(dup2(fileno(sleepLogs), STDOUT_FILENO) >= 0);
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 5100);
+    assert(runtime->sleeping && runtime->dspBlocksProcessed == 2);
+    assert(playbackSample == 0);
+    assert(!audiox::effects::slotHasPendingAudio("idle_effect", 0, hiddenReverb));
+    const unsigned readsBefore = captureReads;
+    const unsigned writesBefore = playbackWrites;
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 5200);
+    assert(runtime->sleeping && runtime->dspBlocksProcessed == 2);
+    assert(captureReads > readsBefore && playbackWrites == writesBefore + 1);
+    assert(input.ring.count() < kCaptureRingFrames);
+    assert(playbackSample == 0);
+    assert(context->nodeChannelLevels[0][0].load() > 0.4f);
+    assert(context->nodeChannelLevels[2][0].load() == 0.0f);
+
+    auto &headphones = context->bluetoothOutputs[0];
+    runtime->btAddress[2] = 0x112233445566ULL;
+    headphones.peer.store(runtime->btAddress[2]);
+    headphones.setActive(true);
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 5200);
+    assert(runtime->sleeping && headphones.available() == BUFFER_FRAMES);
+    assert(!headphones.signalActive.load());
+    headphones.setActive(false);
+    runtime->btAddress[2] = 0;
+
+    // Unmute must render the current captured block, not one block of stale silence.
+    effect.enabled = 0;
+    context->effectStatesSeq.fetch_add(1);
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 5201);
+    assert(!runtime->sleeping && runtime->dspBlocksProcessed == 3);
+    assert(playbackSample > 15000);
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 5202);
+    fflush(stdout);
+    assert(dup2(savedStdout, STDOUT_FILENO) >= 0);
+    assert(close(savedStdout) == 0);
+    rewind(sleepLogs);
+    assert(fgetc(sleepLogs) == EOF);
+    assert(!ferror(sleepLogs) && feof(sleepLogs));
+    assert(fclose(sleepLogs) == 0);
+
+    // Any live fan-out path, including another channel, prevents sleep.
+    effect.enabled = 1;
+    context->effectStatesSeq.fetch_add(1);
+    runtime->sourceRoutes[2] = {0, 2, 1, 1};
+    runtime->sourceRouteCount = 3;
+    runtime->idleControlsKnown = false;
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 6000);
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 12000);
+    assert(!runtime->sleeping && runtime->inputs[2][1][0] > 0.4f);
+    runtime->sourceRouteCount = 2;
+    runtime->idleControlsKnown = false;
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 12001);
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 17001);
+    assert(runtime->sleeping);
+
+    // Volume changes wake immediately; a zero-volume source may go idle.
+    effect.enabled = 0;
+    context->effectStatesSeq.fetch_add(1);
+    context->nodeGainAtomics[0].store(0.0f);
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 17002);
+    assert(!runtime->sleeping);
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 22002);
+    assert(runtime->sleeping);
+    context->nodeGainAtomics[0].store(1.0f);
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 22003);
+    assert(!runtime->sleeping && playbackSample > 15000);
+
+    // Reproduce low-level analog noise on a live route alongside the muted mic.
+    captureSample = 29;
+    input.ring.reset();
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 22004);
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 27003);
+    assert(runtime->sleeping);
+    captureSample = 1;
+    input.ring.reset();
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 27004);
+    assert(runtime->sleeping);
+    captureSample = 33;
+    input.ring.reset();
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 27005);
+    assert(!runtime->sleeping && runtime->inputs[2][0][0] > kAudioIdleNoiseFloor);
+
+    std::fill_n(runtime->outputs[0][0], BUFFER_FRAMES, kAudioIdleNoiseFloor);
+    std::fill_n(runtime->outputs[0][1], BUFFER_FRAMES, kAudioIdleNoiseFloor);
+    assert(!idleSourcesActive(runtime.get()));
+    runtime->outputs[0][0][0] = std::nextafter(kAudioIdleNoiseFloor, 1.0f);
+    assert(idleSourcesActive(runtime.get()));
+    runtime->outputs[0][0][0] = std::numeric_limits<float>::quiet_NaN();
+    assert(idleSourcesActive(runtime.get()));
+
+    // A reverb's delay memory must prevent sleep even in an output-silent gap.
+    effect.enabled = 1;
+    effect.type = audiox::effects::EFFECT_REVERB;
+    audiox::effects::setSlotDefaultsForType(&effect, effect.type);
+    effect.values[3] = 1.0f;
+    context->effectStatesSeq.fetch_add(1);
+    captureSample = 0;
+    input.ring.reset();
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 30000);
+    float impulse[BUFFER_FRAMES]{};
+    float tail[BUFFER_FRAMES]{};
+    impulse[0] = 1.0f;
+    audiox::effects::processSlot("idle_effect", 0, effect, impulse, tail, BUFFER_FRAMES);
+    assert(audiox::effects::slotHasPendingAudio("idle_effect", 0, effect));
+    runtime->lastActivityMs = 30000;
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 35000);
+    assert(!runtime->sleeping);
+    bool heardTail = false;
+    for (uint64_t block = 1; block <= 12000; ++block) {
+        processGraphBlock(context.get(), runtime.get(), capture.get(),
+                          35000 + block * BUFFER_FRAMES * 1000ULL / SAMPLE_RATE);
+        heardTail |= context->nodeChannelLevels[2][0].load() > 0.00001f;
+        if (runtime->sleeping) break;
+    }
+    assert(heardTail && runtime->sleeping);
+    assert(!audiox::effects::slotHasPendingAudio("idle_effect", 0, effect));
+
+    // Soundboard triggers wake and advance the voice even before a reverb emits it.
+    input.pcm = nullptr;
+    output.pcm = nullptr;
+    capture->count = 0;
+    capture->nodeToStream[0] = -1;
+    runtime->playbackCount = 0;
+    strcpy(runtime->snapshot.things[0].id, "soundboard_out");
+    int16_t clipSamples[BUFFER_FRAMES * 2]{};
+    std::fill_n(clipSamples, BUFFER_FRAMES * 2, 16384);
+    auto &clip = context->sfxSlots[0];
+    clip.loaded = 1;
+    strcpy(clip.name, "idle-wake.wav");
+    clip.pcm = clipSamples;
+    clip.channels = 1;
+    clip.frames = BUFFER_FRAMES * 2;
+    clip.sampleRate = SAMPLE_RATE;
+    context->sfxSlotRefs[0].store(1);
+    context->sfxQueue[0] = {0, 0, 1.0f};
+    context->sfxQueueWrite.store(1);
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 70000);
+    assert(!runtime->sleeping && runtime->soundboardVoices[0].pos == BUFFER_FRAMES);
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 70003);
+    assert(!runtime->soundboardVoices[0].active);
+    assert(context->sfxSlotRefs[0].load() == 0);
+
+    // Publishing a new routing graph always leaves idle mode.
+    runtime->sleeping = true;
+    const AudioGraphState graph = runtime->snapshot;
+    rebuildRuntimeGraph(context.get(), runtime.get(), capture.get(), graph);
+    assert(!runtime->sleeping && !runtime->idleControlsKnown);
+
+    // Pitch latency and overlap buffers are also accounted for, and reset on sleep.
+    effect.type = audiox::effects::EFFECT_PITCH;
+    audiox::effects::setSlotDefaultsForType(&effect, effect.type);
+    audiox::effects::processSlot("idle_pitch", 0, effect, impulse, tail, BUFFER_FRAMES);
+    assert(audiox::effects::slotHasPendingAudio("idle_pitch", 0, effect));
+    assert(!audiox::effects::slotHasPendingAudio("idle_pitch", 0, effect, 2.0f));
+    audiox::effects::resetSlotAudio("idle_pitch", 0);
+    assert(!audiox::effects::slotHasPendingAudio("idle_pitch", 0, effect));
+    effect.type = 255;
+    assert(audiox::effects::slotHasPendingAudio("future_plugin", 0, effect));
+
+    puts("Five-second audio sleep, noise floor, live I/O, route demand, wake and effect-tail tests passed");
+}
+
+static void testDirectProcessing() {
+    audiox::capture::PcmCaptureRing<4, 2> ring;
+    const int16_t samples[] = {1, -1, 2, -2, 3, -3, 4, -4, 5, -5};
+    ring.push(samples, 2, 5);
+    assert(ring.count() == 4 && ring.sample(ring.tail(), 0) == 2);
+    assert(ring.sample(ring.tail(), 1) == -2);
+    assert(ring.sample(ring.readFrameIndex(3), 0) == 5);
+    ring.setReadFraction(0.25f);
+    ring.consume(0.5f);
+    assert(ring.count() == 4 && fabsf(ring.readFraction() - 0.75f) < 0.0001f);
+    ring.reset();
+    assert(ring.count() == 0 && ring.readFraction() == 0.0f);
+
+    assert(audiox::pcm::toS16(0.00001f) == 0);
+    assert(audiox::pcm::toS32(0.00001f) != 0);
+    assert(audiox::pcm::toS32(std::numeric_limits<float>::quiet_NaN()) == 0);
+    assert(audiox::pcm::toS32(2.0f) == 2147483647);
+
+    auto context = std::make_unique<AudioContext>(nullptr);
+    auto runtime = std::make_unique<RuntimeGraph>();
+    runtime->snapshot.thingCount = 4;
+    for (unsigned node = 0; node < 4; ++node) {
+        runtime->snapshot.things[node].inputs = node < 2 ? 0 : 2;
+        runtime->snapshot.things[node].outputs = node == 3 ? 0 : 2;
+        context->nodeGainAtomics[node].store(node == 0 ? 0.5f : 1.0f);
+    }
+    strcpy(runtime->snapshot.things[2].id, "direct_effect");
+    runtime->nodeKind[2] = NODE_EFFECT;
+    auto &effect = runtime->effectParamsCache[2];
+    effect.enabled = 1;
+    effect.type = audiox::effects::EFFECT_GAIN;
+    audiox::effects::setSlotDefaultsForType(&effect, effect.type);
+    assert(audiox::effects::setSlotParamValue(&effect, "level", 3.0f) == RET_OK);
+    assert(audiox::effects::setSlotParamValue(&effect, "unknown", 1.0f) == RET_ERR);
+    assert(audiox::effects::setSlotParamValue(&effect, "level",
+        std::numeric_limits<float>::quiet_NaN()) == RET_ERR);
+
+    const auto render = [&]() {
+        clearRuntimeBuffers(runtime.get());
+        for (unsigned frame = 0; frame < BUFFER_FRAMES; ++frame) {
+            runtime->outputs[0][0][frame] = 0.1f;
+            runtime->outputs[0][1][frame] = -0.1f;
+            runtime->outputs[1][0][frame] = 0.2f;
+            runtime->outputs[1][1][frame] = -0.2f;
+        }
+        for (uint8_t channel = 0; channel < 2; ++channel) {
+            routeCompiledEdge(context.get(), runtime.get(), {0, 2, channel, channel});
+            routeCompiledEdge(context.get(), runtime.get(), {1, 2, channel, channel});
+        }
+        processNode(context.get(), runtime.get(), 2);
+        for (uint8_t channel = 0; channel < 2; ++channel) {
+            routeCompiledEdge(context.get(), runtime.get(), {2, 3, channel, channel});
+        }
+    };
+    const auto expect = [&](float magnitude) {
+        for (unsigned frame = 0; frame < BUFFER_FRAMES; ++frame) {
+            assert(fabsf(runtime->inputs[3][0][frame] - magnitude) < 0.0001f);
+            assert(fabsf(runtime->inputs[3][1][frame] + magnitude) < 0.0001f);
+        }
+    };
+    render();
+    expect(0.75f);
+    effect.enabled = 0;
+    render();
+    expect(0.25f);
+    effect.enabled = 1;
+    effect.type = audiox::effects::EFFECT_CUT;
+    audiox::effects::setSlotDefaultsForType(&effect, effect.type);
+    assert(audiox::effects::setSlotParamValue(&effect, "channels", 3.6f) == RET_OK);
+    assert(effect.values[0] == 4.0f);
+    render();
+    expect(0.0f);
+    effect.enabled = 0;
+    render();
+    expect(0.25f);
+
+    // Unity first contributions alias the source until another source mixes in.
+    context->nodeGainAtomics[0].store(1.0f);
+    clearRuntimeBuffers(runtime.get());
+    runtime->outputs[0][0][0] = 0.1f;
+    runtime->outputs[1][0][0] = 0.2f;
+    routeCompiledEdge(context.get(), runtime.get(), {0, 2, 0, 0});
+    assert(runtime->inputs[2][0] == runtime->outputs[0][0]);
+    routeCompiledEdge(context.get(), runtime.get(), {1, 2, 0, 0});
+    assert(runtime->inputs[2][0] == runtime->inputStorage[2][0]);
+    assert(fabsf(runtime->inputs[2][0][0] - 0.3f) < 0.0001f);
+
+    effect.type = audiox::effects::EFFECT_GAIN;
+    effect.enabled = 1;
+    audiox::effects::setSlotDefaultsForType(&effect, effect.type);
+    assert(audiox::effects::setSlotParamValue(&effect, "level", 4.0f) == RET_OK);
+    render();
+    expect(1.0f);
+    effect.enabled = 0;
+    context->nodeGainAtomics[0].store(4.0f);
+    context->nodeGainAtomics[1].store(4.0f);
+    render();
+    expect(1.0f);
+
+    effect.type = audiox::effects::EFFECT_DISTORTION;
+    audiox::effects::setSlotDefaultsForType(&effect, effect.type);
+    assert(audiox::effects::setSlotParamValue(&effect, "drive", 6.0f) == RET_OK);
+    assert(effect.values[1] == 6.0f);
+    assert(audiox::effects::setSlotParamValue(&effect, "drive",
+        std::numeric_limits<float>::quiet_NaN()) == RET_ERR);
+    puts("Direct runtime mixing, channel isolation, bypass, Cut, gain and PCM tests passed");
 }
 
 int main() {
+    testDirectProcessing();
+    testIdleSleep();
     auto context = std::make_unique<AudioContext>(nullptr);
     auto runtime = std::make_unique<RuntimeGraph>();
     auto capture = std::make_unique<AlsaCaptureBackend>();
@@ -190,11 +568,11 @@ int main() {
     headphones.setActive(true);
     headphones.signalActive.store(1);
     headphones.peer.store(btRuntime->btAddress[0]);
-    servicePlaybackIoImpl<false>(context.get(), btRuntime.get(), 0);
+    servicePlaybackIo(context.get(), btRuntime.get());
     assert(headphones.available() == 0);
     assert(headphones.signalActive.load() == 0);
     headphones.peer.store(btRuntime->btAddress[2]);
-    servicePlaybackIoImpl<false>(context.get(), btRuntime.get(), 0);
+    servicePlaybackIo(context.get(), btRuntime.get());
     assert(headphones.available() == BUFFER_FRAMES);
     assert(headphones.signalActive.load() == 1);
     int16_t packet[64 * 2];

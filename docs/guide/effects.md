@@ -88,6 +88,32 @@ Cut's **Channels** setting changes how many input and output sockets the node
 has. If the count changes, reconnect routes that refer to channels that no
 longer exist. A newly created Cut is in its passing (not muted) state.
 
+## Audio idle sleep
+
+After **5 seconds** without signal above **-60 dBFS** (peak amplitude `0.001`)
+on a path to an output, the audio engine enters idle sleep and skips graph
+mixing and effects. This short timeout is
+for testing. Capture, playback of silence, Bluetooth buffer servicing,
+soundboard timing, and input meters continue; this is not board suspend.
+
+A live microphone behind an enabled Cut, a zero-level Gain effect, or a
+zero-volume source does not prevent sleep unless another route carries its
+signal to an output. A noise gate is not treated as a hard mute. Live sources
+and outputs at or below the noise floor count as quiet, so analog background
+noise need not prevent sleep. This intentionally suppresses very quiet real
+audio while asleep; input must exceed the floor to wake processing.
+
+Reverb and pitch delay memory must settle before an audible path can sleep;
+residuals at or below the same `0.001` noise floor are treated as silent.
+Muted/disconnected tails are cleared on sleep entry rather than frozen and
+replayed later. New signal on
+a live route, soundboard triggers, routing changes, or effect/volume changes
+resume processing without waiting for another timeout. Sleep and wake
+transitions do not produce log messages.
+
+This mode reduces DSP work, not audio I/O wakeups. Power savings and glitch-free
+operation still require testing with the connected hardware.
+
 ## MIDI controls and effect LEDs
 
 Connect the MIDI controller you want to use, then open **Effects**:

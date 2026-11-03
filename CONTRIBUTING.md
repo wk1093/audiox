@@ -51,7 +51,7 @@ reversion does not cover every failure.
 - `scripts/`: build, image, QEMU, and release tools.
 - `web/`: device control interface.
 - `root/`: runtime root-filesystem seed files.
-- `tests/`: host regressions and desktop audio-bench targets.
+- `tests/`: host regressions, including direct audio-runtime tests.
 - `docs/`: VitePress documentation.
 - `out/`: generated dependencies, images, and build outputs.
 
@@ -117,7 +117,7 @@ make test-audio-graph-tsan
 
 `make test` runs native C++/Bash, Node.js, and release-workflow regression
 suites. Host dependencies include a C++17 compiler, `pkg-config`,
-ALSA/libsndfile/ncurses/SBC development headers, Node.js 22+, Python 3, Bash,
+ALSA/ncurses/SBC development headers, Node.js 22+, Python 3, Bash,
 and `jq`; Make builds the host Lua library.
 `make test-build-dependencies` runs Bash-only Makefile and incremental header
 dependency checks. `make test-audio-graph-tsan` checks graph publication with

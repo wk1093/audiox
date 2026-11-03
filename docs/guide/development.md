@@ -25,7 +25,7 @@ Pi 4 Model B and Pi 5 are hardware-tested targets. The Pi 5 framebuffer UI remai
 | `scripts/` | Dependency, module, image, QEMU, and release tools |
 | `Kconfig`, `.config` | Configuration definitions and local selected values |
 | `depmod.txt`, `bootmod.txt` | Runtime and bootloader module seeds |
-| `tests/`, `tests/Makefile` | Host regressions and desktop audio-bench targets |
+| `tests/`, `tests/Makefile` | Host regressions, including direct audio-runtime tests |
 | `docs/` | VitePress documentation; separate dependencies |
 | `site/` | Public download site, distinct from device UI/docs |
 | `out/` | Generated binaries, dependencies, firmware, rootfs trees, and images |
@@ -47,7 +47,7 @@ You also need Git to obtain the repository/dependencies. Image creation uses Lin
 
 Additional tools depend on the workflow:
 
-- Host audio tests/bench: host ALSA development headers/library (Debian/Ubuntu: `libasound2-dev`).
+- Host audio tests: host ALSA development headers/library (Debian/Ubuntu: `libasound2-dev`).
 - JavaScript regressions: Node.js with the built-in `node --test` runner.
 - Documentation: Node.js/npm and the pinned `docs/package-lock.json`.
 - QEMU: `qemu-system-aarch64`, `mtools`, `dosfstools`, `e2fsprogs`, `util-linux` (`sfdisk`), `binutils` (`ar`), and `xz`.
@@ -252,7 +252,7 @@ Useful overrides include `QEMU_HTTP_PORT`, `QEMU_USBIP_PORT`, `QEMU_MEMORY`, `QE
 
 ## Test organization
 
-Host tests and desktop bench rules are in `tests/Makefile`, included from the
+Host test rules are in `tests/Makefile`, included from the
 root Makefile. Run the focused targets for each change; `make test` runs the
 native, WebUI, and release-workflow suites.
 
@@ -265,12 +265,12 @@ native, WebUI, and release-workflow suites.
 | Classic Bluetooth discovery | `make test-bluetooth-hci` |
 | Module resolution | `make test-resolve-modules` |
 | Backup archive/HTTP behavior | `make test-config-backup` |
-| Shared audio engine / PCM recovery | `make test-audio-engine test-audio-pcm-recover` |
+| Direct audio runtime / PCM recovery | `make test-audio-runtime test-audio-pcm-recover` |
 | Runtime audio / gadget host gain | `make test-audio-runtime test-gadget-volume` |
 | Display/config/soundboard | `make test-display-hotplug test-soundboard-config` |
 | MIDI, automation, embedded docs | `make test-midi-usb test-midi-script test-midi-docs` |
 
-Some targets run multiple graph-processing variants, use sanitizers, need host ALSA headers, or build host Lua. `test-dnsmasq-config` checks the target binary (through `qemu-aarch64` where available). Consult the rule when a dependency is missing rather than treating all failures as firmware regressions.
+Some targets use sanitizers, need host ALSA headers, or build host Lua. `test-dnsmasq-config` checks the target binary (through `qemu-aarch64` where available). Consult the rule when a dependency is missing rather than treating all failures as firmware regressions.
 
 Browser behavior uses Node's built-in runner, for example:
 
@@ -291,19 +291,17 @@ bash tests/imager_publish_test.sh
 
 Those packaging tests require tools such as `jq` and `xz`. Packet/parser/browser tests do not establish host OS, electrical, latency, or physical hotplug compatibility. For release validation, exercise actual power/cables, display/touch, USB networking, both audio directions and host gain/mute, MIDI/keyboard reconnects, and update/recovery on the target board.
 
-### Desktop audio bench
+### Audio runtime tests
 
 ```bash
-make audio-bench
-make run-audio-bench
-# Alternate input or headless ALSA sink:
-make run-audio-bench BENCH_INPUT=/path/to/audio.wav
-make run-audio-bench BENCH_ALSA_DEVICE=null
+make test-audio-runtime test-gadget-volume test-audio-pcm-recover
 ```
 
-The bench compiles shared effect/graph processors on the host, plays a 440 Hz tone by default through host ALSA, and serves controls at `http://127.0.0.1:8765`. It does not run the Pi runtime or validate the gadget.
-
-The Pi defaults to `AUDIOX_USE_SHARED_GRAPH_PROCESSOR=0` (direct processing path). Set it to `1` for target-side comparison with the shared callback path. This is a build option, not a System UI switch.
+Audio tests compile the same direct processing code used by the Pi, with
+simulated device I/O. They cover route mixing, effect controls, channel isolation,
+soundboard playback, Bluetooth buffers, host gain/mute, and five-second DSP idle
+sleep, including silent sleep/wake transitions. They do not play through host ALSA or validate
+physical gadget timing; use the target board for listening and latency checks.
 
 ## Documentation and release tooling
 

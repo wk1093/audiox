@@ -129,11 +129,15 @@ const char *resolveParamAlias(uint8_t type, const char *name) {
     return name;
 }
 
-ReverbState *getReverbStateFor(const char *effectId, uint8_t channel) {
+ReverbState *getReverbStateFor(const char *effectId, uint8_t channel, bool create = true) {
     static std::unordered_map<std::string, ReverbState> states;
     std::string key = effectId ? effectId : "fx";
     key.push_back('#');
     key += std::to_string((unsigned)channel);
+    if (!create) {
+        auto it = states.find(key);
+        return it == states.end() ? nullptr : &it->second;
+    }
     return &states[key];
 }
 
@@ -315,6 +319,46 @@ void clampSlotParams(SlotParams *params) {
     for (uint8_t i = limit; i < EFFECT_PARAM_MAX; ++i) {
         params->values[i] = 0.0f;
     }
+}
+
+bool slotHasPendingAudio(const char *effectId, uint8_t channel, const SlotParams &params,
+                         float threshold) {
+    if (!params.enabled) return false;
+    switch (params.type) {
+        case EFFECT_PITCH:
+            return pitchHasPendingAudio(effectId, channel, threshold);
+        case EFFECT_REVERB: {
+            const ReverbState *state = getReverbStateFor(effectId, channel, false);
+            if (!state) return false;
+            for (const auto &buffer : state->comb) {
+                for (float sample : buffer) {
+                    if (!(fabsf(sample) <= threshold)) return true;
+                }
+            }
+            for (float sample : state->combFilter) {
+                if (!(fabsf(sample) <= threshold)) return true;
+            }
+            for (const auto &buffer : state->allpass) {
+                for (float sample : buffer) {
+                    if (!(fabsf(sample) <= threshold)) return true;
+                }
+            }
+            return false;
+        }
+        case EFFECT_GAIN:
+        case EFFECT_DISTORTION:
+        case EFFECT_GATE:
+        case EFFECT_CUT:
+            return false;
+        default:
+            return true;
+    }
+}
+
+void resetSlotAudio(const char *effectId, uint8_t channel) {
+    ReverbState *reverb = getReverbStateFor(effectId, channel, false);
+    if (reverb) *reverb = {};
+    resetPitch(effectId, channel);
 }
 
 void processSlot(const char *effectId,

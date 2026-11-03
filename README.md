@@ -70,7 +70,7 @@ The build produces `out/initramfs.cpio.gz` and `out/program.cpio.gz`.
 archive. Build targets create host-side files. `make dev`, `make upload_update`,
 and export targets modify a device or card; review their instructions first.
 
-Tests and audio-benchmark targets are defined in `tests/Makefile` and included
+Test targets are defined in `tests/Makefile` and included
 from the root Makefile. Run the relevant targets from the repository root.
 QEMU and desktop audio tests do not replace physical hardware validation.
 

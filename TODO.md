@@ -74,10 +74,10 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Fix versioning system (use 1.8.0-beta and whatnot instead of putting 1.8 dev stuff under 1.7.x), implement an extra version field everywhere (makefile, C++ source, JS source, etc)
 - [x] Make a config TUI like the linux kernel makefile has to allow configuring for different systems, environments, and be able to change the currently #define static settings like the buffer size and sample rate.
 - [x] Split up code better so that we can partially compile the audio subsystem (the audio graph should be a bit more abstract, and shouldn't know about how devices actually work) so that we can test effects and stuff on my desktop instead of re-uploading to the Pi.
-  - [x] Add replaceable source/sink callbacks for desktop/shared-graph builds; keep the default Pi realtime loop on a direct compile-time path after callbacks caused device-side underruns.
+  - [x] Keep one direct realtime processing path after source/sink callbacks caused device-side underruns; exercise that same runtime code in host tests.
   - [x] Extract the fixed-capacity PCM capture ring and SRC cursor state from the ALSA stream object; keep ALSA acquisition in the Pi adapter.
   - [x] Move ALSA capture stream ownership, device attachment/remapping, source gadget identity, and fixed PCM/SRC state out of RuntimeGraph into an explicit capture backend; keep ALSA I/O on the direct Pi path.
-  - [x] Extract backend-neutral route mixing, node processing, and effect execution; use the same graph block processor in the Pi runtime and host tests.
+  - [x] Cover route mixing, node processing, and effect execution in direct-runtime host tests without a separate desktop engine.
 - [x] "Cut" effect/feature to mute or unmute a route, with configurable matching input/output channel counts and MIDI/Web UI toggling.
 - [x] Run the application as a child of a small PID 1 watchdog; restart it after exit or a stale main-loop heartbeat.
 
@@ -166,6 +166,7 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Replace native disclosure triangles throughout the WebUI with consistent custom chevrons and focus states; polish Soundboard setup/Add panels without changing Play.
 
 ## Plugin System and more built-in effects - v1.14
+- [x] Implement route-aware DSP idle sleep after 5 seconds for testing, ignoring inputs blocked by Cut/zero gain while keeping audio I/O running; preserve audible tails, clear muted tails on sleep entry, and wake on signal or control changes.
 - [ ] Implement custom plugin system for effects, allowing users to create and load their own effect modules into the audio engine.
   - [ ] Create API
   - [ ] Define plugin metadata format (axm)

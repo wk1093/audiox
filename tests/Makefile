@@ -2,7 +2,7 @@
 .PHONY: test test-native test-web test-release test-audio-graph test-audio-graph-mailbox test-audio-graph-tsan test-build-dependencies test-storage-expand
 test: test-native test-web test-release
 
-test-native: test-audio-engine test-audio-runtime test-audio-meters test-audio-graph test-audio-graph-mailbox \
+test-native: test-audio-runtime test-audio-meters test-audio-graph test-audio-graph-mailbox \
 	test-audio-pcm-recover test-bluetooth-hci test-bluetooth-a2dp test-display-hotplug test-soundboard-config \
 	test-boot-recovery test-config-backup test-system-logs test-system test-gadget-setup test-mdns \
 	test-gadget-volume test-diagnostics test-midi-usb test-midi-script test-midi-docs test-watchdog test-resolve-modules test-build-dependencies test-storage-expand
@@ -39,16 +39,9 @@ $(OUT_DIR)/host/audiox-audio-graph-mailbox-tsan: tests/audio_graph_mailbox_test.
 	$(HOSTCXX) $(HOST_CXXFLAGS) -O1 -g -fsanitize=thread -Iinclude -o "$@" "$<" -pthread
 
 DNSMASQ_TEST_RUNNER ?= $(shell command -v qemu-aarch64 2>/dev/null)
-HOST_AUDIO_CFLAGS ?= $(shell pkg-config --cflags alsa sndfile 2>/dev/null)
-HOST_AUDIO_LIBS ?= $(shell pkg-config --libs alsa sndfile 2>/dev/null)
-AUDIO_BENCH_BIN = $(OUT_DIR)/host/audiox-audio-bench
-AUDIO_ENGINE_TEST_BIN = $(OUT_DIR)/host/audiox-audio-engine-test
 WATCHDOG_HOST_BIN := $(OUT_DIR)/host/audiox-watchdog-test
 WATCHDOG_HUNG_CHILD_BIN := $(OUT_DIR)/host/audiox-watchdog-hung-child
-AUDIO_BENCH_SRCS = \
-	tools/audiox-audio-bench.cpp \
-	src/audio/graph_processor.cpp \
-	src/audio/engine.cpp \
+AUDIO_EFFECT_SRCS = \
 	src/audio/effects/slot.cpp \
 	src/audio/effects/gain.cpp \
 	src/audio/effects/distortion.cpp \
@@ -56,12 +49,10 @@ AUDIO_BENCH_SRCS = \
 	src/audio/effects/pitch.cpp \
 	src/audio/effects/reverb.cpp
 
-.PHONY: audio-bench run-audio-bench test-midi-usb test-audio-engine test-display-hotplug test-soundboard-config \
+.PHONY: test-midi-usb test-display-hotplug test-soundboard-config \
 	test-boot-recovery test-config-backup test-audio-pcm-recover test-system-logs test-system \
 	test-gadget-setup test-mdns test-gadget-volume test-audio-runtime test-diagnostics \
 	test-watchdog test-resolve-modules test-dnsmasq-config
-
-audio-bench: $(AUDIO_BENCH_BIN)
 
 test-midi-usb: $(OUT_DIR)/host/audiox-midi-usb-test
 	@"$<"
@@ -110,12 +101,6 @@ $(OUT_DIR)/host/audiox-midi-usb-test: tests/midi_usb_test.cpp src/midi/usb.cpp i
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -Wl,--wrap=fopen -Wl,--wrap=write \
 		-o "$@" tests/midi_usb_test.cpp src/midi/usb.cpp
 
-run-audio-bench: $(AUDIO_BENCH_BIN)
-	@"$(AUDIO_BENCH_BIN)" "$(if $(BENCH_INPUT),$(BENCH_INPUT),-)" "$(BENCH_ALSA_DEVICE)" "$(BENCH_PORT)"
-
-test-audio-engine: $(AUDIO_ENGINE_TEST_BIN)
-	@$(AUDIO_ENGINE_TEST_BIN)
-
 test-display-hotplug: $(OUT_DIR)/host/audiox-display-hotplug-test
 	@"$<"
 
@@ -144,7 +129,7 @@ SOUNDBOARD_CONFIG_TEST_SRCS = tests/soundboard_config_test.cpp src/context.cpp \
 	src/config/basic.cpp src/config/midi_map.cpp src/config/backup.cpp \
 	src/midi/midi.cpp src/midi/usb.cpp src/midi/script.cpp src/audio/setup.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp \
 	src/http/server.cpp src/http/logs.cpp src/init/recovery.cpp src/touch/touch.cpp \
-	$(filter-out tools/audiox-audio-bench.cpp src/audio/engine.cpp src/audio/graph_processor.cpp,$(AUDIO_BENCH_SRCS))
+	$(AUDIO_EFFECT_SRCS)
 
 test-audio-graph: $(OUT_DIR)/host/audiox-audio-graph-test
 	@"$<"
@@ -221,26 +206,24 @@ $(OUT_DIR)/host/audiox-mdns-test: tests/mdns_test.cpp src/http/mdns.cpp include/
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -fsanitize=address,undefined -Iinclude -o "$@" tests/mdns_test.cpp src/http/mdns.cpp
 
-test-gadget-volume: $(OUT_DIR)/host/audiox-gadget-volume-test-0 $(OUT_DIR)/host/audiox-gadget-volume-test-1
-	@"$(OUT_DIR)/host/audiox-gadget-volume-test-0"
-	@"$(OUT_DIR)/host/audiox-gadget-volume-test-1"
+test-gadget-volume: $(OUT_DIR)/host/audiox-gadget-volume-test
+	@"$<"
 
-test-audio-runtime: $(OUT_DIR)/host/audiox-audio-runtime-test-0 $(OUT_DIR)/host/audiox-audio-runtime-test-1
-	@"$(OUT_DIR)/host/audiox-audio-runtime-test-0"
-	@"$(OUT_DIR)/host/audiox-audio-runtime-test-1"
+test-audio-runtime: $(OUT_DIR)/host/audiox-audio-runtime-test
+	@"$<"
 
-$(OUT_DIR)/host/audiox-audio-runtime-test-%: tests/audio_runtime_test.cpp src/audio/processing.cpp src/audio/graph_processor.cpp src/audio/processing_fx.cpp src/audio/gadget_volume.cpp $(wildcard src/audio/effects/*.cpp include/audio/*.hpp include/audio/*.h) $(AUDIOX_CONFIG_FILE)
+$(OUT_DIR)/host/audiox-audio-runtime-test: tests/audio_runtime_test.cpp src/audio/processing.cpp src/audio/processing_fx.cpp src/audio/gadget_volume.cpp $(AUDIO_EFFECT_SRCS) $(wildcard include/audio/*.hpp include/audio/*.h include/audio/effects/*.hpp) $(AUDIOX_CONFIG_FILE)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-function -Wno-format-truncation -Wno-unused-parameter \
-		-Iinclude -DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) -DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) -DAUDIOX_USE_SHARED_GRAPH_PROCESSOR=$* \
+		-Iinclude -DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) -DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections -o "$@" \
-		tests/audio_runtime_test.cpp src/audio/graph_processor.cpp src/audio/processing_fx.cpp src/audio/gadget_volume.cpp \
-		$(wildcard src/audio/effects/*.cpp) $(shell pkg-config --cflags --libs alsa) -pthread -lm
+		tests/audio_runtime_test.cpp src/audio/processing_fx.cpp src/audio/gadget_volume.cpp \
+		$(AUDIO_EFFECT_SRCS) $(shell pkg-config --cflags --libs alsa) -pthread -lm
 
-$(OUT_DIR)/host/audiox-gadget-volume-test-%: tests/gadget_volume_test.cpp src/audio/processing.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp $(wildcard include/audio/*.hpp include/audio/*.h) $(AUDIOX_CONFIG_FILE)
+$(OUT_DIR)/host/audiox-gadget-volume-test: tests/gadget_volume_test.cpp src/audio/processing.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp $(wildcard include/audio/*.hpp include/audio/*.h) $(AUDIOX_CONFIG_FILE)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-function -Wno-format-truncation -Wno-unused-parameter \
-		-Iinclude -DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) -DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) -DAUDIOX_USE_SHARED_GRAPH_PROCESSOR=$* \
+		-Iinclude -DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) -DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections -o "$@" \
 		tests/gadget_volume_test.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp $(shell pkg-config --cflags --libs alsa) -pthread -lm
 
@@ -265,26 +248,6 @@ test-watchdog: $(WATCHDOG_HOST_BIN) $(WATCHDOG_HUNG_CHILD_BIN)
 
 test-resolve-modules:
 	@bash tests/resolve_modules_test.sh
-
-BENCH_INPUT ?=
-BENCH_ALSA_DEVICE ?= default
-BENCH_PORT ?= 8765
-
-$(AUDIO_BENCH_BIN): $(AUDIO_BENCH_SRCS) $(AUDIOX_CONFIG_FILE) include/audio/pcm_convert.hpp include/audio/engine.hpp include/audio/graph_processor.hpp include/audio/effects/slot.hpp
-	@mkdir -p "$(dir $@)"
-	@command -v "$(HOSTCXX)" >/dev/null || { echo "Host C++ compiler not found: $(HOSTCXX)"; exit 1; }
-	@pkg-config --exists alsa sndfile || { echo "Host ALSA and libsndfile development files are required (pkg-config alsa sndfile)"; exit 1; }
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude $(HOST_AUDIO_CFLAGS) \
-		-DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) \
-		-DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) \
-		-DAUDIOX_BENCH_HTML='"$(CURDIR)/web/audio-bench.html"' \
-		-o "$@" $(AUDIO_BENCH_SRCS) $(HOST_AUDIO_LIBS) -pthread -lm
-
-$(AUDIO_ENGINE_TEST_BIN): tests/audio_engine_test.cpp $(filter-out tools/audiox-audio-bench.cpp,$(AUDIO_BENCH_SRCS)) include/audio/pcm_convert.hpp include/audio/engine.hpp include/audio/graph_processor.hpp $(AUDIOX_CONFIG_FILE)
-	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) \
-		-DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) -o "$@" tests/audio_engine_test.cpp \
-		$(filter-out tools/audiox-audio-bench.cpp,$(AUDIO_BENCH_SRCS)) -pthread -lm
 
 $(WATCHDOG_HOST_BIN): $(WATCHDOG_SRC) include/boot_recovery.hpp include/update_archive.hpp
 	@mkdir -p "$(dir $@)"

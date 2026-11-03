@@ -12,6 +12,26 @@ const nodes = [
   { id: 'input2', kind: 'device', inputs: 2, outputs: 2, width: 280, height: 300 },
 ];
 
+test('advanced effect templates remain registered when the Cut template already exists', () => {
+  const source = fs.readFileSync(require.resolve('../web/app.js'), 'utf8');
+  const registered = { 'audiox/effect_cut': function () {} };
+  const context = vm.createContext({ window: { LiteGraph: { registered_node_types: registered,
+    registerNodeType: (key, node) => { registered[key] = node; } } } });
+  vm.runInContext(source.slice(source.indexOf('  const advancedEffects ='),
+    source.indexOf('  state.graphCanvas.background_image =')), context);
+  for (const type of ['compressor', 'limiter', 'eq', 'multiband', 'noise_reduction']) {
+    const Node = registered[`audiox/effect_${type}`];
+    assert.equal(typeof Node, 'function');
+    const node = Object.create(Node.prototype);
+    const inputs = [], outputs = [];
+    node.addInput = (...args) => inputs.push(args);
+    node.addOutput = (...args) => outputs.push(args);
+    Node.call(node);
+    assert.equal(node.properties.effectTypeTemplate, type);
+    assert.equal(inputs.length, 2);
+    assert.equal(outputs.length, 2);
+  }
+});
 test('routing channels use mono, left/right, or one-based channel names', () => {
   assert.equal(routing.channelLabel(0, 1), 'Mono');
   assert.equal(routing.channelLabel(0, 2), 'Left');

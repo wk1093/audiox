@@ -269,6 +269,7 @@ static void testIdleSleep() {
     // Pitch latency and overlap buffers are also accounted for, and reset on sleep.
     effect.type = audiox::effects::EFFECT_PITCH;
     audiox::effects::setSlotDefaultsForType(&effect, effect.type);
+    assert(audiox::effects::setSlotParamValue(&effect, "semitones", 7) == RET_OK);
     audiox::effects::processSlot("idle_pitch", 0, effect, impulse, tail, BUFFER_FRAMES);
     assert(audiox::effects::slotHasPendingAudio("idle_pitch", 0, effect));
     assert(!audiox::effects::slotHasPendingAudio("idle_pitch", 0, effect, 2.0f));
@@ -355,6 +356,79 @@ static void testDirectProcessing() {
     effect.enabled = 0;
     render();
     expect(0.25f);
+
+    for (uint8_t type : {audiox::effects::EFFECT_COMPRESSOR, audiox::effects::EFFECT_LIMITER,
+                        audiox::effects::EFFECT_EQ, audiox::effects::EFFECT_MULTIBAND,
+                        audiox::effects::EFFECT_NOISE_REDUCTION}) {
+        effect = {};
+        effect.type = type;
+        effect.enabled = 1;
+        audiox::effects::setSlotDefaultsForType(&effect, type);
+        assert(audiox::effects::isBuiltinEffectType(type));
+        assert(audiox::effects::effectTypeFromString(audiox::effects::effectTypeToString(type)) == type);
+        if (type == audiox::effects::EFFECT_LIMITER)
+            assert(audiox::effects::setSlotParamValue(&effect, "ceiling_db", -18) == RET_OK);
+        for (unsigned block = 0; block < 400; ++block) render();
+        for (unsigned frame = 0; frame < BUFFER_FRAMES; ++frame) {
+            const float left = runtime->inputs[3][0][frame], right = runtime->inputs[3][1][frame];
+            if (!(left > .02f && left <= .251f && fabsf(left + right) < 1e-5f))
+                fprintf(stderr, "Builtin type %u frame %u: left=%g right=%g\n", type, frame, left, right);
+            assert(std::isfinite(left) && std::isfinite(right));
+            assert(left > .02f && left <= .251f && fabsf(left + right) < 1e-5f);
+            if (type == audiox::effects::EFFECT_COMPRESSOR ||
+                type == audiox::effects::EFFECT_MULTIBAND ||
+                type == audiox::effects::EFFECT_LIMITER) assert(left < .18f);
+            if (type == audiox::effects::EFFECT_EQ) assert(left == .25f);
+        }
+        effect.enabled = 0;
+        render();
+        expect(.25f);
+        assert(!audiox::effects::slotHasPendingAudio("direct_effect", 0, effect));
+        effect.enabled = 1;
+        assert(!audiox::effects::slotHasPendingAudio("direct_effect", 0, effect));
+    }
+    puts("All five new builtins execute through graph routes with symmetric independent channels and clean bypass/reset");
+
+    float dirty[BUFFER_FRAMES]{}, clean[BUFFER_FRAMES]{};
+    dirty[0] = std::numeric_limits<float>::quiet_NaN();
+    dirty[1] = std::numeric_limits<float>::infinity();
+    for (uint8_t type = 0; type <= audiox::effects::EFFECT_NOISE_REDUCTION; ++type) {
+        effect = {};
+        effect.type = type;
+        effect.enabled = 1;
+        audiox::effects::setSlotDefaultsForType(&effect, type);
+        audiox::effects::processSlot("finite_builtin", 0, effect, dirty, clean, BUFFER_FRAMES);
+        for (float sample : clean) assert(std::isfinite(sample));
+        audiox::effects::resetSlotAudio("finite_builtin", 0);
+        assert(!audiox::effects::slotHasPendingAudio("finite_builtin", 0, effect));
+    }
+    effect = {};
+    effect.enabled = 1;
+    effect.type = audiox::effects::EFFECT_REVERB;
+    audiox::effects::setSlotDefaultsForType(&effect, effect.type);
+    std::fill_n(dirty, BUFFER_FRAMES, 0);
+    dirty[0] = .5f;
+    audiox::effects::processSlot("changed_type", 0, effect, dirty, clean, BUFFER_FRAMES);
+    assert(audiox::effects::slotHasPendingAudio("changed_type", 0, effect));
+    effect.type = audiox::effects::EFFECT_GAIN;
+    audiox::effects::setSlotDefaultsForType(&effect, effect.type);
+    audiox::effects::processSlot("changed_type", 0, effect, dirty, clean, BUFFER_FRAMES);
+    effect.type = audiox::effects::EFFECT_REVERB;
+    audiox::effects::setSlotDefaultsForType(&effect, effect.type);
+    assert(!audiox::effects::slotHasPendingAudio("changed_type", 0, effect));
+    audiox::effects::processSlot("changed_type", 0, effect, dirty, clean, BUFFER_FRAMES);
+    assert(audiox::effects::slotHasPendingAudio("changed_type", 0, effect));
+    auto cutParams = effect;
+    cutParams.type = audiox::effects::EFFECT_CUT;
+    for (unsigned node = 0; node < 63; ++node) {
+        char id[32];
+        snprintf(id, sizeof(id), "bank_cut_%u", node);
+        for (uint8_t channel = 0; channel < 16; ++channel)
+            audiox::effects::prepareSlotAudio(id, channel, cutParams);
+    }
+    audiox::effects::prepareSlotAudio("changed_type", 0, effect);
+    assert(audiox::effects::slotHasPendingAudio("changed_type", 0, effect));
+    audiox::effects::resetSlotAudio("changed_type", 0);
 
     // Unity first contributions alias the source until another source mixes in.
     context->nodeGainAtomics[0].store(1.0f);

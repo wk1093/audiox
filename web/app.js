@@ -165,7 +165,8 @@ if (effectsManager) {
   effectsManager.mountPanel(effectsMapGridEl, effectsMapStatusEl);
 }
 
-const builtinEffectTypes = ['gain', 'distortion', 'pitch', 'reverb', 'gate', 'cut'];
+const builtinEffectTypes = ['gain', 'distortion', 'pitch', 'reverb', 'gate', 'cut',
+  'compressor', 'limiter', 'eq', 'multiband', 'noise_reduction'];
 const pluginTemplateIds = new Set();
 
 function pluginTemplateNodeType(id) {
@@ -1246,6 +1247,25 @@ function ensureRoutingGraph() {
     AudioxEffectCutNode.title = 'Mute (Cut)';
     AudioxEffectCutNode.filter = 'audiox';
     window.LiteGraph.registerNodeType('audiox/effect_cut', AudioxEffectCutNode);
+  }
+  const advancedEffects = {
+    compressor: 'Compressor', limiter: 'Limiter', eq: 'Parametric EQ',
+    multiband: 'Multiband Compressor', noise_reduction: 'Noise Reduction',
+  };
+  for (const [type, label] of Object.entries(advancedEffects)) {
+    if (window.LiteGraph.registered_node_types[`audiox/effect_${type}`]) continue;
+    function AdvancedEffectNode() {
+      this.size = [220, 80];
+      this.properties = { effectTypeTemplate: type, nodeKind: 'template' };
+      this.title = `Add ${label} Effect`;
+      for (let channel = 0; channel < 2; channel++) {
+        this.addInput(`in ${channel + 1}`, 'audio');
+        this.addOutput(`out ${channel + 1}`, 'audio');
+      }
+    }
+    AdvancedEffectNode.title = `${label} Effect`;
+    AdvancedEffectNode.filter = 'audiox';
+    window.LiteGraph.registerNodeType(`audiox/effect_${type}`, AdvancedEffectNode);
   }
   state.graphCanvas.background_image = null;
   window.LiteGraph.NODE_DEFAULT_COLOR = '#1f4a62';

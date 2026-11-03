@@ -181,12 +181,15 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Provide a way for plugins to give a custom UI for their parameters:
     - We should be able to dynamically serve custom JS or CSS for the plugin UI, since the HTTP server is custom. We could just add an api endpoint for the webui to grab a plugin's assets, and the plugin custom format can also contain multiple asset files (yet another custom archive format like axu and axb)
   - Native and browser regressions pass and AArch64 binaries/packages build; physical-device kernel sandbox support and performance still need validation.
-- [ ] More advanced effects
-  - [ ] Voice noise cancellation/reduction
-  - [ ] Compressor
-  - [ ] Limiter
-  - [ ] Parametric EQ
-  - [ ] Multi-band compressor
+- [x] More advanced effects
+  - [x] Voice noise cancellation/reduction: stationary spectral noise reduction, not echo cancellation or ML speech separation.
+  - [x] Compressor
+  - [x] Limiter
+  - [x] Parametric EQ
+  - [x] Multi-band compressor
+  - [x] Correct pitch normalization, transparent zero shift and internal dry/wet delay alignment; bound per-effect DSP state without audio-callback allocation.
+  - [x] Fix plugin-host lifecycle linking in meter, display-hotplug and gadget-volume host tests; cover their build rules and verify the full CI test suite, including graph ThreadSanitizer.
+  - DSP/sanitizer, routing, HTTP persistence, MIDI/Lua and WebUI regressions pass; physical Pi listening and realtime performance still need validation.
 
 ## Release - v2.0+
 

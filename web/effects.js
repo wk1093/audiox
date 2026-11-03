@@ -100,7 +100,7 @@
         label: String(raw?.label || name),
         min: Number.isFinite(Number(raw?.min)) ? Number(raw.min) : 0,
         max: Number.isFinite(Number(raw?.max)) ? Number(raw.max) : 1,
-        ...parameterHelp(name),
+        ...parameterHelp(name, fx?.type),
         defaultValue: Number(raw.default),
         value: toNumber(params[name], Number(raw?.default) || 0),
       });
@@ -129,6 +129,8 @@
   const effectTypes = {
     gain: 'Gain', distortion: 'Distortion', pitch: 'Pitch Shift',
     reverb: 'Reverb', gate: 'Noise Gate', cut: 'Mute',
+    compressor: 'Compressor', limiter: 'Limiter', eq: 'Parametric EQ',
+    multiband: 'Multiband Compressor', noise_reduction: 'Noise Reduction',
   };
 
   const pluginStatusText = {
@@ -151,7 +153,7 @@
     return fx?.name || `${effectTypes[fx?.type] || 'Effect'} ${String(fx?.id || '').replace(/^fx_/, '')}`.trim();
   }
 
-  function parameterHelp(name) {
+  function parameterHelp(name, type) {
     const help = {
       level: ['Level', 'x', 'Multiplies the signal level. 1 is unchanged; 0 silences it.'],
       input_gain: ['Input gain', 'x', 'Level entering the effect. 1 leaves the input unchanged.'],
@@ -159,7 +161,7 @@
       drive: ['Drive', 'x', 'Pushes the distortion harder for a more saturated sound.'],
       clip: ['Clip threshold', '', 'Lower values clip the waveform sooner, adding more distortion.'],
       semitones: ['Pitch shift', 'st', 'Moves pitch down or up. 12 semitones is one octave.'],
-      mix: ['Effect mix', '', '0 is the original sound; 1 is entirely pitch-shifted sound.'],
+      mix: ['Effect mix', '', 'Blends dry and processed sound. 0 is dry; 1 is fully processed. Delayed effects align their dry signal internally.'],
       noise_floor: ['Noise floor', '', 'Suppresses very quiet input in the pitch shifter. Increase to reduce low-level artifacts.'],
       wet_lpf_hz: ['Wet tone cutoff', 'Hz', 'Low-pass filter on the shifted signal. Lower values make it darker.'],
       feedback: ['Reverb length', '', 'Higher feedback makes the reverb tail last longer.'],
@@ -170,9 +172,31 @@
       release_ms: ['Release', 'ms', 'How gradually the gate closes when input becomes quiet.'],
       range_db: ['Attenuation', 'dB', 'How much the gate reduces quiet input. Higher values silence more noise.'],
       channels: ['Channels', '', 'Number of audio channels. Changing this can remove routing sockets; check your connections.'],
+      ratio: ['Ratio', ':1', 'Compression ratio above the threshold. 1 leaves dynamics unchanged.'],
+      knee_db: ['Knee', 'dB', 'Width of the gradual transition into compression. 0 uses a hard knee.'],
+      makeup_db: ['Makeup gain', 'dB', 'Gain after compression. Positive values can overload downstream effects or outputs.'],
+      ceiling_db: ['Ceiling', 'dBFS', 'Maximum output sample peak; this is not a true-peak or intersample limiter.'],
+      lookahead_ms: ['Lookahead', 'ms', 'Delays the signal so the limiter can react before peaks reach the output. Changing this clears its delay history.'],
+      q: ['Q', '', 'Width of all three peaking EQ bands. Higher Q makes a narrower band.'],
+      reduction_db: ['Noise reduction', 'dB', 'Maximum suppression of estimated stationary noise. High values can make speech sound watery.'],
+      noise_floor_db: ['Noise floor', 'dBFS', 'Starting noise estimate. Set below the quietest speech you want to preserve.'],
+      adaptation: ['Adaptation', '', 'How quickly the estimated noise floor tracks quiet background noise. 0 freezes the estimate.'],
+      smoothing: ['Smoothing', '', 'Smooths spectral suppression across time to reduce musical noise.'],
     }[name];
+    const dynamics = type === 'compressor' || type === 'limiter' || type === 'multiband';
+    if (dynamics && name === 'threshold_db') help[2] = 'Signals above this dBFS level are compressed.';
+    if (dynamics && name === 'attack_ms') help[2] = 'How quickly gain reduction responds to a rising signal.';
+    if (dynamics && name === 'release_ms') help[2] = 'How gradually gain recovers after a peak.';
+    const band = name.match(/^(low|mid|high)_(hz|gain_db|threshold_db)$/);
+    const bandHelp = band ? {
+      unit: band[2] === 'hz' ? 'Hz' : 'dB',
+      description: band[2] === 'hz' ? (type === 'multiband' ?
+        'Crossover dividing the independently compressed bands.' : 'Center frequency of this peaking EQ band.') :
+        band[2] === 'gain_db' ? 'Boost or cut around this band center.' : 'Signals above this level are compressed in this band.',
+    } : {};
     return {
       ...(help ? { label: help[0], unit: help[1], description: help[2] } : { unit: '', description: '' }),
+      ...bandHelp,
       step: name === 'channels' || name.endsWith('_hz') ? 1 :
         name === 'noise_floor' ? 0.0001 : name.endsWith('_ms') || name.endsWith('_db') ? 0.1 : 0.01,
       precision: name === 'channels' || name.endsWith('_hz') ? 0 :

@@ -2,7 +2,7 @@
 .PHONY: test test-native test-web test-release test-audio-graph test-audio-graph-mailbox test-audio-graph-tsan test-build-dependencies test-storage-expand
 test: test-native test-web test-release
 
-test-native: test-audio-runtime test-audio-meters test-audio-graph test-audio-graph-mailbox \
+test-native: test-audio-runtime test-builtin-effects test-audio-meters test-audio-graph test-audio-graph-mailbox \
 	test-plugin-package test-plugin-host test-plugin-integration \
 	test-audio-pcm-recover test-bluetooth-hci test-bluetooth-a2dp test-display-hotplug test-soundboard-config \
 	test-boot-recovery test-config-backup test-system-logs test-system test-gadget-setup test-mdns \
@@ -50,10 +50,31 @@ AUDIO_EFFECT_SRCS = \
 	src/audio/effects/gain.cpp \
 	src/audio/effects/distortion.cpp \
 	src/audio/effects/gate.cpp \
+	src/audio/effects/dynamics.cpp \
+	src/audio/effects/equalizer.cpp \
+	src/audio/effects/noise_reduction.cpp \
 	src/audio/effects/pitch.cpp \
 	src/audio/effects/reverb.cpp
 
 HOST_CXXFLAGS += -DAUDIOX_PLUGIN_WORKER_PATH='"$(OUT_DIR)/host/audiox-plugin-worker"'
+
+.PHONY: test-builtin-effects
+test-builtin-effects: $(OUT_DIR)/host/audiox-dynamics-test $(OUT_DIR)/host/audiox-eq-noise-test $(OUT_DIR)/host/audiox-pitch-test
+	@"$(OUT_DIR)/host/audiox-dynamics-test"
+	@"$(OUT_DIR)/host/audiox-eq-noise-test"
+	@"$(OUT_DIR)/host/audiox-pitch-test"
+
+$(OUT_DIR)/host/audiox-dynamics-test: tests/audio_dynamics_test.cpp src/audio/effects/dynamics.cpp include/audio/effects/dynamics.hpp include/defs.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/audio_dynamics_test.cpp src/audio/effects/dynamics.cpp
+
+$(OUT_DIR)/host/audiox-eq-noise-test: tests/audio_eq_noise_test.cpp src/audio/effects/equalizer.cpp src/audio/effects/noise_reduction.cpp include/audio/effects/equalizer.hpp include/audio/effects/noise_reduction.hpp include/audio/effects/fft.hpp include/defs.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/audio_eq_noise_test.cpp src/audio/effects/equalizer.cpp src/audio/effects/noise_reduction.cpp
+
+$(OUT_DIR)/host/audiox-pitch-test: tests/audio_pitch_test.cpp src/audio/effects/pitch.cpp include/audio/effects/pitch.hpp include/audio/effects/state_bank.hpp include/audio/effects/fft.hpp include/defs.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/audio_pitch_test.cpp src/audio/effects/pitch.cpp
 
 .PHONY: test-plugin-package test-plugin-host test-plugin-integration
 test-plugin-package: $(OUT_DIR)/host/plugin-package-test
@@ -158,19 +179,20 @@ test-display-hotplug: $(OUT_DIR)/host/audiox-display-hotplug-test
 test-audio-meters: $(OUT_DIR)/host/audiox-audio-meters-test
 	@"$<"
 
-$(OUT_DIR)/host/audiox-audio-meters-test: tests/audio_meters_test.cpp src/audio/graph.cpp include/json.hpp $(wildcard include/audio/*.hpp include/bluetooth/*.hpp include/config/*.hpp)
+$(OUT_DIR)/host/audiox-audio-meters-test: tests/audio_meters_test.cpp src/audio/graph.cpp src/audio/plugin_host.cpp include/json.hpp $(wildcard include/audio/*.hpp include/bluetooth/*.hpp include/config/*.hpp)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-format-truncation -Iinclude \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections \
-		-o "$@" "$<" $(shell pkg-config --cflags alsa) -pthread
+		-o "$@" "$<" src/audio/plugin_host.cpp $(shell pkg-config --cflags alsa) -pthread
 
 $(OUT_DIR)/host/audiox-display-hotplug-test: tests/display_hotplug_test.cpp src/context.cpp \
+		src/audio/plugin_host.cpp \
 		src/framebuffer/hardware.cpp src/framebuffer/drawing.cpp src/framebuffer/ui.cpp src/touch/touch.cpp \
 		$(wildcard include/framebuffer/*.hpp include/touch/*.hpp include/audio/*.hpp include/config/*.hpp include/midi/*.hpp) include/context.hpp include/defs.hpp
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-parameter -Iinclude \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections \
-		-o "$@" tests/display_hotplug_test.cpp src/context.cpp $(shell pkg-config --cflags alsa)
+		-o "$@" tests/display_hotplug_test.cpp src/context.cpp src/audio/plugin_host.cpp $(shell pkg-config --cflags alsa) -pthread
 
 test-soundboard-config: $(OUT_DIR)/host/audiox-soundboard-config-test
 	@"$<"
@@ -270,12 +292,12 @@ $(OUT_DIR)/host/audiox-audio-runtime-test: tests/audio_runtime_test.cpp src/audi
 		tests/audio_runtime_test.cpp src/audio/processing_fx.cpp src/audio/gadget_volume.cpp \
 		$(AUDIO_EFFECT_SRCS) $(shell pkg-config --cflags --libs alsa) -pthread -lm
 
-$(OUT_DIR)/host/audiox-gadget-volume-test: tests/gadget_volume_test.cpp src/audio/processing.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp $(wildcard include/audio/*.hpp include/audio/*.h) $(AUDIOX_CONFIG_FILE)
+$(OUT_DIR)/host/audiox-gadget-volume-test: tests/gadget_volume_test.cpp src/audio/processing.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp src/audio/plugin_host.cpp $(wildcard include/audio/*.hpp include/audio/*.h) $(AUDIOX_CONFIG_FILE)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-function -Wno-format-truncation -Wno-unused-parameter \
 		-Iinclude -DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) -DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections -o "$@" \
-		tests/gadget_volume_test.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp $(shell pkg-config --cflags --libs alsa) -pthread -lm
+		tests/gadget_volume_test.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp src/audio/plugin_host.cpp $(shell pkg-config --cflags --libs alsa) -pthread -lm
 
 test-diagnostics: $(OUT_DIR)/host/audiox-diagnostics-test
 	@"$<"

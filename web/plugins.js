@@ -1,6 +1,7 @@
 (() => {
   const MAX_PLUGIN_BYTES = 12 * 1024 * 1024;
-  const BUILTIN_TYPES = new Set(['gain', 'distortion', 'pitch', 'reverb', 'gate', 'cut']);
+  const BUILTIN_TYPES = new Set(['gain', 'distortion', 'pitch', 'reverb', 'gate', 'cut',
+    'compressor', 'limiter', 'eq', 'multiband', 'noise_reduction']);
 
   function normalizePluginId(value) {
     const id = String(value ?? '').trim();

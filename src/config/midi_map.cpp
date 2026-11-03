@@ -362,7 +362,12 @@ static int parseEffectStateLine(const char *value,
         strcmp(parts[1], "pitch") != 0 &&
         strcmp(parts[1], "reverb") != 0 &&
         strcmp(parts[1], "gate") != 0 &&
-        strcmp(parts[1], "cut") != 0 && !audiox::plugin::validTypeName(parts[1])) {
+        strcmp(parts[1], "cut") != 0 &&
+        strcmp(parts[1], "compressor") != 0 &&
+        strcmp(parts[1], "limiter") != 0 &&
+        strcmp(parts[1], "eq") != 0 &&
+        strcmp(parts[1], "multiband") != 0 &&
+        strcmp(parts[1], "noise_reduction") != 0 && !audiox::plugin::validTypeName(parts[1])) {
         return RET_ERR;
     }
 
@@ -1280,6 +1285,11 @@ void midiEffectDisplayName(const MidiMapData &map, const char *id, const char *t
                         !strcmp(type, "cut") ? "Mute" :
                         !strcmp(type, "distortion") ? "Distortion" :
                         !strcmp(type, "pitch") ? "Pitch Shift" :
+                        !strcmp(type, "compressor") ? "Compressor" :
+                        !strcmp(type, "limiter") ? "Limiter" :
+                        !strcmp(type, "eq") ? "Parametric EQ" :
+                        !strcmp(type, "multiband") ? "Multiband Compressor" :
+                        !strcmp(type, "noise_reduction") ? "Noise Reduction" :
                         !strcmp(type, "reverb") ? "Reverb" : "Gain";
     snprintf(out, capacity, "%s %s", label, !strncmp(id, "fx_", 3) ? id + 3 : id);
 }

@@ -644,11 +644,11 @@ int main() {
             int result;
             if (!strncmp(path, "/api/plugins", 12))
                 result = handlePlugins(&http, sockets[0], method, path, body.data(), body.size());
-            else if (!strcmp(path, "/api/effects/create"))
+            else if (!strcmp(path, "/api/effect/create"))
                 result = handleEffectCreate(&http, sockets[0], method, path, body.data(), body.size());
-            else if (!strcmp(path, "/api/effects/set"))
+            else if (!strcmp(path, "/api/effect/set"))
                 result = handleEffectSet(&http, sockets[0], method, path, body.data(), body.size());
-            else if (!strcmp(path, "/api/effects/delete"))
+            else if (!strcmp(path, "/api/effect/delete"))
                 result = handleEffectDelete(&http, sockets[0], method, path, body.data(), body.size());
             else result = handleEffects(&http, sockets[0], method, path);
             assert(result == 0);
@@ -662,13 +662,54 @@ int main() {
             close(sockets[1]);
             return response;
         };
+        const auto savedBeforeBuiltinCount = config.readMidiMapFile().effectStateCount;
+        for (const char *type : {"compressor", "limiter", "eq", "multiband", "noise_reduction"}) {
+            const auto created = pluginRequest("POST", "/api/effect/create", std::string("type=") + type);
+            assert(created.find("200 OK") != std::string::npos);
+            saved = config.readMidiMapFile();
+            assert(saved.effectStateCount == savedBeforeBuiltinCount + 1);
+            const auto &definition = saved.effectStates[saved.effectStateCount - 1];
+            assert(!strcmp(definition.type, type));
+            const std::string effectId = definition.effectId;
+            const auto *spec = audiox::effects::effectTypeSpecFor(audiox::effects::effectTypeFromString(type));
+            for (uint8_t index = 0; index < spec->paramCount; ++index) {
+                const auto &param = spec->params[index];
+                const float value = param.minValue + (param.maxValue - param.minValue) * .25f;
+                assert(pluginRequest("POST", "/api/effect/set", "id=" + effectId +
+                    "&param=" + param.name + "&value=" + std::to_string(value)).find("200 OK") != std::string::npos);
+            }
+            audio.loadEffectsFromConfig();
+            audiox::effects::SlotParams restored{};
+            assert(audio.getEffectParams(effectId.c_str(), &restored) == RET_OK);
+            assert(restored.type == spec->type && restored.enabled);
+            const auto metadata = pluginRequest("GET", "/api/effects", "");
+            assert(metadata.find(std::string("\"type\":\"") + type + "\"") != std::string::npos);
+            const char *label = !strcmp(type, "compressor") ? "Compressor" :
+                !strcmp(type, "limiter") ? "Limiter" : !strcmp(type, "eq") ? "Parametric EQ" :
+                !strcmp(type, "multiband") ? "Multiband Compressor" : "Noise Reduction";
+            assert(metadata.find(std::string("\"name\":\"") + label + " " + effectId.substr(3) +
+                                  "\"") != std::string::npos);
+            for (uint8_t index = 0; index < spec->paramCount; ++index) {
+                const auto &param = spec->params[index];
+                const float value = param.minValue + (param.maxValue - param.minValue) * .25f;
+                assert(fabsf(restored.values[index] - value) < 1e-4f);
+                assert(metadata.find(std::string("\"name\":\"") + param.name + "\"") != std::string::npos);
+                assert(audio.setEffectParamNormalized(effectId.c_str(), param.name, 1) == RET_OK);
+                audiox::effects::SlotParams midiControlled{};
+                assert(audio.getEffectParams(effectId.c_str(), &midiControlled) == RET_OK);
+                assert(midiControlled.values[index] == param.maxValue);
+            }
+            assert(pluginRequest("POST", "/api/effect/delete", "id=" + effectId).find("200 OK") != std::string::npos);
+            assert(config.readMidiMapFile().effectStateCount == savedBeforeBuiltinCount);
+        }
+        puts("New builtin HTTP creation, parameter metadata, full parameter persistence/reload and deletion tests passed");
         const auto emptyCatalog = pluginRequest("GET", "/api/plugins", "");
         if (emptyCatalog.find("\"plugins\":[]") == std::string::npos) fprintf(stderr, "%s\n", emptyCatalog.c_str());
         assert(emptyCatalog.find("\"plugins\":[]") != std::string::npos);
         assert(pluginRequest("PUT", "/api/plugins/install", "invalid").find("400 Bad Request") != std::string::npos);
         assert(pluginRequest("POST", "/api/plugins/remove", "id=../../config").find("400 Bad Request") != std::string::npos);
         assert(pluginRequest("GET", "/api/plugins/plugin_gain/assets/../midi_map.txt", "").find("404 Not Found") != std::string::npos);
-        assert(pluginRequest("POST", "/api/effects/create", "type=plugin_missing").find("400 Bad Request") != std::string::npos);
+        assert(pluginRequest("POST", "/api/effect/create", "type=plugin_missing").find("400 Bad Request") != std::string::npos);
         if (const char *fixture = getenv("AUDIOX_TEST_PLUGIN_PACKAGE")) {
             assert(chmod(".", 0755) == 0);
             std::ifstream input(fixture, std::ios::binary);
@@ -707,11 +748,11 @@ int main() {
             audiox::effects::SlotParams restored{};
             assert(audio.getEffectParams("fx_1234", &restored) == RET_OK);
             assert(restored.pluginHost && restored.values[0] == 1.6f);
-            assert(pluginRequest("POST", "/api/effects/delete", "id=fx_1234").find("200 OK") != std::string::npos);
+            assert(pluginRequest("POST", "/api/effect/delete", "id=fx_1234").find("200 OK") != std::string::npos);
             const std::string ui = pluginRequest("GET", ("/api/plugins/" + id + "/assets/index.html").c_str(), "");
             assert(ui.find("sandbox allow-scripts") != std::string::npos);
             assert(ui.find("connect-src 'none'") != std::string::npos);
-            const std::string created = pluginRequest("POST", "/api/effects/create", "type=" + id);
+            const std::string created = pluginRequest("POST", "/api/effect/create", "type=" + id);
             assert(created.find("200 OK") != std::string::npos);
             const auto persisted = config.readMidiMapFile();
             const auto &effect = persisted.effectStates[persisted.effectStateCount - 1];
@@ -721,7 +762,7 @@ int main() {
             assert(pluginRequest("POST", "/api/plugins/remove", "id=" + id).find("409 Conflict") != std::string::npos);
             if (package.metadata.paramCount) {
                 const auto &parameter = package.metadata.params[0];
-                assert(pluginRequest("POST", "/api/effects/set",
+                assert(pluginRequest("POST", "/api/effect/set",
                     "id=" + effectId + "&param=" + parameter.name + "&value=" +
                     std::to_string(parameter.max)).find("200 OK") != std::string::npos);
                 audiox::effects::SlotParams params{};
@@ -731,7 +772,7 @@ int main() {
                 assert(value == parameter.max);
             }
             assert(pluginRequest("POST", "/api/plugins/reload", "id=" + id).find("200 OK") != std::string::npos);
-            assert(pluginRequest("POST", "/api/effects/delete", "id=" + effectId).find("200 OK") != std::string::npos);
+            assert(pluginRequest("POST", "/api/effect/delete", "id=" + effectId).find("200 OK") != std::string::npos);
             audio.pollPlugins();
             assert(pluginRequest("POST", "/api/plugins/remove", "id=" + id).find("200 OK") != std::string::npos);
             assert(!audiox::plugin::available(audiox::plugin::findType(id.c_str())));
@@ -1400,6 +1441,27 @@ int main() {
         macroRequest("POST", "id=" + std::to_string(webId), "200 OK", true);
         stepMacro(8120);
         assert(strstr(midi.macroErrors[1], "connected controller"));
+        const auto beforeBuiltinScripts = scriptedParams;
+        unsigned builtinScriptIndex = 0;
+        for (const char *type : {"compressor", "limiter", "eq", "multiband", "noise_reduction"}) {
+            const uint8_t effectType = audiox::effects::effectTypeFromString(type);
+            const auto &param = audiox::effects::effectTypeSpecFor(effectType)->params[0];
+            const float value = param.minValue + (param.maxValue - param.minValue) * .25f;
+            assert(audio.setEffectType("fx_7", effectType) == RET_OK);
+            const std::string source = std::string("effects.set('fx_7','") + param.name + "'," +
+                std::to_string(value) + "); effects.enable('fx_7',false); effects.toggle('fx_7')";
+            saveNamed("Renamed", source.c_str(), webId);
+            const auto persistedSource = readMidiConfig();
+            macroRequest("POST", "id=" + std::to_string(webId), "200 OK", true);
+            stepMacro(8130 + 10 * builtinScriptIndex++);
+            assert(!midi.macroErrors[1][0]);
+            assert(audio.getEffectParams("fx_7", &scriptedParams) == RET_OK);
+            assert(scriptedParams.type == effectType && scriptedParams.enabled);
+            assert(fabsf(scriptedParams.values[0] - value) < 1e-4f);
+            assert(readMidiConfig() == persistedSource);
+        }
+        assert(audio.setEffectType("fx_7", beforeBuiltinScripts.type) == RET_OK);
+        assert(audio.setEffectParam("fx_7", "channels", beforeBuiltinScripts.values[0]) == RET_OK);
         macroRequest("POST", "id=4294967296", "400 Bad Request", true);
         macroRequest("POST", "id=999", "404 Not Found", true);
         macroRequest("GET", "", "405 Method Not Allowed", true);

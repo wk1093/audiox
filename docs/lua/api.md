@@ -278,6 +278,13 @@ For **Cut**, enabled means **muted** and disabled means **passing**.
 Cut mute.
 
 `effects.set` changes a numeric parameter, not the effect type or its routes.
+Built-in type names are `gain`, `distortion`, `pitch`, `reverb`, `gate`, `cut`,
+`compressor`, `limiter`, `eq`, `multiband`, and `noise_reduction`.
+The new effects use the same API; for example a Compressor supports
+`threshold_db`, `ratio`, `attack_ms`, `release_ms`, `knee_db`, `makeup_db`, and
+`mix`. EQ band controls use `low_hz`/`low_gain_db`, `mid_hz`/`mid_gain_db`, and
+`high_hz`/`high_gain_db`, plus shared `q` and `output_gain`.
+See [Effects](../guide/effects.md) for every range, default and latency caveat.
 For example, with an existing Pitch effect whose ID is `fx_2`:
 
 ```lua

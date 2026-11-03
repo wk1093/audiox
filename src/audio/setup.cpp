@@ -823,12 +823,7 @@ int AudioContext::setEffectType(const char *thingId, uint8_t type) {
 
     audiox::effects::SlotParams params{};
     if (getEffectParams(thingId, &params) != RET_OK) return RET_ERR;
-    if (type != audiox::effects::EFFECT_GAIN &&
-        type != audiox::effects::EFFECT_DISTORTION &&
-        type != audiox::effects::EFFECT_PITCH &&
-        type != audiox::effects::EFFECT_REVERB &&
-        type != audiox::effects::EFFECT_GATE &&
-        type != audiox::effects::EFFECT_CUT && !audiox::plugin::available(type)) {
+    if (!audiox::effects::isBuiltinEffectType(type) && !audiox::plugin::available(type)) {
         return RET_ERR;
     }
     const uint8_t previousType = params.type;

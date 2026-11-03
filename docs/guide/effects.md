@@ -97,10 +97,72 @@ increments; the backend accepts the listed ranges.
 |  | Release ms | 5–600 ms | 160 ms |
 |  | Range dB | 0–80 dB | 30 dB |
 | **Cut** | Channels | 1–16, whole numbers | 2 |
+| **Compressor** | Threshold | −60–0 dBFS | −18 |
+| | Ratio | 1–20:1 | 4 |
+| | Attack | 0.1–100 ms | 10 |
+| | Release | 5–1,000 ms | 120 |
+| | Knee | 0–24 dB | 6 |
+| | Makeup | −12–24 dB | 0 |
+| | Mix | 0–1 | 1 |
+| **Limiter** | Ceiling | −24–0 dBFS | −1 |
+| | Release | 5–1,000 ms | 80 |
+| | Lookahead | 0–10 ms | 3 |
+| | Input Gain | 0–4 | 1 |
+| **Parametric EQ** | Low Hz / Gain | 40–1,000 Hz / −18–18 dB | 150 Hz / 0 dB |
+| | Mid Hz / Gain | 200–8,000 Hz / −18–18 dB | 1,000 Hz / 0 dB |
+| | High Hz / Gain | 1,000–18,000 Hz / −18–18 dB | 6,000 Hz / 0 dB |
+| | Shared Q | 0.2–10 | 1 |
+| | Output Gain | 0–4 | 1 |
+| **Multiband Compressor** | Low Crossover | 80–1,000 Hz | 200 |
+| | High Crossover | 1,000–10,000 Hz | 2,500 |
+| | Low / Mid / High Threshold | −60–0 dBFS each | −18 |
+| | Shared Ratio | 1–20:1 | 4 |
+| | Release | 5–1,000 ms | 120 |
+| | Makeup | −12–24 dB | 0 |
+| **Noise Reduction** | Reduction | 0–30 dB | 12 |
+| | Starting Noise Floor | −90–−20 dBFS | −55 |
+| | Adaptation | 0–1 | 0.1 |
+| | Smoothing | 0–1 | 0.7 |
+| | Mix | 0–1 | 1 |
+| | Output Gain | 0–4 | 1 |
 
 Cut's **Channels** setting changes how many input and output sockets the node
 has. If the count changes, reconnect routes that refer to channels that no
 longer exist. A newly created Cut is in its passing (not muted) state.
+
+### Algorithms, headroom and latency
+
+- **Compressor** uses a sample-peak detector with soft knee, gain-reduction
+  attack/release, makeup and parallel dry/wet mixing. **Limiter** caps sample
+  peaks, not intersample/true peaks. It adds its selected lookahead delay;
+  changing lookahead clears history, so a brief gap is possible.
+- **Parametric EQ** has three peaking bands and a shared Q, with a short
+  coefficient-change crossfade. **Multiband Compressor** uses three
+  Linkwitz-Riley bands, fixed 10 ms attack and 6 dB knee. Ratio 1 and makeup 0
+  have unity magnitude but allpass phase, not sample-identical bypass.
+  Frequencies are bounded below Nyquist; the high crossover stays above the low.
+- Dynamics detectors are independent per channel, not stereo-linked. Compression,
+  makeup and EQ boosts can overload the next node or final output; reduce gain
+  or add a final limiter. These three effects add no explicit block delay.
+- **Noise Reduction** suppresses estimated stationary background noise, such as
+  hiss or fans. It is not acoustic echo cancellation or an ML voice separator.
+  Set the starting floor below quiet speech; excessive reduction can introduce
+  watery/musical artifacts. Adaptation 0 freezes the estimate. Its phase-preserving
+  spectral processor adds **256 frames** (5.33 ms at 48 kHz), including dry mix.
+- **Pitch** uses a 1024-sample phase vocoder with a 128-sample hop. Shifted audio
+  and its internal dry mix have **1024 frames** of delay (21.33 ms at 48 kHz).
+  Zero semitones or Mix 0 are immediate, transparent apart from input/output
+  gain and peak clamping. Switching between these and shifted processing clears
+  history and changes latency. Pitch remains non-formant-preserving and can
+  sound phasey, soften transients, or lose level on upward shifts. Overlap-add
+  normalization is corrected so downshifts no longer receive the old unintended
+  level boost.
+
+Delays affect only routes through the corresponding enabled effect, never
+unrelated routes. Bypass is immediate and clears effect history. There is no
+automatic latency compensation between parallel graph routes; mixing an external
+dry route with a delayed effect can comb-filter. Re-enabling or changing type
+does not replay old tails.
 
 ## Audio idle sleep
 
@@ -117,7 +179,7 @@ and outputs at or below the noise floor count as quiet, so analog background
 noise need not prevent sleep. This intentionally suppresses very quiet real
 audio while asleep; input must exceed the floor to wake processing.
 
-Reverb and pitch delay memory must settle before an audible path can sleep;
+Reverb, pitch, EQ, multiband, limiter and noise-reduction audio memory must settle before an audible path can sleep;
 residuals at or below the same `0.001` noise floor are treated as silent.
 Muted/disconnected tails are cleared on sleep entry rather than frozen and
 replayed later. New signal on

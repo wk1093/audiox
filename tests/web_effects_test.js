@@ -66,6 +66,28 @@ const gain = {
   params: { level: 1 }, param_meta: [{ name: 'level', label: 'Level', min: 0, max: 4, default: 1 }],
 };
 
+test('advanced builtins have names, dynamic sliders and type-specific help, not plugin UI', async () => {
+  const names = { compressor: 'Compressor', limiter: 'Limiter', eq: 'Parametric EQ',
+    multiband: 'Multiband Compressor', noise_reduction: 'Noise Reduction' };
+  for (const [type, name] of Object.entries(names)) {
+    const f = fixture();
+    assert.equal(f.api.effectName({ id: 'fx_9', type }), `${name} 9`);
+    const param = type === 'compressor' ? 'threshold_db' : type === 'limiter' ? 'ceiling_db' :
+      type === 'eq' ? 'mid_gain_db' : type === 'multiband' ? 'low_threshold_db' : 'reduction_db';
+    const fx = { ...gain, type, name: `${name} 9`, params: { [param]: 0 },
+      param_meta: [{ name: param, label: 'Test parameter', min: -60, max: 30, default: 0 }] };
+    const [meta] = f.api.dynamicParamList(fx);
+    assert.ok(meta.description.length > 20);
+    if (type === 'compressor') {
+      assert.match(meta.description, /above.*compressed/);
+      assert.doesNotMatch(meta.description, /gate/);
+    }
+    f.setEffects([fx]);
+    await f.manager.loadEffects();
+    assert.ok(find(f.panel, el => el.className === 'fx-parameter'));
+    assert.equal(find(f.panel, el => el.textContent === 'Open custom UI'), undefined);
+  }
+});
 test('effects use saved or readable names, never internal IDs in their graph titles', async () => {
   const f = fixture();
   assert.equal(f.api.effectName({ id: 'fx_3', type: 'gate' }), 'Noise Gate 3');

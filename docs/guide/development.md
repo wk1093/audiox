@@ -255,6 +255,9 @@ Useful overrides include `QEMU_HTTP_PORT`, `QEMU_USBIP_PORT`, `QEMU_MEMORY`, `QE
 Host test rules are in `tests/Makefile`, included from the
 root Makefile. Run the focused targets for each change; `make test` runs the
 native, WebUI, and release-workflow suites.
+The host-test CI job also runs `make test-audio-graph-tsan` separately to check
+graph publication with ThreadSanitizer. AudioContext-based host fixtures link
+the real plugin-host lifecycle, even when they do not instantiate plugins.
 
 | Area | Targets |
 | --- | --- |

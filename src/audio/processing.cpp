@@ -1603,6 +1603,8 @@ static void processNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex)
 
     if (rt->nodeKind[nodeIndex] == NODE_EFFECT) {
         const auto &params = rt->effectParamsCache[nodeIndex];
+        for (uint8_t channel = 0; channel < channels; ++channel)
+            audiox::effects::prepareSlotAudio(thing.id, channel, params);
         if (audiox::plugin::isPluginType(params.type)) {
             if (params.pluginHost && params.enabled) {
                 const float *inputs[kMaxChannelsPerThing]{};

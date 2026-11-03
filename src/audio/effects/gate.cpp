@@ -77,7 +77,7 @@ void processGate(const float *in,
     const float kneeEndDb = thresholdDb + kKneeWidthDb;
 
     for (uint32_t frame = 0; frame < frames; ++frame) {
-        const float sample = in[frame];
+        const float sample = std::isfinite(in[frame]) ? in[frame] : 0.0f;
         const float level = fabsf(sample);
 
         if (level > env) {

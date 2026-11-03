@@ -42,7 +42,7 @@ void processDistortion(const float *in,
 
     const float shapedDrive = 1.0f + (drive * 6.0f);
     for (uint32_t frame = 0; frame < frames; ++frame) {
-        float s = in[frame] * inputGain * shapedDrive;
+        float s = std::isfinite(in[frame]) ? in[frame] * inputGain * shapedDrive : 0.0f;
         s = tanhf(s);
 
         if (s > clip) {

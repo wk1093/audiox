@@ -30,6 +30,11 @@ grep -Fq 'resolve_modules_test.sh' "$WORK/targets"
 grep -Fq -- '--test -C' "$WORK/targets"
 echo "PASS: host tests use the direct audio runtime through the root Makefile"
 
+for test in audio_meters display_hotplug gadget_volume; do
+    grep -E "tests/${test}_test.cpp.*src/audio/plugin_host.cpp" "$WORK/targets" >/dev/null
+done
+echo "PASS: AudioContext host fixtures link the real plugin-host lifecycle"
+
 touch "$WORK/config" "$WORK/menuconfig"
 for source in init/init init/watchdog audio/setup; do
     object="$WORK/obj/runtime/$source.o"

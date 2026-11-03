@@ -213,8 +213,8 @@ int main() {
     data.actionMappingCount = 1;
     data.actionMappings[0] = {39, MIDI_ACTION_STOP_ALL};
     data.effectStateCount = 2;
-    data.effectStates[0] = {"fx_7", "cut", 1, 0, 0, 0, 0};
-    data.effectStates[1] = {"fx_8", "gain", 1, 1, 0, 0, 0};
+    data.effectStates[0] = {"fx_7", "cut", 1, 0, 0, 0, 0, ""};
+    data.effectStates[1] = {"fx_8", "gain", 1, 1, 0, 0, 0, ""};
     data.effectParamCount = 1;
     data.effectParams[0] = {"fx_7", "channels", 6};
     data.effectToggleMappingCount = 1;

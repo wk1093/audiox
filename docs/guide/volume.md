@@ -12,9 +12,10 @@ current routing graph's list of nodes.
 
 ## Set a level
 
-1. Open **Volume** and find the node by its display name and ID.
-   Effect cards show their effect type (for example, **Reverb** or **Noise Gate**)
-   with the stable `fx_N` ID underneath to distinguish effects of the same type.
+1. Open **Volume** and find the node by its readable name.
+   Effect cards use the saved name from **Effects** (for example, **Mic Reverb**),
+   or a default such as **Reverb 3**. Expand **Advanced** only when you need
+   the stable scripting/routing ID.
 2. Drag its slider. The displayed value is from **0%** to **200%**.
 3. The change is applied immediately and stored; there is no separate Save
    button. Choose **Refresh** to reload the displayed values.

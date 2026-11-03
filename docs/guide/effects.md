@@ -12,8 +12,27 @@ effects, assign MIDI controls, set LED values, or delete an effect.
 
 WebUI effect changes take effect as you make them and are written to AudioX's
 persistent effect configuration. Lua effect changes are runtime-only.
-There is no separate Save button for the parameter sliders. A newly created effect receives an `fx_N` ID; use that ID
-when identifying the same effect in Routing, Effects, or automation.
+There is no separate Save button for parameter changes.
+
+## Names and precise controls
+
+Effects start with readable names such as **Reverb 3** or **Noise Gate 4**.
+On **Effects**, enter a name such as **Mic Reverb** and choose **Save name**.
+The name is saved across restarts and appears in Routing,
+Volume, and effect notifications. Clear the name and save to restore the
+automatic name. Names allow 63 UTF-8 bytes and cannot contain control characters.
+Names need not be unique; use distinct names when building larger patches.
+
+Each parameter has a slider, a precise numeric input, a unit where applicable,
+and an explanation below its label (also available on hover). **Reset** restores
+that parameter's factory default and saves it. Gain values use multipliers:
+`1x` is unchanged. Mix values remain fractions from 0 to 1, not percentages.
+The pitch noise-floor control retains four decimal places for fine adjustment.
+
+Expand **MIDI controls and pad lighting** only when assigning hardware controls.
+**Advanced and delete** holds the stable `fx_N` scripting/routing ID and Delete.
+Renaming never changes IDs, script references, audio parameters, or connections.
+The Volume card's **Advanced** disclosure also shows its scripting/routing ID.
 
 ## Add, connect, and edit an effect
 
@@ -23,9 +42,9 @@ when identifying the same effect in Routing, Effects, or automation.
    connect channel 0 to channel 0, channel 1 to channel 1, and so on.
 3. Adjust the parameter sliders displayed on the effect node. Changes are
    applied after a short debounce and saved automatically.
-4. On **Effects**, use **Bypass**/**Enable** for ordinary effects. A Cut node
-   uses **Mute**/**Unmute** instead. This panel also contains MIDI mapping,
-   LED color, and delete controls.
+4. On **Effects**, use **Bypass**/**Enable** for ordinary effects. A Mute (Cut) node
+   uses **Mute**/**Unmute** instead. Tune parameters here as well; expand the
+   MIDI or advanced sections for mapping, lighting, and deletion.
 
 Deleting an effect from the Effects page removes its saved effect state and its
 node from Routing. Check the graph and save the route changes you intend to
@@ -68,6 +87,7 @@ longer exist. A newly created Cut is in its passing (not muted) state.
 ## MIDI controls and effect LEDs
 
 Connect the MIDI controller you want to use, then open **Effects**:
+Expand the effect's **MIDI controls and pad lighting** section.
 
 - In a parameter row, choose **Map** and move the desired controller. AudioX
   captures the next incoming CC number and maps it to that parameter. The CC's

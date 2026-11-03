@@ -76,8 +76,9 @@ unavailable. The commands require access to your device, not this docs site.
 | `POST /api/routing/helper/create` or `/delete` | Create/remove the routing helper |
 | `GET /api/audio/volumes` | Audio thing IDs/names and current gains |
 | `POST /api/audio/volume/set` | Set and save a gain using `id` and `gain` |
-| `GET /api/effects` | Existing effects, parameter metadata, and MIDI assignments |
+| `GET /api/effects` | Existing effects, display `name`, saved `custom_name`, parameter metadata, and MIDI assignments |
 | `POST /api/effect/create`, `/set`, `/delete` | Manage an effect or its parameters |
+| `POST /api/effect/name` | Save `id` and `name_hex` (UTF-8 encoded as hex, up to 63 decoded bytes); empty name restores automatic naming |
 | `POST /api/effect/midi_cc/set`, `/delete` | Effect parameter CC mapping |
 | `POST /api/effect/midi_toggle/set`, `/delete` | Effect bypass-note mapping |
 | `POST /api/effect/midi_light/set`, `/delete` | Effect enabled/bypassed lighting |

@@ -196,7 +196,6 @@ function routingFixture(thingIds) {
       graph: {}, nodes: [], edges: [], dormantEdges: [], selectedEdgeIdx: -1, nodeByThingId,
       graphCanvas: { setDirty() {} },
     },
-    renderEdgesList() {},
   });
   vm.runInContext([
     slice('function edgeKey(', 'function findEdgeIndex('),

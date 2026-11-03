@@ -846,6 +846,23 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             if (parseEffectStateLine(value, data.effectStates, &data.effectStateCount) != RET_OK) {
                 printf("[CONFIG] [WARN] invalid fx_state in MIDI config\n");
             }
+        } else if (strcmp(key, "fx_name") == 0) {
+            char *comma = strchr(value, ',');
+            bool valid = false;
+            if (comma) {
+                *comma = '\0';
+                char name[64]{};
+                if (midiHexDecode(comma + 1, name, sizeof(name)) && midiEffectNameValid(name)) {
+                    for (uint32_t i = 0; i < data.effectStateCount; ++i) {
+                        if (!strcmp(data.effectStates[i].effectId, value)) {
+                            copyBounded(data.effectStates[i].name, sizeof(data.effectStates[i].name), name);
+                            valid = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!valid) printf("[CONFIG] [WARN] invalid fx_name (must follow its fx_state)\n");
         } else if (strcmp(key, "fx_param") == 0) {
             if (parseEffectParamLine(value, data.effectParams, &data.effectParamCount) != RET_OK) {
                 printf("[CONFIG] [WARN] invalid fx_param in MIDI config\n");
@@ -1095,6 +1112,10 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
                     (double)data->effectStates[i].drive,
                     (double)data->effectStates[i].clip,
                     (double)data->effectStates[i].output);
+            if (data->effectStates[i].name[0]) {
+                dprintf(fd, "fx_name=%s,%s\n", data->effectStates[i].effectId,
+                        midiHexEncode(data->effectStates[i].name).c_str());
+            }
         }
     }
 
@@ -1224,6 +1245,44 @@ static int readFxParamsPath(const char *path, MidiEffectParam *out, uint32_t *co
 
 } // namespace
 
+bool midiEffectNameValid(const char *name) {
+    if (!name || strnlen(name, 64) >= 64) return false;
+    const auto *p = reinterpret_cast<const unsigned char *>(name);
+    while (*p) {
+        if (*p < 32 || *p == 127) return false;
+        if (*p < 128) { ++p; continue; }
+        unsigned value = 0, bytes = 0, minimum = 0;
+        if (*p >= 0xc2 && *p <= 0xdf) { value = *p & 31; bytes = 1; minimum = 0x80; }
+        else if (*p >= 0xe0 && *p <= 0xef) { value = *p & 15; bytes = 2; minimum = 0x800; }
+        else if (*p >= 0xf0 && *p <= 0xf4) { value = *p & 7; bytes = 3; minimum = 0x10000; }
+        else return false;
+        ++p;
+        for (unsigned i = 0; i < bytes; ++i, ++p) {
+            if ((*p & 0xc0) != 0x80) return false;
+            value = (value << 6) | (*p & 63);
+        }
+        if (value < minimum || value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff) ||
+            (value >= 0x80 && value <= 0x9f)) return false;
+    }
+    return true;
+}
+
+void midiEffectDisplayName(const MidiMapData &map, const char *id, const char *type,
+                           char *out, size_t capacity) {
+    for (uint32_t i = 0; i < std::min<uint32_t>(map.effectStateCount, MIDI_EFFECT_STATES_MAX); ++i) {
+        if (!strcmp(map.effectStates[i].effectId, id) && map.effectStates[i].name[0]) {
+            copyBounded(out, capacity, map.effectStates[i].name);
+            return;
+        }
+    }
+    const char *label = !strcmp(type, "gate") ? "Noise Gate" :
+                        !strcmp(type, "cut") ? "Mute" :
+                        !strcmp(type, "distortion") ? "Distortion" :
+                        !strcmp(type, "pitch") ? "Pitch Shift" :
+                        !strcmp(type, "reverb") ? "Reverb" : "Gain";
+    snprintf(out, capacity, "%s %s", label, !strncmp(id, "fx_", 3) ? id + 3 : id);
+}
+
 MidiMapData ConfigStore::readMidiMapFile() const {
     MidiMapData data = {};
     int rc = readMidiMapPath(MIDI_MAP_REAL_FILE_PATH, &data);
@@ -1254,9 +1313,11 @@ int ConfigStore::writeMidiMapFile(MidiMapData *data) {
     }
     for (uint32_t i = 0; i < std::min<uint32_t>(data->effectStateCount, MIDI_EFFECT_STATES_MAX); ++i) {
         const auto &state = data->effectStates[i];
-        if (!std::isfinite(state.gain) || !std::isfinite(state.drive) ||
+        if (strnlen(state.name, sizeof(state.name)) == sizeof(state.name) ||
+            !midiEffectNameValid(state.name) ||
+            !std::isfinite(state.gain) || !std::isfinite(state.drive) ||
             !std::isfinite(state.clip) || !std::isfinite(state.output)) {
-            printf("[CONFIG] [WARN] rejected non-finite effect state\n");
+            printf("[CONFIG] [WARN] rejected invalid effect name or non-finite effect state\n");
             return RET_ERR;
         }
     }

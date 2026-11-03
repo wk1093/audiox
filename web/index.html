@@ -64,7 +64,6 @@
                 <button id="btn-zoom-fit">Fit</button>
               </div>
               <span class="graph-hint" id="zoom-label" hidden>zoom 100%</span>
-              <button id="btn-route-details" class="flat" aria-expanded="false" aria-controls="routing-details">Details</button>
               <button id="btn-graph-fullscreen" class="flat" aria-pressed="false">Fullscreen</button>
             </div>
             <div class="graph-hint">Drag output to input to connect. Click a wire to remove it. Drag headers to move nodes; scroll to zoom.</div>
@@ -75,35 +74,6 @@
           </div>
         </section>
 
-        <aside class="side-stack" id="routing-details">
-          <section class="card">
-            <h2>Routing Overview</h2>
-            <div class="metric-grid" style="margin-top: 8px;">
-              <div class="metric">
-                <div class="label">Nodes</div>
-                <div class="value" id="metric-node-count">0</div>
-              </div>
-              <div class="metric">
-                <div class="label">Routes</div>
-                <div class="value" id="metric-route-count">0</div>
-              </div>
-              <div class="metric">
-                <div class="label">Selected Node</div>
-                <div class="value" id="metric-selected-node">-</div>
-              </div>
-              <div class="metric">
-                <div class="label">Selected Route</div>
-                <div class="value" id="metric-selected-route">-</div>
-              </div>
-            </div>
-            <div id="route-inspector" class="small" style="margin-top: 10px;">Select a node or route for details.</div>
-          </section>
-
-          <section class="card">
-            <h2>Routes</h2>
-            <div id="edge-list" class="edge-list" style="margin-top: 8px;"></div>
-          </section>
-        </aside>
       </div>
     </section>
 
@@ -129,9 +99,9 @@
     <section class="page" data-page="effects">
       <div class="effects-layout">
         <section class="card">
-          <h2>Effect Mapping</h2>
+          <h2>Effects</h2>
           <div id="effects-map-status" class="small" style="margin-top:8px;">
-            Map MIDI CCs and bypass notes per effect.
+            Name and tune your effects here. Changes save automatically. Add effects from the Routing menu; expand MIDI controls only when you need them.
           </div>
         </section>
         <div id="effects-map-grid" class="effects-map-grid"></div>

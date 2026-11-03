@@ -100,8 +100,8 @@
         label: String(raw?.label || name),
         min: Number.isFinite(Number(raw?.min)) ? Number(raw.min) : 0,
         max: Number.isFinite(Number(raw?.max)) ? Number(raw.max) : 1,
-        step: name === 'channels' ? 1 : 0.01,
-        precision: name === 'channels' ? 0 : 2,
+        ...parameterHelp(name),
+        defaultValue: Number(raw.default),
         value: toNumber(params[name], Number(raw?.default) || 0),
       });
     }
@@ -126,6 +126,44 @@
     return out;
   }
 
+  const effectTypes = {
+    gain: 'Gain', distortion: 'Distortion', pitch: 'Pitch Shift',
+    reverb: 'Reverb', gate: 'Noise Gate', cut: 'Mute',
+  };
+
+  function effectName(fx) {
+    return fx?.name || `${effectTypes[fx?.type] || 'Effect'} ${String(fx?.id || '').replace(/^fx_/, '')}`.trim();
+  }
+
+  function parameterHelp(name) {
+    const help = {
+      level: ['Level', 'x', 'Multiplies the signal level. 1 is unchanged; 0 silences it.'],
+      input_gain: ['Input gain', 'x', 'Level entering the effect. 1 leaves the input unchanged.'],
+      output_gain: ['Output gain', 'x', 'Level after processing. Reduce this if the result is too loud.'],
+      drive: ['Drive', 'x', 'Pushes the distortion harder for a more saturated sound.'],
+      clip: ['Clip threshold', '', 'Lower values clip the waveform sooner, adding more distortion.'],
+      semitones: ['Pitch shift', 'st', 'Moves pitch down or up. 12 semitones is one octave.'],
+      mix: ['Effect mix', '', '0 is the original sound; 1 is entirely pitch-shifted sound.'],
+      noise_floor: ['Noise floor', '', 'Suppresses very quiet input in the pitch shifter. Increase to reduce low-level artifacts.'],
+      wet_lpf_hz: ['Wet tone cutoff', 'Hz', 'Low-pass filter on the shifted signal. Lower values make it darker.'],
+      feedback: ['Reverb length', '', 'Higher feedback makes the reverb tail last longer.'],
+      damping: ['High-frequency damping', '', 'Higher values absorb more high frequencies for a darker reverb tail.'],
+      wet_mix: ['Reverb mix', '', 'Blends the reverb with the original sound. 0 is dry; 1 is wet.'],
+      threshold_db: ['Threshold', 'dB', 'The gate turns down signals quieter than this level.'],
+      attack_ms: ['Attack', 'ms', 'How quickly the gate opens when input rises above the threshold.'],
+      release_ms: ['Release', 'ms', 'How gradually the gate closes when input becomes quiet.'],
+      range_db: ['Attenuation', 'dB', 'How much the gate reduces quiet input. Higher values silence more noise.'],
+      channels: ['Channels', '', 'Number of audio channels. Changing this can remove routing sockets; check your connections.'],
+    }[name];
+    return {
+      ...(help ? { label: help[0], unit: help[1], description: help[2] } : { unit: '', description: '' }),
+      step: name === 'channels' || name.endsWith('_hz') ? 1 :
+        name === 'noise_floor' ? 0.0001 : name.endsWith('_ms') || name.endsWith('_db') ? 0.1 : 0.01,
+      precision: name === 'channels' || name.endsWith('_hz') ? 0 :
+        name === 'noise_floor' ? 4 : name.endsWith('_ms') || name.endsWith('_db') ? 1 : 2,
+    };
+  }
+
   class EffectsManager {
     constructor(setStatus, onLayoutChange = () => {}) {
       this.setStatus = typeof setStatus === 'function' ? setStatus : (() => {});
@@ -144,6 +182,7 @@
       this.mutationInFlight = 0;
       this.loadEpoch = 0;
       this.effectsSignature = '';
+      this.nameDrafts = new Map();
     }
 
     mountPanel(panelEl, statusEl) {
@@ -159,6 +198,70 @@
       this.panelStatusEl.textContent = AudioxUI.formatMessage(text);
       this.panelStatusEl.className = `small ${kind}`.trim();
       if (kind === 'warn') this.setStatus(text, kind);
+    }
+
+    displayName(id) {
+      return effectName(this.effectsById.get(id) || { id });
+    }
+
+    parameterName(id, param) {
+      return dynamicParamList(this.effectsById.get(id)).find(row => row.name === param)?.label || param;
+    }
+
+    appendParameterControl(parent, row, fx) {
+      const control = document.createElement('div');
+      control.className = 'fx-parameter';
+      const label = document.createElement('label');
+      const inputId = `${fx.id}-${row.name}-value`;
+      label.htmlFor = inputId;
+      label.textContent = row.label + (row.unit ? ` (${row.unit})` : '');
+      control.appendChild(label);
+      const help = document.createElement('p');
+      help.className = 'small fx-param-help';
+      help.id = `${inputId}-help`;
+      help.textContent = row.description || `Adjust ${row.label.toLowerCase()} between ${row.min} and ${row.max}.`;
+      control.appendChild(help);
+      const inputs = document.createElement('div');
+      inputs.className = 'fx-param-inputs';
+      const slider = document.createElement('input');
+      slider.type = 'range';
+      slider.setAttribute('aria-label', `${row.label} slider for ${effectName(fx)}`);
+      const number = document.createElement('input');
+      number.type = 'number';
+      number.id = inputId;
+      for (const input of [slider, number]) {
+        input.min = String(row.min);
+        input.max = String(row.max);
+        input.step = String(row.step);
+        input.value = String(row.value);
+        input.title = help.textContent;
+        input.setAttribute('aria-describedby', help.id);
+      }
+      const save = value => {
+        number.value = String(value);
+        slider.value = String(value);
+        this.queueParamUpdate(fx.id, row.name, value);
+      };
+      slider.addEventListener('input', () => save(Number(slider.value)));
+      number.addEventListener('change', () => {
+        const value = Number(number.value);
+        if (!number.value.trim() || !Number.isFinite(value) || value < row.min || value > row.max ||
+          (row.name === 'channels' && !Number.isInteger(value))) {
+          this.setPanelStatus(`${row.label} must be ${row.name === 'channels' ? 'a whole number ' : ''}between ${row.min} and ${row.max}.`, 'warn');
+          return;
+        }
+        save(value);
+      });
+      const reset = document.createElement('button');
+      reset.className = 'flat';
+      reset.textContent = 'Reset';
+      reset.setAttribute('aria-label', `Reset ${row.label} for ${effectName(fx)}`);
+      reset.title = `Factory default: ${row.defaultValue}${row.unit ? ` ${row.unit}` : ''}`;
+      reset.disabled = !Number.isFinite(row.defaultValue);
+      reset.addEventListener('click', () => save(row.defaultValue));
+      inputs.append(slider, number, reset);
+      control.appendChild(inputs);
+      parent.appendChild(control);
     }
 
     renderPanel() {
@@ -194,8 +297,37 @@
 
         const header = document.createElement('div');
         header.className = 'fx-card-head';
-        header.textContent = `${effectId} (${fx.type || 'gain'})`;
+        header.textContent = effectName(fx);
         card.appendChild(header);
+        const typeLabel = document.createElement('p');
+        typeLabel.className = 'small';
+        typeLabel.textContent = effectTypes[fx.type] || 'Effect';
+        card.appendChild(typeLabel);
+
+        const renameRow = document.createElement('div');
+        renameRow.className = 'fx-name-row';
+        const name = document.createElement('input');
+        name.type = 'text';
+        name.maxLength = 63;
+        name.value = this.nameDrafts.get(effectId) ?? fx.custom_name ?? '';
+        name.placeholder = effectName({ ...fx, name: '' });
+        name.setAttribute('aria-label', `Name for ${effectName(fx)}`);
+        name.addEventListener('input', () => this.nameDrafts.set(effectId, name.value));
+        const rename = document.createElement('button');
+        rename.textContent = 'Save name';
+        rename.setAttribute('aria-label', `Save name for ${effectName(fx)}`);
+        rename.addEventListener('click', async () => {
+          try {
+            rename.disabled = true;
+            await this.setName(effectId, name.value.trim());
+          } catch (error) {
+            this.setPanelStatus(String(error), 'warn');
+          } finally {
+            rename.disabled = false;
+          }
+        });
+        renameRow.append(name, rename);
+        card.appendChild(renameRow);
 
         const enabledRow = document.createElement('div');
         enabledRow.className = 'fx-map-row';
@@ -212,8 +344,8 @@
             await this.setEnabled(effectId, !toEnabled(this.effectsById.get(effectId)?.enabled));
             const nowEnabled = toEnabled(this.effectsById.get(effectId)?.enabled);
             this.setPanelStatus(isCut
-              ? `${effectId} ${nowEnabled ? 'muted' : 'passing'}`
-              : `${effectId} ${nowEnabled ? 'enabled' : 'bypassed'}`, 'ok');
+              ? `${this.displayName(effectId)} ${nowEnabled ? 'muted' : 'passing'}`
+              : `${this.displayName(effectId)} ${nowEnabled ? 'enabled' : 'bypassed'}`, 'ok');
           } catch (err) {
             this.setPanelStatus(String(err), 'warn');
           } finally {
@@ -224,7 +356,13 @@
         enabledRow.appendChild(enabledBtn);
         card.appendChild(enabledRow);
 
+        const mapping = document.createElement('details');
+        mapping.className = 'fx-midi-details';
+        const summary = document.createElement('summary');
+        summary.textContent = 'MIDI controls and pad lighting';
+        mapping.appendChild(summary);
         for (const row of paramList) {
+          this.appendParameterControl(card, row, fx);
           const line = document.createElement('div');
           line.className = 'fx-map-row';
 
@@ -239,22 +377,24 @@
 
           const mapBtn = document.createElement('button');
           mapBtn.textContent = 'Map';
+          mapBtn.setAttribute('aria-label', `Map MIDI CC to ${row.label} for ${effectName(fx)}`);
           mapBtn.disabled = isCut && row.name === 'channels';
           mapBtn.addEventListener('click', async () => {
             await this.beginCcCapture(effectId, row.name);
-            this.setPanelStatus(`Move a MIDI CC for ${effectId}.${row.name}`, 'ok');
+            this.setPanelStatus(`Move a MIDI CC for ${effectName(fx)}: ${row.label}`, 'ok');
           });
 
           const clearBtn = document.createElement('button');
           clearBtn.className = 'flat';
           clearBtn.textContent = 'Clear';
+          clearBtn.setAttribute('aria-label', `Clear MIDI CC for ${row.label} on ${effectName(fx)}`);
           clearBtn.disabled = rowCc < 0;
           clearBtn.addEventListener('click', async () => {
             const ccNum = rowCc;
             if (ccNum < 0) {
               return;
             }
-            if (!await window.AudioxUI.confirm(`Remove the MIDI CC ${ccNum} mapping for ${effectId}.${row.name}?`, {
+            if (!await window.AudioxUI.confirm(`Remove the MIDI CC ${ccNum} mapping for ${effectName(fx)}: ${row.label}?`, {
               title: 'Remove MIDI mapping?', label: 'Remove mapping',
             })) return;
             try {
@@ -269,7 +409,7 @@
           line.appendChild(badge);
           line.appendChild(mapBtn);
           line.appendChild(clearBtn);
-          card.appendChild(line);
+          mapping.appendChild(line);
         }
 
         const bypassRow = document.createElement('div');
@@ -285,7 +425,7 @@
         bypassMap.textContent = 'Map';
         bypassMap.addEventListener('click', async () => {
           await this.beginNoteCapture(effectId);
-          this.setPanelStatus(`Press a MIDI note for ${effectId} ${isCut ? 'mute' : 'bypass'}`, 'ok');
+          this.setPanelStatus(`Press a MIDI note for ${effectName(fx)} ${isCut ? 'mute' : 'bypass'}`, 'ok');
         });
         const bypassClear = document.createElement('button');
         bypassClear.className = 'flat';
@@ -295,7 +435,7 @@
           if (note < 0) {
             return;
           }
-          if (!await window.AudioxUI.confirm(`Remove the MIDI bypass mapping for ${effectId}?`, {
+          if (!await window.AudioxUI.confirm(`Remove the MIDI toggle mapping for ${effectName(fx)}?`, {
             title: 'Remove MIDI mapping?', label: 'Remove mapping',
           })) return;
           try {
@@ -309,7 +449,7 @@
         bypassRow.appendChild(bypassBadge);
         bypassRow.appendChild(bypassMap);
         bypassRow.appendChild(bypassClear);
-        card.appendChild(bypassRow);
+        mapping.appendChild(bypassRow);
 
         const lightRow = document.createElement('div');
         lightRow.className = 'fx-map-row';
@@ -323,6 +463,7 @@
         enabledInput.max = '127';
         enabledInput.step = '1';
         enabledInput.value = String(toNumber(light.enabled_vel, 0));
+        enabledInput.setAttribute('aria-label', `${effectName(fx)} ${isCut ? 'muted' : 'enabled'} LED velocity`);
         enabledInput.style.width = '62px';
 
         const bypassedInput = document.createElement('input');
@@ -331,6 +472,7 @@
         bypassedInput.max = '127';
         bypassedInput.step = '1';
         bypassedInput.value = String(toNumber(light.bypassed_vel, 0));
+        bypassedInput.setAttribute('aria-label', `${effectName(fx)} ${isCut ? 'passing' : 'bypassed'} LED velocity`);
         bypassedInput.style.width = '62px';
 
         const lightSave = document.createElement('button');
@@ -341,7 +483,7 @@
           try {
             lightSave.disabled = true;
             await this.setEffectLight(effectId, enabledVel, bypassedVel);
-            this.setPanelStatus(`Saved LED colors for ${effectId}`, 'ok');
+            this.setPanelStatus(`Saved LED colors for ${effectName(fx)}`, 'ok');
           } catch (err) {
             this.setPanelStatus(String(err), 'warn');
           } finally {
@@ -353,13 +495,13 @@
         lightClear.className = 'flat';
         lightClear.textContent = 'Default';
         lightClear.addEventListener('click', async () => {
-          if (!await window.AudioxUI.confirm(`Reset the custom LED colors for ${effectId}?`, {
+          if (!await window.AudioxUI.confirm(`Reset the custom LED colors for ${effectName(fx)}?`, {
             title: 'Reset effect lighting?', label: 'Reset lighting',
           })) return;
           try {
             lightClear.disabled = true;
             await this.deleteEffectLight(effectId);
-            this.setPanelStatus(`Using default LED colors for ${effectId}`, 'ok');
+            this.setPanelStatus(`Using default LED colors for ${effectName(fx)}`, 'ok');
           } catch (err) {
             this.setPanelStatus(String(err), 'warn');
           } finally {
@@ -372,7 +514,16 @@
         lightRow.appendChild(bypassedInput);
         lightRow.appendChild(lightSave);
         lightRow.appendChild(lightClear);
-        card.appendChild(lightRow);
+        mapping.appendChild(lightRow);
+        card.appendChild(mapping);
+        const advanced = document.createElement('details');
+        const advancedTitle = document.createElement('summary');
+        advancedTitle.textContent = 'Advanced and delete';
+        advanced.appendChild(advancedTitle);
+        const identity = document.createElement('p');
+        identity.className = 'small';
+        identity.textContent = `Script / routing ID: ${effectId}. Renaming does not change connections or scripts. Clear the name to restore the default.`;
+        advanced.appendChild(identity);
 
         const deleteRow = document.createElement('div');
         deleteRow.className = 'fx-map-row';
@@ -388,12 +539,12 @@
             if (typeof window.deleteEffectThing === 'function') {
               deleted = await window.deleteEffectThing(effectId);
             } else {
-              if (!await window.AudioxUI.confirm(`Delete effect ${effectId}? Its settings and routing connections will be removed.`, {
+              if (!await window.AudioxUI.confirm(`Delete ${effectName(fx)}? Its settings and routing connections will be removed.`, {
                 title: 'Delete effect?', label: 'Delete effect',
               })) return;
               await this.deleteEffect(effectId);
             }
-            if (deleted !== false) this.setPanelStatus(`Deleted ${effectId}`, 'ok');
+            if (deleted !== false) this.setPanelStatus(`Deleted ${effectName(fx)}`, 'ok');
           } catch (err) {
             this.setPanelStatus(String(err), 'warn');
           } finally {
@@ -402,13 +553,16 @@
         });
         deleteRow.appendChild(deleteMeta);
         deleteRow.appendChild(deleteBtn);
-        card.appendChild(deleteRow);
+        advanced.appendChild(deleteRow);
+        card.appendChild(advanced);
 
         this.panelEl.appendChild(card);
       }
     }
 
     async loadEffects() {
+      if (!this.mutationInFlight && this.panelEl?.contains(document.activeElement) &&
+          ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
       const myEpoch = this.loadEpoch;
       const res = await fetch('/api/effects', { method: 'GET' });
       const txt = await res.text();
@@ -420,6 +574,7 @@
         throw new Error('Effects data is not available. Refresh the page and try again.');
       }
       AudioxUI.resolve('effects-load');
+      if (myEpoch !== this.loadEpoch) return;
       this.effectsById.clear();
       for (const fx of data.effects) {
         const id = normalizeEffectId(fx?.id);
@@ -431,11 +586,6 @@
         return;
       }
       this.effectsSignature = nextSig;
-      // Skip updating nodes if a mutation started while we were fetching;
-      // the mutation's own loadEffects call will apply the correct state.
-      if (myEpoch !== this.loadEpoch) {
-        return;
-      }
       this.refreshAllNodes();
       this.onLayoutChange();
       this.renderPanel();
@@ -467,9 +617,6 @@
     }
 
     async postSet(body) {
-      if (body && body.id && Object.prototype.hasOwnProperty.call(body, 'enabled')) {
-        this.setStatus(`sending enable request for ${body.id}: ${body.enabled}`, 'ok');
-      }
       const res = await fetch('/api/effect/set', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
@@ -482,16 +629,27 @@
       return parseJson(txt) || {};
     }
 
-    async setEnabled(effectId, enabled) {
-      const current = this.effectsById.get(effectId);
-      const nextEnabled = toEnabled(enabled);
-      this.setStatus(`setEnabled(${effectId}) -> ${nextEnabled ? 1 : 0}`, 'ok');
-
-      if (current) {
-        current.enabled = nextEnabled;
-        this.refreshAllNodes();
-        this.renderPanel();
+    async setName(effectId, name) {
+      if (new TextEncoder().encode(name).length > 63 || /[\u0000-\u001f\u007f-\u009f]/.test(name)) {
+        throw new Error('Effect names allow up to 63 UTF-8 bytes and no control characters.');
       }
+      const nameHex = Array.from(new TextEncoder().encode(name), byte => byte.toString(16).padStart(2, '0')).join('');
+      this.loadEpoch++;
+      this.mutationInFlight++;
+      try {
+        const res = await fetch('/api/effect/name', { method: 'POST',
+          headers: { 'Content-Type': 'text/plain' }, body: `id=${effectId}&name_hex=${nameHex}` });
+        if (!res.ok) throw new Error(`Could not save effect name: ${res.status} ${await res.text()}`);
+        this.nameDrafts.delete(effectId);
+        await this.loadEffects();
+        this.setPanelStatus(`Saved name: ${this.displayName(effectId)}`, 'ok');
+      } finally {
+        this.mutationInFlight--;
+      }
+    }
+
+    async setEnabled(effectId, enabled) {
+      const nextEnabled = toEnabled(enabled);
 
       this.loadEpoch++;
       this.mutationInFlight++;
@@ -500,8 +658,8 @@
         await this.loadEffects();
         const isCut = this.effectsById.get(effectId)?.type === 'cut';
         this.setStatus(isCut
-          ? `${effectId} ${nextEnabled ? 'muted' : 'passing'}`
-          : `${effectId} ${nextEnabled ? 'enabled' : 'bypassed'}`, 'ok');
+          ? `${this.displayName(effectId)} ${nextEnabled ? 'muted' : 'passing'}`
+          : `${this.displayName(effectId)} ${nextEnabled ? 'enabled' : 'bypassed'}`, 'ok');
       } finally {
         this.mutationInFlight--;
       }
@@ -513,7 +671,7 @@
       try {
         await this.postSet({ id: effectId, type });
         await this.loadEffects();
-        this.setStatus(`${effectId} type set to ${type}`, 'ok');
+        this.setStatus(`${this.displayName(effectId)} type set to ${effectTypes[type] || type}`, 'ok');
       } finally {
         this.mutationInFlight--;
       }
@@ -522,19 +680,23 @@
     async setParam(effectId, param, value) {
       const numeric = Number(value);
       if (!Number.isFinite(numeric)) {
-        return;
+        throw new Error('Effect parameter value must be a finite number.');
       }
 
       const fx = this.effectsById.get(effectId);
       const prev = Number(fx?.params?.[param]);
-      if (Number.isFinite(prev) && Math.abs(prev - numeric) < 0.0005) {
+      if (Number.isFinite(prev) && prev === numeric) {
         return;
       }
 
-      await this.postSet({ id: effectId, param, value: numeric.toFixed(4) });
-
-      if (fx && fx.params) {
-        fx.params[param] = numeric;
+      this.loadEpoch++;
+      this.mutationInFlight++;
+      try {
+        await this.postSet({ id: effectId, param, value: numeric.toFixed(4) });
+        if (fx && fx.params) fx.params[param] = numeric;
+        this.refreshAllNodes();
+      } finally {
+        this.mutationInFlight--;
       }
     }
 
@@ -556,6 +718,8 @@
         const ccSig = paramList.map((p) => `${p.name}:${toNumber(cc[p.name], -1)}`).join(';');
         rows.push([
           id,
+          fx.name || '',
+          fx.custom_name || '',
           type,
           enabled,
           paramSig,
@@ -578,7 +742,7 @@
         this.paramUpdateTimers.delete(key);
         try {
           await this.setParam(effectId, param, value);
-          this.setStatus(`${effectId} ${param} updated`, 'ok');
+          this.setStatus(`${this.displayName(effectId)}: ${this.parameterName(effectId, param)} saved`, 'ok');
         } catch (err) {
           this.setStatus(String(err), 'warn');
         }
@@ -597,7 +761,7 @@
         throw new Error(`effect CC mapping failed: ${res.status} ${txt.trim()}`);
       }
       await this.loadEffects();
-      this.setStatus(`Mapped CC ${cc} to ${effectId}.${param}`, 'ok');
+      this.setStatus(`Mapped CC ${cc} to ${this.displayName(effectId)}: ${this.parameterName(effectId, param)}`, 'ok');
     }
 
     async deleteEffectCc(cc) {
@@ -625,7 +789,7 @@
         throw new Error(`effect toggle mapping failed: ${res.status} ${txt.trim()}`);
       }
       await this.loadEffects();
-      this.setStatus(`Mapped note ${note} to ${effectId} bypass`, 'ok');
+      this.setStatus(`Mapped note ${note} to ${this.displayName(effectId)} toggle`, 'ok');
     }
 
     async deleteEffectToggle(note) {
@@ -653,7 +817,7 @@
         throw new Error(`effect light mapping failed: ${res.status} ${txt.trim()}`);
       }
       await this.loadEffects();
-      this.setStatus(`Updated LED colors for ${effectId}`, 'ok');
+      this.setStatus(`Updated LED colors for ${this.displayName(effectId)}`, 'ok');
     }
 
     async deleteEffectLight(effectId) {
@@ -667,10 +831,11 @@
         throw new Error(`effect light mapping delete failed: ${res.status} ${txt.trim()}`);
       }
       await this.loadEffects();
-      this.setStatus(`Reset LED colors for ${effectId}`, 'ok');
+      this.setStatus(`Reset LED colors for ${this.displayName(effectId)}`, 'ok');
     }
 
     async deleteEffect(effectId) {
+      const name = this.displayName(effectId);
       const res = await fetch('/api/effect/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
@@ -680,8 +845,9 @@
       if (!res.ok) {
         throw new Error(`effect delete failed: ${res.status} ${txt.trim()}`);
       }
+      this.nameDrafts.delete(effectId);
       await this.loadEffects();
-      this.setStatus(`Deleted ${effectId}`, 'ok');
+      this.setStatus(`Deleted ${name}`, 'ok');
     }
 
     async beginCcCapture(effectId, param) {
@@ -698,7 +864,7 @@
         clearInterval(this.ccPoll);
       }
 
-      this.setStatus(`Move a MIDI CC to map ${effectId}.${param}...`, 'ok');
+      this.setStatus(`Move a MIDI CC to map ${this.displayName(effectId)}: ${this.parameterName(effectId, param)}...`, 'ok');
       this.renderPanel();
       this.ccPoll = setInterval(() => this.pollCcCapture(), 220);
     }
@@ -730,7 +896,7 @@
             this.ccPoll = null;
           }
           await this.setEffectCc(target.effectId, target.param, cc);
-          this.setPanelStatus(`Mapped CC ${cc} to ${target.effectId}.${target.param}`, 'ok');
+          this.setPanelStatus(`Mapped CC ${cc} to ${this.displayName(target.effectId)}: ${this.parameterName(target.effectId, target.param)}`, 'ok');
         }
       } catch (_) {}
     }
@@ -750,7 +916,7 @@
       }
 
       const isCut = this.effectsById.get(effectId)?.type === 'cut';
-      this.setStatus(`Press a MIDI note to map ${effectId} ${isCut ? 'mute' : 'bypass'} toggle...`, 'ok');
+      this.setStatus(`Press a MIDI note to map ${this.displayName(effectId)} ${isCut ? 'mute' : 'bypass'} toggle...`, 'ok');
       this.renderPanel();
       this.notePoll = setInterval(() => this.pollNoteCapture(), 220);
     }
@@ -783,7 +949,7 @@
           }
           await this.setEffectToggle(target.effectId, note);
           const isCut = this.effectsById.get(target.effectId)?.type === 'cut';
-          this.setPanelStatus(`Mapped note ${note} to ${target.effectId} ${isCut ? 'mute' : 'bypass'}`, 'ok');
+          this.setPanelStatus(`Mapped note ${note} to ${this.displayName(target.effectId)} ${isCut ? 'mute' : 'bypass'}`, 'ok');
         }
       } catch (_) {}
     }
@@ -807,8 +973,8 @@
       node.widgets = [];
       node.size = [340, hasFx ? Math.max(210, 150 + (paramList.length * 36)) : 130];
       node.title = hasFx
-        ? `${effectId} (${type}${type === 'cut' ? (enabled ? ' muted' : '') : (enabled ? '' : ' bypass')})`
-        : `${effectId} (loading...)`;
+        ? `${effectName(fx)}${type === 'cut' ? (enabled ? ' (muted)' : '') : (enabled ? '' : ' (bypassed)')}`
+        : 'Effect (loading...)';
 
       if (!hasFx) {
         node.addWidget('button', 'Reload Effect State', null, async () => {
@@ -827,7 +993,7 @@
         }, { min: p.min, max: p.max, step: p.step, precision: p.precision });
       }
 
-      node.addWidget('button', 'Open Effects Mapping Page', null, () => {
+      node.addWidget('button', 'Edit effect and MIDI controls', null, () => {
         const btn = document.querySelector('.tab-btn[data-tab="effects"]');
         if (btn) {
           btn.click();
@@ -839,6 +1005,7 @@
   }
 
   window.AudioxEffects = {
+    effectName, dynamicParamList,
     createManager(setStatus, onLayoutChange) {
       return new EffectsManager(setStatus, onLayoutChange);
     },

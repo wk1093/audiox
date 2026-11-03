@@ -495,17 +495,6 @@ select {
   pointer-events: none;
 }
 
-.side-stack {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 10px;
-  align-content: start;
-  min-width: 0;
-  overflow: auto;
-  width: 260px;
-  flex-shrink: 0;
-}
-
 .graph-shell:fullscreen,
 .graph-shell.expanded {
   width: 100%;
@@ -521,8 +510,6 @@ select {
 }
 
 .app:has(.graph-shell.expanded) { backdrop-filter: none; }
-
-#btn-route-details { display: none; }
 
 .bluetooth-layout {
   max-width: 960px;
@@ -597,41 +584,6 @@ select {
   font-weight: 600;
   margin-top: 2px;
   overflow-wrap: anywhere;
-}
-
-.edge-list {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 6px;
-  max-height: 300px;
-  overflow-y: auto;
-  overflow-x: hidden;
-  min-width: 0;
-}
-
-.edge-item {
-  border: 1px solid #355a6f;
-  border-radius: 8px;
-  background: #102635;
-  padding: 6px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.edge-item > div:first-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.edge-item.selected {
-  border-color: var(--select);
-  box-shadow: 0 0 0 1px rgba(255, 208, 144, 0.38) inset;
 }
 
 .small {
@@ -820,14 +772,45 @@ select {
 
 .effects-map-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr));
   gap: 10px;
 }
 
 .fx-card {
   display: grid;
   gap: 8px;
+  min-width: 0;
+  align-content: start;
 }
+
+.fx-name-row, .fx-param-inputs {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.fx-name-row input, .fx-param-inputs input[type="range"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.fx-param-inputs input[type="number"] {
+  width: 90px;
+  min-width: 0;
+}
+
+.fx-parameter {
+  border-top: 1px solid #2d5065;
+  padding-top: 10px;
+}
+
+.fx-param-help { margin: 4px 0 8px; }
+.fx-midi-details .fx-map-row { margin-top: 8px; }
+.fx-card summary { cursor: pointer; }
+.fx-card-head, .fx-map-meta { overflow-wrap: anywhere; }
+.fx-midi-details .fx-map-row { grid-template-columns: minmax(0, 1fr) auto auto; }
+.fx-midi-details .fx-map-meta { grid-column: 1 / -1; }
 
 .fx-card-head {
   font-size: 13px;
@@ -1333,25 +1316,6 @@ select {
   .tabs { min-width: 0; flex-wrap: nowrap; overflow-x: auto; }
   .tab-btn { flex-shrink: 0; }
 
-  .side-stack {
-    display: none;
-  }
-
-  #btn-route-details { display: inline-block; }
-
-  .routing-grid.show-details .side-stack {
-    display: grid;
-    position: absolute;
-    top: 54px;
-    right: 0;
-    bottom: 0;
-    z-index: 5;
-    width: min(300px, 90%);
-    padding: 8px;
-    background: var(--panel-solid);
-    border: 1px solid var(--line);
-    border-radius: 12px;
-  }
 }
 
 @media (max-width: 760px) {

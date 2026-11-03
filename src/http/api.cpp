@@ -2320,11 +2320,19 @@ static int handleEffects(HttpServer *server,
 			}
 		}
 
+		char displayName[64]{};
+		midiEffectDisplayName(map, slots[i].thingId, audiox::effects::effectTypeToString(params.type),
+			displayName, sizeof(displayName));
+		const char *customName = "";
+		for (uint32_t s = 0; s < map.effectStateCount; ++s)
+			if (!strcmp(map.effectStates[s].effectId, slots[i].thingId)) customName = map.effectStates[s].name;
 		n = snprintf(out + off,
 					 sizeof(out) - off,
-					 "%s{\"id\":\"%s\",\"type\":\"%s\",\"enabled\":%s,\"params\":{",
+					 "%s{\"id\":\"%s\",\"name\":\"%s\",\"custom_name\":\"%s\",\"type\":\"%s\",\"enabled\":%s,\"params\":{",
 					 first ? "" : ",",
 					 slots[i].thingId,
+					 audiox::json::escape(displayName).c_str(),
+					 audiox::json::escape(customName).c_str(),
 					 audiox::effects::effectTypeToString(params.type),
 					 params.enabled ? "true" : "false");
 		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
@@ -2420,6 +2428,38 @@ static int handleEffects(HttpServer *server,
 	}
 
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, off);
+}
+
+static int handleEffectName(HttpServer *server, int cfd, const char *method,
+                            const char *body, size_t bodyLen) {
+	if (!server || !server->app || !server->app->audio || !server->app->config) return -1;
+	if (strcmp(method, "POST")) return sendMethodNotAllowed(server, cfd);
+	auto reply = [&](const char *status, const char *text) {
+		return server->sendResponse(cfd, status, "text/plain; charset=utf-8", text, strlen(text));
+	};
+	char id[64]{}, hex[512]{}, name[64]{};
+	if (!body || bodyLen > 512 || memchr(body, '\0', bodyLen) ||
+		!body_get_value(body, bodyLen, "id", id, sizeof(id)) || !effect_id_valid(id) ||
+		!body_get_value(body, bodyLen, "name_hex", hex, sizeof(hex)) ||
+		!midiHexDecode(hex, name, sizeof(name)) || !midiEffectNameValid(name))
+		return reply("400 Bad Request", "Name must be valid UTF-8, at most 63 bytes, without control characters.\n");
+	audiox::effects::SlotParams params{};
+	if (server->app->audio->getEffectParams(id, &params) != RET_OK)
+		return reply("404 Not Found", "Effect not found.\n");
+	auto map = server->app->config->readMidiMapFile();
+	bool persisted = false;
+	for (uint32_t i = 0; i < map.effectStateCount; ++i)
+		if (!strcmp(map.effectStates[i].effectId, id)) persisted = true;
+	if (!persisted) upsertEffectStateFromRuntime(&map, id, params);
+	for (uint32_t i = 0; i < map.effectStateCount; ++i) {
+		if (strcmp(map.effectStates[i].effectId, id)) continue;
+		copy_bound(map.effectStates[i].name, sizeof(map.effectStates[i].name), name);
+		if (server->app->config->writeMidiMapFile(&map) != RET_OK)
+			return reply("500 Internal Server Error", "Could not save effect name.\n");
+		if (server->app->midi) server->app->midi->cachedMidiMap = map;
+		return reply("200 OK", "Effect name saved.\n");
+	}
+	return reply("409 Conflict", "Effect settings capacity reached.\n");
 }
 
 static int handleEffectSet(HttpServer *server,
@@ -5156,6 +5196,9 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_EFFECT_SET_PATH) == 0) {
 		return handleEffectSet(server, cfd, method, path, body, body_len);
+	}
+	if (strcmp(path, HTTP_API_PREFIX "effect/name") == 0) {
+		return handleEffectName(server, cfd, method, body, body_len);
 	}
 
 	if (strcmp(path, HTTP_EFFECT_CREATE_PATH) == 0) {

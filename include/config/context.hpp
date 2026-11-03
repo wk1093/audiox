@@ -55,6 +55,7 @@ struct MidiEffectState {
     float drive;
     float clip;
     float output;
+    char name[64];
 };
 
 struct MidiEffectParam {
@@ -219,6 +220,9 @@ struct MidiMapData {
 
 bool soundboardGridNote(const MidiMapData *data, uint8_t row, uint8_t column, uint8_t *note);
 uint8_t soundboardGridAction(const char *element);
+bool midiEffectNameValid(const char *name);
+void midiEffectDisplayName(const MidiMapData &map, const char *id, const char *type,
+                           char *out, size_t capacity);
 
 struct ConfigStore {
     // For interacting with the config files

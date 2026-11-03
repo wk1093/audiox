@@ -1,4 +1,3 @@
-const edgeListEl = document.getElementById('edge-list');
 const graphWrapEl = document.getElementById('graph-wrap');
 const graphCanvasEl = document.getElementById('graph-canvas');
 const zoomLabelEl = document.getElementById('zoom-label');
@@ -13,11 +12,6 @@ const volGridEl = document.getElementById('vol-grid');
 const volCcStatusEl = document.getElementById('vol-cc-status');
 const effectsMapGridEl = document.getElementById('effects-map-grid');
 const effectsMapStatusEl = document.getElementById('effects-map-status');
-const inspectorEl = document.getElementById('route-inspector');
-const nodeCountEl = document.getElementById('metric-node-count');
-const routeCountEl = document.getElementById('metric-route-count');
-const selectedNodeEl = document.getElementById('metric-selected-node');
-const selectedRouteEl = document.getElementById('metric-selected-route');
 const logsSourceEl = document.getElementById('logs-source');
 const logsLevelEl = document.getElementById('logs-level');
 const logsTextEl = document.getElementById('logs-text');
@@ -38,7 +32,6 @@ const state = {
   // routing.txt untouched so the routing comes back when the device returns.
   dormantEdges: [],
   positions: {},
-  selectedNodeId: null,
   selectedEdgeIdx: -1,
   autoArrange: true,
   soundboardEditing: false,
@@ -619,62 +612,6 @@ function getConfigFromForm() {
   };
 }
 
-function renderInspector() {
-  nodeCountEl.textContent = String(state.nodes.length);
-  routeCountEl.textContent = String(state.edges.length);
-  selectedNodeEl.textContent = state.selectedNodeId || '-';
-
-  if (state.selectedEdgeIdx >= 0 && state.selectedEdgeIdx < state.edges.length) {
-    const edge = state.edges[state.selectedEdgeIdx];
-    selectedRouteEl.textContent = `${edge.src}[${edge.srcChannel}] -> ${edge.dst}[${edge.dstChannel}]`;
-    inspectorEl.textContent = `Selected route: ${edge.src}[${edge.srcChannel}] -> ${edge.dst}[${edge.dstChannel}]`;
-    return;
-  }
-
-  selectedRouteEl.textContent = '-';
-  if (state.selectedNodeId) {
-    inspectorEl.textContent = `Selected node: ${state.selectedNodeId}.`;
-    return;
-  }
-
-  inspectorEl.textContent = '';
-}
-
-function renderEdgesList() {
-  edgeListEl.innerHTML = '';
-  if (!state.edges.length) {
-    edgeListEl.textContent = 'no routes';
-    renderInspector();
-    return;
-  }
-
-  state.edges.forEach((edge, idx) => {
-    const row = document.createElement('div');
-    row.className = `edge-item ${idx === state.selectedEdgeIdx ? 'selected' : ''}`.trim();
-
-    const txt = document.createElement('div');
-    txt.textContent = `${edge.src}[${edge.srcChannel}] -> ${edge.dst}[${edge.dstChannel}]`;
-
-    const btn = document.createElement('button');
-    btn.textContent = 'remove';
-    btn.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      removeEdgeByIndex(idx);
-    });
-
-    row.appendChild(txt);
-    row.appendChild(btn);
-    row.addEventListener('click', () => {
-      state.selectedEdgeIdx = (state.selectedEdgeIdx === idx) ? -1 : idx;
-      renderEdgesList();
-      renderInspector();
-    });
-    edgeListEl.appendChild(row);
-  });
-
-  renderInspector();
-}
-
 function normalizeThingId(v) {
   return String(v || '').trim();
 }
@@ -710,7 +647,7 @@ async function createRoutingHelper() {
   const res = await fetch('/api/routing/helper/create', { method: 'POST' });
   const txt = await res.text();
   if (!res.ok) {
-    throw new Error(`routing helper create failed: ${res.status} ${txt.trim()}`);
+    throw new Error(`Audio Mixer creation failed: ${res.status} ${txt.trim()}`);
   }
 }
 
@@ -718,7 +655,7 @@ async function deleteRoutingHelper() {
   const res = await fetch('/api/routing/helper/delete', { method: 'POST' });
   const txt = await res.text();
   if (!res.ok) {
-    throw new Error(`routing helper delete failed: ${res.status} ${txt.trim()}`);
+    throw new Error(`Audio Mixer deletion failed: ${res.status} ${txt.trim()}`);
   }
 }
 
@@ -742,7 +679,8 @@ async function deleteEffectThing(thingId) {
   if (!id || !isEffectThingId(id) || !effectsManager) {
     return false;
   }
-  if (!await AudioxUI.confirm(`Delete effect ${id}? Its settings and routing connections will be removed.`, {
+  const name = effectsManager.displayName(id);
+  if (!await AudioxUI.confirm(`Delete ${name}? Its settings and routing connections will be removed.`, {
     title: 'Delete effect?', label: 'Delete effect',
   })) return false;
 
@@ -760,7 +698,7 @@ async function deleteEffectThing(thingId) {
     await loadRoutingThingsWithOptions({ silent: true, force: true });
     await loadRoutingFile();
     await effectsManager.loadEffects();
-    setStatus(`effect ${id} deleted`, 'ok');
+    setStatus(`${name} deleted`, 'ok');
     return true;
   } catch (err) {
     setStatus(String(err), 'warn');
@@ -869,7 +807,6 @@ function syncEdgesFromGraph() {
     state.selectedEdgeIdx = state.edges.length - 1;
   }
 
-  renderEdgesList();
   state.graphCanvas.setDirty(true, true);
 }
 
@@ -892,7 +829,6 @@ function addEdgeFromConnection(srcNode, srcSlot, dstNode, dstSlot) {
   state.edges.push(edge);
   AudioxUI.setUnsaved('routing');
   syncEdgesFromGraph();
-  renderEdgesList();
   setStatus('route added (not saved yet)', 'ok');
   return true;
 }
@@ -1133,13 +1069,13 @@ function ensureRoutingGraph() {
     function AudioxRoutingHelperNode() {
       this.size = [220, 80];
       this.properties = { routingHelperTemplate: true, nodeKind: 'template' };
-      this.title = 'Add Routing Helper';
+      this.title = 'Add Audio Mixer';
       this.addInput('in 1', 'audio');
       this.addInput('in 2', 'audio');
       this.addOutput('out 1', 'audio');
       this.addOutput('out 2', 'audio');
     }
-    AudioxRoutingHelperNode.title = 'Routing Helper';
+    AudioxRoutingHelperNode.title = 'Audio Mixer';
     AudioxRoutingHelperNode.filter = 'audiox';
     window.LiteGraph.registerNodeType('audiox/routing_helper', AudioxRoutingHelperNode);
   }
@@ -1208,13 +1144,13 @@ function ensureRoutingGraph() {
     function AudioxEffectCutNode() {
       this.size = [220, 80];
       this.properties = { effectTypeTemplate: 'cut', nodeKind: 'template' };
-      this.title = 'Add Cut';
+      this.title = 'Add Mute (Cut)';
       this.addInput('in 1', 'audio');
       this.addInput('in 2', 'audio');
       this.addOutput('out 1', 'audio');
       this.addOutput('out 2', 'audio');
     }
-    AudioxEffectCutNode.title = 'Cut';
+    AudioxEffectCutNode.title = 'Mute (Cut)';
     AudioxEffectCutNode.filter = 'audiox';
     window.LiteGraph.registerNodeType('audiox/effect_cut', AudioxEffectCutNode);
   }
@@ -1256,14 +1192,14 @@ function ensureRoutingGraph() {
         content: 'Remove Node',
         callback: async () => {
           if (isRoutingHelperNode(node)) {
-            if (!await AudioxUI.confirm('Delete the routing helper? Any connections through it will be removed.', {
-              title: 'Delete routing helper?', label: 'Delete helper',
+            if (!await AudioxUI.confirm('Delete the Audio Mixer? Any connections through it will be removed.', {
+              title: 'Delete Audio Mixer?', label: 'Delete mixer',
             })) return;
             try {
               await deleteRoutingHelper();
               await loadRoutingThingsWithOptions({ silent: true, force: true });
               await loadRoutingFile();
-              setStatus('routing helper deleted', 'ok');
+              setStatus('Audio Mixer deleted', 'ok');
             } catch (err) {
               setStatus(String(err), 'warn');
             }
@@ -1278,16 +1214,6 @@ function ensureRoutingGraph() {
         },
       },
     ];
-  };
-
-  state.graphCanvas.onNodeSelected = (node) => {
-    state.selectedNodeId = normalizeThingId(node?.properties?.thingId);
-    renderInspector();
-  };
-
-  state.graphCanvas.onNodeDeselected = () => {
-    state.selectedNodeId = null;
-    renderInspector();
   };
 
   state.graphCanvas.onNodeMoved = (node) => {
@@ -1321,7 +1247,7 @@ function ensureRoutingGraph() {
             state.positions.routing_helper = pos;
           }
           rebuildRoutingGraph();
-          setStatus('routing helper created', 'ok');
+          setStatus('Audio Mixer created', 'ok');
         })
         .catch((err) => setStatus(String(err), 'warn'));
       return;
@@ -1494,11 +1420,11 @@ function rebuildRoutingGraph() {
     node._inputChannelBySlot = [];
 
     for (let ch = 0; ch < thing.inputs; ch += 1) {
-      node.addInput(`in ${ch + 1}`, 'audio');
+      node.addInput(window.AudioxRouting.channelLabel(ch, thing.inputs), 'audio');
       node._inputChannelBySlot.push(ch);
     }
     for (let ch = 0; ch < thing.outputs; ch += 1) {
-      node.addOutput(`out ${ch + 1}`, 'audio');
+      node.addOutput(window.AudioxRouting.channelLabel(ch, thing.outputs), 'audio');
     }
 
     const pos = state.positions[thing.id] || { x: 40, y: 60 };
@@ -3514,9 +3440,14 @@ function renderVolGrid() {
     nameEl.title = name;
     nameEl.textContent = name;
 
-    const idEl = document.createElement('div');
+    const idEl = document.createElement('details');
     idEl.className = 'vol-card-id';
-    idEl.textContent = id;
+    const idSummary = document.createElement('summary');
+    idSummary.textContent = 'Advanced';
+    const idText = document.createElement('span');
+    idText.textContent = `Script / routing ID: ${id}`;
+    idEl.appendChild(idSummary);
+    idEl.appendChild(idText);
 
     const sliderRow = document.createElement('div');
     sliderRow.className = 'vol-slider-row';
@@ -3742,10 +3673,6 @@ document.getElementById('btn-route-arrange').addEventListener('click', () => {
   arrangeRoutingGraph();
 });
 document.getElementById('btn-zoom-fit').addEventListener('click', fitRoutingGraph);
-document.getElementById('btn-route-details').addEventListener('click', (event) => {
-  const visible = document.querySelector('.routing-grid').classList.toggle('show-details');
-  event.currentTarget.setAttribute('aria-expanded', String(visible));
-});
 
 const graphShellEl = document.querySelector('.graph-shell');
 const fullscreenButton = document.getElementById('btn-graph-fullscreen');

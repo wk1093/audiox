@@ -148,12 +148,12 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Expand Lua with bounded configuration reads and atomic queued writes, save-time permission warnings, and MIDI release/CC, sound voice lifecycle and selected MIDI controller connection hooks. Configuration access uses a six-file allowlist; pairing credentials remain inaccessible. Physical hardware validation remains needed.
 - [x] Add multi-hook Lua callback scripts with explicit state-only persistence and code-derived subscriptions; expand source, memory, instruction, action and typing budgets while retaining sandbox and audio-thread isolation.
 - [x] Rename automation to Scripts, remove sequence/shortcut editor modes, and automatically convert existing saved entries to callback source without changing their bindings or permissions.
-- [ ] Improve effect system to be more user friendly
-  - [ ] Provide meaningful names EVERYWHERE in the ui for existing effects instead of fx1, fx2, etc.
-  - [ ] Improve parameter UI
-  - [ ] Provide tooltips or descriptions for each parameter to help users understand their function
-  - [ ] 
-- [ ] Also while we are at it, hide the internal routing names from the user, and provide more intuitive labels for the routing paths.
+- [x] Improve effect system to be more user friendly
+  - [x] Provide readable defaults and editable saved names in Effects, Routing, Volume, and notifications; retain stable IDs in advanced details for scripts.
+  - [x] Improve parameter UI with precise values, units, per-parameter reset, and collapsible MIDI/lighting controls.
+  - [x] Provide tooltips and inline descriptions for each built-in parameter, including fine noise-floor adjustments.
+- [x] Hide internal routing names behind advanced details; use From/To device labels and Mono/Left/Right/channel names without changing stored route IDs.
+- [x] Remove the Routing overview/route-list sidebar and Details toggle; keep graph editing full-width and technical inspection available through APIs and scripts.
 
 ## Plugin System and more built-in effects - v1.14
 - [ ] Implement custom plugin system for effects, allowing users to create and load their own effect modules into the audio engine.

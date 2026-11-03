@@ -23,6 +23,7 @@ function fixture() {
     return {
       value: '', disabled: false, children: [],
       addEventListener(name, callback) { this[name] = callback; },
+      dispatchEvent(event) { this[event.type]?.(event); },
       append(...children) { this.children.push(...children); },
       appendChild(child) { this.children.push(child); },
       replaceChildren() { this.children = []; },
@@ -39,6 +40,7 @@ function fixture() {
     addEventListener(name, callback) { this[name] = callback; }, querySelectorAll: () => [] };
   const context = vm.createContext({
     document, window: {}, state, TextEncoder, TextDecoder,
+    AudioxLuaEditor: require('../web/lua-editor.js'),
     AudioxUI: {
       confirm: async (...args) => { confirmations.push(args); return confirmResult; },
       setUnsaved() {}, hasUnsavedChanges: () => false,

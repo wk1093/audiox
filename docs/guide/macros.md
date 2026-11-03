@@ -16,6 +16,10 @@ completion. It is unavailable unless the script registers a `run` callback.
 Choose **Reload Scripts** to refresh runtime errors. Editing preserves the
 script's stable ID; **Remove** deletes its definition.
 
+The source editor highlights Lua keywords, strings, comments, numbers, and API
+names locally, without an internet connection. Highlighting is visual only;
+**Save Script** still validates the source on the device.
+
 Scripts register up to 32 callbacks. Setup code runs in a fresh environment for
 each trigger; ordinary variables reset. Only supported scalar values assigned
 to `state` persist in RAM. Register hooks unconditionally at top level; access

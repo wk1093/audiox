@@ -251,10 +251,13 @@ end)</code></pre>
             </details>
             <label><input id="macro-config-write" type="checkbox" data-unsaved-key="macro-editor"> Allow configuration writes (requires confirmation on save)</label>
             <label for="chord-script">Lua Script</label>
-            <textarea id="chord-script" rows="14" maxlength="17408" spellcheck="false" data-unsaved-key="macro-editor">hook("run", function(event)
+            <div class="lua-editor">
+            <pre id="lua-preview" aria-hidden="true"></pre>
+            <textarea id="chord-script" rows="14" maxlength="17408" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off" data-unsaved-key="macro-editor">hook("run", function(event)
   log("Script triggered")
 end)
 </textarea>
+            </div>
             <details class="reference-panel">
               <summary>Lua API quick reference and execution limits</summary>
             <p class="small">Keyboard: tap("CTRL+A"), press("SHIFT+A"), release(), type("Text", 80). press replaces held keys; tap and type release them first. Completion or cancellation releases all keys. type uses US-layout ASCII; match the host layout and Caps Lock state. Typing interval: 50 ms default, 30 ms minimum. wait(ms) schedules a delay; light(velocity) sets the bound pad LED.</p>
@@ -570,6 +573,7 @@ end)
   <script src="/effects.js"></script>
   <script src="/updates.js"></script>
   <script src="/backup.js"></script>
+  <script src="/lua-editor.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

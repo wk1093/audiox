@@ -1875,7 +1875,7 @@ function renderMidiChords(chords) {
       document.getElementById('macro-midi-enabled').checked = chord.midi_enabled;
       document.getElementById('chord-channel').value = chord.channel;
       document.getElementById('chord-note').value = chord.note;
-      document.getElementById('chord-script').value = chordHexDecode(chord.script_hex || '');
+      AudioxLuaEditor.setValue(document.getElementById('chord-script'), chordHexDecode(chord.script_hex || ''));
       document.getElementById('macro-config-write').checked = Boolean(chord.config_write_allowed);
       document.getElementById('chord-idle-velocity').value = chord.idle_velocity ?? 0;
       document.getElementById('chord-pressed-velocity').value = chord.pressed_velocity ?? 0;
@@ -1968,7 +1968,7 @@ function resetMacroEditor() {
   document.getElementById('macro-midi-enabled').checked = false;
   document.getElementById('chord-channel').value = '0';
   document.getElementById('chord-note').value = '60';
-  document.getElementById('chord-script').value = defaultScriptSource;
+  AudioxLuaEditor.setValue(document.getElementById('chord-script'), defaultScriptSource);
   document.getElementById('macro-config-write').checked = false;
   document.getElementById('chord-idle-velocity').value = '0';
   document.getElementById('chord-pressed-velocity').value = '0';

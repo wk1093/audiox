@@ -143,7 +143,6 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Expand image storage to fill the SD card.
 
 ## Effect, Soundboard, and Engine Improvements - v1.13
-- [ ] Option in config to use raspi AUX port as an output source (for people without an audio interface, since custom hardware is still WIP)
 - [ ] Soundboard modes: Normal mode is current behavior, grid mode allows the user to specify a grid size (matching their midi controller) and use an intuitive midi learn (where they need to press specific edges or corners of their grid so AudioX can learn how the grid is laid out) and then every sound is in one of the grids, when you add a new sound you have to specify where it will go, and you can have blank space in between. There should also be a conversion tool for existing "normal" mode setups to the grid without having to remap everything. This grid mode should also affect the fbui soundboard, and the webui to not use a list of sounds, and insteal also display a grid.
 - [ ] Improve Lua api to have more functionality, reading (and maybe writing, if I do add writing, I will also add a warning on save when a script contains any write calls) all configuration files, and more interaction and events to hook into.
 - [ ] Improve effect system to be more user friendly
@@ -180,6 +179,7 @@ The above last two features are mainly to improve my setup, but could probably b
 - [ ] Test the framebuffer UI on Pi 5 with a connected screen; rendering, touch interaction, and display hotplug remain untested on that board.
 
 ## Future
+- [ ] Option in config to use raspi AUX port as an output source (for people without an audio interface, since custom hardware is still WIP)
 - [ ] Create a roadmap for future features and improvements
 - [ ] Explore integration with other audio software and hardware, such as DAWs and MIDI controllers
 - [ ] Hardware...

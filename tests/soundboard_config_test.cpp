@@ -323,6 +323,208 @@ int main() {
         orderRequest("POST", "\n", "400 Bad Request");
         orderRequest("DELETE", "", "405 Method Not Allowed");
         orderRequest("GET", "", "remove.wav\nkeep.wav\n");
+        uint8_t gridLedVelocity[128]{};
+        auto layoutRequest = [&](const char *method, const char *body, const char *expected) {
+            int sockets[2];
+            assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+            assert(handleSoundboardLayout(&http, sockets[0], method, body, strlen(body)) == 0);
+            char reply[8192] = {};
+            assert(read(sockets[1], reply, sizeof(reply) - 1) > 0);
+            assert(strstr(reply, expected));
+            close(sockets[0]);
+            close(sockets[1]);
+            assert(fcntl(leds[0], F_SETFL, O_NONBLOCK) == 0);
+            uint8_t message[3];
+            ssize_t bytes = 0;
+            while ((bytes = read(leds[0], message, sizeof(message))) > 0) {
+                assert(bytes == 3);
+                gridLedVelocity[message[1]] = message[2];
+            }
+            assert(bytes == -1 && errno == EAGAIN);
+            assert(fcntl(leds[0], F_SETFL, 0) == 0);
+            return std::string(reply);
+        };
+        MidiMapData beforeLayout = config.readMidiMapFile();
+        layoutRequest("GET", "", "\"mode\":\"normal\"");
+        layoutRequest("POST", "mode=grid&rows=2&columns=2", "\"mode\":\"grid\"");
+        MidiMapData grid = config.readMidiMapFile();
+        assert(grid.soundboardLayout == SOUNDBOARD_LAYOUT_GRID);
+        assert(grid.gridRows == 2 && grid.gridColumns == 2);
+        assert(grid.mappingCount == beforeLayout.mappingCount);
+        for (uint32_t i = 0; i < grid.mappingCount; ++i) {
+            assert(grid.mappings[i].note == beforeLayout.mappings[i].note);
+            assert(strcmp(grid.mappings[i].sfxPath, beforeLayout.mappings[i].sfxPath) == 0);
+        }
+        layoutRequest("POST", "corner=top_left&note=38", "200 OK");
+        layoutRequest("POST", "corner=top_right&note=39", "200 OK");
+        layoutRequest("POST", "corner=bottom_left&note=46", "200 OK");
+        layoutRequest("POST", "corner=bottom_right&note=47", "200 OK");
+        layoutRequest("GET", "", "\"sfx\":\"keep.wav\",\"row\":0,\"column\":0");
+        grid = config.readMidiMapFile();
+        uint8_t inferredNote = 0;
+        assert(soundboardGridNote(&grid, 1, 1, &inferredNote) && inferredNote == 47);
+        layoutRequest("POST", "sfx=keep.wav&row=1&column=0", "200 OK");
+        grid = config.readMidiMapFile();
+        assert(grid.gridCellCount == 2);
+        assert(grid.mappingCount == 3);
+        assert(grid.soundLightCount == beforeLayout.soundLightCount);
+        assert(grid.soundModeCount == beforeLayout.soundModeCount);
+        refreshSoundboardFiles(&config, 3500);
+        assert(soundboardUi.gridMode && soundboardUi.gridRows == 2 && soundboardUi.gridColumns == 2);
+        assert(soundboardFileAtGridCell(soundboardUi, 1, 0) == 1);
+        bool keepMappedToGridPad = false;
+        for (uint32_t i = 0; i < grid.mappingCount; ++i)
+            if (strcmp(grid.mappings[i].sfxPath, "keep.wav") == 0 && grid.mappings[i].note == 46)
+                keepMappedToGridPad = true;
+        assert(keepMappedToGridPad);
+        layoutRequest("POST", "sfx=remove.wav&row=1&column=0", "200 OK");
+        grid = config.readMidiMapFile();
+        assert(grid.mappingCount == 2);
+        assert(midi.cachedMidiMap.mappingCount == grid.mappingCount);
+        bool removeSwapped = false, keepSwapped = false;
+        for (uint32_t i = 0; i < grid.mappingCount; ++i) {
+            if (strcmp(grid.mappings[i].sfxPath, "remove.wav") == 0 && grid.mappings[i].note == 46)
+                removeSwapped = true;
+            if (strcmp(grid.mappings[i].sfxPath, "keep.wav") == 0 && grid.mappings[i].note == 39)
+                keepSwapped = true;
+        }
+        assert(removeSwapped && keepSwapped);
+        assert(gridLedVelocity[36] == 0 && gridLedVelocity[37] == 0);
+        assert(gridLedVelocity[46] == 11);
+        refreshSoundboardFiles(&config, 6000);
+        assert(soundboardFileAtGridCell(soundboardUi, 1, 0) == 0);
+        assert(soundboardFileAtGridCell(soundboardUi, 0, 1) == 1);
+        layoutRequest("POST", "sfx=keep.wav&unassign=1", "200 OK");
+        grid = config.readMidiMapFile();
+        assert(grid.gridCellCount == 1 && grid.mappingCount == 1);
+        assert(strcmp(grid.mappings[0].sfxPath, "remove.wav") == 0);
+        assert(layoutRequest("GET", "", "200 OK").find("\"sfx\":\"keep.wav\"") == std::string::npos);
+        layoutRequest("POST", "mode=normal", "200 OK");
+        layoutRequest("POST", "mode=grid", "200 OK");
+        assert(config.readMidiMapFile().gridCellCount == 1);
+        touch("sfx/grid-new.wav");
+        assert(layoutRequest("GET", "", "200 OK").find("\"sfx\":\"grid-new.wav\"") == std::string::npos);
+        assert(unlink("sfx/grid-new.wav") == 0);
+        layoutRequest("POST", "sfx=keep.wav&row=1&column=0", "200 OK");
+        grid = config.readMidiMapFile();
+        assert(grid.gridCellCount == 1 && grid.mappingCount == 1);
+        assert(strcmp(grid.gridCells[0].sfxPath, "keep.wav") == 0);
+        assert(strcmp(grid.mappings[0].sfxPath, "keep.wav") == 0 && grid.mappings[0].note == 46);
+        layoutRequest("POST", "sfx=keep.wav&unassign=1", "200 OK");
+        assert(config.readMidiMapFile().gridCellCount == 0);
+        layoutRequest("POST", "mode=normal", "200 OK");
+        layoutRequest("POST", "mode=grid", "200 OK");
+        assert(config.readMidiMapFile().gridCellCount == 0);
+        refreshSoundboardFiles(&config, 9000);
+        assert(soundboardUi.gridMode && soundboardFileAtGridCell(soundboardUi, 1, 0) == -1);
+        assert(soundboardFileAtGridCell(soundboardUi, 0, 0) == -1);
+        layoutRequest("POST", "corner=top_right&note=40", "400 Bad Request");
+        layoutRequest("POST", "", "400 Bad Request");
+        layoutRequest("POST", "rows=2", "400 Bad Request");
+        layoutRequest("POST", "sfx=keep.wav&unassign=0", "400 Bad Request");
+        layoutRequest("POST", "sfx=keep.wav&unassign=1&row=0&column=0", "400 Bad Request");
+        layoutRequest("POST", "sfx=keep.wav&row=1&column=0", "200 OK");
+        layoutRequest("POST", "mode=grid&rows=1&columns=1", "200 OK");
+        grid = config.readMidiMapFile();
+        assert(grid.gridCornerMask == 0 && grid.gridCellCount == 0 && grid.mappingCount == 0);
+        layoutRequest("POST", "mode=normal", "\"mode\":\"normal\"");
+        assert(config.readMidiMapFile().soundboardLayout == SOUNDBOARD_LAYOUT_NORMAL);
+        MidiMapData actionGrid = beforeLayout;
+        actionGrid.soundboardLayout = SOUNDBOARD_LAYOUT_GRID;
+        actionGrid.gridInitialized = 1;
+        actionGrid.gridRows = actionGrid.gridColumns = 2;
+        actionGrid.gridCornerMask = 15;
+        actionGrid.gridCornerNotes[0] = 38;
+        actionGrid.gridCornerNotes[1] = 39;
+        actionGrid.gridCornerNotes[2] = 46;
+        actionGrid.gridCornerNotes[3] = 47;
+        actionGrid.gridCellCount = 1;
+        actionGrid.gridCells[0] = {"keep.wav", 0, 0};
+        assert(config.writeMidiMapFile(&actionGrid) == RET_OK);
+        layoutRequest("POST", "action=stop_all&row=0&column=1", "200 OK");
+        layoutRequest("POST", "action=sampler_toggle&row=1&column=1", "200 OK");
+        grid = config.readMidiMapFile();
+        assert(grid.gridCellCount == 3 && grid.actionMappingCount == 2);
+        assert(config.purgeMissingSoundMappings(&grid) == RET_OK && grid.gridCellCount == 3);
+        layoutRequest("POST", "action=stop_all&row=0&column=0", "200 OK");
+        grid = config.readMidiMapFile();
+        bool stopAt38 = false, keepAt39 = false;
+        for (uint32_t i = 0; i < grid.actionMappingCount; ++i)
+            if (grid.actionMappings[i].action == MIDI_ACTION_STOP_ALL && grid.actionMappings[i].note == 38)
+                stopAt38 = true;
+        for (uint32_t i = 0; i < grid.mappingCount; ++i)
+            if (strcmp(grid.mappings[i].sfxPath, "keep.wav") == 0 && grid.mappings[i].note == 39)
+                keepAt39 = true;
+        assert(stopAt38 && keepAt39 && gridLedVelocity[38] == 5);
+        refreshSoundboardFiles(&config, 12000);
+        const int stopIndex = soundboardFileAtGridCell(soundboardUi, 0, 0);
+        const int samplerIndex = soundboardFileAtGridCell(soundboardUi, 1, 1);
+        assert(stopIndex >= 0 && samplerIndex >= 0);
+        assert(soundboardGridAction(soundboardUi.files[stopIndex]) == MIDI_ACTION_STOP_ALL);
+        assert(soundboardGridAction(soundboardUi.files[samplerIndex]) == MIDI_ACTION_SAMPLER_TOGGLE);
+        layoutRequest("POST", "action=sampler_toggle&row=0&column=0", "200 OK");
+        grid = config.readMidiMapFile();
+        bool samplerAt38 = false, stopAt47 = false;
+        for (uint32_t i = 0; i < grid.actionMappingCount; ++i) {
+            if (grid.actionMappings[i].action == MIDI_ACTION_SAMPLER_TOGGLE && grid.actionMappings[i].note == 38)
+                samplerAt38 = true;
+            if (grid.actionMappings[i].action == MIDI_ACTION_STOP_ALL && grid.actionMappings[i].note == 47)
+                stopAt47 = true;
+        }
+        assert(samplerAt38 && stopAt47);
+        layoutRequest("POST", "action=sampler_toggle&unassign=1", "200 OK");
+        grid = config.readMidiMapFile();
+        assert(grid.gridCellCount == 2 && grid.actionMappingCount == 1);
+        assert(grid.actionMappings[0].action == MIDI_ACTION_STOP_ALL);
+        layoutRequest("POST", "action=unknown&row=0&column=0", "400 Bad Request");
+        layoutRequest("POST", "action=stop_all&sfx=keep.wav&row=0&column=0", "400 Bad Request");
+        auto samplerRequest = [&](const char *method, const char *expected) {
+            int sockets[2];
+            assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+            assert(handleMidiSamplerMode(&http, sockets[0], method) == 0);
+            char reply[512]{};
+            assert(read(sockets[1], reply, sizeof(reply) - 1) > 0);
+            assert(strstr(reply, expected));
+            close(sockets[0]);
+            close(sockets[1]);
+            // Drain any lighting changes produced by the runtime mode toggle.
+            layoutRequest("GET", "", "200 OK");
+        };
+        samplerRequest("GET", "\"active\":false");
+        samplerRequest("POST", "\"active\":true");
+        assert(midi.samplerModeActive == 1);
+        samplerRequest("POST", "\"active\":false");
+        samplerRequest("PUT", "405 Method Not Allowed");
+        app.midi = nullptr;
+        samplerRequest("POST", "503 Service Unavailable");
+        app.midi = &midi;
+        MidiMapData freshGrid = beforeLayout;
+        freshGrid.gridInitialized = 0;
+        freshGrid.gridCellCount = 0;
+        assert(config.writeMidiMapFile(&freshGrid) == RET_OK);
+        layoutRequest("POST", "mode=grid&rows=1&columns=1", "200 OK");
+        grid = config.readMidiMapFile();
+        assert(grid.gridCellCount == 1 && grid.gridRows == 1 && grid.gridColumns == 1);
+        assert(grid.mappingCount == beforeLayout.mappingCount);
+        char capacityFiles[SOUNDBOARD_GRID_ELEMENTS_MAX][MIDI_SFX_PATH_MAX]{};
+        for (unsigned i = 0; i < SOUNDBOARD_GRID_CELLS_MAX; ++i)
+            snprintf(capacityFiles[i], MIDI_SFX_PATH_MAX, "sound-%u.wav", i);
+        strcpy(capacityFiles[SOUNDBOARD_GRID_CELLS_MAX], SOUNDBOARD_GRID_STOP_ALL_ID);
+        strcpy(capacityFiles[SOUNDBOARD_GRID_CELLS_MAX + 1], SOUNDBOARD_GRID_SAMPLER_TOGGLE_ID);
+        MidiMapData capacityGrid{};
+        capacityGrid.gridRows = capacityGrid.gridColumns = 8;
+        SoundboardGridCell capacityCells[SOUNDBOARD_GRID_CELLS_MAX]{};
+        uint32_t capacityCount = 0;
+        assert(buildSoundboardGridCells(capacityGrid, capacityFiles, SOUNDBOARD_GRID_ELEMENTS_MAX,
+            capacityCells, &capacityCount, false, true) == RET_OK);
+        assert(capacityCount == SOUNDBOARD_GRID_CELLS_MAX);
+        for (uint32_t i = 0; i < capacityCount; ++i)
+            assert(soundboardGridAction(capacityCells[i].sfxPath) == MIDI_ACTION_NONE);
+        assert(config.writeMidiMapFile(&beforeLayout) == RET_OK);
+        midi.cachedMidiMap = beforeLayout;
+        soundboardUi.lastFilesMs = 0;
+        refreshSoundboardFiles(&config, 1000);
+        soundboardUi.lastFilesMs = 0;
         touch("sfx/new.WAV");
         assert(mkdir("sfx/not-a-file.wav", 0755) == 0);
         orderRequest("GET", "", "remove.wav\nkeep.wav\nnew.WAV\n");

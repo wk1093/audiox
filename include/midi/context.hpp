@@ -87,6 +87,7 @@ struct MidiContext {
 
     void setLightsDimmed(bool dimmed);
     void refreshLightingFromState();
+    void toggleSamplerMode();
     int reloadSoundboardMappings();
     void syncMacros();
     void stopMacros();

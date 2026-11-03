@@ -905,6 +905,65 @@ select {
   gap: 10px;
 }
 
+.sb-grid.grid-mode {
+  grid-template-columns: repeat(var(--sb-columns), minmax(112px, 1fr));
+  gap: 6px;
+  overflow-x: auto;
+}
+
+.sb-grid.grid-mode .sb-card {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  padding: 6px;
+  gap: 5px;
+}
+
+.sb-grid.grid-mode .sb-card-name,
+.sb-grid.grid-mode .sb-card-midi {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sb-grid.grid-mode .sb-card-actions {
+  grid-template-columns: 1fr;
+}
+
+.sb-grid.grid-mode .sb-play {
+  min-height: 48px;
+}
+
+.sb-grid-empty {
+  min-height: 80px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.sb-grid-cell-select {
+  font-size: 11px;
+}
+
+.soundboard-layout:not(.play-mode) .grid-mode .sb-card-name,
+.soundboard-layout:not(.play-mode) #sb-unassigned .sb-card-name {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.grid-drop-target {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+}
+
+#sb-unassigned {
+  min-height: 140px;
+}
+
 .sb-card {
   border: 1px solid var(--line);
   border-radius: 10px;

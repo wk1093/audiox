@@ -4,6 +4,7 @@
 #include "bluetooth/context.hpp"
 #include "bluetooth/route_id.hpp"
 #include "config/context.hpp"
+#include "midi/context.hpp"
 #include "touch/context.hpp"
 
 #include <stdint.h>
@@ -74,10 +75,15 @@ static bool uiSleepFrameDrawn = false;
 static bool uiSleepLastTouchDown = false;
 
 struct SoundboardUiState {
-    char files[AUDIO_SFX_SLOT_COUNT][MIDI_SFX_PATH_MAX]{};
-    uint8_t modes[AUDIO_SFX_SLOT_COUNT]{};
+    char files[AUDIO_SFX_SLOT_COUNT + 2][MIDI_SFX_PATH_MAX]{};
+    uint8_t modes[AUDIO_SFX_SLOT_COUNT + 2]{};
+    uint8_t cellRows[AUDIO_SFX_SLOT_COUNT + 2]{};
+    uint8_t cellColumns[AUDIO_SFX_SLOT_COUNT + 2]{};
     int count{0};
     int page{0};
+    uint8_t gridRows{4};
+    uint8_t gridColumns{4};
+    bool gridMode{false};
     int pressedPad{-1};
     int startX{0};
     int startY{0};
@@ -557,7 +563,19 @@ static void refreshSoundboardFiles(ConfigStore *config, uint64_t nowMs) {
     ui.count = count;
     memcpy(ui.files, files, sizeof(files));
     MidiMapData map = config->readMidiMapFile();
+    ui.gridMode = map.soundboardLayout == SOUNDBOARD_LAYOUT_GRID;
+    if (ui.gridMode) {
+        snprintf(ui.files[count++], MIDI_SFX_PATH_MAX, "%s", SOUNDBOARD_GRID_STOP_ALL_ID);
+        snprintf(ui.files[count++], MIDI_SFX_PATH_MAX, "%s", SOUNDBOARD_GRID_SAMPLER_TOGGLE_ID);
+        ui.count = count;
+    }
+    ui.gridRows = map.gridRows >= 1 && map.gridRows <= SOUNDBOARD_GRID_ROWS_MAX ? map.gridRows : 4;
+    ui.gridColumns = map.gridColumns >= 1 && map.gridColumns <= SOUNDBOARD_GRID_COLUMNS_MAX
+        ? map.gridColumns : 4;
+    bool occupied[SOUNDBOARD_GRID_CELLS_MAX]{};
     for (uint32_t i = 0; i < count; ++i) {
+        ui.cellRows[i] = UINT8_MAX;
+        ui.cellColumns[i] = UINT8_MAX;
         ui.modes[i] = SOUNDBOARD_MODE_PLAY;
         for (uint32_t j = 0; j < map.soundModeCount && j < MIDI_SOUND_MODES_MAX; ++j) {
             if (strcmp(ui.files[i], map.soundModes[j].sfxPath) == 0) {
@@ -565,20 +583,37 @@ static void refreshSoundboardFiles(ConfigStore *config, uint64_t nowMs) {
                 break;
             }
         }
+        for (uint32_t j = 0; j < map.gridCellCount && j < SOUNDBOARD_GRID_CELLS_MAX; ++j) {
+            if (strcmp(ui.files[i], map.gridCells[j].sfxPath) != 0 ||
+                map.gridCells[j].row >= ui.gridRows || map.gridCells[j].column >= ui.gridColumns) continue;
+            uint32_t cell = (uint32_t)map.gridCells[j].row * ui.gridColumns + map.gridCells[j].column;
+            if (occupied[cell]) continue;
+            ui.cellRows[i] = map.gridCells[j].row;
+            ui.cellColumns[i] = map.gridCells[j].column;
+            occupied[cell] = true;
+            break;
+        }
     }
+}
+
+static int soundboardFileAtGridCell(const SoundboardUiState &ui, int row, int column) {
+    for (int i = 0; i < ui.count; ++i) {
+        if (ui.cellRows[i] == row && ui.cellColumns[i] == column) return i;
+    }
+    return -1;
 }
 
 static void drawSoundboard(FramebufferContext *fb, TouchState *touch) {
     SoundboardUiState &ui = soundboardUi;
     const int padding = 10;
     const int gap = 8;
-    const int columns = fb->width < 480 ? 2 : 4;
-    const int rows = 3;
+    const int columns = ui.gridMode ? ui.gridColumns : (fb->width < 480 ? 2 : 4);
+    const int rows = ui.gridMode ? ui.gridRows : 3;
     const int pageSize = columns * rows;
     const int headerHeight = 44;
     const int padWidth = ((int)fb->width - 2 * padding - (columns - 1) * gap) / columns;
     const int padHeight = ((int)fb->height - headerHeight - 2 * padding - (rows - 1) * gap) / rows;
-    const int pages = (ui.count + pageSize - 1) / pageSize;
+    const int pages = ui.gridMode ? 1 : (ui.count + pageSize - 1) / pageSize;
     ui.page = clampInt(ui.page, 0, pages > 0 ? pages - 1 : 0);
     const bool down = touch && touch->is_pressed;
     const int touchX = touch ? touch->x : 0;
@@ -589,8 +624,11 @@ static void drawSoundboard(FramebufferContext *fb, TouchState *touch) {
         ui.startY = touchY;
         ui.pressedPad = -1;
         for (int cell = 0; cell < pageSize; ++cell) {
-            int index = ui.page * pageSize + cell;
+            int index = ui.gridMode
+                ? soundboardFileAtGridCell(ui, cell / columns, cell % columns)
+                : ui.page * pageSize + cell;
             if (index >= ui.count) break;
+            if (index < 0) continue;
             int x = padding + (cell % columns) * (padWidth + gap);
             int y = headerHeight + padding + (cell / columns) * (padHeight + gap);
             if (pointInRect(touchX, touchY, x, y, padWidth, padHeight)) {
@@ -605,7 +643,9 @@ static void drawSoundboard(FramebufferContext *fb, TouchState *touch) {
         }
     }
     if (down && ui.held && ui.pressedPad >= 0) {
-        int cell = ui.pressedPad % pageSize;
+        int cell = ui.gridMode
+            ? ui.cellRows[ui.pressedPad] * columns + ui.cellColumns[ui.pressedPad]
+            : ui.pressedPad % pageSize;
         int x = padding + (cell % columns) * (padWidth + gap);
         int y = headerHeight + padding + (cell / columns) * (padHeight + gap);
         if (!pointInRect(touchX, touchY, x, y, padWidth, padHeight)) {
@@ -618,22 +658,32 @@ static void drawSoundboard(FramebufferContext *fb, TouchState *touch) {
         ui.held = false;
         int dx = touchX - ui.startX;
         int dy = touchY - ui.startY;
-        if (dx > 50 && abs(dx) > abs(dy)) ui.page = clampInt(ui.page - 1, 0, pages > 0 ? pages - 1 : 0);
-        else if (dx < -50 && abs(dx) > abs(dy)) ui.page = clampInt(ui.page + 1, 0, pages > 0 ? pages - 1 : 0);
+        if (!ui.gridMode && dx > 50 && abs(dx) > abs(dy)) ui.page = clampInt(ui.page - 1, 0, pages > 0 ? pages - 1 : 0);
+        else if (!ui.gridMode && dx < -50 && abs(dx) > abs(dy)) ui.page = clampInt(ui.page + 1, 0, pages > 0 ? pages - 1 : 0);
         else if (abs(dx) < kButtonDragThresholdPx && abs(dy) < kButtonDragThresholdPx) {
             if (ui.startY < headerHeight) {
                 if (ui.startX < 80 && fb->app->audio) fb->app->audio->stopAllSfx();
                 else if (ui.startX >= (int)fb->width - 80) ui.page = clampInt(ui.page + 1, 0, pages > 0 ? pages - 1 : 0);
                 else if (ui.startX >= (int)fb->width - 160) ui.page = clampInt(ui.page - 1, 0, pages > 0 ? pages - 1 : 0);
             } else if (ui.pressedPad >= 0 && ui.modes[ui.pressedPad] != SOUNDBOARD_MODE_HOLD && fb->app->audio) {
-                int cell = ui.pressedPad % pageSize;
+                int cell = ui.gridMode
+                    ? ui.cellRows[ui.pressedPad] * columns + ui.cellColumns[ui.pressedPad]
+                    : ui.pressedPad % pageSize;
                 int x = padding + (cell % columns) * (padWidth + gap);
                 int y = headerHeight + padding + (cell / columns) * (padHeight + gap);
                 if (pointInRect(touchX, touchY, x, y, padWidth, padHeight)) {
-                    char path[sizeof(SFX_ROOT_DIR) + MIDI_SFX_PATH_MAX];
-                    snprintf(path, sizeof(path), "%s/%s", SFX_ROOT_DIR, ui.files[ui.pressedPad]);
-                    if (fb->app->audio->triggerSfx(path) != RET_OK) {
-                        printf("[FBUI] [WARN] Could not play %s\n", path);
+                    const uint8_t action = soundboardGridAction(ui.files[ui.pressedPad]);
+                    if (action == MIDI_ACTION_STOP_ALL) {
+                        fb->app->audio->stopAllSfx();
+                    } else if (action == MIDI_ACTION_SAMPLER_TOGGLE) {
+                        if (fb->app->midi) fb->app->midi->toggleSamplerMode();
+                        else printf("[FBUI] [WARN] MIDI sampler is unavailable\n");
+                    } else {
+                        char path[sizeof(SFX_ROOT_DIR) + MIDI_SFX_PATH_MAX];
+                        snprintf(path, sizeof(path), "%s/%s", SFX_ROOT_DIR, ui.files[ui.pressedPad]);
+                        if (fb->app->audio->triggerSfx(path) != RET_OK) {
+                            printf("[FBUI] [WARN] Could not play %s\n", path);
+                        }
                     }
                 }
             }
@@ -647,22 +697,37 @@ static void drawSoundboard(FramebufferContext *fb, TouchState *touch) {
     fb->drawRect(0, 0, fb->width, headerHeight, 25, 35, 50);
     fb->drawText(14, 17, "STOP ALL", 245, 125, 105, 1);
     char title[48];
-    if (fb->width < 480) snprintf(title, sizeof(title), "SFX %d/%d", ui.page + 1, pages > 0 ? pages : 1);
+    if (ui.gridMode) {
+        if (fb->width < 480) snprintf(title, sizeof(title), "SFX %ux%u", ui.gridColumns, ui.gridRows);
+        else snprintf(title, sizeof(title), "Soundboard Grid  %ux%u", ui.gridColumns, ui.gridRows);
+    } else if (fb->width < 480) snprintf(title, sizeof(title), "SFX %d/%d", ui.page + 1, pages > 0 ? pages : 1);
     else snprintf(title, sizeof(title), "Soundboard  %d/%d", ui.page + 1, pages > 0 ? pages : 1);
     fb->drawText(90, 17, title, 220, 232, 240, 1);
-    fb->drawText((int)fb->width - 148, 17, "<", 220, 232, 240, 1);
-    fb->drawText((int)fb->width - 68, 17, ">", 220, 232, 240, 1);
+    if (!ui.gridMode) {
+        fb->drawText((int)fb->width - 148, 17, "<", 220, 232, 240, 1);
+        fb->drawText((int)fb->width - 68, 17, ">", 220, 232, 240, 1);
+    }
     if (ui.count == 0) fb->drawText(padding, headerHeight + 20, "No sounds uploaded", 190, 205, 220, 1);
     for (int cell = 0; cell < pageSize; ++cell) {
-        int index = ui.page * pageSize + cell;
-        if (index >= ui.count) break;
+        int index = ui.gridMode
+            ? soundboardFileAtGridCell(ui, cell / columns, cell % columns)
+            : ui.page * pageSize + cell;
+        if (!ui.gridMode && index >= ui.count) break;
         int x = padding + (cell % columns) * (padWidth + gap);
         int y = headerHeight + padding + (cell / columns) * (padHeight + gap);
+        if (index < 0) {
+            fb->drawRect(x, y, padWidth, padHeight, 22, 30, 40);
+            drawRectBorder(fb, x, y, padWidth, padHeight, 50, 67, 78, 1);
+            continue;
+        }
         bool pressed = down && ui.pressedPad == index;
         fb->drawRect(x, y, padWidth, padHeight, pressed ? 64 : 35, pressed ? 128 : 68, pressed ? 142 : 90);
         drawRectBorder(fb, x, y, padWidth, padHeight, pressed ? 126 : 77, pressed ? 216 : 144, pressed ? 210 : 165, 2);
         char label[MIDI_SFX_PATH_MAX];
-        trimLabelToWidth(ui.files[index], label, sizeof(label), (padWidth - 16) / 8);
+        const uint8_t action = soundboardGridAction(ui.files[index]);
+        const char *name = action == MIDI_ACTION_STOP_ALL ? "STOP ALL" :
+            action == MIDI_ACTION_SAMPLER_TOGGLE ? "SAMPLER" : ui.files[index];
+        trimLabelToWidth(name, label, sizeof(label), (padWidth - 16) / 8);
         fb->drawText(x + 8, y + padHeight / 2 - 4, label, 245, 248, 250, 1);
         if (ui.modes[index] == SOUNDBOARD_MODE_HOLD) fb->drawText(x + 8, y + padHeight - 16, "HOLD", 160, 215, 210, 1);
     }

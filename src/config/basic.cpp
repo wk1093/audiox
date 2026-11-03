@@ -212,6 +212,41 @@ uint8_t soundboardModeFromString(const char *value) {
     return SOUNDBOARD_MODE_PLAY;
 }
 
+uint8_t soundboardGridAction(const char *element) {
+    if (!element) return MIDI_ACTION_NONE;
+    if (strcmp(element, SOUNDBOARD_GRID_STOP_ALL_ID) == 0) return MIDI_ACTION_STOP_ALL;
+    if (strcmp(element, SOUNDBOARD_GRID_SAMPLER_TOGGLE_ID) == 0) return MIDI_ACTION_SAMPLER_TOGGLE;
+    return MIDI_ACTION_NONE;
+}
+
+bool soundboardGridNote(const MidiMapData *data, uint8_t row, uint8_t column, uint8_t *note) {
+    if (!data || !note || data->gridRows < 2 || data->gridRows > SOUNDBOARD_GRID_ROWS_MAX ||
+        data->gridColumns < 2 || data->gridColumns > SOUNDBOARD_GRID_COLUMNS_MAX ||
+        row >= data->gridRows || column >= data->gridColumns ||
+        (data->gridCornerMask & 0x0f) != 0x0f) {
+        return false;
+    }
+
+    const int topLeft = data->gridCornerNotes[SOUNDBOARD_GRID_TOP_LEFT];
+    const int topRight = data->gridCornerNotes[SOUNDBOARD_GRID_TOP_RIGHT];
+    const int bottomLeft = data->gridCornerNotes[SOUNDBOARD_GRID_BOTTOM_LEFT];
+    const int bottomRight = data->gridCornerNotes[SOUNDBOARD_GRID_BOTTOM_RIGHT];
+    const int columnSteps = (int)data->gridColumns - 1;
+    const int rowSteps = (int)data->gridRows - 1;
+    const int horizontalDelta = topRight - topLeft;
+    const int verticalDelta = bottomLeft - topLeft;
+    if (horizontalDelta % columnSteps != 0 || verticalDelta % rowSteps != 0 ||
+        topLeft + horizontalDelta + verticalDelta != bottomRight) {
+        return false;
+    }
+
+    const int inferred = topLeft + (horizontalDelta / columnSteps) * column +
+                         (verticalDelta / rowSteps) * row;
+    if (inferred < 0 || inferred > 127) return false;
+    *note = (uint8_t)inferred;
+    return true;
+}
+
 ConfigStore::ConfigStore(Audiox *context) : app(context) {
     if (!app) {
         printf("[CONFIG] [ERR] ConfigStore initialized with null context\n");

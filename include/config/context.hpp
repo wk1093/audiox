@@ -19,6 +19,12 @@
 #define MIDI_SOUND_LIGHTS_MAX MIDI_MAPPINGS_MAX
 #define MIDI_SOUND_MODES_MAX MIDI_MAPPINGS_MAX
 #define SOUNDBOARD_ORDER_MAX 64
+#define SOUNDBOARD_GRID_ROWS_MAX 8
+#define SOUNDBOARD_GRID_COLUMNS_MAX 8
+#define SOUNDBOARD_GRID_CELLS_MAX (SOUNDBOARD_GRID_ROWS_MAX * SOUNDBOARD_GRID_COLUMNS_MAX)
+#define SOUNDBOARD_GRID_ELEMENTS_MAX (SOUNDBOARD_GRID_CELLS_MAX + 2)
+#define SOUNDBOARD_GRID_STOP_ALL_ID "__stop_all__"
+#define SOUNDBOARD_GRID_SAMPLER_TOGGLE_ID "__sampler_toggle__"
 #define MIDI_ACTION_MAPPINGS_MAX MIDI_MAPPINGS_MAX
 #define MIDI_CC_VOLUME_MAPPINGS_MAX 16
 #define MIDI_EFFECT_STATES_MAX 16
@@ -141,6 +147,25 @@ struct SoundboardOrderEntry {
     char sfxPath[MIDI_SFX_PATH_MAX];
 };
 
+enum SoundboardLayoutMode : uint8_t {
+    SOUNDBOARD_LAYOUT_NORMAL = 0,
+    SOUNDBOARD_LAYOUT_GRID = 1,
+};
+
+enum SoundboardGridCorner : uint8_t {
+    SOUNDBOARD_GRID_TOP_LEFT = 0,
+    SOUNDBOARD_GRID_TOP_RIGHT = 1,
+    SOUNDBOARD_GRID_BOTTOM_LEFT = 2,
+    SOUNDBOARD_GRID_BOTTOM_RIGHT = 3,
+    SOUNDBOARD_GRID_CORNER_COUNT = 4,
+};
+
+struct SoundboardGridCell {
+    char sfxPath[MIDI_SFX_PATH_MAX];
+    uint8_t row;
+    uint8_t column;
+};
+
 struct MidiActionMapping {
     uint8_t note;
     uint8_t action; // MidiActionType
@@ -162,6 +187,14 @@ struct MidiMapData {
     MidiSoundMode soundModes[MIDI_SOUND_MODES_MAX];
     uint32_t soundOrderCount;
     SoundboardOrderEntry soundOrder[SOUNDBOARD_ORDER_MAX];
+    uint8_t soundboardLayout;
+    uint8_t gridRows;
+    uint8_t gridColumns;
+    uint8_t gridInitialized;
+    uint8_t gridCornerMask;
+    uint8_t gridCornerNotes[SOUNDBOARD_GRID_CORNER_COUNT];
+    uint32_t gridCellCount;
+    SoundboardGridCell gridCells[SOUNDBOARD_GRID_CELLS_MAX];
     uint32_t actionMappingCount;
     MidiActionMapping actionMappings[MIDI_ACTION_MAPPINGS_MAX];
     uint8_t samplerKeyboardEnabled;
@@ -180,6 +213,9 @@ struct MidiMapData {
     uint32_t effectLightMappingCount;
     MidiEffectLightMapping effectLightMappings[MIDI_EFFECT_LIGHT_MAPPINGS_MAX];
 };
+
+bool soundboardGridNote(const MidiMapData *data, uint8_t row, uint8_t column, uint8_t *note);
+uint8_t soundboardGridAction(const char *element);
 
 struct ConfigStore {
     // For interacting with the config files

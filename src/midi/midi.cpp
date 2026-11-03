@@ -839,6 +839,11 @@ int MidiContext::reloadSoundboardMappings() {
     return RET_OK;
 }
 
+void MidiContext::toggleSamplerMode() {
+    samplerModeActive = samplerModeActive ? 0U : 1U;
+    refreshLightingFromState();
+}
+
 void MidiContext::refreshLightingFromState() {
     if (fd < 0 || !connected) {
         return;
@@ -1248,8 +1253,7 @@ void MidiContext::poll() {
                     continue;
                 }
                 if (mappedAction == MIDI_ACTION_SAMPLER_TOGGLE) {
-                    samplerModeActive = samplerModeActive ? 0U : 1U;
-                    refreshLightingFromState();
+                    toggleSamplerMode();
                     printf("[MIDI] NOTE ON n=%u v=%u -> action sampler_toggle (%s)\n",
                            (unsigned)d0,
                            (unsigned)d1,

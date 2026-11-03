@@ -187,6 +187,50 @@ static int parseSoundModeLine(const char *value,
     return RET_OK;
 }
 
+static int parseSoundboardGridCellLine(const char *value,
+                                       SoundboardGridCell *out,
+                                       uint32_t *count_in_out) {
+    if (!value || !out || !count_in_out || *count_in_out >= SOUNDBOARD_GRID_CELLS_MAX) {
+        return RET_ERR;
+    }
+
+    char sfxPath[MIDI_SFX_PATH_MAX]{};
+    unsigned row = 0;
+    unsigned column = 0;
+    char extra = '\0';
+    if (sscanf(value, "%159[^,],%u,%u%c", sfxPath, &row, &column, &extra) != 3 ||
+        !sfxPath[0] || row >= SOUNDBOARD_GRID_ROWS_MAX || column >= SOUNDBOARD_GRID_COLUMNS_MAX) {
+        return RET_ERR;
+    }
+
+    SoundboardGridCell &cell = out[(*count_in_out)++];
+    copyBounded(cell.sfxPath, sizeof(cell.sfxPath), sfxPath);
+    cell.row = (uint8_t)row;
+    cell.column = (uint8_t)column;
+    return RET_OK;
+}
+
+static int parseSoundboardGridCornerLine(const char *value, MidiMapData *data) {
+    if (!value || !data) return RET_ERR;
+    char cornerName[24]{};
+    unsigned note = 0;
+    char extra = '\0';
+    if (sscanf(value, "%23[^,],%u%c", cornerName, &note, &extra) != 2 || note > 127) {
+        return RET_ERR;
+    }
+    static const char *const names[SOUNDBOARD_GRID_CORNER_COUNT] = {
+        "top_left", "top_right", "bottom_left", "bottom_right",
+    };
+    for (uint8_t i = 0; i < SOUNDBOARD_GRID_CORNER_COUNT; ++i) {
+        if (strcmp(cornerName, names[i]) == 0) {
+            data->gridCornerNotes[i] = (uint8_t)note;
+            data->gridCornerMask |= (uint8_t)(1U << i);
+            return RET_OK;
+        }
+    }
+    return RET_ERR;
+}
+
 static uint8_t midiActionFromString(const char *value) {
     if (!value) {
         return MIDI_ACTION_NONE;
@@ -611,6 +655,8 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
     bool explicitSamplerEnabled = false;
     data.samplerKeyboardChannel = 0;
     data.samplerRootNote = 60;
+    data.gridRows = 4;
+    data.gridColumns = 4;
     // defaults: channel 0, all states off (vel=0)
 
     FILE *fp = fopen(path, "r");
@@ -668,6 +714,28 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             if (value[0] && strlen(value) < MIDI_SFX_PATH_MAX && data.soundOrderCount < SOUNDBOARD_ORDER_MAX) {
                 copyBounded(data.soundOrder[data.soundOrderCount++].sfxPath, MIDI_SFX_PATH_MAX, value);
             }
+        } else if (strcmp(key, "soundboard_layout") == 0) {
+            char mode[16]{};
+            unsigned rows = 0;
+            unsigned columns = 0;
+            char extra = '\0';
+            if (sscanf(value, "%15[^,],%u,%u%c", mode, &rows, &columns, &extra) == 3 &&
+                rows >= 1 && rows <= SOUNDBOARD_GRID_ROWS_MAX &&
+                columns >= 1 && columns <= SOUNDBOARD_GRID_COLUMNS_MAX &&
+                rows * columns <= SOUNDBOARD_GRID_CELLS_MAX) {
+                if (strcmp(mode, "normal") == 0 || strcmp(mode, "grid") == 0) {
+                    data.soundboardLayout = strcmp(mode, "grid") == 0
+                        ? SOUNDBOARD_LAYOUT_GRID : SOUNDBOARD_LAYOUT_NORMAL;
+                    data.gridRows = (uint8_t)rows;
+                    data.gridColumns = (uint8_t)columns;
+                }
+            }
+        } else if (strcmp(key, "soundboard_grid_corner") == 0) {
+            (void)parseSoundboardGridCornerLine(value, &data);
+        } else if (strcmp(key, "soundboard_grid_initialized") == 0) {
+            data.gridInitialized = strcmp(value, "1") == 0;
+        } else if (strcmp(key, "soundboard_grid_cell") == 0) {
+            (void)parseSoundboardGridCellLine(value, data.gridCells, &data.gridCellCount);
         } else if (strcmp(key, "note_action") == 0) {
             (void)parseMidiActionLine(value, data.actionMappings, &data.actionMappingCount);
         } else if (strcmp(key, "automation") == 0) {
@@ -779,6 +847,8 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
     fclose(fp);
 
     assignMacroIdentities(data);
+    if (data.soundboardLayout == SOUNDBOARD_LAYOUT_GRID || data.gridCellCount > 0)
+        data.gridInitialized = 1;
     *out = data;
     return RET_OK;
 }
@@ -902,6 +972,37 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
     for (uint32_t i = 0; i < data->soundOrderCount && i < SOUNDBOARD_ORDER_MAX; ++i) {
         if (dprintf(fd, "sound_order=%s\n", data->soundOrder[i].sfxPath) < 0) {
             printf("[CONFIG] [WARN] failed to write soundboard order: %s\n", strerror(errno));
+            close(fd);
+            return RET_ERR;
+        }
+    }
+    if (dprintf(fd, "soundboard_grid_initialized=%u\nsoundboard_layout=%s,%u,%u\n",
+                (unsigned)(data->gridInitialized || data->soundboardLayout == SOUNDBOARD_LAYOUT_GRID ||
+                           data->gridCellCount > 0),
+                data->soundboardLayout == SOUNDBOARD_LAYOUT_GRID ? "grid" : "normal",
+                (unsigned)(data->gridRows ? data->gridRows : 4),
+                (unsigned)(data->gridColumns ? data->gridColumns : 4)) < 0) {
+        printf("[CONFIG] [WARN] failed to write soundboard layout: %s\n", strerror(errno));
+        close(fd);
+        return RET_ERR;
+    }
+    for (uint8_t i = 0; i < SOUNDBOARD_GRID_CORNER_COUNT; ++i) {
+        if ((data->gridCornerMask & (uint8_t)(1U << i)) == 0) continue;
+        static const char *const names[SOUNDBOARD_GRID_CORNER_COUNT] = {
+            "top_left", "top_right", "bottom_left", "bottom_right",
+        };
+        if (dprintf(fd, "soundboard_grid_corner=%s,%u\n", names[i],
+                    (unsigned)data->gridCornerNotes[i]) < 0) {
+            printf("[CONFIG] [WARN] failed to write soundboard grid calibration: %s\n", strerror(errno));
+            close(fd);
+            return RET_ERR;
+        }
+    }
+    for (uint32_t i = 0; i < data->gridCellCount && i < SOUNDBOARD_GRID_CELLS_MAX; ++i) {
+        if (!data->gridCells[i].sfxPath[0]) continue;
+        if (dprintf(fd, "soundboard_grid_cell=%s,%u,%u\n", data->gridCells[i].sfxPath,
+                    (unsigned)data->gridCells[i].row, (unsigned)data->gridCells[i].column) < 0) {
+            printf("[CONFIG] [WARN] failed to write soundboard grid cell: %s\n", strerror(errno));
             close(fd);
             return RET_ERR;
         }
@@ -1221,7 +1322,7 @@ int ConfigStore::purgeMissingSoundMappings(MidiMapData *data) {
 
     MidiMapData cleaned = *data;
     bool changed = false;
-    auto purge = [&](auto &entries, uint32_t &count) -> int {
+    auto purge = [&](auto &entries, uint32_t &count, bool gridElements = false) -> int {
         if (count > sizeof(entries) / sizeof(entries[0])) {
             printf("[CONFIG] [WARN] invalid sound mapping count: %u\n", (unsigned)count);
             return RET_ERR;
@@ -1230,6 +1331,10 @@ int ConfigStore::purgeMissingSoundMappings(MidiMapData *data) {
         for (uint32_t i = 0; i < count; ++i) {
             char path[512];
             const char *sfx = entries[i].sfxPath;
+            if (gridElements && soundboardGridAction(sfx) != MIDI_ACTION_NONE) {
+                entries[kept++] = entries[i];
+                continue;
+            }
             int n = sfx[0] == '/' ? snprintf(path, sizeof(path), "%s", sfx)
                                   : snprintf(path, sizeof(path), "%s/%s", SFX_ROOT_DIR, sfx);
             if (n <= 0 || (size_t)n >= sizeof(path)) {
@@ -1258,7 +1363,8 @@ int ConfigStore::purgeMissingSoundMappings(MidiMapData *data) {
     if (purge(cleaned.mappings, cleaned.mappingCount) != RET_OK ||
         purge(cleaned.soundLights, cleaned.soundLightCount) != RET_OK ||
         purge(cleaned.soundModes, cleaned.soundModeCount) != RET_OK ||
-        purge(cleaned.soundOrder, cleaned.soundOrderCount) != RET_OK) {
+        purge(cleaned.soundOrder, cleaned.soundOrderCount) != RET_OK ||
+        purge(cleaned.gridCells, cleaned.gridCellCount, true) != RET_OK) {
         return RET_ERR;
     }
     if (changed && writeMidiMapFile(&cleaned) != RET_OK) {

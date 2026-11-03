@@ -96,6 +96,10 @@ See [Routing](./routing) for connection syntax and graph limitations, and
 | --- | --- |
 | `GET /api/soundboard/order` | Complete ordered WAV filename list, one per line |
 | `POST /api/soundboard/order` | Save a complete newline-separated order; stale lists can return 409 |
+| `GET /api/soundboard/layout` | Read list/grid mode, dimensions, learned MIDI corners, and cell assignments |
+| `POST /api/soundboard/layout` | Set `mode`, `rows`/`columns`, a `corner`/`note`, or an `sfx`/`row`/`column` assignment (occupied cells swap); use `action=stop_all` or `action=sampler_toggle` instead of `sfx` for action tiles. `unassign=1` clears the element's cell and MIDI bindings |
+| `GET /api/midi/sampler_mode` | Read runtime sample-selection mode (`active`) |
+| `POST /api/midi/sampler_mode` | Toggle runtime sample-selection mode, also used by the sampler grid tile |
 | `POST /api/soundboard/trigger/<target>` | Start a one-shot sound |
 | `POST /api/soundboard/press/<target>` | Start the shared held voice |
 | `POST /api/soundboard/release/<target>` | Release the held voice |

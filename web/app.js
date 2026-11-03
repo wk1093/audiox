@@ -71,6 +71,7 @@ const state = {
   volAssignTarget: null,
   volCcPollTimer: null,
   volCcLastSeq: 0,
+  volShowEffects: false,
   systemPollTimer: null,
   systemPollInFlight: false,
 };
@@ -3297,10 +3298,52 @@ const volumeMeters = new Map();
 let meterPollTimer = null;
 let meterPollBusy = false;
 let meterTopology = null;
+const meterLevels = new WeakMap();
+const meterReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+let meterAnimationFrame = null;
+let meterAnimationTime = 0;
+
+function resetVolumeMeters() {
+  if (meterAnimationFrame !== null) cancelAnimationFrame(meterAnimationFrame);
+  meterAnimationFrame = null;
+  for (const [id, group] of volumeMeters) {
+    updateVolumeMeter(id, Array(group.children[0]?.children.length || 0).fill(0), true);
+  }
+}
+
+function animateVolumeMeters(now) {
+  meterAnimationFrame = null;
+  if (state.activeTab !== 'volume' || document.hidden) {
+    resetVolumeMeters();
+    return;
+  }
+  const elapsed = Math.max(0, now - meterAnimationTime);
+  meterAnimationTime = now;
+  let moving = false;
+  for (const group of volumeMeters.values()) {
+    for (const row of group.children[0]?.children || []) {
+      const meter = row.children[0];
+      const level = meterLevels.get(meter);
+      if (!level) continue;
+      // Smooth in dB, with a fast attack (35 ms) and gentler release (300 ms).
+      const duration = level.target > level.current ? 35 : 300;
+      level.current += (level.target - level.current) * -Math.expm1(-elapsed / duration);
+      if (meterReducedMotion.matches || Math.abs(level.target - level.current) < 0.05) {
+        level.current = level.target;
+      } else {
+        moving = true;
+      }
+      meter.value = (level.current + 60) / 60;
+      row.style.setProperty('--meter-level', `${meter.value * 100}%`);
+    }
+  }
+  if (moving) meterAnimationFrame = requestAnimationFrame(animateVolumeMeters);
+}
 
 function stopMeterPolling() {
   if (meterPollTimer !== null) clearInterval(meterPollTimer);
   meterPollTimer = null;
+  resetVolumeMeters();
 }
 
 function startMeterPolling() {
@@ -3310,34 +3353,60 @@ function startMeterPolling() {
   meterPollTimer = setInterval(pollMeters, 250);
 }
 
-function updateVolumeMeter(id, levels) {
+function updateVolumeMeter(id, levels, immediate = false) {
   const group = volumeMeters.get(id);
   if (!group) return;
-  if (group.children.length !== levels.length) {
+  if (!levels.length) {
     group.replaceChildren();
+    return;
+  }
+  if (group.children[0]?.children.length !== levels.length) {
+    group.replaceChildren();
+    const bars = document.createElement('div');
+    bars.className = 'vol-meter-bars';
+    const name = state.volumes?.find(vol => vol.id === id)?.name || id;
     levels.forEach((_, channel) => {
-      const row = document.createElement('label');
+      const row = document.createElement('div');
       row.className = 'vol-meter-row';
-      const label = document.createElement('span');
-      label.textContent = `Ch ${channel + 1}`;
       const meter = document.createElement('meter');
       meter.min = 0;
       meter.max = 1;
       meter.high = 0.95;
       meter.optimum = 0;
-      meter.setAttribute('aria-label', `${id} channel ${channel + 1}`);
-      const value = document.createElement('span');
-      row.append(label, meter, value);
-      group.appendChild(row);
+      meter.value = 0;
+      row.style.setProperty('--meter-level', '0%');
+      meterLevels.set(meter, { current: -60, target: -60 });
+      meter.setAttribute('aria-label', `${name} channel ${channel + 1} signal level`);
+      row.appendChild(meter);
+      bars.appendChild(row);
     });
+    const value = document.createElement('span');
+    value.className = 'vol-meter-reading';
+    group.append(bars, value);
   }
   levels.forEach((raw, channel) => {
     const level = Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : 0;
     const db = level > 0 ? 20 * Math.log10(level) : -Infinity;
-    const row = group.children[channel];
-    row.children[1].value = Math.max(0, (db + 60) / 60);
-    row.children[2].textContent = `${db > -60 ? db.toFixed(1) : '-inf'} dBFS`;
+    const row = group.children[0].children[channel];
+    const meter = row.children[0];
+    const display = meterLevels.get(meter);
+    display.target = Math.max(-60, db);
+    if (immediate || meterReducedMotion.matches) {
+      display.current = display.target;
+      meter.value = (display.current + 60) / 60;
+      row.style.setProperty('--meter-level', `${meter.value * 100}%`);
+    }
+    meter.setAttribute('aria-valuetext', `${db > -60 ? db.toFixed(1) : '-inf'} dBFS`);
   });
+  const level = levels.reduce((sum, raw) =>
+    sum + (Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : 0), 0) / levels.length;
+  const db = level > 0 ? 20 * Math.log10(level) : -Infinity;
+  group.children[1].textContent = `${db > -60 ? db.toFixed(1) : '-inf'} dB`;
+  group.children[1].title = `Average channel peak: ${db > -60 ? db.toFixed(1) : '-inf'} dBFS`;
+  if (!immediate && !meterReducedMotion.matches && meterAnimationFrame === null && levels.length) {
+    meterAnimationTime = performance.now();
+    meterAnimationFrame = requestAnimationFrame(animateVolumeMeters);
+  }
 }
 
 async function pollMeters() {
@@ -3365,15 +3434,18 @@ async function pollMeters() {
       if (!liveIds.has(id)) group.replaceChildren();
     }
     data.meters.forEach(meter => updateVolumeMeter(meter.id, meter.levels));
-    const message = 'Live levels: 4 updates/s, -60 to 0 dBFS.';
-    if (status && status.textContent !== message) status.textContent = message;
+    if (status) {
+      status.textContent = '';
+      status.hidden = true;
+    }
   } catch (err) {
     if (state.activeTab !== 'volume' || document.hidden) return;
-    for (const [id, group] of volumeMeters) {
-      updateVolumeMeter(id, Array(group.children.length).fill(0));
-    }
+    resetVolumeMeters();
     const message = `Meters unavailable: ${AudioxUI.formatMessage(err)}`;
-    if (status && status.textContent !== message) status.textContent = message;
+    if (status) {
+      status.textContent = message;
+      status.hidden = false;
+    }
   } finally {
     meterPollBusy = false;
   }
@@ -3418,16 +3490,28 @@ function renderVolGrid() {
   if (!volGridEl) return;
   volumeMeters.clear();
   volGridEl.innerHTML = '';
+  const effects = state.volumes.filter(vol => isEffectThingId(vol.id));
+  const visibleVolumes = state.volumes.filter(vol => state.volShowEffects || !isEffectThingId(vol.id));
+  const effectSummary = document.getElementById('vol-effect-summary');
+  if (effectSummary) {
+    const adjusted = effects.filter(vol => vol.gain !== 1).length;
+    effectSummary.textContent = !state.volShowEffects && effects.length
+      ? `${effects.length} effect ${effects.length === 1 ? 'channel' : 'channels'} hidden${adjusted ? `; ${adjusted} with adjusted gain` : ''}. Saved gain, MIDI mappings, and script control remain active.`
+      : '';
+    effectSummary.hidden = !effectSummary.textContent;
+  }
 
-  if (!state.volumes.length) {
+  if (!visibleVolumes.length) {
     const empty = document.createElement('div');
     empty.className = 'small';
-    empty.textContent = 'No active devices. Open the Routing tab first.';
+    empty.textContent = state.volumes.length
+      ? 'Only effect channels are available. Enable Show effect channels to see them.'
+      : 'No active devices. Open the Routing tab first.';
     volGridEl.appendChild(empty);
     return;
   }
 
-  for (const vol of state.volumes) {
+  for (const vol of visibleVolumes) {
     const { id, name, gain } = vol;
     const cc = ccForThing(id);
     const isTarget = state.volAssignTarget === id;
@@ -3458,22 +3542,53 @@ function renderVolGrid() {
     slider.max = '200';
     slider.step = '1';
     slider.value = String(Math.max(0, Math.min(200, gainToPercent(gain))));
+    slider.setAttribute('aria-label', `${name} outgoing gain`);
+    slider.setAttribute('aria-orientation', 'vertical');
 
     const pctEl = document.createElement('div');
     pctEl.className = 'vol-pct';
     pctEl.textContent = `${gainToPercent(gain)}%`;
+    slider.setAttribute('aria-valuetext', pctEl.textContent);
 
     let saveTimer = null;
+    const showGain = value => {
+      slider.value = String(gainToPercent(value));
+      pctEl.textContent = `${gainToPercent(value)}%`;
+      slider.setAttribute('aria-valuetext', pctEl.textContent);
+    };
     slider.addEventListener('input', () => {
       pctEl.textContent = `${slider.value}%`;
+      slider.setAttribute('aria-valuetext', pctEl.textContent);
       clearTimeout(saveTimer);
-      saveTimer = setTimeout(() => {
-        setVolumeGain(id, percentToGain(slider.value));
+      saveTimer = setTimeout(async () => {
+        const requested = percentToGain(slider.value);
+        if (await setVolumeGain(id, requested) === false && percentToGain(slider.value) === requested) {
+          showGain(vol.gain);
+        }
       }, 120);
     });
 
     sliderRow.appendChild(slider);
     sliderRow.appendChild(pctEl);
+    const scale = document.createElement('div');
+    scale.className = 'vol-fader-scale';
+    scale.setAttribute('aria-hidden', 'true');
+    for (const tick of ['200', '100', '0']) {
+      const mark = document.createElement('span');
+      mark.textContent = tick;
+      scale.appendChild(mark);
+    }
+    sliderRow.appendChild(scale);
+    const unityBtn = document.createElement('button');
+    unityBtn.className = 'flat vol-unity';
+    unityBtn.textContent = 'Unity';
+    unityBtn.title = 'Reset outgoing gain to 100% (0 dB)';
+    unityBtn.setAttribute('aria-label', `Reset ${name} to unity gain`);
+    unityBtn.addEventListener('click', async () => {
+      clearTimeout(saveTimer);
+      showGain(1);
+      if (await setVolumeGain(id, 1) === false && slider.value === '100') showGain(vol.gain);
+    });
 
     const ccRow = document.createElement('div');
     ccRow.className = 'vol-cc-row';
@@ -3523,13 +3638,17 @@ function renderVolGrid() {
     if (cc === null) ccRow.appendChild(ccBadge);
 
     card.appendChild(nameEl);
-    card.appendChild(idEl);
     const meters = document.createElement('div');
     meters.className = 'vol-meters';
     volumeMeters.set(id, meters);
-    card.appendChild(meters);
-    card.appendChild(sliderRow);
+    const controls = document.createElement('div');
+    controls.className = 'vol-channel-controls';
+    controls.appendChild(sliderRow);
+    controls.appendChild(meters);
+    card.appendChild(controls);
+    card.appendChild(unityBtn);
     card.appendChild(ccRow);
+    card.appendChild(idEl);
     volGridEl.appendChild(card);
   }
 }
@@ -3544,14 +3663,16 @@ async function setVolumeGain(thingId, gain) {
     const txt = (await res.text()).trim();
     if (!res.ok) {
       setStatus(`volume set failed: ${res.status} ${txt}`, 'warn');
-      return;
+      return false;
     }
     // Update local state
     const v = state.volumes.find((e) => e.id === thingId);
     if (v) v.gain = gain;
-    setStatus(`${thingId} volume set to ${Math.round(gain * 50)}%`, 'ok');
+    setStatus(`${v?.name || thingId} volume set to ${gainToPercent(gain)}%`, 'ok');
+    return true;
   } catch (err) {
     setStatus(`volume set error: ${err}`, 'warn');
+    return false;
   }
 }
 
@@ -3927,6 +4048,16 @@ document.getElementById('btn-sb-clear-sampler-toggle').addEventListener('click',
 });
 
 document.getElementById('btn-vol-refresh').addEventListener('click', loadVolumes);
+document.getElementById('vol-show-effects').addEventListener('change', (event) => {
+  state.volShowEffects = event.currentTarget.checked;
+  if (!state.volShowEffects && isEffectThingId(state.volAssignTarget)) {
+    state.volAssignTarget = null;
+    if (state.volCcPollTimer) clearInterval(state.volCcPollTimer);
+    state.volCcPollTimer = null;
+    if (volCcStatusEl) volCcStatusEl.textContent = 'Effect channel MIDI assignment cancelled.';
+  }
+  renderVolGrid();
+});
 
 document.getElementById('btn-sampler-config-save').addEventListener('click', saveSamplerConfig);
 document.getElementById('btn-sampler-config-load').addEventListener('click', loadSamplerConfig);

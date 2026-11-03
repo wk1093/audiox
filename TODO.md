@@ -154,6 +154,10 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Provide tooltips and inline descriptions for each built-in parameter, including fine noise-floor adjustments.
 - [x] Hide internal routing names behind advanced details; use From/To device labels and Mono/Left/Right/channel names without changing stored route IDs.
 - [x] Remove the Routing overview/route-list sidebar and Details toggle; keep graph editing full-width and technical inspection available through APIs and scripts.
+- [x] Smooth WebUI level meters with frame-rate, fast-attack/slow-release animation while retaining bounded polling, immediate error clearing, and reduced-motion support.
+- [x] Lay out Volume as horizontally scrollable mixer strips with vertical faders/meters and unity reset; hide effect channels by default without changing saved gain or automation.
+- [x] Refine mixer styling with compact custom faders, tightly packed per-channel segmented bars without per-channel text, one averaged reading per strip, and error-only meter status.
+  - [x] Fix Firefox collapsing the channel-bar bank; verify mono, stereo, and 16-channel layouts in Firefox and Chromium at desktop/mobile widths.
 
 ## Plugin System and more built-in effects - v1.14
 - [ ] Implement custom plugin system for effects, allowing users to create and load their own effect modules into the audio engine.

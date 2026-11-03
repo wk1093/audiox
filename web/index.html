@@ -113,12 +113,16 @@
       <div class="vol-layout">
         <div class="vol-header card">
           <div class="vol-header-left">
+            <h2>Mixer</h2>
+            <p class="small">Vertical faders control outgoing-route gain. 100% is unity; meters show signal before this gain.</p>
             <span class="small" id="vol-cc-status">Click &ldquo;Assign CC&rdquo; on a channel to map a MIDI knob.</span>
           </div>
+          <label class="vol-effect-filter"><input id="vol-show-effects" type="checkbox"> Show effect channels</label>
           <button id="btn-vol-refresh" class="flat">Refresh</button>
         </div>
-        <div id="vol-grid" class="vol-grid"></div>
-        <p id="vol-meter-status" class="small" role="status">Live levels: loading...</p>
+        <p id="vol-effect-summary" class="small" role="status"></p>
+        <div id="vol-grid" class="vol-grid" role="region" aria-label="Mixer channels; scroll horizontally for more" tabindex="0"></div>
+        <p id="vol-meter-status" class="small" role="status" hidden></p>
       </div>
     </section>
 

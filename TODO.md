@@ -147,11 +147,13 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Improve soundboard edit UI
 - [ ] Improve Lua api to have more functionality, reading (and maybe writing, if I do add writing, I will also add a warning on save when a script contains any write calls) all configuration files, and more interaction and events to hook into.
 - [ ] Improve effect system to be more user friendly
-  - [ ] Provide meaningful names for existing effects instead of fx1, fx2, etc.
+  - [ ] Provide meaningful names EVERYWHERE in the ui for existing effects instead of fx1, fx2, etc.
   - [ ] Improve parameter UI
   - [ ] Provide tooltips or descriptions for each parameter to help users understand their function
   - [ ] 
 - [ ] Also while we are at it, hide the internal routing names from the user, and provide more intuitive labels for the routing paths.
+
+## Plugin System and more built-in effects - v1.14
 - [ ] Implement custom plugin system for effects, allowing users to create and load their own effect modules into the audio engine.
   - [ ] Create API
   - [ ] Define plugin metadata format (axm)

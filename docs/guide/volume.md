@@ -80,20 +80,20 @@ receiving.
 
 For automation, use the graph ID (for example, `usb_gadget_in`,
 `soundboard_out`, `bt_A4C6F0A57AA7_in`, or an effect ID such as `fx_1`), not the
-display name. The [Macros](./macros.md) `volume.set` helper takes a percentage
+display name. The [Scripts](./macros.md) `volume.set` helper takes a percentage
 from 0 to 100 and has a unity-gain maximum. A hardware MIDI CC volume mapping
 has the wider 0–200% range described above. The planned
 [Reference](./reference.md) will group API and persisted-file details.
 
 For example, to set the gain on audio entering AudioX from the phone
-`A4:C6:F0:A5:7A:A7` to 50% from a macro, target its source-node ID:
+`A4:C6:F0:A5:7A:A7` to 50% from a script, target its source-node ID:
 
 ```lua
 volume.set("bt_A4C6F0A57AA7_in", 50)
 ```
 
 Each paired Bluetooth device has its own volume entry. Volume settings,
-MIDI mappings, and macros that targeted the older shared `bluetooth_in` or
+MIDI mappings, and scripts that targeted the older shared `bluetooth_in` or
 `bluetooth_out` IDs need to be pointed at the per-device `bt_<MAC>_in` or
 `bt_<MAC>_out` ID.
 
@@ -128,5 +128,5 @@ its own processing branch before it joins a shared route.
   value as the slider's stored level.
 
 Related guides: [Routing](./routing.md), [MIDI](./midi.md),
-[Macros](./macros.md), [Configuration](./config.md),
+[Scripts](./macros.md), [Configuration](./config.md),
 [Soundboard](./soundboard.md), and [Troubleshooting](./troubleshooting.md).

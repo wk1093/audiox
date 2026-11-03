@@ -44,7 +44,7 @@
         <button class="tab-btn" data-tab="volume">Volume</button>
         <button class="tab-btn" data-tab="soundboard">Soundboard</button>
         <button class="tab-btn" data-tab="midi">MIDI</button>
-        <button class="tab-btn" data-tab="macros">Macros</button>
+        <button class="tab-btn" data-tab="scripts">Scripts</button>
         <button class="tab-btn" data-tab="config">Config</button>
         <button class="tab-btn" data-tab="system">System</button>
       </nav>
@@ -232,12 +232,12 @@
       </div>
     </section>
 
-    <!-- Macros page -->
-    <section class="page" data-page="macros">
+    <!-- Scripts page -->
+    <section class="page" data-page="scripts">
       <div class="macros-layout">
         <section class="card stack">
-          <h2>Named Automation Macros</h2>
-          <p class="small">Save up to 16 named macros and Run them here, optionally binding a MIDI pad. Only keyboard action plans need USB Keyboard enabled in Config and a connected USB host. Light/MIDI action plans need the selected controller connected. Sound, effects and volume actions do not need either device.</p>
+          <h2>Scripts</h2>
+          <p class="small">Save up to 16 named Lua scripts with multiple event callbacks. Only keyboard actions need USB Keyboard enabled in Config and a connected USB host. Light/MIDI actions need the selected controller connected. Sound, effects and volume actions do not need either device. Existing sequences and keyboard shortcuts are automatically converted to callbacks, retaining their triggers and Run behavior.</p>
           <div class="cfg-row">
             <label for="macro-name">Name (up to 63 UTF-8 bytes)</label>
             <input id="macro-name" type="text" maxlength="63" autocomplete="off" placeholder="My automation" data-unsaved-key="macro-editor">
@@ -255,30 +255,34 @@
           <button id="btn-chord-learn" type="button" aria-pressed="false" disabled>Learn MIDI Pad</button>
           <p id="chord-learn-status" class="small" role="status">Choose a channel/note above, or learn the next pad you press.</p>
           </div>
-          <div class="cfg-row">
-            <label for="chord-mode">Macro Type</label>
-            <select id="chord-mode" data-unsaved-key="macro-editor">
-              <option value="chord">Keyboard chord</option>
-              <option value="script">Lua sequence</option>
-            </select>
-          </div>
-          <div id="chord-capture-editor" class="stack">
-          <div class="cfg-row">
-            <label for="chord-keys">Keyboard Chord</label>
-            <input id="chord-keys" type="text" maxlength="63" placeholder="Click Record Chord, then press your shortcut" autocomplete="off" spellcheck="false" aria-describedby="chord-capture-status" data-unsaved-key="macro-editor">
-          </div>
-          <button id="btn-chord-record" type="button" aria-pressed="false">Record Chord</button>
-          <p id="chord-capture-status" class="small" role="status">Click Record Chord, hold your modifiers, press the key(s), then release. You can also enter CTRL+SHIFT+F13 manually.</p>
-          <p class="small">Captures physical key positions (host layout applies), up to six keys plus Ctrl, Shift, Alt, and Meta/Windows. Letters, digits, F1&ndash;F24, Enter, Escape, Tab, Space, Backspace, Delete, arrows and navigation keys are supported. Some system/browser shortcuts cannot be captured; enter those manually.</p>
-          </div>
-          <div id="chord-script-editor" class="stack" hidden>
-            <label for="chord-script">Lua Sequence</label>
-            <textarea id="chord-script" rows="9" maxlength="2047" spellcheck="false" placeholder='state.count = (state.count or 0) + 1&#10;if event.velocity &gt; 80 then&#10;  press("SHIFT+A")&#10;  wait(200)&#10;  release()&#10;end&#10;type("Hello!", 80)' data-unsaved-key="macro-editor"></textarea>
+          <div id="chord-script-editor" class="stack">
+            <details>
+              <summary>Callback example and lifetime rules</summary>
+              <p class="small">Register callbacks in code, for example:</p>
+              <pre><code>hook("run", function(event)
+  state.runs = (state.runs or 0) + 1
+  log("Run " .. state.runs)
+end)
+
+hook("sound_finish", function(event)
+  if event.sound == "intro.wav" then
+    log("Intro finished")
+  end
+end)</code></pre>
+              <p class="small">Subscriptions come from hook calls. Script setup reruns for each event; ordinary variables reset. Only explicit state values persist between events (not across restart). Put actions and configuration reads inside callbacks. Register hooks unconditionally at top level; event and state are available only in callbacks. Up to 32 callbacks, called in registration order. Add a run hook for the Run button. MIDI hooks still require the optional pad binding above; for CC the Note field is the controller number. Keyboard shortcuts use tap("CTRL+A") inside a callback.</p>
+            </details>
+            <label><input id="macro-config-write" type="checkbox" data-unsaved-key="macro-editor"> Allow configuration writes (requires confirmation on save)</label>
+            <label for="chord-script">Lua Script</label>
+            <textarea id="chord-script" rows="14" maxlength="17408" spellcheck="false" data-unsaved-key="macro-editor">hook("run", function(event)
+  log("Hello from AudioX")
+end)
+</textarea>
             <p class="small">tap("CTRL+A"), press("SHIFT+A"), release(), type("Hello!", 80), wait(milliseconds), light(velocity). press replaces the held chord; release clears all keys. Taps/text release any previous hold first; sequence completion/cancellation releases everything automatically. type uses US-layout ASCII (including newline and tab); its optional interval is milliseconds between character presses (default 50, minimum 30). Host layout and Caps Lock must match.</p>
-            <p class="small">Lua runs for each queued Run or MIDI note-on. event.source is "web" or "midi"; event.channel, event.note and event.velocity are numbers; event.pressed is true. Web runs use the configured channel/note and velocity 127. state persists across triggers (32 named scalar values). Edits, cancellation/failure and restart reset state; USB loss does not globally reset non-keyboard scripts. millis() and epoch() read original trigger-time snapshots. value_type() inspects values; type() types text.</p>
-            <p class="small">sound.play("clip.wav", 1.0), sound.stop_all(), midi.note_on(0,60,100), midi.note_off(0,60), midi.cc(0,1,64), midi.program(0,5), and midi.send(status,...) queue device actions. Sound must already be preloaded; MIDI goes to the controller, not the USB host. log("message") writes to device logs. No files, shell, network, or module loading. <a href="https://wklab.net/audiox/docs/lua/" target="_blank" rel="noopener noreferrer">Lua guide, API reference and recipes</a> (requires internet on your browser).</p>
+            <p class="small">event.type identifies the trigger: note_on, note_off, cc, sound_start, sound_finish, device_connect, device_disconnect, or run. event.source is web, midi, audio, or device. MIDI fields: channel, note, velocity, pressed; CC fields: cc and value. Sound/device hooks include event.sound or event.device. Web Run invokes the run hook with velocity 127. state persists across triggers (32 named scalar values). Edits, cancellation and restart reset state; failed evaluations discard their state changes. millis() and epoch() are trigger snapshots.</p>
+            <p class="small">sound.play("clip.wav", 1.0), sound.stop_all(), midi.note_on(0,60,100), midi.note_off(0,60), midi.cc(0,1,64), midi.program(0,5), and midi.send(status,...) queue device actions. Sound must already be preloaded; MIDI goes to the controller, not the USB host. log("message") writes to device logs. No arbitrary files, shell, network, or module loading. <a href="https://wklab.net/audiox/docs/lua/" target="_blank" rel="noopener noreferrer">Lua guide, API reference and recipes</a> (requires internet on your browser).</p>
+            <p class="small">config.list() lists allowed persistent settings files; config.read(name) reads up to 64 KiB of text. config.write(name, text) queues a full replacement (up to 4 KiB per write, 8 KiB total payload). Saving configuration scripts requires confirmation. Writes are not format-validated: back up first, preserve the file format, and reload/restart after changes. Bluetooth pairing credentials are deliberately inaccessible. Avoid event scripts that repeatedly write settings or trigger their own sound events.</p>
             <p class="small">effects.enable(id, true), effects.toggle(id), effects.set(id, parameter, value) use existing effect IDs and actual parameter ranges (invalid values report runtime errors). volume.set(id, 0..100) and volume.adjust(id, -100..100) use routing thing IDs from GET /api/audio/volumes, not display names. 100% is unity gain; adjustments are percentage points clamped to 0..100. Device controls are runtime-only; routing automation is planned later.</p>
-            <p class="small">Limits: 2,047 UTF-8 bytes, 64 actions, 256 typed characters (255 per type call), 60 seconds scheduled time, 10,000 instructions, 256 KiB Lua memory. Saving checks syntax; execution errors appear in device logs and here after Reload Macros. No actions or state updates from a failed evaluation are applied.</p>
+            <p class="small">Limits per event: 17,408 UTF-8 source bytes (including migration wrappers), 128 actions, 1,024 typed characters (255 per type call), 60 seconds scheduled time, 100,000 instructions, 1 MiB Lua memory. Registration and callbacks share these budgets. Saving validates registration without executing handlers. Execution errors appear in device logs and here after Reload Scripts. No actions or state updates from a failed evaluation are applied. Lua never runs on the audio thread.</p>
           </div>
           <div class="grid-2">
             <div class="stack">
@@ -290,11 +294,11 @@
               <input id="chord-pressed-velocity" type="number" min="0" max="127" value="0" data-unsaved-key="macro-editor">
             </div>
           </div>
-          <p class="small">Leave both velocities at 0 for web-only macros with no default lighting. 0 turns the LED off; 1&ndash;127 selects your controller's velocity/color. Uses the global lighting output channel. MIDI-bound macro colors override sound/action colors on the same note; Dim Lights still applies. Lua light() requires an enabled MIDI binding and the selected controller connected, even for web Run. Without a binding it reports a runtime error; it temporarily overrides the bound pad.</p>
+          <p class="small">Leave both velocities at 0 for scripts with no default lighting. 0 turns the LED off; 1&ndash;127 selects your controller's velocity/color. Uses the global lighting output channel. MIDI-bound script colors override sound/action colors on the same note; Dim Lights still applies. Lua light() requires an enabled MIDI binding and the selected controller connected, even for web Run.</p>
           <div class="macro-actions">
-            <button id="btn-chord-save" class="primary">Save Macro</button>
-            <button id="btn-macro-new" class="flat">New Macro</button>
-            <button id="btn-chord-load" class="flat">Reload Macros</button>
+            <button id="btn-chord-save" class="primary">Save Script</button>
+            <button id="btn-macro-new" class="flat">New Script</button>
+            <button id="btn-chord-load" class="flat">Reload Scripts</button>
           </div>
           <div id="chord-list" class="stack"></div>
         </section>
@@ -409,7 +413,7 @@
             </select>
           </div>
           <div class="cfg-row">
-            <label for="keyboard_macros">USB Keyboard Chords</label>
+            <label for="keyboard_macros">USB Keyboard Output</label>
             <select id="keyboard_macros" data-unsaved-key="usb-config">
               <option value="0">Disabled (no keyboard USB function)</option>
               <option value="1">Enabled</option>

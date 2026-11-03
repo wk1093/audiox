@@ -74,7 +74,7 @@ velocity zero. This deliberately handles controllers with inconsistent release
 note numbers; it is not independent polyphonic key holding.
 
 **Stop All** stops soundboard voices, not every live audio route, effect, or
-Lua macro. To stop unrelated live audio, change its route or volume.
+Lua script. To stop unrelated live audio, change its route or volume.
 
 ## Map a MIDI pad
 
@@ -87,7 +87,7 @@ Choose the assignment control again to cancel waiting. Use the small remove
 button beside an assigned MIDI note to clear the mapping.
 
 Ordinary soundboard mappings use a **note number**, not a note-plus-channel.
-Macros use explicit channel/note bindings instead. Reserve separate note
+Scripts use explicit channel/note bindings instead. Reserve separate note
 numbers for sounds, Stop All, effect bypass, and Sampler Toggle where possible;
 overlapping mappings can have precedence effects. Read [MIDI](./midi) before
 building a shared controller layout.
@@ -165,7 +165,7 @@ refer to that filename. Wait for conversion and bank reload before testing it.
 per-sound lighting overrides, playback-mode override, and saved ordering entry.
 Startup and soundboard reload clean up references to missing sound files too.
 
-Lua source code is not rewritten when a clip is removed or renamed. A macro
+Lua source code is not rewritten when a clip is removed or renamed. A script
 that calls `sound.play("old.wav")` must be edited separately.
 
 ## Soundboard on the device display

@@ -700,7 +700,6 @@ select {
   gap: 10px;
 }
 
-#chord-capture-editor[hidden],
 #macro-midi-binding[hidden],
 #chord-script-editor[hidden] {
   display: none;

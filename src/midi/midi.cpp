@@ -402,6 +402,9 @@ MidiContext::MidiContext(Audiox *context)
 }
 
 void MidiContext::disconnect() {
+    const bool wasConnected = connected != 0;
+    char previousDevice[sizeof(devPath)]{};
+    copyBounded(previousDevice, sizeof(previousDevice), devPath);
     stopMacros();
     (void)flushControllerMidi();
     controllerPendingSize = 0;
@@ -425,6 +428,13 @@ void MidiContext::disconnect() {
     holdActive = 0;
     for (int i = 0; i < 128; ++i) {
         ledStateByNote[i] = 255;
+    }
+    if (wasConnected) {
+        MidiScriptEvent event{};
+        event.kind = MidiScriptEventKind::DeviceDisconnect;
+        event.pressed = false;
+        copyBounded(event.device, sizeof(event.device), previousDevice);
+        dispatchMacroEvent(event);
     }
 }
 
@@ -453,14 +463,15 @@ void MidiContext::syncMacros() {
         const auto &macro = compiledMacros[i];
         macroErrors[i][0] = '\0';
         char error[192]{};
+        macroEventMasks[i] = macro.eventMask;
         if (macro.script[0]) {
-            macroValid[i] = midiValidateScript(macro.script, error, sizeof(error));
+            macroValid[i] = macro.hookMode &&
+                midiInspectHooks(macro.script, macroEventMasks[i], error, sizeof(error));
         } else {
-            uint8_t report[8];
-            macroValid[i] = midiChordReport(macro.keys, report);
+            macroValid[i] = false;
         }
         if (!macroValid[i]) {
-            snprintf(macroErrors[i], sizeof(macroErrors[i]), "%s", error[0] ? error : "invalid chord");
+            snprintf(macroErrors[i], sizeof(macroErrors[i]), "%s", error[0] ? error : "script requires callback conversion");
             printf("[MIDI] [WARN] Macro ch=%u note=%u disabled: %s\n",
                    macro.channel, macro.note, macroErrors[i]);
         }
@@ -469,22 +480,55 @@ void MidiContext::syncMacros() {
 }
 
 bool MidiContext::triggerMacro(unsigned index, uint8_t velocity, bool fromWeb) {
-    if (index >= compiledMacroCount || !macroValid[index]) return false;
+    if (index >= compiledMacroCount) return false;
+    const auto &macro = compiledMacros[index];
+    MidiScriptEvent event{macro.channel, macro.note, velocity, true};
+    event.fromWeb = fromWeb;
+    if (macro.hookMode && fromWeb) {
+        event.kind = MidiScriptEventKind::Run;
+        if (!(macroEventMasks[index] & (1U << static_cast<unsigned>(event.kind)))) {
+            printf("[MIDI] [WARN] Callback macro has no run hook\n");
+            return false;
+        }
+    }
+    return queueMacroEvent(index, event);
+}
+
+bool MidiContext::queueMacroEvent(unsigned index, MidiScriptEvent event) {
+    if (index >= compiledMacroCount || !macroValid[index]) {
+        printf("[MIDI] [WARN] Cannot queue unavailable macro %u\n", index);
+        return false;
+    }
     if (macroQueueCount == MIDI_CHORDS_MAX) {
         printf("[MIDI] [WARN] Macro trigger queue full; dropping trigger\n");
         return false;
     }
-    const auto &macro = compiledMacros[index];
     struct timespec monotonic{}, wall{};
     if (clock_gettime(CLOCK_MONOTONIC, &monotonic) != 0 || clock_gettime(CLOCK_REALTIME, &wall) != 0) {
         printf("[MIDI] [WARN] Cannot capture macro clocks: %s\n", strerror(errno));
         return false;
     }
-    macroQueue[macroQueueCount++] = {static_cast<uint8_t>(index),
-        {macro.channel, macro.note, velocity, true,
-         static_cast<uint64_t>(monotonic.tv_sec) * 1000 + static_cast<uint64_t>(monotonic.tv_nsec) / 1000000,
-         static_cast<int64_t>(wall.tv_sec), fromWeb}};
+    event.monotonicMs = static_cast<uint64_t>(monotonic.tv_sec) * 1000 +
+        static_cast<uint64_t>(monotonic.tv_nsec) / 1000000;
+    event.epochSeconds = static_cast<int64_t>(wall.tv_sec);
+    macroQueue[macroQueueCount++] = {static_cast<uint8_t>(index), event};
     return true;
+}
+
+void MidiContext::dispatchMacroEvent(MidiScriptEvent event) {
+    const unsigned kind = static_cast<unsigned>(event.kind);
+    if (kind > 7) {
+        printf("[MIDI] [WARN] Invalid macro event kind %u\n", kind);
+        return;
+    }
+    const bool midi = kind <= static_cast<unsigned>(MidiScriptEventKind::ControlChange);
+    for (unsigned i = 0; i < compiledMacroCount; ++i) {
+        const auto &macro = compiledMacros[i];
+        if (!macroValid[i]) continue;
+        if (!(macroEventMasks[i] & (1U << kind))) continue;
+        if (midi && (!macro.midiEnabled || macro.channel != event.channel || macro.note != event.note)) continue;
+        if (!queueMacroEvent(i, event)) break;
+    }
 }
 
 void MidiContext::failMacro(const char *error) {
@@ -522,18 +566,16 @@ void MidiContext::pollMacros(uint64_t now) {
         macroPlan = {};
         macroErrors[activeMacro][0] = '\0';
         MidiScriptState nextState = macroStates[activeMacro];
-        if (macro.script[0]) {
+        {
             if (!midiEvaluateScript(macro.script, trigger.event, nextState, macroPlan,
-                                    macroErrors[activeMacro], sizeof(macroErrors[activeMacro]))) {
+                                    macroErrors[activeMacro], sizeof(macroErrors[activeMacro]),
+                                    app ? app->config : nullptr, macro.configWriteAllowed,
+                                    macro.hookMode, macroEventMasks[activeMacro])) {
                 printf("[MIDI] [WARN] Macro ch=%u note=%u failed: %s\n",
                        macro.channel, macro.note, macroErrors[activeMacro]);
                 activeMacro = -1;
                 return;
             }
-        } else {
-            macroPlan.count = 1;
-            macroPlan.actions[0].kind = MidiScriptKind::Tap;
-            strcpy(macroPlan.actions[0].keys, macro.keys);
         }
         bool needsKeyboard = false, needsController = false;
         for (unsigned i = 0; i < macroPlan.count; ++i) {
@@ -634,6 +676,12 @@ void MidiContext::pollMacros(uint64_t now) {
         } else if (action.kind == MidiScriptKind::Log) {
             printf("[MIDI] [LUA] ch=%u note=%u %s\n", compiledMacros[activeMacro].channel,
                    compiledMacros[activeMacro].note, action.text);
+        } else if (action.kind == MidiScriptKind::ConfigWrite) {
+            if (!app || !app->config || app->config->writeScriptConfig(action.target,
+                macroPlan.configText + action.value, static_cast<size_t>(action.number)) != RET_OK) {
+                failMacro("config.write failed; check file format, storage and write limits");
+                return;
+            }
         } else if (action.kind == MidiScriptKind::SoundPlay) {
             if (!app || !app->audio ||
                 app->audio->triggerPreloadedSfxPitch(action.text, static_cast<float>(action.pitchRatio)) != RET_OK) {
@@ -964,6 +1012,16 @@ void MidiContext::poll() {
     usb.poll(now, passthroughMode, keyboardEnabled);
 
     if (app->audio) {
+        AudioContext::ScriptSoundEvent soundEvent{};
+        for (unsigned i = 0; i < 128 && app->audio->popScriptSoundEvent(&soundEvent); ++i) {
+            MidiScriptEvent event{};
+            event.kind = soundEvent.started ? MidiScriptEventKind::SoundStart : MidiScriptEventKind::SoundFinish;
+            event.pressed = soundEvent.started;
+            copyBounded(event.sound, sizeof(event.sound), soundEvent.sound);
+            dispatchMacroEvent(event);
+        }
+        unsigned dropped = app->audio->scriptSoundDropped.exchange(0, std::memory_order_relaxed);
+        if (dropped) printf("[MIDI] [WARN] Dropped %u audio Lua events: event queue full\n", dropped);
         uint32_t playingSeq = app->audio->sfxPlayingSeq.load(std::memory_order_acquire);
         if (playingSeq != cachedPlayingSeq) {
             cachedPlayingSeq = playingSeq;
@@ -1028,6 +1086,10 @@ void MidiContext::poll() {
                    (unsigned)cachedMidiMap.globalLight.mappedVel,
                    (unsigned)cachedMidiMap.globalLight.playingVel);
             refreshAllLighting();
+            MidiScriptEvent event{};
+            event.kind = MidiScriptEventKind::DeviceConnect;
+            copyBounded(event.device, sizeof(event.device), devPath);
+            dispatchMacroEvent(event);
             return;
         }
 
@@ -1079,11 +1141,21 @@ void MidiContext::poll() {
                             if (length == 3 && (kind == 0x80 || kind == 0x90)) {
                                 bool pressed = kind == 0x90 && message[2] != 0;
                                 macroPressed[j] = pressed;
-                                if (pressed) triggerMacro(j, message[2]);
+                                const auto eventKind = pressed ? MidiScriptEventKind::NoteOn : MidiScriptEventKind::NoteOff;
+                                if (macroEventMasks[j] & (1U << static_cast<unsigned>(eventKind))) {
+                                    MidiScriptEvent event{channel, number, message[2], pressed};
+                                    event.kind = eventKind;
+                                    queueMacroEvent(j, event);
+                                }
                                 refreshLightingFromState();
                             }
                         }
                     } else if (kind == 0xb0) {
+                        for (unsigned j = 0; j < compiledMacroCount; ++j) {
+                            const auto &macro = compiledMacros[j];
+                            if (macro.midiEnabled && macro.channel == channel && macro.note == number &&
+                                (macroEventMasks[j] & 4)) mapped = true;
+                        }
                         for (uint32_t j = 0; j < cachedMidiMap.ccVolumeMappingCount; ++j) {
                             if (cachedMidiMap.ccVolumeMappings[j].cc == number) mapped = true;
                         }
@@ -1107,6 +1179,9 @@ void MidiContext::poll() {
                 int isCc = (kind == 0xB0);
 
                 if (isCc) {
+                    MidiScriptEvent event{channel, d0, d1, false};
+                    event.kind = MidiScriptEventKind::ControlChange;
+                    dispatchMacroEvent(event);
                     ++lastCcSeq;
                     lastCc = d0;
                     lastCcValue = d1;

@@ -172,8 +172,7 @@ if (effectsManager) {
 }
 
 function setActiveTab(tab) {
-  if (tab !== 'macros') {
-    stopChordRecording();
+  if (tab !== 'scripts') {
     cancelChordLearn();
   }
   state.activeTab = tab;
@@ -208,7 +207,7 @@ function setActiveTab(tab) {
   if (tab === 'bluetooth') {
     loadBluetoothDevices();
   }
-  if (tab === 'macros') {
+  if (tab === 'scripts') {
     loadMidiChords();
   }
   if (tab === 'midi') {
@@ -1911,15 +1910,16 @@ async function saveConfig() {
 }
 
 let editingMacroId = null;
+const defaultScriptSource = 'hook("run", function(event)\n  log("Hello from AudioX")\nend)\n';
 let macroCount = 0;
 
 async function loadMidiChords() {
   try {
-    const res = await fetch('/api/macros', { cache: 'no-store' });
+    const res = await fetch('/api/scripts', { cache: 'no-store' });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
-    renderMidiChords((await res.json()).macros);
+    renderMidiChords((await res.json()).scripts);
   } catch (err) {
-    setStatus(`Macro load failed: ${err}`, 'warn', 'midi-chords');
+    setStatus(`Script load failed: ${err}`, 'warn', 'midi-chords');
   }
 }
 
@@ -1930,7 +1930,7 @@ function renderMidiChords(chords) {
   for (const chord of chords) {
     const row = document.createElement('div');
     const label = document.createElement('span');
-    label.textContent = `${chord.name} — ${chord.midi_enabled ? `Channel ${chord.channel}, note ${chord.note}` : 'Web only'}: ${chord.script_hex ? 'Lua sequence' : chord.keys} ` +
+    label.textContent = `${chord.name} — ${chord.midi_enabled ? `Channel ${chord.channel}, note ${chord.note}` : 'Event hooks'} ` +
       `(LED idle ${chord.idle_velocity ?? 0}, pressed ${chord.pressed_velocity ?? 0})`;
     if (chord.runtime_error_hex) {
       label.textContent += ` — Last execution failed: ${chordHexDecode(chord.runtime_error_hex)}`;
@@ -1939,22 +1939,19 @@ function renderMidiChords(chords) {
     edit.textContent = 'Edit';
     edit.addEventListener('click', async () => {
       if (AudioxUI.hasUnsavedChanges('macro-editor') && !await AudioxUI.confirm(
-        'Discard unsaved macro changes and edit this saved macro?', {
-          title: 'Discard macro changes?', label: 'Discard and edit',
+        'Discard unsaved script changes and edit this saved script?', {
+          title: 'Discard script changes?', label: 'Discard and edit',
         })) return;
-      stopChordRecording();
       cancelChordLearn();
       editingMacroId = chord.id;
       document.getElementById('macro-name').value = chord.name;
       document.getElementById('macro-midi-enabled').checked = chord.midi_enabled;
       document.getElementById('chord-channel').value = chord.channel;
       document.getElementById('chord-note').value = chord.note;
-      document.getElementById('chord-keys').value = chord.keys;
-      document.getElementById('chord-mode').value = chord.script_hex ? 'script' : 'chord';
       document.getElementById('chord-script').value = chordHexDecode(chord.script_hex || '');
+      document.getElementById('macro-config-write').checked = Boolean(chord.config_write_allowed);
       document.getElementById('chord-idle-velocity').value = chord.idle_velocity ?? 0;
       document.getElementById('chord-pressed-velocity').value = chord.pressed_velocity ?? 0;
-      updateChordMode();
       updateMacroBinding();
       AudioxUI.setUnsaved('macro-editor', false);
       document.getElementById('btn-chord-save').textContent = 'Save Changes';
@@ -1963,13 +1960,15 @@ function renderMidiChords(chords) {
     const remove = document.createElement('button');
     remove.textContent = 'Remove';
     remove.addEventListener('click', async () => {
-      if (!await AudioxUI.confirm(`Delete the saved macro "${chord.name}"? This cannot be undone.`, {
-        title: 'Delete macro?', label: 'Delete macro',
+      if (!await AudioxUI.confirm(`Delete the saved script "${chord.name}"? This cannot be undone.`, {
+        title: 'Delete script?', label: 'Delete script',
       })) return;
       await saveMidiChord('DELETE', chord, remove);
     });
     const run = document.createElement('button');
     run.textContent = 'Run';
+    run.disabled = !(chord.event_mask & 128);
+    if (run.disabled) run.title = 'Add hook("run", function(event) ... end) to enable Run';
     run.addEventListener('click', () => runMacro(chord.id, run));
     row.className = 'stack';
     const actions = document.createElement('div');
@@ -1984,21 +1983,28 @@ async function saveMidiChord(method, chord, button) {
   if (button.disabled) return;
   button.disabled = true;
   try {
+    const configurationScript = method === 'POST' &&
+      (Boolean(chord.config_write_allowed) || chordHexDecode(chord.script_hex || '').includes('config'));
+    if (configurationScript && !await AudioxUI.confirm(
+      'This script accesses configuration and may overwrite persistent settings, including MIDI bindings, routing and startup configuration. Writes replace whole files and are not format-validated. Back up your settings first; reload or restart may be required. Save this script?', {
+        title: 'Allow configuration writes?', label: 'Save configuration script',
+      })) return;
     const payload = method === 'DELETE' ? `id=${chord.id}` :
       (chord.id ? `id=${chord.id}&` : '') +
       `name_hex=${chordHexEncode(chord.name)}&midi_enabled=${chord.midi_enabled ? 1 : 0}` +
-      `&channel=${chord.channel}&note=${chord.note}&keys=${chord.keys}` +
+      `&channel=${chord.channel}&note=${chord.note}` +
       `&idle_velocity=${chord.idle_velocity ?? 0}&pressed_velocity=${chord.pressed_velocity ?? 0}` +
+      `&config_write_ack=${configurationScript ? 1 : 0}` +
       `&script_hex=${chord.script_hex || ''}`;
-    const res = await fetch('/api/macros', {
+    const res = await fetch('/api/scripts', {
       method, headers: { 'Content-Type': 'text/plain' }, body: payload,
     });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
     if (method === 'POST' || editingMacroId === chord.id) resetMacroEditor();
-    setStatus(method === 'DELETE' ? 'Macro removed' : 'Macro saved', 'ok', 'midi-chords');
+    setStatus(method === 'DELETE' ? 'Script removed' : 'Script saved', 'ok', 'midi-chords');
     await loadMidiChords();
   } catch (err) {
-    setStatus(`Macro save failed: ${err}`, 'warn', 'midi-chords');
+    setStatus(`Script save failed: ${err}`, 'warn', 'midi-chords');
   } finally {
     button.disabled = false;
   }
@@ -2008,14 +2014,14 @@ async function runMacro(id, button) {
   if (button.disabled) return;
   button.disabled = true;
   try {
-    const res = await fetch('/api/macros/run', {
+    const res = await fetch('/api/scripts/run', {
       method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: `id=${id}`,
     });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
-    setStatus('Macro queued (not confirmation of completion)', 'ok', 'midi-chords');
+    setStatus('Script queued (not confirmation of completion)', 'ok', 'midi-chords');
     await loadMidiChords();
   } catch (err) {
-    setStatus(`Macro run failed: ${err}`, 'warn', 'midi-chords');
+    setStatus(`Script run failed: ${err}`, 'warn', 'midi-chords');
   } finally {
     button.disabled = false;
   }
@@ -2029,21 +2035,18 @@ function updateMacroBinding() {
 }
 
 function resetMacroEditor() {
-  stopChordRecording();
   cancelChordLearn();
   editingMacroId = null;
   document.getElementById('macro-name').value = '';
   document.getElementById('macro-midi-enabled').checked = false;
   document.getElementById('chord-channel').value = '0';
   document.getElementById('chord-note').value = '60';
-  document.getElementById('chord-keys').value = '';
-  document.getElementById('chord-script').value = '';
-  document.getElementById('chord-mode').value = 'chord';
+  document.getElementById('chord-script').value = defaultScriptSource;
+  document.getElementById('macro-config-write').checked = false;
   document.getElementById('chord-idle-velocity').value = '0';
   document.getElementById('chord-pressed-velocity').value = '0';
-  document.getElementById('btn-chord-save').textContent = 'Save Macro';
+  document.getElementById('btn-chord-save').textContent = 'Save Script';
   AudioxUI.setUnsaved('macro-editor', false);
-  updateChordMode();
   updateMacroBinding();
 }
 
@@ -2055,101 +2058,10 @@ function chordHexDecode(hex) {
   return new TextDecoder().decode(Uint8Array.from(hex.match(/../g) || [], (byte) => parseInt(byte, 16)));
 }
 
-function updateChordMode() {
-  stopChordRecording();
-  const script = document.getElementById('chord-mode').value === 'script';
-  document.getElementById('chord-capture-editor').hidden = script;
-  document.getElementById('chord-script-editor').hidden = !script;
-}
-
-let chordRecording = null;
-
-function stopChordRecording(keep = false) {
-  if (!chordRecording) return;
-  const input = document.getElementById('chord-keys');
-  if (!keep) input.value = chordRecording.previous;
-  input.readOnly = false;
-  chordRecording = null;
-  const button = document.getElementById('btn-chord-record');
-  button.textContent = 'Record Chord';
-  button.setAttribute('aria-pressed', 'false');
-  document.getElementById('chord-capture-status').textContent = keep ?
-    `Captured ${input.value}. Save Macro to apply.` : 'Recording cancelled. Previous chord restored.';
-}
-
-function chordKeyFromCode(code) {
-  if (/^Key[A-Z]$/.test(code)) return code.slice(3);
-  if (/^Digit[0-9]$/.test(code)) return code.slice(5);
-  if (/^F(?:[1-9]|1[0-9]|2[0-4])$/.test(code)) return code;
-  return {
-    Enter: 'ENTER', Escape: 'ESC', Backspace: 'BACKSPACE', Tab: 'TAB', Space: 'SPACE',
-    Delete: 'DELETE', ArrowRight: 'RIGHT', ArrowLeft: 'LEFT', ArrowDown: 'DOWN', ArrowUp: 'UP',
-    Home: 'HOME', End: 'END', PageUp: 'PAGEUP', PageDown: 'PAGEDOWN',
-  }[code] || null;
-}
-
-document.getElementById('btn-chord-record').addEventListener('click', () => {
-  if (chordRecording) {
-    stopChordRecording();
-    return;
-  }
-  const input = document.getElementById('chord-keys');
-  chordRecording = { previous: input.value, keys: [], held: new Set(), modifiers: new Set() };
-  input.readOnly = true;
-  const button = document.getElementById('btn-chord-record');
-  button.textContent = 'Cancel Recording';
-  button.setAttribute('aria-pressed', 'true');
-  document.getElementById('chord-capture-status').textContent = 'Listening: press your shortcut, then release its keys.';
-  input.focus();
-});
-document.getElementById('btn-chord-record').addEventListener('pointerdown', (event) => {
-  if (chordRecording) event.preventDefault();
-});
-
-document.getElementById('chord-keys').addEventListener('keydown', (event) => {
-  if (!chordRecording) return;
-  event.preventDefault();
-  event.stopPropagation();
-  if (event.repeat || event.isComposing) return;
-  if (event.ctrlKey) chordRecording.modifiers.add('CTRL');
-  if (event.shiftKey) chordRecording.modifiers.add('SHIFT');
-  if (event.altKey) chordRecording.modifiers.add('ALT');
-  if (event.metaKey) chordRecording.modifiers.add('GUI');
-  if (/^(Control|Shift|Alt|Meta)(Left|Right)$/.test(event.code)) return;
-  const key = chordKeyFromCode(event.code);
-  if (!key || (chordRecording.keys.length === 6 && !chordRecording.keys.includes(key))) {
-    stopChordRecording();
-    document.getElementById('chord-capture-status').textContent = 'Unsupported key or more than six keys. Previous chord restored; record again to retry.';
-    return;
-  }
-  chordRecording.held.add(event.code);
-  if (!chordRecording.keys.includes(key)) chordRecording.keys.push(key);
-  const keys =
-    ['CTRL', 'SHIFT', 'ALT', 'GUI'].filter((modifier) => chordRecording.modifiers.has(modifier))
-      .concat(chordRecording.keys).join('+');
-  if (keys.length > 63) {
-    stopChordRecording();
-    document.getElementById('chord-capture-status').textContent = 'Chord exceeds 63 characters. Previous chord restored.';
-    return;
-  }
-  document.getElementById('chord-keys').value = keys;
-  AudioxUI.setUnsaved('macro-editor');
-});
-
-document.getElementById('chord-keys').addEventListener('keyup', (event) => {
-  if (!chordRecording) return;
-  event.preventDefault();
-  event.stopPropagation();
-  chordRecording.held.delete(event.code);
-  if (chordRecording.keys.length && !chordRecording.held.size) stopChordRecording(true);
-});
-document.getElementById('chord-keys').addEventListener('blur', () => stopChordRecording());
-window.addEventListener('blur', () => stopChordRecording());
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) stopMeterPolling();
   else if (state.activeTab === 'volume') startMeterPolling();
   if (document.hidden) {
-    stopChordRecording();
     cancelChordLearn();
   }
 });
@@ -2179,7 +2091,7 @@ document.getElementById('btn-chord-learn').addEventListener('click', async () =>
     const res = await fetch('/api/midi/last_note', { cache: 'no-store' });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
     const data = await res.json();
-    if (state.activeTab !== 'macros' || document.hidden ||
+    if (state.activeTab !== 'scripts' || document.hidden ||
         !document.getElementById('macro-midi-enabled').checked) return;
     const seq = Number(data.last_seq);
     if (!Number.isInteger(seq) || seq < 0) throw new Error('device did not report a valid MIDI event sequence');
@@ -2195,28 +2107,21 @@ document.getElementById('btn-chord-learn').addEventListener('click', async () =>
   }
 });
 
-document.getElementById('chord-mode').addEventListener('change', updateChordMode);
 document.getElementById('macro-midi-enabled').addEventListener('change', updateMacroBinding);
 document.getElementById('btn-macro-new').addEventListener('click', async () => {
   if (AudioxUI.hasUnsavedChanges('macro-editor') && !await AudioxUI.confirm(
-    'Discard unsaved macro changes and start a new macro?', {
-      title: 'Discard macro changes?', label: 'Discard and start new',
+    'Discard unsaved script changes and start a new script?', {
+      title: 'Discard script changes?', label: 'Discard and start new',
     })) return;
   resetMacroEditor();
 });
 document.getElementById('btn-chord-load').addEventListener('click', loadMidiChords);
 document.getElementById('btn-chord-save').addEventListener('click', () => {
-  if (chordRecording) {
-    setStatus('Finish or cancel recording before saving.', 'warn', 'midi-chords');
-    return;
-  }
   const channel = Number(document.getElementById('chord-channel').value);
   const name = document.getElementById('macro-name').value.trim();
   const midi_enabled = document.getElementById('macro-midi-enabled').checked;
   const note = Number(document.getElementById('chord-note').value);
-  const keys = document.getElementById('chord-keys').value.trim().toUpperCase();
-  const script = document.getElementById('chord-mode').value === 'script' ?
-    document.getElementById('chord-script').value : '';
+  const script = document.getElementById('chord-script').value;
   const idle = Number(document.getElementById('chord-idle-velocity').value);
   const pressed = Number(document.getElementById('chord-pressed-velocity').value);
   if (!name || name.includes('\0') || new TextEncoder().encode(name).length > 63 ||
@@ -2225,14 +2130,15 @@ document.getElementById('btn-chord-save').addEventListener('click', () => {
       !Number.isInteger(note) || note < 0 || note > 127 ||
       !Number.isInteger(idle) || idle < 0 || idle > 127 ||
       !Number.isInteger(pressed) || pressed < 0 || pressed > 127 ||
-      (document.getElementById('chord-mode').value === 'script' ? !script.trim() :
-        (!/^[A-Z0-9]+(?:\+[A-Z0-9]+)*$/.test(keys) || keys.length > 63)) ||
-      new TextEncoder().encode(script).length >= 2048) {
-    setStatus('Enter a name (1-63 UTF-8 bytes), channel 0-15, note/LED values 0-127, and a chord (up to 63 characters) or Lua script (up to 2,047 UTF-8 bytes). Maximum 16 macros.', 'warn', 'midi-chords');
+      !script.trim() || script.includes('\0') ||
+      new TextEncoder().encode(script).length > 17408) {
+    setStatus('Enter a name (1-63 UTF-8 bytes), channel 0-15, note/LED values 0-127, and a Lua callback script (up to 17,408 UTF-8 bytes). Maximum 16 scripts.', 'warn', 'midi-chords');
     return;
   }
-  return saveMidiChord('POST', { id: editingMacroId, name, midi_enabled, channel, note, keys: script ? '' : keys, idle_velocity: idle,
-    pressed_velocity: pressed, script_hex: chordHexEncode(script) }, document.getElementById('btn-chord-save'));
+  return saveMidiChord('POST', { id: editingMacroId, name, midi_enabled, channel, note, idle_velocity: idle,
+    pressed_velocity: pressed,
+    config_write_allowed: script && document.getElementById('macro-config-write').checked,
+    script_hex: chordHexEncode(script) }, document.getElementById('btn-chord-save'));
 });
 
 async function reloadConfig() {

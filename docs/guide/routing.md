@@ -184,7 +184,7 @@ into an earlier node.
   [Troubleshooting](./troubleshooting.md) guides for audio health and logs.
 
 Related guides: [Getting started](./getting-started.md),
-[Soundboard](./soundboard.md), [MIDI](./midi.md), [Macros](./macros.md),
+[Soundboard](./soundboard.md), [MIDI](./midi.md), [Scripts](./macros.md),
 [Configuration](./config.md), [Hardware](./hardware.md), and
 [Development](./development.md). The planned [Reference](./reference.md) will
 group the relevant API endpoints and configuration files.

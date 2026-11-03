@@ -105,7 +105,7 @@ Start with monitoring volumes low and avoid feedback loops. Discovering a USB de
 4. Add [Effects](/guide/effects) after a simple route is working.
 5. For clips, use [Soundboard](/guide/soundboard). Non-WAV uploads depend on the FFmpeg binary included in your installation; System reports its availability.
 
-For peripherals and automation, continue with [Bluetooth](/guide/bluetooth), [MIDI](/guide/midi), and [Macros](/guide/macros). Save persistent settings using the relevant page; a runtime control change is not necessarily a saved configuration.
+For peripherals and automation, continue with [Bluetooth](/guide/bluetooth), [MIDI](/guide/midi), and [Scripts](/guide/macros). Save persistent settings using the relevant page; a runtime control change is not necessarily a saved configuration.
 
 ## Updating, shutting down, and recovering
 

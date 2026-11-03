@@ -23,7 +23,7 @@ Only one page is visible at a time; switching pages does not stop audio.
 | Volume | Monitor per-channel meters, set node gain, and assign MIDI knobs | [Volume](./volume) |
 | Soundboard | Upload, play, replace, order, and map short audio clips | [Soundboard](./soundboard) |
 | MIDI | Assign global actions, configure pitched sample playback, and set controller lights | [MIDI](./midi) |
-| Macros | Create named keyboard shortcuts or Lua automations; run them from the web or MIDI | [Macros](./macros) |
+| Scripts | Create named keyboard shortcuts or Lua automations; run them from the web or MIDI | [Scripts](./macros) |
 | Config | Change USB gadget settings and back up or restore your setup | [Config and backups](./config) |
 | System | Inspect device information and logs, restart, shut down, and install firmware | [System](./system) |
 
@@ -37,9 +37,9 @@ AudioX does not have a single global Save button.
   and reconnects USB functions.
 - Soundboard assignments, playback-mode changes, ordering, and the individual
   MIDI/effect mapping controls save through their own actions.
-- A macro's **Save Macro** stores its definition. **Run** queues the saved
+- A script's **Save Script** stores its definition. **Run** queues the saved
   version; it does not run unsaved editor text.
-- Lua effect/volume actions, **Dim lights**, and a macro's `state` are runtime
+- Lua effect/volume actions, **Dim lights**, and a script's `state` are runtime
   state, not permanent settings.
 
 See each page's guide before relying on a change to survive restart. Save all
@@ -52,7 +52,7 @@ connections. Read the notification instead of repeatedly clicking a disabled
 control. Device polling warnings clear after the corresponding operation starts
 succeeding; other errors may need dismissal or a corrected action.
 
-Destructive actions such as deleting a sound, effect, macro, or MIDI mapping ask
+Destructive actions such as deleting a sound, effect, script, or MIDI mapping ask
 for confirmation before they are applied. If you have unsaved routing, USB
 configuration, macro-editor, MIDI settings, or a staged sound upload, the
 browser also asks before you close or reload the page. That browser warning is
@@ -75,7 +75,7 @@ requested on the Pi. Reopen the device address when it is ready.
 3. Use **Routing** to connect the soundboard source to your intended output.
 4. Start with a low **Volume**, then return to Soundboard and test playback.
 5. Add one effect and confirm its input and output are both connected.
-6. Add MIDI mappings or a named macro only after the basic audio path works.
+6. Add MIDI mappings or a named script only after the basic audio path works.
 7. Download a configuration backup once the setup is useful.
 
 This order separates audio-path problems from controller and automation

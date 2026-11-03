@@ -51,7 +51,7 @@ setup, operation, and development. Its Markdown source lives in [docs/](docs/).
 | Every WebUI page | [WebUI overview](docs/guide/web-interface.md) |
 | Signal paths, channels, and processing | [Routing](docs/guide/routing.md), [Effects](docs/guide/effects.md), [Volume](docs/guide/volume.md) |
 | Clips, controllers, and wireless audio | [Soundboard](docs/guide/soundboard.md), [MIDI](docs/guide/midi.md), [Bluetooth](docs/guide/bluetooth.md) |
-| Automation and scripting | [Macros](docs/guide/macros.md), [Lua API](docs/lua/api.md), [Cookbook](docs/lua/cookbook.md) |
+| Automation and scripting | [Scripts](docs/guide/macros.md), [Lua API](docs/lua/api.md), [Cookbook](docs/lua/cookbook.md) |
 | Backups, updates, and diagnostics | [Config](docs/guide/config.md), [System](docs/guide/system.md), [Troubleshooting](docs/guide/troubleshooting.md) |
 | Builds, tests, and publication | [Development](docs/guide/development.md), [Publishing](docs/guide/publishing.md) |
 | Persistent files and integrations | [Files and HTTP reference](docs/guide/reference.md) |

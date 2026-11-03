@@ -61,6 +61,42 @@ int main() {
     assert(context->sfxIsPlaying.load() == 0);
     assert(context->sfxPlayingCount == 0);
     assert(context->sfxSlotRefs[0].load() == 0);
+    AudioContext::ScriptSoundEvent soundEvent{};
+    assert(context->popScriptSoundEvent(&soundEvent) && soundEvent.started);
+    assert(strcmp(soundEvent.sound, "test.wav") == 0);
+    assert(context->popScriptSoundEvent(&soundEvent) && !soundEvent.started);
+    assert(strcmp(soundEvent.sound, "test.wav") == 0);
+    assert(!context->popScriptSoundEvent(&soundEvent));
+
+    // A short voice can start and finish within one processing block.
+    clip.frames = 1;
+    context->sfxSlotRefs[0].store(1);
+    context->sfxQueue[1] = {0, 0, 1.0f};
+    context->sfxQueueWrite.store(2);
+    processGraphBlock(context.get(), runtime.get(), capture.get());
+    assert(context->popScriptSoundEvent(&soundEvent) && soundEvent.started);
+    assert(context->popScriptSoundEvent(&soundEvent) && !soundEvent.started);
+    assert(!context->popScriptSoundEvent(&soundEvent));
+
+    clip.frames = BUFFER_FRAMES * 2;
+    context->sfxSlotRefs[0].store(1);
+    context->sfxQueue[2] = {0, 0, 1.0f};
+    context->sfxQueueWrite.store(3);
+    processGraphBlock(context.get(), runtime.get(), capture.get());
+    assert(context->popScriptSoundEvent(&soundEvent) && soundEvent.started);
+    context->pendingSfxStopAll.fetch_add(1);
+    processGraphBlock(context.get(), runtime.get(), capture.get());
+    assert(context->popScriptSoundEvent(&soundEvent) && !soundEvent.started);
+    assert(!context->popScriptSoundEvent(&soundEvent));
+    for (unsigned i = 0; i < 130; ++i) context->publishScriptSoundEvent("overflow.wav", i % 2 == 0);
+    assert(context->scriptSoundDropped.exchange(0) == 2);
+    for (unsigned i = 0; i < 128; ++i) {
+        assert(context->popScriptSoundEvent(&soundEvent));
+        assert(soundEvent.started == (i % 2 == 0));
+    }
+    assert(!context->popScriptSoundEvent(&soundEvent));
+    context->sfxQueueRead.store(1);
+    context->sfxQueueWrite.store(1);
     puts("Runtime soundboard audio, completion and lighting tests passed");
 
     // Per-device Bluetooth nodes: only the live peer's node reads or writes audio.

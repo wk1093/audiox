@@ -1,19 +1,20 @@
 # Limits and troubleshooting
 
 Lua is intended for short, bounded controller actions, not general-purpose
-programs or long-running tasks. Each web Run or MIDI note-on builds one plan, which
+programs or long-running tasks. Each queued event builds one plan, which
 AudioX replays later. The following limits apply to an evaluation:
 
 | Resource | Limit |
 | --- | ---: |
-| Named macros | 16 |
+| Named scripts | 16 |
 | Name | 63 UTF-8 bytes |
-| Source text | 2,047 bytes |
-| Queued actions | 64 |
+| Source text | 17,408 UTF-8 bytes |
+| Queued actions | 128 |
+| Registered callbacks | 32 per script evaluation |
 | Total waits and typing duration | 60,000 ms |
-| Instructions | 10,000 |
-| Lua memory | 256 KiB |
-| Type text | 255 bytes per call; 256 characters total |
+| Instructions | 100,000, shared by setup and matching callbacks |
+| Lua memory | 1 MiB per evaluation |
+| Type text | 255 bytes per call; 1,024 characters total |
 | Persistent state | 32 scalar fields |
 | State key | 31 bytes |
 | State string value | 127 bytes |
@@ -21,10 +22,29 @@ AudioX replays later. The following limits apply to an evaluation:
 | Table or string span | 1,024 items |
 | Cumulative library work | 65,536 units |
 | `string.format` fields | 16; width and precision up to 256 |
+| Configuration read size | 65,536 bytes per file; four reads per evaluation |
+| Configuration lines | 1,024 lines, 4,096 bytes per line |
+| Configuration write size | 4,096 bytes per write |
+| Configuration write payload | 8,192 bytes total, including terminators |
+| Pending sound events | 128; excess events dropped and logged |
 
 The engine also limits queued work to one evaluation per 10 ms, allows at most
-16 macros and 16 pending triggers, and uses a 65-second playback timeout.
+16 scripts and 16 pending triggers, and uses a 65-second playback timeout.
 These are safety bounds, not timing guarantees.
+
+Callback scripts get a fresh Lua environment on every event. Their top-level
+registration runs at save/validation time as well, without access to `event`,
+`state`, configuration reads/writes or queued device actions. Put those
+operations inside handlers. Register hooks unconditionally; the runtime checks
+that subscriptions still match the validated set. An error in any matching
+handler discards the entire event's pending actions and state changes.
+
+Event storms may fill the shared trigger queue. Filter sound events and avoid
+recursive sound playback. Configuration writes require acknowledgment on save;
+read-only scripts mentioning `config` also prompt conservatively. File errors
+are reported explicitly. Writes are raw replacements, may need reload/restart,
+and should not be performed on every CC/audio event. See the
+[configuration API](/lua/api#persistent-configuration).
 
 ## An evaluation failed
 
@@ -81,23 +101,23 @@ volume plans need neither device.
 
 ## Counters or clocks seem to reset
 
-`state` resets on macro edits, cancellation/failure, or AudioX restart.
+`state` resets on script edits, cancellation/failure, or AudioX restart.
 USB loss and keyboard disable do not globally reset non-keyboard scripts.
 `millis()` and `epoch()` are frozen to the original trigger while a plan waits
 in the queue; evaluate a later note-on to obtain a new snapshot. The device's
 wall clock may be unset, making `epoch()` unsuitable for absolute timestamps
 until system time is configured.
 
-A playback failure (such as a missing loaded sound) cancels pending macros and
+A playback failure (such as a missing loaded sound) cancels pending scripts and
 resets state. Evaluation failures are atomic, but playback failures cannot undo
 actions already delivered.
 
 ## Web Run or a device control fails
 
-Run queues a saved macro by its stable ID; a successful response is not a
+Run queues a saved script by its stable ID; a successful response is not a
 playback-completion acknowledgment. Non-200 responses appear as errors; reload
-the macro list for later runtime errors. A failed save keeps the editor contents.
-Check the 16-macro limit and count name/source lengths in UTF-8 bytes, not
+the script list for later runtime errors. A failed save keeps the editor contents.
+Check the 16-script limit and count name/source lengths in UTF-8 bytes, not
 characters.
 
 Use the exact routing thing ID returned by `/api/audio/volumes` for volume

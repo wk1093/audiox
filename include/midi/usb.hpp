@@ -15,18 +15,31 @@ struct MidiChord {
     char keys[64];
     uint8_t idleVelocity;
     uint8_t pressedVelocity;
-    char script[MIDI_SCRIPT_MAX];
+    char script[MIDI_SCRIPT_STORAGE_MAX];
     uint32_t id{0};
     char name[64]{};
     bool midiEnabled{true};
+    uint8_t eventMask{1};
+    bool configWriteAllowed{false};
+    bool hookMode{false};
 };
 
+// Convert legacy sequences/chords without executing their code or granting permissions.
+bool midiMigrateScript(MidiChord &script, char *error, size_t errorSize);
+
 inline bool midiMacroEqual(const MidiChord &a, const MidiChord &b) {
-    return a.id == b.id && a.midiEnabled == b.midiEnabled && a.channel == b.channel && a.note == b.note &&
+    return a.id == b.id && a.midiEnabled == b.midiEnabled && a.eventMask == b.eventMask &&
+        a.configWriteAllowed == b.configWriteAllowed && a.hookMode == b.hookMode &&
+        a.channel == b.channel && a.note == b.note &&
         a.idleVelocity == b.idleVelocity && a.pressedVelocity == b.pressedVelocity &&
         !std::strncmp(a.name, b.name, sizeof(a.name)) &&
         !std::strncmp(a.keys, b.keys, sizeof(a.keys)) &&
         !std::strncmp(a.script, b.script, sizeof(a.script));
+}
+
+inline bool midiMacroTriggersOverlap(const MidiChord &a, const MidiChord &b) {
+    return a.midiEnabled && b.midiEnabled && a.channel == b.channel && a.note == b.note &&
+        (a.eventMask & b.eventMask & 7) != 0;
 }
 
 bool midiChordReport(const char *keys, uint8_t (&report)[8], bool allowModifiers = false);

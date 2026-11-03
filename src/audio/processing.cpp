@@ -1165,6 +1165,8 @@ static void stopVoice(AudioContext *ctx, RuntimeGraph *rt, uint32_t voiceIndex) 
         return;
     }
 
+    if (voice.slotIndex < AUDIO_SFX_SLOT_COUNT)
+        ctx->publishScriptSoundEvent(ctx->sfxSlots[voice.slotIndex].name, false);
     releaseSfxSlotRef(ctx, voice.slotIndex);
     voice.active = 0;
     voice.hold = 0;
@@ -1306,6 +1308,7 @@ static void consumeSoundboardTriggers(AudioContext *ctx, RuntimeGraph *rt) {
         voice.frac = 0.0f;
         voice.pitchRatio = audiox::processing::clampPitchRatio(ev.pitchRatio);
         voice.startedAtBlock = rt->blocksProcessed;
+        ctx->publishScriptSoundEvent(ctx->sfxSlots[voice.slotIndex].name, true);
 
         if (startAsHold) {
             rt->holdVoiceIndex = (int16_t)voiceIndex;

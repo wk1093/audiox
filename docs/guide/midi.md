@@ -1,7 +1,7 @@
 # MIDI controllers and USB passthrough
 
 AudioX uses a connected raw-MIDI controller for soundboard pads, action buttons,
-effect bypass, volume/effect CC control, and macro triggers. Supported USB
+effect bypass, volume/effect CC control, and script triggers. Supported USB
 controllers need to appear as compatible ALSA raw-MIDI devices. A controller
 requiring proprietary drivers or a proprietary lighting protocol may not work
 as expected.
@@ -20,7 +20,7 @@ WebUI controller chooser or multi-controller MIDI patchbay.
 | Set global controller colors and Dim lights | MIDI, Lighting |
 | Bind a knob to a volume | [Volume](./volume) |
 | Map a parameter, bypass note, or effect LED | [Effects](./effects) |
-| Bind a named automation to a channel/note | [Macros](./macros) |
+| Bind a named automation to a channel/note | [Scripts](./macros) |
 | Expose USB MIDI or keyboard to the computer | [Config](./config) |
 
 Connecting a MIDI controller does not automatically forward it to a host computer.
@@ -34,14 +34,14 @@ channel **0**.
 
 Soundboard, global actions, and effect bypass mappings are note-number-based.
 Volume and effect parameter mappings are CC-number-based. These mappings are
-not channel-isolated in the same way that macros and the sampler keyboard are.
+not channel-isolated in the same way that scripts and the sampler keyboard are.
 
 When assigning a pad or knob, first click the relevant **Assign** or **Learn**
 control, then move the hardware control. The WebUI snapshots the latest event
 before waiting so an old press is not intentionally reused. Check the resulting
 number, and cancel learning before using unrelated controls.
 
-For macros, learning fills **both** channel and note; you still need **Save Macro**
+For scripts, learning fills **both** channel and note; you still need **Save Script**
 to store the edited definition. Ordinary sound/action assignment saves when the
 new note is captured.
 
@@ -84,7 +84,7 @@ runtime state; do not rely on them surviving restart.
 Once a sample is selected, note-on messages on the enabled sampler keyboard
 channel take priority over ordinary sound/action/effect-toggle handling.
 Use a different channel for pads and the sampler keyboard, and avoid putting
-Stop All or Sampler Toggle on notes intercepted by the keyboard. Macros are
+Stop All or Sampler Toggle on notes intercepted by the keyboard. Scripts are
 matched separately and can still be queued by their own bindings.
 :::
 
@@ -111,10 +111,10 @@ Advanced clients can set per-sound lighting overrides through the
 [HTTP interface](./reference#soundboard-and-midi). There is no dedicated
 per-sound color editor on the current soundboard cards.
 
-Effect LEDs use their own enabled/bypassed configuration. MIDI-bound macros have
+Effect LEDs use their own enabled/bypassed configuration. MIDI-bound scripts have
 idle and pressed colors, and Lua can temporarily override its bound pad.
 The resulting LED precedence is sound state, then global action, then effect
-bypass, then a valid MIDI-bound macro on the same note. Avoid overlapping notes
+bypass, then a valid MIDI-bound script on the same note. Avoid overlapping notes
 if you need an unambiguous indication.
 
 **Dim lights** temporarily blanks all controller LEDs without stopping MIDI
@@ -136,7 +136,7 @@ Choose **Save Config**, then **Reload Config**. All USB gadget functions briefly
 disconnect, including networking, so expect a short interruption.
 
 Forwarding is **one way: selected controller to USB host**. Host MIDI is not
-routed back into AudioX, to controller LEDs, or to local macro triggers.
+routed back into AudioX, to controller LEDs, or to local script triggers.
 Lua's `midi.*` functions send to the **controller**, not this host endpoint.
 
 Start with **Unmapped** to avoid a pad triggering a sound both locally and in
@@ -148,13 +148,13 @@ not a guarantee that a disconnected host receives every final note-off.
 
 - **Waiting for MIDI device:** check the data cable, power, USB host connection,
   controller compatibility, and logs. A charge-only cable cannot carry MIDI.
-- **The wrong pad triggers:** verify zero-based channels for macros/sampler,
+- **The wrong pad triggers:** verify zero-based channels for scripts/sampler,
   and remember ordinary note/CC mappings are not channel-specific.
-- **A pad does two things:** check macros as well as sound/action/effect mappings,
+- **A pad does two things:** check scripts as well as sound/action/effect mappings,
   and check whether passthrough is set to All.
 - **No LED response:** verify the controller's note-driven LED protocol and output
   channel, choose Refresh LEDs, and check Dim lights.
 - **The host sees no MIDI device:** enable passthrough and apply Config; merely
   connecting a controller to the Pi is not sufficient.
 
-For automation, continue to [Macros](./macros) and the [Lua reference](/lua/api).
+For automation, continue to [Scripts](./macros) and the [Lua reference](/lua/api).

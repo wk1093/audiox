@@ -27,7 +27,7 @@ Over that one data link AudioX can expose:
 - Optional USB MIDI passthrough.
 - Optional HID keyboard output for keyboard macros.
 
-MIDI and keyboard functions are disabled unless configured. See [Config](/guide/config), [MIDI](/guide/midi), and [Macros](/guide/macros).
+MIDI and keyboard functions are disabled unless configured. See [Config](/guide/config), [MIDI](/guide/midi), and [Scripts](/guide/macros).
 
 The Pi 5 USB device path has been tested on hardware. Use the board-matched preset and a suitable power/data arrangement; this does not establish compatibility with every cable, hub, or power supply.
 

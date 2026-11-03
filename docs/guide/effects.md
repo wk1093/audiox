@@ -84,22 +84,24 @@ Mappings are selected by MIDI CC or note number; the Effects page does not
 offer a per-channel filter. As with other MIDI features, use the currently
 selected controller. Mapping and LED edits are persisted as you apply them.
 See [MIDI](./midi.md) for controller setup and
-[Macros](./macros.md) for automation.
+[Scripts](./macros.md) for automation.
 
 ## Control effects from Lua
 
-**Yes: Lua macros can toggle effects, explicitly enable/bypass them, and change
+**Yes: Lua scripts can toggle effects, explicitly enable/bypass them, and change
 their parameters.** A web-triggered effect script does not need a MIDI controller
 or the USB keyboard function.
 
 Create and connect the effect in Routing first. Find its exact `fx_N` ID in
-`GET /api/effects`, then use it in a Lua sequence on **Macros**:
+`GET /api/effects`, then use it in a callback on **Scripts**:
 
 ```lua
 -- Replace fx_1 with the ID of an existing Reverb effect.
-effects.enable("fx_1", true)
-effects.set("fx_1", "feedback", 0.7)
-effects.set("fx_1", "wet_mix", 0.4)
+hook("run", function(event)
+    effects.enable("fx_1", true)
+    effects.set("fx_1", "feedback", 0.7)
+    effects.set("fx_1", "wet_mix", 0.4)
+end)
 ```
 
 `effects.toggle("fx_1")` flips the current enabled state.
@@ -152,6 +154,6 @@ See the [Lua API](/lua/api#effects-and-volume) and
   [Routing](./routing.md) and [Troubleshooting](./troubleshooting.md).
 
 Related guides: [Getting started](./getting-started.md),
-[Routing](./routing.md), [MIDI](./midi.md), [Macros](./macros.md),
+[Routing](./routing.md), [MIDI](./midi.md), [Scripts](./macros.md),
 [Configuration](./config.md), and [Development](./development.md). The
 [Reference](./reference.md) groups effect API and configuration file details.

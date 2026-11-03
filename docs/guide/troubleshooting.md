@@ -80,13 +80,13 @@ from per-sample processing.
 | File upload succeeds but no audio plays | Conversion/load problem, unsupported source, missing route, or insufficient memory |
 | Pad selects instead of plays | Sampler selection mode is active |
 | Saved order conflicts | Another client changed the library; refresh and reorder again |
-| Removed file is still referenced in Lua | Macro source is not rewritten automatically |
+| Removed file is still referenced in Lua | Script source is not rewritten automatically |
 
 See [Soundboard](./soundboard).
 
-## MIDI, lights, and macros
+## MIDI, lights, and scripts
 
-- A sound or action bound to a note is generally not channel-isolated; macros
+- A sound or action bound to a note is generally not channel-isolated; scripts
   and the sampler keyboard use explicit zero-based channels.
 - Reserve distinct notes for global actions, effect bypass, sound pads, and
   automations unless combined behavior is intentional.
@@ -94,13 +94,13 @@ See [Soundboard](./soundboard).
   lighting protocol, or **Dim lights** being active.
 - Missing host MIDI can mean USB passthrough is disabled, not missing controller
   input. Passthrough is controller-to-host only.
-- A macro's Run button queues the saved definition. Reload the list to see
+- A script's Run button queues the saved definition. Reload the list to see
   runtime errors.
 - Keyboard actions require enabled USB Keyboard and a connected host.
   `light()` also requires a MIDI binding, and `midi.*` needs the controller.
 - Lua is bounded and intentionally has no filesystem, shell, or network access.
 
-See [MIDI](./midi), [Macros](./macros), and
+See [MIDI](./midi), [Scripts](./macros), and
 [Lua troubleshooting](/lua/limits-and-troubleshooting).
 
 ## A change vanished after restart
@@ -141,5 +141,5 @@ Include:
 - Whether the problem began after a USB reload, restore, or firmware update.
 
 Do not publicly attach a complete configuration backup: it includes Bluetooth
-pairing keys and may include private audio or macro text. Review logs and
+pairing keys and may include private audio or script text. Review logs and
 screenshots before sharing them.

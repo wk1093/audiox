@@ -16,9 +16,8 @@ int luaopen_table(lua_State *lua);
 }
 
 namespace {
-constexpr size_t MEMORY_MAX = 256 * 1024;
-constexpr unsigned INSTRUCTIONS_MAX = 10000;
 constexpr uint64_t DURATION_MAX = 60000;
+char hooksRegistryKey;
 
 struct Compiler {
     MidiScriptPlan *plan;
@@ -34,6 +33,15 @@ struct Compiler {
     bool syntaxOnly;
     uint64_t randomState;
     unsigned helperWork;
+    ConfigStore *config;
+    unsigned configReads;
+    bool configWriteAllowed;
+    bool hookMode;
+    bool registering;
+    unsigned hookCount;
+    uint8_t hookMask;
+    uint8_t expectedHookMask;
+    uint8_t *discoveredMask;
 };
 
 void *allocate(void *user, void *pointer, size_t oldSize, size_t newSize) {
@@ -44,7 +52,7 @@ void *allocate(void *user, void *pointer, size_t oldSize, size_t newSize) {
         compiler->memory -= oldSize;
         return nullptr;
     }
-    if (newSize > MEMORY_MAX - (compiler->memory - oldSize)) return nullptr;
+    if (newSize > MIDI_SCRIPT_MEMORY_MAX - (compiler->memory - oldSize)) return nullptr;
     void *result = std::realloc(pointer, newSize);
     if (result) compiler->memory = compiler->memory - oldSize + newSize;
     return result;
@@ -57,14 +65,16 @@ Compiler *context(lua_State *lua) {
 void instructionHook(lua_State *lua, lua_Debug *) {
     Compiler *compiler = context(lua);
     compiler->instructions += 100;
-    if (compiler->instructions >= INSTRUCTIONS_MAX)
-        luaL_error(lua, "instruction limit exceeded (10000)");
+    if (compiler->instructions >= MIDI_SCRIPT_INSTRUCTIONS_MAX)
+        luaL_error(lua, "instruction limit exceeded (100000)");
 }
 
 MidiScriptAction *append(lua_State *lua, MidiScriptKind kind) {
+    if (context(lua)->registering)
+        luaL_error(lua, "device actions belong inside hook callbacks, not registration");
     MidiScriptPlan *plan = context(lua)->plan;
     if (plan->count == MIDI_SCRIPT_ACTIONS_MAX)
-        luaL_error(lua, "action limit exceeded (64)");
+        luaL_error(lua, "action limit exceeded (128)");
     MidiScriptAction *action = &plan->actions[plan->count++];
     *action = {};
     action->kind = kind;
@@ -165,7 +175,7 @@ int type(lua_State *lua) {
     }
     Compiler *compiler = context(lua);
     if (length > MIDI_SCRIPT_TYPE_CHARS_MAX - compiler->typeChars)
-        return luaL_error(lua, "total type character limit exceeded (256)");
+        return luaL_error(lua, "total type character limit exceeded (1024)");
     uint64_t duration = length ? static_cast<uint64_t>(length - 1) *
         static_cast<uint64_t>(interval) + 30 : 0;
     if (duration > DURATION_MAX - compiler->duration)
@@ -206,6 +216,7 @@ void arity(lua_State *lua, int low, int high) {
 
 int millis(lua_State *lua) {
     arity(lua, 0, 0);
+    if (context(lua)->registering) return luaL_error(lua, "millis is only available inside callbacks");
     // Monotonic snapshots beyond Lua's signed integer range saturate.
     uint64_t value = context(lua)->event->monotonicMs;
     lua_pushinteger(lua, value > static_cast<uint64_t>(LUA_MAXINTEGER)
@@ -215,6 +226,7 @@ int millis(lua_State *lua) {
 
 int epoch(lua_State *lua) {
     arity(lua, 0, 0);
+    if (context(lua)->registering) return luaL_error(lua, "epoch is only available inside callbacks");
     lua_pushinteger(lua, context(lua)->event->epochSeconds);
     return 1;
 }
@@ -673,6 +685,87 @@ void setFunction(lua_State *lua, const char *name, lua_CFunction function) {
     lua_setfield(lua, -2, name);
 }
 
+const char *configName(lua_State *lua) {
+    size_t length = 0;
+    const char *name = luaL_checklstring(lua, 1, &length);
+    if (memchr(name, '\0', length)) luaL_error(lua, "invalid configuration name");
+    for (const char *allowed : SCRIPT_CONFIG_FILES)
+        if (strcmp(name, allowed) == 0) return name;
+    luaL_error(lua, "configuration file is not on the allowlist; use config.list()");
+    return nullptr;
+}
+
+int configList(lua_State *lua) {
+    arity(lua, 0, 0);
+    lua_newtable(lua);
+    unsigned index = 1;
+    for (const char *name : SCRIPT_CONFIG_FILES) {
+        lua_pushstring(lua, name);
+        lua_rawseti(lua, -2, index++);
+    }
+    return 1;
+}
+
+int configRead(lua_State *lua) {
+    arity(lua, 1, 1);
+    if (context(lua)->registering) return luaL_error(lua, "configuration reads belong inside callbacks");
+    const char *name = configName(lua);
+    ConfigStore *store = context(lua)->config;
+    if (!store) return luaL_error(lua, "configuration access requires the device runtime");
+    if (++context(lua)->configReads > 4) return luaL_error(lua, "configuration read limit exceeded (4)");
+    auto *buffer = static_cast<char *>(lua_newuserdatauv(lua, MIDI_SCRIPT_CONFIG_READ_MAX + 1, 0));
+    size_t length = 0;
+    if (store->readScriptConfig(name, buffer, MIDI_SCRIPT_CONFIG_READ_MAX + 1, &length) != RET_OK)
+        return luaL_error(lua, "config.read failed: file unavailable, invalid, or larger than 64 KiB");
+    charge(lua, 100);
+    lua_pushlstring(lua, buffer, length);
+    lua_remove(lua, -2);
+    return 1;
+}
+
+int configLines(lua_State *lua) {
+    configRead(lua);
+    size_t length = 0;
+    const char *text = lua_tolstring(lua, -1, &length);
+    lua_newtable(lua);
+    unsigned index = 1;
+    for (size_t start = 0; start < length;) {
+        size_t end = start;
+        while (end < length && text[end] != '\n') ++end;
+        size_t lineLength = end - start;
+        if (lineLength && text[end - 1] == '\r') --lineLength;
+        if (lineLength > 4096 || index > 1024)
+            return luaL_error(lua, "config.lines limit exceeded (1024 lines, 4096 bytes per line)");
+        lua_pushlstring(lua, text + start, lineLength);
+        lua_rawseti(lua, -2, index++);
+        start = end + 1;
+    }
+    return 1;
+}
+
+int configWrite(lua_State *lua) {
+    arity(lua, 2, 2);
+    if (context(lua)->registering) return luaL_error(lua, "configuration writes belong inside callbacks");
+    const char *name = configName(lua);
+    if (!context(lua)->configWriteAllowed)
+        return luaL_error(lua, "configuration writes require acknowledgment when saving the script");
+    size_t length = 0;
+    const char *text = luaL_checklstring(lua, 2, &length);
+    if (!midiScriptConfigTextValid(text, length))
+        return luaL_error(lua, "config.write text must be at most 4096 bytes with no NUL or non-whitespace control characters");
+    auto *plan = context(lua)->plan;
+    if (length + 1 > MIDI_SCRIPT_CONFIG_PLAN_MAX - plan->configBytes)
+        return luaL_error(lua, "configuration write payload limit exceeded (8192 bytes)");
+    auto *action = append(lua, MidiScriptKind::ConfigWrite);
+    snprintf(action->target, sizeof(action->target), "%s", name);
+    action->value = plan->configBytes;
+    action->number = static_cast<double>(length);
+    memcpy(plan->configText + plan->configBytes, text, length);
+    plan->configText[plan->configBytes + length] = '\0';
+    plan->configBytes += static_cast<unsigned>(length + 1);
+    return 0;
+}
+
 void libraries(lua_State *lua) {
     // Open base privately, then replace the global environment with a whitelist.
     luaopen_base(lua);
@@ -843,7 +936,19 @@ void pushEvent(lua_State *lua, const MidiScriptEvent &event) {
     lua_setfield(lua, -2, "velocity");
     lua_pushboolean(lua, event.pressed);
     lua_setfield(lua, -2, "pressed");
-    lua_pushstring(lua, event.fromWeb ? "web" : "midi");
+    lua_pushstring(lua, midiScriptEventName(event.kind));
+    lua_setfield(lua, -2, "type");
+    lua_pushinteger(lua, event.note);
+    lua_setfield(lua, -2, "cc");
+    lua_pushinteger(lua, event.velocity);
+    lua_setfield(lua, -2, "value");
+    lua_pushstring(lua, event.sound);
+    lua_setfield(lua, -2, "sound");
+    lua_pushstring(lua, event.device);
+    lua_setfield(lua, -2, "device");
+    const bool audio = event.kind == MidiScriptEventKind::SoundStart || event.kind == MidiScriptEventKind::SoundFinish;
+    const bool device = event.kind == MidiScriptEventKind::DeviceConnect || event.kind == MidiScriptEventKind::DeviceDisconnect;
+    lua_pushstring(lua, event.fromWeb ? "web" : audio ? "audio" : device ? "device" : "midi");
     lua_setfield(lua, -2, "source");
     lua_setglobal(lua, "event");
 }
@@ -894,11 +999,47 @@ void exportState(lua_State *lua, MidiScriptState *result) {
     *result = exported;
 }
 
+int registerHook(lua_State *lua) {
+    arity(lua, 2, 2);
+    Compiler *compiler = context(lua);
+    if (!compiler->hookMode) return luaL_error(lua, "hook requires Lua callbacks mode");
+    if (!compiler->registering) return luaL_error(lua, "hooks must be registered at script top level");
+    if (lua_type(lua, 1) != LUA_TSTRING || lua_type(lua, 2) != LUA_TFUNCTION)
+        return luaL_error(lua, "hook expects an event name and a function");
+    size_t length = 0;
+    const char *name = lua_tolstring(lua, 1, &length);
+    unsigned kind = 0;
+    for (; kind < 8; ++kind) {
+        const char *candidate = midiScriptEventName(static_cast<MidiScriptEventKind>(kind));
+        if (length == strlen(candidate) && !memcmp(name, candidate, length)) break;
+    }
+    if (kind == 8) return luaL_error(lua, "unknown hook event name");
+    if (compiler->hookCount == MIDI_SCRIPT_HOOKS_MAX)
+        return luaL_error(lua, "hook limit exceeded (32)");
+    lua_rawgetp(lua, LUA_REGISTRYINDEX, &hooksRegistryKey);
+    lua_createtable(lua, 2, 0);
+    lua_pushinteger(lua, kind);
+    lua_rawseti(lua, -2, 1);
+    lua_pushvalue(lua, 2);
+    lua_rawseti(lua, -2, 2);
+    lua_rawseti(lua, -2, ++compiler->hookCount);
+    compiler->hookMask |= static_cast<uint8_t>(1U << kind);
+    return 0;
+}
+
 // Setup, parsing, execution, and state export all run inside lua_pcall so
 // allocation failures cannot reach Lua's panic handler.
 int evaluate(lua_State *lua) {
     Compiler *compiler = context(lua);
     libraries(lua);
+    lua_pushcfunction(lua, registerHook);
+    lua_setglobal(lua, "hook");
+    lua_newtable(lua);
+    setFunction(lua, "list", configList);
+    setFunction(lua, "read", configRead);
+    setFunction(lua, "lines", configLines);
+    setFunction(lua, "write", configWrite);
+    lua_setglobal(lua, "config");
     lua_pushcfunction(lua, tap);
     lua_setglobal(lua, "tap");
     lua_pushcfunction(lua, wait);
@@ -911,17 +1052,48 @@ int evaluate(lua_State *lua) {
     lua_setglobal(lua, "release");
     lua_pushcfunction(lua, type);
     lua_setglobal(lua, "type");
-    if (!compiler->syntaxOnly) {
+    if (!compiler->syntaxOnly && !compiler->hookMode) {
         pushEvent(lua, *compiler->event);
         pushState(lua, *compiler->initialState);
     }
-    int status = luaL_loadbufferx(lua, compiler->source, compiler->length, "macro", "t");
+    int status = luaL_loadbufferx(lua, compiler->source, compiler->length, "script", "t");
     if (status != LUA_OK) return lua_error(lua);
     if (compiler->syntaxOnly) {
         lua_pop(lua, 1);
         return 0;
     }
+    if (compiler->hookMode) {
+        lua_newtable(lua);
+        lua_rawsetp(lua, LUA_REGISTRYINDEX, &hooksRegistryKey);
+        compiler->registering = true;
+    }
     lua_call(lua, 0, 0);
+    if (compiler->hookMode) {
+        if (!compiler->hookCount) return luaL_error(lua, "callback scripts must register at least one hook");
+        compiler->registering = false;
+        if (compiler->discoveredMask) {
+            *compiler->discoveredMask = compiler->hookMask;
+            return 0;
+        }
+        if (compiler->expectedHookMask && compiler->expectedHookMask != compiler->hookMask)
+            return luaL_error(lua, "hook subscriptions changed; register hooks unconditionally");
+        pushEvent(lua, *compiler->event);
+        pushState(lua, *compiler->initialState);
+        lua_rawgetp(lua, LUA_REGISTRYINDEX, &hooksRegistryKey);
+        for (unsigned i = 1; i <= compiler->hookCount; ++i) {
+            lua_rawgeti(lua, -1, i);
+            lua_rawgeti(lua, -1, 1);
+            bool matches = lua_tointeger(lua, -1) == static_cast<unsigned>(compiler->event->kind);
+            lua_pop(lua, 1);
+            if (matches) {
+                lua_rawgeti(lua, -1, 2);
+                lua_getglobal(lua, "event");
+                lua_call(lua, 1, 0);
+            }
+            lua_pop(lua, 1);
+        }
+        lua_pop(lua, 1);
+    }
     exportState(lua, compiler->state);
     return 0;
 }
@@ -930,14 +1102,16 @@ void writeError(char *error, size_t size, const char *message) {
     if (error && size) std::snprintf(error, size, "%s", message);
 }
 
-bool sourceLength(const char *source, size_t &length, char *error, size_t errorSize) {
+bool sourceLength(const char *source, size_t &length, char *error, size_t errorSize,
+                  size_t capacity) {
     if (!source) {
         writeError(error, errorSize, "script source is null");
         return false;
     }
-    length = strnlen(source, MIDI_SCRIPT_MAX);
-    if (length == MIDI_SCRIPT_MAX) {
-        writeError(error, errorSize, "script source must be less than 2048 bytes");
+    length = strnlen(source, capacity);
+    if (length == capacity) {
+        writeError(error, errorSize, capacity == MIDI_SCRIPT_MAX ?
+                   "script source must be at most 16384 bytes" : "callback source must be at most 17408 bytes");
         return false;
     }
     if (length && static_cast<unsigned char>(source[0]) == 0x1b) {
@@ -949,17 +1123,32 @@ bool sourceLength(const char *source, size_t &length, char *error, size_t errorS
 
 bool run(const char *source, const MidiScriptEvent *event, const MidiScriptState *initialState,
          MidiScriptState *resultState, MidiScriptPlan *plan, bool syntaxOnly,
-         char *error, size_t errorSize) {
+         char *error, size_t errorSize, ConfigStore *config = nullptr,
+         bool configWriteAllowed = false, bool hookMode = false,
+         uint8_t expectedHookMask = 0, uint8_t *discoveredMask = nullptr) {
     writeError(error, errorSize, "");
     size_t length = 0;
-    if (!sourceLength(source, length, error, errorSize)) return false;
-    Compiler compiler{plan, resultState, initialState, event, source, length, 0, 0, 0, 0, syntaxOnly, 0, 0};
+    if (!sourceLength(source, length, error, errorSize,
+                      hookMode || syntaxOnly ? MIDI_SCRIPT_STORAGE_MAX : MIDI_SCRIPT_MAX)) return false;
+    Compiler compiler{};
+    compiler.plan = plan;
+    compiler.state = resultState;
+    compiler.initialState = initialState;
+    compiler.event = event;
+    compiler.source = source;
+    compiler.length = length;
+    compiler.syntaxOnly = syntaxOnly;
+    compiler.config = config;
+    compiler.configWriteAllowed = configWriteAllowed;
+    compiler.hookMode = hookMode;
+    compiler.expectedHookMask = expectedHookMask;
+    compiler.discoveredMask = discoveredMask;
     if (event) compiler.randomState = event->monotonicMs ^
         (static_cast<uint64_t>(event->channel) << 24) ^
         (static_cast<uint64_t>(event->note) << 8) ^ event->velocity;
     lua_State *lua = lua_newstate(allocate, &compiler);
     if (!lua) {
-        writeError(error, errorSize, "Lua memory limit exceeded (256 KiB) or allocation failed");
+        writeError(error, errorSize, "Lua memory limit exceeded (1 MiB) or allocation failed");
         return false;
     }
     *static_cast<Compiler **>(lua_getextraspace(lua)) = &compiler;
@@ -969,7 +1158,7 @@ bool run(const char *source, const MidiScriptEvent *event, const MidiScriptState
     if (status != LUA_OK) {
         const char *message = lua_type(lua, -1) == LUA_TSTRING ? lua_tostring(lua, -1) : nullptr;
         writeError(error, errorSize, status == LUA_ERRMEM
-            ? "Lua memory limit exceeded (256 KiB) or allocation failed"
+            ? "Lua memory limit exceeded (1 MiB) or allocation failed"
             : (message ? message : "Lua script failed"));
     }
     lua_close(lua);
@@ -979,9 +1168,13 @@ bool run(const char *source, const MidiScriptEvent *event, const MidiScriptState
 
 bool midiEvaluateScript(const char *source, const MidiScriptEvent &event,
                         MidiScriptState &state, MidiScriptPlan &plan,
-                        char *error, size_t errorSize) {
+                        char *error, size_t errorSize, ConfigStore *config, bool configWriteAllowed,
+                        bool hookMode, uint8_t expectedHookMask) {
     plan = {};
-    if (event.channel > 15 || event.note > 127 || event.velocity > 127) {
+    if (event.channel > 15 || event.note > 127 || event.velocity > 127 ||
+        static_cast<unsigned>(event.kind) > 7 ||
+        strnlen(event.sound, sizeof(event.sound)) == sizeof(event.sound) ||
+        strnlen(event.device, sizeof(event.device)) == sizeof(event.device)) {
         writeError(error, errorSize, "MIDI event values are out of range");
         return false;
     }
@@ -990,17 +1183,85 @@ bool midiEvaluateScript(const char *source, const MidiScriptEvent &event,
         return false;
     }
     MidiScriptState updated{};
-    bool success = run(source, &event, &state, &updated, &plan, false, error, errorSize);
+    bool success = run(source, &event, &state, &updated, &plan, false, error, errorSize,
+                       config, configWriteAllowed, hookMode, expectedHookMask);
     if (!success) {
         plan = {};
         return false;
     }
+
     state = updated;
     return true;
 }
 
+const char *midiScriptEventName(MidiScriptEventKind kind) {
+    switch (kind) {
+    case MidiScriptEventKind::NoteOn: return "note_on";
+    case MidiScriptEventKind::NoteOff: return "note_off";
+    case MidiScriptEventKind::ControlChange: return "cc";
+    case MidiScriptEventKind::SoundStart: return "sound_start";
+    case MidiScriptEventKind::SoundFinish: return "sound_finish";
+    case MidiScriptEventKind::DeviceConnect: return "device_connect";
+    case MidiScriptEventKind::DeviceDisconnect: return "device_disconnect";
+    case MidiScriptEventKind::Run: return "run";
+    }
+    return "unknown";
+}
+
 bool midiValidateScript(const char *source, char *error, size_t errorSize) {
     return run(source, nullptr, nullptr, nullptr, nullptr, true, error, errorSize);
+}
+
+bool midiInspectHooks(const char *source, uint8_t &mask, char *error, size_t errorSize) {
+    mask = 0;
+    uint8_t discovered = 0;
+    if (!run(source, nullptr, nullptr, nullptr, nullptr, false, error, errorSize,
+             nullptr, false, true, 0, &discovered)) return false;
+    mask = discovered;
+    return true;
+}
+
+bool midiMigrateScript(MidiChord &script, char *error, size_t errorSize) {
+    if (error && errorSize) error[0] = '\0';
+    if (script.hookMode) return true;
+    if (strnlen(script.script, sizeof(script.script)) >= MIDI_SCRIPT_MAX ||
+        strnlen(script.keys, sizeof(script.keys)) == sizeof(script.keys) ||
+        script.eventMask > MIDI_SCRIPT_LEGACY_EVENTS_MASK) {
+        writeError(error, errorSize, "invalid legacy script source or event mask");
+        return false;
+    }
+    std::string source = script.script;
+    if (source.empty()) {
+        uint8_t report[8];
+        if (!midiChordReport(script.keys, report)) {
+            writeError(error, errorSize, "invalid legacy keyboard shortcut");
+            return false;
+        }
+        source = "tap(\"" + std::string(script.keys) + "\")";
+    }
+    if (!midiValidateScript(source.c_str(), error, errorSize)) return false;
+    // The initializer keeps generated names out of the original source's scope.
+    std::string converted =
+        "local legacy = function(...)\n"
+        "if event.type == \"run\" then event.type = \"note_on\" end\n" + source + "\nend\n";
+    for (unsigned kind = 0; kind < 8; ++kind) {
+        if (kind == 7 || (script.eventMask & (1U << kind))) {
+            converted += "hook(\"";
+            converted += midiScriptEventName(static_cast<MidiScriptEventKind>(kind));
+            converted += "\", function() legacy() end)\n";
+        }
+    }
+    if (converted.size() >= sizeof(script.script)) {
+        writeError(error, errorSize, "converted script exceeds migration storage");
+        return false;
+    }
+    uint8_t mask = 0;
+    if (!midiInspectHooks(converted.c_str(), mask, error, errorSize)) return false;
+    memcpy(script.script, converted.c_str(), converted.size() + 1);
+    script.keys[0] = '\0';
+    script.hookMode = true;
+    script.eventMask = mask;
+    return true;
 }
 
 bool midiCompileScript(const char *source, MidiScriptPlan &plan, char *error, size_t errorSize) {

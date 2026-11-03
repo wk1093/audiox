@@ -1,22 +1,88 @@
 # Lua API reference
 
 Scripts use Lua 5.4 syntax in a restricted environment. The API is intentionally
-small: there is no filesystem, shell, network, dynamic loading, or unrestricted
+small: there is no arbitrary filesystem, shell, network, dynamic loading, or unrestricted
 device access. `_G`, `_VERSION`, metatables, pattern matching, module loading,
 coroutines, `io`, `os`, `debug`, and `package` are not exposed. Each function
 below is available globally unless shown under
-`math`, `string`, `table`, `sound`, `midi`, `effects`, or `volume`.
+`math`, `string`, `table`, `sound`, `midi`, `effects`, `volume`, or `config`.
+Unless shown as complete callback scripts, examples below are handler-body
+snippets: put them inside `hook("run", function(event) ... end)` or another
+event callback, not at top level.
 
 ## Trigger and state
 
 | Name | Description |
 | --- | --- |
-| `event.source` | `"web"` or `"midi"`; web Run and MIDI note-on use the same queue. |
+| `event.type` | `note_on`, `note_off`, `cc`, `sound_start`, `sound_finish`, `device_connect`, `device_disconnect`, or `run`. |
+| `event.source` | `"web"`, `"midi"`, `"audio"` or `"device"`; all hooks use the same bounded queue. |
 | `event.channel` | Triggering MIDI channel, `0`–`15`. |
 | `event.note` | Triggering note, `0`–`127`. |
-| `event.velocity` | Triggering note-on velocity, `1`–`127`. |
-| `event.pressed` | Always `true`; note-off does not execute Lua. Web uses configured numeric channel/note and velocity `127`. |
+| `event.velocity` | MIDI velocity/value, `0`–`127`; zero for audio/device hooks. |
+| `event.pressed` | True for press/start/connect and Web Run; false for release/CC/finish/disconnect. |
+| `event.cc`, `event.value` | MIDI controller number and value; `value` mirrors velocity for notes. |
+| `event.sound`, `event.device` | Sound basename or selected controller device path; empty when inapplicable. |
 | `state` | Persistent flat table for this mapping; see [events and state](/lua/events-and-state). |
+
+## Callback registration
+
+`hook(eventName, callback)` registers a script's event handlers. Event names
+are the eight `event.type` values above; the second argument must be a Lua
+function. Register up to 32 handlers at top level. Matching functions receive
+the fresh event table as their sole argument and run in registration order.
+Multiple handlers for the same event are supported; return values are ignored.
+
+Setup reruns on each event; ordinary globals, locals and closures do **not**
+persist. Use `state` explicitly inside callbacks to remember scalar values.
+State and event are unavailable during registration. Device actions, configuration
+I/O and clock snapshots are callback-only. Registration is inspected in a
+bounded sandbox at save time to derive subscriptions, without invoking handlers.
+Register unconditionally, not inside handlers or based on changing values.
+Setup and all matching handlers share instruction/memory/action budgets.
+Any evaluation error discards the event's entire plan and state changes.
+
+The Web Run button invokes `hook("run", callback)` only. Without a run hook it
+is disabled and the Run API rejects execution. Automatically converted
+sequences preserve their previous note-on-shaped event inside the generated wrapper.
+See [callback examples and lifetime rules](/lua/events-and-state#register-callbacks-in-one-script).
+
+## Persistent configuration
+
+| Call | Description |
+| --- | --- |
+| `config.list()` | Array of six allowed file names. |
+| `config.read(name)` | Read a regular, non-symlink UTF-8/raw text file, up to 65,536 bytes, with no NUL bytes. Missing or invalid files raise an error. |
+| `config.lines(name)` | Read the same file as a dense line array, without LF/CRLF terminators. At most 1,024 lines, 4,096 bytes per line; empty files yield an empty array. |
+| `config.write(name, text)` | Queue a complete file replacement, up to 4,096 bytes, without NUL or non-whitespace control characters. Requires saved write permission. |
+
+Allowed names are `config.txt`, `config.staging.txt`, `routing.txt`,
+`midi_map.txt`, `fx_params.txt`, and `volumes.txt`. Paths and arbitrary files
+are rejected. Bluetooth pairing storage is excluded because it contains credentials.
+
+Reads happen during evaluation and are limited to four file reads per trigger
+(`read` and `lines` combined). Different reads are not a transactional snapshot.
+Use `config.lines` to process large files with the bounded string helpers:
+the ordinary string-operation limit remains 4,096 bytes.
+
+The editor warns before saving scripts containing `config`, including read-only
+scripts and comments. **Allow configuration writes** explicitly requests
+permission for dynamically accessed APIs. Every permission-granting save
+requires confirmation; cancellation sends no request. The device persists that
+permission with the script and rejects writes without it, even through aliases.
+
+Writes execute only after successful evaluation, alongside other queued actions.
+Payloads share an 8,192-byte per-plan buffer, including one NUL terminator per
+write. An evaluation failure discards all pending writes. Each successful write
+is an atomic, flushed replacement; multiple files/actions are **not** one
+transaction, and an execution failure does not undo earlier successful actions.
+
+These are raw text edits, **not format-validated settings changes**. Back up
+first, preserve the documented file format, and reload/restart the relevant
+subsystem afterwards. Some subsystems periodically reload their files.
+Editing `midi_map.txt` can change or reset scripts at the next map reload.
+Avoid writes on every CC or sound event: filesystem sync can stall the control
+loop and repeated writes wear flash storage. Use runtime `effects`/`volume`
+actions when persistence is unnecessary.
 
 ## Keyboard, timing, and logging
 
@@ -28,8 +94,8 @@ below is available globally unless shown under
 | `type(text, interval_ms)` | Type supported US-ASCII text. The interval defaults to 50 ms. |
 | `wait(ms)` | Add a playback delay, `0`–`60000` ms. |
 | `light(level)` | Temporarily set the bound pad light, `0`–`127`. Requires an enabled MIDI binding and the selected connected controller, including for web Run; no binding is an explicit runtime error. |
-| `millis()` | Monotonic milliseconds captured at the original note-on. |
-| `epoch()` | Unix seconds captured at the original note-on; the device clock may be unset. |
+| `millis()` | Monotonic milliseconds captured at the original trigger. |
+| `epoch()` | Unix seconds captured at the original trigger; the device clock may be unset. |
 | `log(message)` | Queue a string as a device diagnostic message, at most 255 bytes and no NUL. |
 
 Keyboard specifics and playback behavior are in
@@ -81,7 +147,7 @@ using a new sound; the trigger does not scan storage. See
 | --- | --- |
 | `effects.enable(id, enabled)` | Enable/disable an existing effect; `enabled` must be a boolean. |
 | `effects.toggle(id)` | Toggle an existing effect's enabled state. |
-| `effects.set(id, parameter, value)` | Set an existing effect parameter to a finite number in its actual range, not a normalized value. Unknown IDs/parameters and out-of-range values are runtime errors shown in the macro list. |
+| `effects.set(id, parameter, value)` | Set an existing effect parameter to a finite number in its actual range, not a normalized value. Unknown IDs/parameters and out-of-range values are runtime errors shown in the script list. |
 | `volume.set(id, percent)` | Set an existing routing thing's gain to `0`–`100` percent: `0` is mute, `100` is unity (`gain = 1`). |
 | `volume.adjust(id, delta)` | Adjust by `-100`–`100` percentage points, clamping the result to `0`–`100`. |
 
@@ -196,7 +262,7 @@ delivered.
 
 ## Device and failure requirements
 
-These are firmware automation macros, not browser scripts or always-on
+These are firmware automation scripts, not browser scripts or always-on
 automation. Only keyboard action plans require **USB Keyboard** enabled and a
 connected USB host. Light/MIDI plans require the selected controller connected.
 Sound, effects, volume, timing and logging need neither device. Sounds must be loaded
@@ -204,7 +270,7 @@ into AudioX before triggering.
 
 A Lua evaluation error is atomic: no actions or state updates from that
 evaluation are applied. A playback failure (for example, an unavailable
-preloaded sound or controller output) cancels other pending macros and resets
+preloaded sound or controller output) cancels other pending scripts and resets
 state. Already-delivered actions cannot be undone. AudioX best-effort releases
 macro-generated MIDI notes and sustain when a sequence completes or is
 canceled, including on disconnect.

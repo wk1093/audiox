@@ -12,6 +12,9 @@
 #define MIDI_MAP_REAL_FILE_PATH ROOT_MOUNT_POINT "/midi_map.txt"
 #define FX_PARAMS_FILE_PATH ROOT_MOUNT_POINT "/fx_params.txt"
 #define VOLUMES_FILE_PATH ROOT_MOUNT_POINT "/volumes.txt"
+inline constexpr const char *SCRIPT_CONFIG_FILES[] = {
+    "config.txt", "config.staging.txt", "routing.txt", "midi_map.txt", "fx_params.txt", "volumes.txt"
+};
 #define SFX_ROOT_DIR ROOT_MOUNT_POINT "/sfx"
 
 #define MIDI_MAPPINGS_MAX 64
@@ -225,6 +228,8 @@ struct ConfigStore {
     ConfigData readConfigFile() const;
     int readStagingConfigFile(ConfigData *out) const;
     int writeConfigFile(ConfigData *cfg);
+    int readScriptConfig(const char *name, char *out, size_t capacity, size_t *length) const;
+    int writeScriptConfig(const char *name, const char *text, size_t length);
 
     // midi_map.txt: note→sfx mappings + lighting config (separate from config.txt)
     MidiMapData readMidiMapFile() const;

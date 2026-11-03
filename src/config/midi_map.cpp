@@ -664,7 +664,7 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
         return (errno == ENOENT) ? RET_WARN : RET_ERR;
     }
 
-    char line[MIDI_SCRIPT_MAX * 2 + 384];
+    char line[MIDI_SCRIPT_STORAGE_MAX * 2 + 384];
     while (fgets(line, sizeof(line), fp)) {
         char *eq = strchr(line, '=');
         if (!eq) {
@@ -768,6 +768,26 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
                 }
             }
             printf("[CONFIG] [WARN] Invalid or excess automation entry\n");
+        } else if (strcmp(key, "automation_events") == 0 ||
+                   strcmp(key, "automation_config_write") == 0 ||
+                   strcmp(key, "automation_hooks") == 0) {
+            unsigned id = 0, mask = 0;
+            char extra = '\0';
+            bool found = false;
+            bool writePermission = strcmp(key, "automation_config_write") == 0;
+            bool hookMode = strcmp(key, "automation_hooks") == 0;
+            if (sscanf(value, "%u,%u%c", &id, &mask, &extra) == 2 &&
+                mask <= (writePermission || hookMode ? 1 : MIDI_SCRIPT_EVENTS_MASK)) {
+                for (uint32_t j = 0; j < data.chordCount; ++j) {
+                    if (data.chords[j].id == id) {
+                        if (writePermission) data.chords[j].configWriteAllowed = mask != 0;
+                        else if (hookMode) data.chords[j].hookMode = mask != 0;
+                        else data.chords[j].eventMask = static_cast<uint8_t>(mask);
+                        found = true;
+                    }
+                }
+            }
+            if (!found) printf("[CONFIG] [WARN] Invalid %s entry (must follow its automation)\n", key);
         } else if (strcmp(key, "key_macro") == 0) {
             unsigned channel, note, idle, pressed;
             char keys[64]{};
@@ -847,6 +867,11 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
     fclose(fp);
 
     assignMacroIdentities(data);
+    for (uint32_t i = 0; i < data.chordCount; ++i) {
+        char error[192]{};
+        if (!midiMigrateScript(data.chords[i], error, sizeof(error)))
+            printf("[CONFIG] [WARN] Cannot convert script %u: %s\n", data.chords[i].id, error);
+    }
     if (data.soundboardLayout == SOUNDBOARD_LAYOUT_GRID || data.gridCellCount > 0)
         data.gridInitialized = 1;
     *out = data;
@@ -910,7 +935,10 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         if (dprintf(fd, "automation=%u,%u,%u,%u,%u,%u,%s,%s,%s\n",
                     chord.id, chord.midiEnabled ? 1 : 0, chord.channel, chord.note,
                     chord.idleVelocity, chord.pressedVelocity, midiHexEncode(chord.name).c_str(),
-                    chord.keys[0] ? chord.keys : "-", hex.c_str()) < 0) {
+                    chord.keys[0] ? chord.keys : "-", hex.c_str()) < 0 ||
+            dprintf(fd, "automation_events=%u,%u\n", chord.id, chord.eventMask) < 0 ||
+            dprintf(fd, "automation_config_write=%u,%u\n", chord.id, chord.configWriteAllowed ? 1 : 0) < 0 ||
+            dprintf(fd, "automation_hooks=%u,%u\n", chord.id, chord.hookMode ? 1 : 0) < 0) {
             printf("[CONFIG] [WARN] Cannot write macro mapping\n");
             close(fd);
             return RET_ERR;
@@ -1247,7 +1275,13 @@ int ConfigStore::writeMidiMapFile(MidiMapData *data) {
         uint8_t report[8];
         auto &chord = data->chords[i];
         char error[192]{};
+        if (!midiMigrateScript(chord, error, sizeof(error))) {
+            printf("[CONFIG] [WARN] Cannot convert script %u: %s\n", chord.id, error);
+            return RET_ERR;
+        }
         if (chord.channel > 15 || chord.note > 127 ||
+            (!chord.hookMode && chord.eventMask > MIDI_SCRIPT_LEGACY_EVENTS_MASK) ||
+            (chord.hookMode && !chord.script[0]) ||
             chord.idleVelocity > 127 || chord.pressedVelocity > 127 ||
             strnlen(chord.keys, sizeof(chord.keys)) == sizeof(chord.keys) ||
             strnlen(chord.script, sizeof(chord.script)) == sizeof(chord.script) ||
@@ -1258,10 +1292,13 @@ int ConfigStore::writeMidiMapFile(MidiMapData *data) {
             printf("[CONFIG] [WARN] Invalid macro mapping: %s\n", error);
             return RET_ERR;
         }
+        if (chord.hookMode && !midiInspectHooks(chord.script, chord.eventMask, error, sizeof(error))) {
+            printf("[CONFIG] [WARN] Invalid callback mapping: %s\n", error);
+            return RET_ERR;
+        }
         for (uint32_t j = 0; j < i; ++j) {
             if (chord.id == data->chords[j].id ||
-                (chord.midiEnabled && data->chords[j].midiEnabled &&
-                 chord.channel == data->chords[j].channel && chord.note == data->chords[j].note)) {
+                midiMacroTriggersOverlap(chord, data->chords[j])) {
                 printf("[CONFIG] [WARN] Duplicate macro trigger\n");
                 return RET_ERR;
             }

@@ -322,4 +322,4 @@ retention, version strings, catalog behavior, and required repository permission
 4. Include board, host OS/toolchain, firmware/kernel version, exact commands, and whether the fault occurs after full flashing, AXU upload, or `make dev`.
 5. Preserve current/previous logs and automatic-revert reports before another update or reboot.
 
-Related operation guides: [Routing](/guide/routing), [Effects](/guide/effects), [Volume](/guide/volume), [Bluetooth](/guide/bluetooth), [Soundboard](/guide/soundboard), [MIDI](/guide/midi), [Macros](/guide/macros), [Config](/guide/config), and [Troubleshooting](/guide/troubleshooting).
+Related operation guides: [Routing](/guide/routing), [Effects](/guide/effects), [Volume](/guide/volume), [Bluetooth](/guide/bluetooth), [Soundboard](/guide/soundboard), [MIDI](/guide/midi), [Scripts](/guide/macros), [Config](/guide/config), and [Troubleshooting](/guide/troubleshooting).

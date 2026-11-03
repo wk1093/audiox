@@ -19,34 +19,18 @@ inline constexpr size_t MIDI_SCRIPT_CONFIG_PLAN_MAX = 8192;
 
 struct ConfigStore;
 enum class MidiScriptEventKind : uint8_t {
-    NoteOn, NoteOff, ControlChange, SoundStart, SoundFinish, DeviceConnect, DeviceDisconnect, Run
+    NoteOn, NoteOff, ControlChange, SoundStart, SoundFinish, DeviceConnect, DeviceDisconnect, Run,
+    Boot, Timer, ConfigChange, Ui, BluetoothChange
 };
-inline constexpr uint8_t MIDI_SCRIPT_EVENTS_MASK = 255;
-inline constexpr uint8_t MIDI_SCRIPT_LEGACY_EVENTS_MASK = 127;
+inline constexpr uint16_t MIDI_SCRIPT_EVENTS_MASK = 8191;
+inline constexpr uint16_t MIDI_SCRIPT_LEGACY_EVENTS_MASK = 127;
 const char *midiScriptEventName(MidiScriptEventKind kind);
 
 enum class MidiScriptKind { Tap, Wait, Light, Press, Release, Type, Log, SoundPlay, SoundStopAll, Midi,
-                            EffectEnable, EffectToggle, EffectSet, VolumeSet, VolumeAdjust, ConfigWrite };
-
-struct MidiScriptAction {
-    MidiScriptKind kind;
-    uint32_t value;
-    char keys[64];
-    char text[256];
-    uint8_t midiBytes[3];
-    uint8_t midiSize;
-    double pitchRatio;
-    char target[64];
-    char parameter[64];
-    double number;
-};
-
-struct MidiScriptPlan {
-    unsigned count;
-    MidiScriptAction actions[MIDI_SCRIPT_ACTIONS_MAX];
-    unsigned configBytes;
-    char configText[MIDI_SCRIPT_CONFIG_PLAN_MAX];
-};
+                            EffectEnable, EffectToggle, EffectSet, VolumeSet, VolumeAdjust, ConfigWrite,
+                            StorageWrite, StorageRemove, ScriptConfigSet, SystemRestart, BluetoothScan,
+                            BluetoothPair, BluetoothConnect, BluetoothDisconnect, BluetoothUnpair,
+                            BluetoothAutoConnect, SettingsSet };
 
 enum class MidiScriptValueKind { Boolean, Number, String };
 
@@ -60,10 +44,49 @@ struct MidiScriptStateEntry {
     int64_t integerValue;
 };
 
+struct MidiScriptAction {
+    MidiScriptKind kind;
+    uint32_t value;
+    char keys[64];
+    char text[256];
+    uint8_t midiBytes[3];
+    uint8_t midiSize;
+    double pitchRatio;
+    char target[64];
+    char parameter[64];
+    double number;
+    MidiScriptStateEntry setting;
+};
+
+struct MidiScriptPlan {
+    unsigned count;
+    MidiScriptAction actions[MIDI_SCRIPT_ACTIONS_MAX];
+    unsigned configBytes;
+    char configText[MIDI_SCRIPT_CONFIG_PLAN_MAX];
+};
+
 struct MidiScriptState {
     MidiScriptStateEntry entries[MIDI_SCRIPT_STATE_ENTRIES_MAX];
     unsigned count;
 };
+
+enum class MidiScriptUiKind { Boolean, Number, String, Button };
+inline constexpr unsigned MIDI_SCRIPT_UI_MAX = 16;
+struct MidiScriptUiControl {
+    char key[32];
+    char label[64];
+    MidiScriptUiKind kind;
+    MidiScriptStateEntry defaultValue;
+    bool hasMin;
+    bool hasMax;
+    double min;
+    double max;
+};
+struct MidiScriptUi {
+    MidiScriptUiControl controls[MIDI_SCRIPT_UI_MAX];
+    unsigned count;
+};
+bool midiScriptUiValueValid(const MidiScriptUiControl &control, const MidiScriptStateEntry &entry);
 
 inline bool midiScriptConfigTextValid(const char *text, size_t length) {
     if (!text || length > MIDI_SCRIPT_CONFIG_WRITE_MAX) return false;
@@ -85,6 +108,9 @@ struct MidiScriptEvent {
     MidiScriptEventKind kind{MidiScriptEventKind::NoteOn};
     char sound[160]{};
     char device[256]{};
+    char key[32]{};
+    MidiScriptStateEntry value{};
+    bool hasValue{true};
 };
 
 // Evaluate text once into an isolated, bounded plan. No actions are executed.
@@ -95,11 +121,12 @@ bool midiEvaluateScript(const char *source, const MidiScriptEvent &event,
                         MidiScriptState &state, MidiScriptPlan &plan,
                         char *error, size_t errorSize, ConfigStore *config = nullptr,
                         bool configWriteAllowed = false, bool hookMode = false,
-                        uint8_t expectedHookMask = 0);
+                        uint16_t expectedHookMask = 0, uint32_t scriptId = 0);
 
 // Execute registration only in an isolated sandbox, without state, event, or device I/O.
 // The returned mask is authoritative for callback scripts; callbacks are not invoked.
-bool midiInspectHooks(const char *source, uint8_t &mask, char *error, size_t errorSize);
+bool midiInspectHooks(const char *source, uint16_t &mask, char *error, size_t errorSize);
+bool midiInspectUi(const char *source, MidiScriptUi &ui, char *error, size_t errorSize);
 
 // Parse text without running it. The same source, memory, and instruction limits apply.
 bool midiValidateScript(const char *source, char *error, size_t errorSize);

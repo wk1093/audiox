@@ -2,6 +2,7 @@
 #include "config/context.hpp"
 #include "midi/context.hpp"
 #include "touch/context.hpp"
+#include "script_device_stubs.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -1332,11 +1333,13 @@ int main() {
         assert(!midi.macroErrors[1][0]);
         close(automationInput[1]);
 
-        auto saveCallbacks = [&](const std::string &source, const char *status = "200 OK") {
+        auto saveCallbacks = [&](const std::string &source, const char *status = "200 OK",
+                                 bool allowManagement = false) {
             std::string body = "id=" + std::to_string(midiId) +
                 "&name_hex=" + midiHexEncode("Multi-hook addon") +
                 "&midi_enabled=1&channel=5&note=66&script_hex=" +
                 midiHexEncode(source.c_str());
+            if (allowManagement) body += "&config_write_ack=1";
             macroRequest("POST", body, status, false, true);
         };
         std::string strictScript = "id=" + std::to_string(midiId) +
@@ -1423,6 +1426,218 @@ int main() {
         assert(!strcmp(configText, "sfx=0.5\n"));
         assert(!midi.macroErrors[1][0]);
         assert(unlink("volumes.txt") == 0);
+        saveCallbacks("hook('boot',function(e) assert(e.source=='system'); "
+                      "state.boots=(state.boots or 0)+1 end); "
+                      "hook('timer',function(e) assert(e.source=='system'); "
+                      "state.ticks=(state.ticks or 0)+1 end)", "200 OK", true);
+        assert(config.readMidiMapFile().chords[1].eventMask == 768);
+        initBootRecovery();
+        pollBootRecovery();
+        const uint64_t startupAt = testNowMs;
+        midi.pollScriptLifecycle(testNowMs, bootStartupStable());
+        assert(!midi.macroQueueCount && !midi.bootHooksDispatched);
+        testNowMs = startupAt + (BOOT_RECOVERY_CONFIRM_SECONDS - 1) * 1000;
+        pollBootRecovery();
+        midi.pollScriptLifecycle(testNowMs, bootStartupStable());
+        assert(!midi.macroQueueCount && !bootStartupStable());
+        testNowMs = startupAt + BOOT_RECOVERY_CONFIRM_SECONDS * 1000;
+        pollBootRecovery();
+        assert(bootStartupStable());
+        midi.pollScriptLifecycle(testNowMs, bootStartupStable());
+        assert(midi.macroQueueCount == 1);
+        midi.pollMacros(testNowMs);
+        assert(hookState("boots").integerValue == 1);
+        midi.pollScriptLifecycle(testNowMs + 999, true);
+        assert(!midi.macroQueueCount);
+        testNowMs += 1000;
+        midi.pollScriptLifecycle(testNowMs, true);
+        assert(midi.macroQueueCount == 1);
+        midi.pollScriptLifecycle(testNowMs + 1000, true);
+        assert(midi.macroQueueCount == 1);
+        midi.pollMacros(testNowMs);
+        assert(hookState("ticks").integerValue == 1 && hookState("boots").integerValue == 1);
+        midi.pollScriptLifecycle(testNowMs + 5000, true);
+        assert(midi.macroQueueCount == 1);
+        testNowMs += 5000;
+        midi.pollMacros(testNowMs);
+        assert(hookState("ticks").integerValue == 2 && hookState("boots").integerValue == 1);
+        saveCallbacks("hook('boot',function() state.late=true end)");
+        midi.pollScriptLifecycle(testNowMs + 1000, true);
+        assert(!midi.macroQueueCount && midi.bootHooksDispatched);
+        saveCallbacks("hook('run',function() system.restart() end)", "409 Conflict");
+        saveCallbacks("hook('run',function() system.restart(); error('abort') end)", "200 OK", true);
+        macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+        testNowMs += 20;
+        midi.pollMacros(testNowMs);
+        assert(scriptRestartRequests == 0 && strstr(midi.macroErrors[1], "abort"));
+        saveCallbacks("hook('run',function() system.restart() end)", "200 OK", true);
+        macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+        testNowMs += 20;
+        midi.pollMacros(testNowMs);
+        assert(scriptRestartRequests == 1 && strstr(midi.macroErrors[1], "system.restart failed"));
+        saveCallbacks("hook('run',function() settings.set('midi_passthrough','unmapped') end)",
+                      "200 OK", true);
+        macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+        testNowMs += 20;
+        midi.pollMacros(testNowMs);
+        assert(config.readConfigFile().midiPassthrough == 1 && !midi.macroErrors[1][0]);
+        {
+            BluetoothContext bluetooth(&app);
+            bluetooth.deviceCount = 1;
+            bluetooth.devices[0] = {};
+            assert(bt::parseAddress("AA:BB:CC:DD:EE:FF", &bluetooth.devices[0].address));
+            strcpy(bluetooth.devices[0].name, "Test phone");
+            bluetooth.devices[0].paired = true;
+            memset(bluetooth.devices[0].linkKey, 0xA5, sizeof(bluetooth.devices[0].linkKey));
+            saveCallbacks("hook('bluetooth_change',function(e) assert(e.source=='bluetooth'); "
+                          "local b=bluetooth.devices(); assert(b.ready and #b.devices==1); "
+                          "assert(b.devices[1].address=='AA:BB:CC:DD:EE:FF'); "
+                          "assert(b.devices[1].linkKey==nil and b.devices[1].link_key==nil); "
+                          "state.changes=(state.changes or 0)+1 end); "
+                          "hook('run',function() bluetooth.connect('AA:BB:CC:DD:EE:FF') end)",
+                          "200 OK", true);
+            midi.pollScriptLifecycle(testNowMs, true);
+            assert(!midi.macroQueueCount);
+            bluetooth.scanning = true;
+            midi.pollScriptLifecycle(testNowMs + 1, true);
+            assert(midi.macroQueueCount == 1);
+            testNowMs += 20;
+            midi.pollMacros(testNowMs);
+            assert(hookState("changes").integerValue == 1 && !midi.macroErrors[1][0]);
+            midi.pollScriptLifecycle(testNowMs + 1, true);
+            assert(!midi.macroQueueCount);
+            macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+            testNowMs += 20;
+            midi.pollMacros(testNowMs);
+            assert(scriptBluetoothRequests == 1 && strstr(midi.macroErrors[1], "Bluetooth request rejected"));
+            scriptBluetoothResult = RET_OK;
+            macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+            testNowMs += 20;
+            midi.pollMacros(testNowMs);
+            assert(scriptBluetoothRequests == 2 && !midi.macroErrors[1][0]);
+        }
+        saveCallbacks(
+            "ui.option('enabled',{label='Enabled',type='boolean',default=true}); "
+            "ui.option('level',{label='Level',type='number',default=50,min=0,max=100}); "
+            "ui.option('name',{label='Name',type='string',default='default'}); "
+            "ui.button('apply','<Apply>'); "
+            "hook('config_change',function(e) state.key=e.key; state.value=e.value; "
+            "assert(script_config.get(e.key)==e.value) end); "
+            "hook('ui',function(e) assert(e.key=='apply' and e.value==nil); state.applied=true end); "
+            "hook('run',function() storage.write('private.bin','A\\0B'); "
+            "script_config.set('starts',script_config.get('starts',0)+1) end)");
+        macroRequest("GET", "", "\"type\":\"number\",\"value\":50", false, true);
+        auto controlRequest = [&](const std::string &body, const char *expected) {
+            int sockets[2];
+            assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+            assert(handleScriptControl(&http, sockets[0], "POST", body.data(), body.size()) == 0);
+            assert(shutdown(sockets[0], SHUT_WR) == 0);
+            std::string response;
+            char buffer[2048];
+            ssize_t got;
+            while ((got = read(sockets[1], buffer, sizeof(buffer))) > 0)
+                response.append(buffer, static_cast<size_t>(got));
+            if (response.find(expected) == std::string::npos)
+                fprintf(stderr, "Expected %s, got %s\n", expected, response.c_str());
+            assert(response.find(expected) != std::string::npos);
+            close(sockets[0]);
+            close(sockets[1]);
+        };
+        const std::string controlId = "id=" + std::to_string(midiId);
+        auto option = [&](const char *key, const char *value, const char *status = "200 OK") {
+            controlRequest(controlId + "&key_hex=" + midiHexEncode(key) +
+                           "&value_hex=" + midiHexEncode(value), status);
+        };
+        option("level", "70");
+        testNowMs += 20;
+        midi.pollMacros(testNowMs);
+        assert(hookState("value").numberValue == 70 && !midi.macroErrors[1][0]);
+        option("enabled", "false");
+        testNowMs += 20;
+        midi.pollMacros(testNowMs);
+        assert(!hookState("value").booleanValue);
+        option("name", "<unsafe>&text");
+        testNowMs += 20;
+        midi.pollMacros(testNowMs);
+        assert(!strcmp(hookState("value").stringValue, "<unsafe>&text"));
+        macroRequest("GET", "", "\"type\":\"number\",\"value\":70", false, true);
+        option("level", "101", "400 Bad Request");
+        option("level", "nan", "400 Bad Request");
+        option("enabled", "1", "400 Bad Request");
+        option("unknown", "x", "404 Not Found");
+        controlRequest(controlId + "&key_hex=" + midiHexEncode("apply"), "button queued");
+        testNowMs += 20;
+        midi.pollMacros(testNowMs);
+        assert(hookState("applied").booleanValue && !midi.macroErrors[1][0]);
+        controlRequest(controlId + "&key_hex=" + midiHexEncode("apply") + "&value_hex=31",
+                       "400 Bad Request");
+        controlRequest(controlId + "&id=1&key_hex=31", "400 Bad Request");
+        const std::string dataDirectory = "scripts/" + std::to_string(midiId);
+        ScriptStorage privateStorage(midiId);
+        MidiScriptState savedOptions{};
+        assert(privateStorage.readSettings(savedOptions) == RET_OK && savedOptions.count == 3);
+        assert(access((dataDirectory + "/private.bin").c_str(), F_OK) != 0);
+        macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+        testNowMs += 20;
+        midi.pollMacros(testNowMs);
+        std::string binary;
+        assert(privateStorage.readFile("private.bin", binary) == RET_OK && binary == std::string("A\0B", 3));
+        assert(privateStorage.readSettings(savedOptions) == RET_OK && savedOptions.count == 4);
+        const uint32_t orphanId = saveNamed("Temporary storage owner", "log('temporary')");
+        ScriptStorage orphan(orphanId);
+        assert(orphan.writeFile("owned.txt", "private", 7) == RET_OK);
+        macroRequest("DELETE", "id=" + std::to_string(orphanId), "200 OK");
+        const uint32_t replacementId = saveNamed("New isolated script", "log('replacement')");
+        assert(replacementId > orphanId);
+        ScriptStorage replacement(replacementId);
+        std::string isolated;
+        assert(replacement.readFile("owned.txt", isolated) == RET_ERR && errno == ENOENT);
+        macroRequest("DELETE", "id=" + std::to_string(replacementId), "200 OK");
+        assert(orphan.removeFile("owned.txt") == RET_OK);
+        assert(rmdir(("scripts/" + std::to_string(orphanId)).c_str()) == 0);
+        for (unsigned i = 0; i < MIDI_CHORDS_MAX; ++i)
+            controlRequest(controlId + "&key_hex=" + midiHexEncode("apply"), "200 OK");
+        option("level", "80", "409 Conflict");
+        assert(privateStorage.readSettings(savedOptions) == RET_OK);
+        for (unsigned i = 0; i < savedOptions.count; ++i)
+            if (!strcmp(savedOptions.entries[i].key, "level")) assert(savedOptions.entries[i].numberValue == 70);
+        midi.stopMacros();
+        const std::string settingsPath = dataDirectory + "/.settings";
+        assert(unlink(settingsPath.c_str()) == 0);
+        assert(mkdir(settingsPath.c_str(), 0700) == 0);
+        option("level", "80", "500 Internal Server Error");
+        assert(!midi.macroQueueCount);
+        macroRequest("GET", "", "\"ui_error_hex\":", false, true);
+        assert(rmdir(settingsPath.c_str()) == 0);
+        MidiScriptStateEntry restored{};
+        strcpy(restored.key, "level");
+        restored.kind = MidiScriptValueKind::Number;
+        restored.numberValue = 70;
+        assert(privateStorage.setSetting(restored) == RET_OK);
+        saveCallbacks("hook('run',function() assert(script_config.get('level')==70); "
+                      "assert(storage.read('private.bin')=='A\\0B') end)");
+        macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+        testNowMs += 20;
+        midi.pollMacros(testNowMs);
+        assert(!midi.macroErrors[1][0]);
+        saveCallbacks("hook('run',function() storage.write('abort.bin','bad'); "
+                      "script_config.set('level',80); error('abort storage') end)");
+        macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+        testNowMs += 20;
+        midi.pollMacros(testNowMs);
+        assert(strstr(midi.macroErrors[1], "abort storage"));
+        assert(privateStorage.readFile("abort.bin", binary) == RET_ERR && errno == ENOENT);
+        assert(privateStorage.readSettings(savedOptions) == RET_OK);
+        for (unsigned i = 0; i < savedOptions.count; ++i)
+            if (!strcmp(savedOptions.entries[i].key, "level")) assert(savedOptions.entries[i].numberValue == 70);
+        saveCallbacks("hook('run',function() storage.remove('private.bin') end)");
+        macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+        testNowMs += 20;
+        midi.pollMacros(testNowMs);
+        assert(!midi.macroErrors[1][0] && privateStorage.readFile("private.bin", binary) == RET_ERR);
+        assert(unlink((dataDirectory + "/.settings").c_str()) == 0);
+        assert(rmdir(dataDirectory.c_str()) == 0);
+        assert(rmdir("scripts") == 0);
         hookScript(1, "state.count=(state.count or 0)+1");
         for (unsigned i = 0; i < MIDI_CHORDS_MAX; ++i)
             macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
@@ -1450,6 +1665,35 @@ int main() {
         MidiScriptPlan plan{};
         char error[256]{};
         MidiScriptEvent event{};
+        assert(midiEvaluateScript("local s=settings.get(); assert(s.midi_passthrough=='unmapped'); "
+                                  "assert(value_type(s.keyboard_macros)=='boolean')",
+                                  event, state, plan, error, sizeof(error), &config));
+        assert(midiEvaluateScript("settings.set('usb_capture_channels',16)",
+                                  event, state, plan, error, sizeof(error), &config, true));
+        assert(plan.count == 1 && plan.actions[0].kind == MidiScriptKind::SettingsSet &&
+               plan.actions[0].setting.numberValue == 16);
+        for (const char *invalid : {
+                "settings.set('usb_capture_channels',17)", "settings.set('usb_sample_size',0)",
+                "settings.set('keyboard_macros',1)", "settings.set('midi_passthrough','invalid')",
+                "settings.set('unknown',true)", "bluetooth.connect('../config.txt')",
+                "bluetooth.auto_connect('AA:BB:CC:DD:EE:FF',1)",
+                "bluetooth.connect('00:00:00:00:00:00')", "system.logs('config.txt')",
+                "system.logs('stdout',129)", "system.restart(1)"}) {
+            assert(!midiEvaluateScript(invalid, event, state, plan, error, sizeof(error), &config, true));
+            assert(error[0] && plan.count == 0);
+        }
+        assert(!midiEvaluateScript("settings.set('keyboard_macros',true)",
+                                   event, state, plan, error, sizeof(error), &config));
+        FILE *log = fopen("stdout.log", "w");
+        assert(log && fputs("first\nsecond\nlast\n", log) >= 0 && fclose(log) == 0);
+        assert(midiEvaluateScript("assert(system.logs('stdout',2)=='second\\nlast\\n')",
+                                  event, state, plan, error, sizeof(error), &config));
+        assert(!midiEvaluateScript("for i=1,5 do system.logs() end",
+                                   event, state, plan, error, sizeof(error), &config));
+        assert(strstr(error, "read limit"));
+        assert(!midiEvaluateScript("system.logs('stderr')",
+                                   event, state, plan, error, sizeof(error), &config));
+        assert(unlink("stdout.log") == 0);
         assert(midiEvaluateScript("assert(config.read('volumes.txt')=='sfx=1\\n'); "
                                   "assert(config.lines('volumes.txt')[1]=='sfx=1')",
                                   event, state, plan, error, sizeof(error), &config));

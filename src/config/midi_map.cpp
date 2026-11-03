@@ -782,7 +782,7 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
                     if (data.chords[j].id == id) {
                         if (writePermission) data.chords[j].configWriteAllowed = mask != 0;
                         else if (hookMode) data.chords[j].hookMode = mask != 0;
-                        else data.chords[j].eventMask = static_cast<uint8_t>(mask);
+                        else data.chords[j].eventMask = static_cast<uint16_t>(mask);
                         found = true;
                     }
                 }

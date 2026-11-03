@@ -16,6 +16,10 @@ evaluation:
 | Lua memory | 1 MiB per evaluation |
 | Type text | 255 bytes per call; 1,024 characters total |
 | Persistent state | 32 scalar fields |
+| Persistent script options | 32 scalar fields; same key/string limits as `state` |
+| Native WebUI controls | 16 per script |
+| Custom script files | 32; 4,096 bytes each; 65,536 bytes total including options |
+| Storage reads/listing | 32 calls per event |
 | State key | 31 bytes |
 | State string value | 127 bytes |
 | String value | 4,096 bytes |
@@ -25,8 +29,9 @@ evaluation:
 | Configuration read size | 65,536 bytes per file; four reads per evaluation |
 | Configuration lines | 1,024 lines, 4,096 bytes per line |
 | Configuration write size | 4,096 bytes per write |
-| Configuration write payload | 8,192 bytes total, including terminators |
+| Configuration/custom-file write payload | 8,192 bytes total, including terminators |
 | Pending sound events | 128; excess events dropped and logged |
+| System log query | 128 lines, 4,096 output bytes; scans at most 64 KiB |
 
 The engine also limits queued work to one evaluation per 10 ms, allows at most
 16 scripts and 16 pending triggers, and uses a 65-second playback timeout.
@@ -40,8 +45,9 @@ that subscriptions still match the validated set. An error in any matching
 handler discards the entire event's pending actions and state changes.
 
 Event storms may fill the shared trigger queue. Filter sound events and avoid
-recursive sound playback. Configuration writes require acknowledgment on save;
-read-only scripts mentioning `config` also prompt conservatively. File errors
+recursive sound playback. Official configuration/device-management scripts require acknowledgment on save;
+read-only references also prompt conservatively. Script-owned options/files do
+not grant access to official settings. File errors
 are reported explicitly. Writes are raw replacements, may need reload/restart,
 and should not be performed on every CC/audio event. See the
 [configuration API](/lua/api#persistent-configuration).
@@ -102,6 +108,8 @@ volume plans need neither device.
 ## Counters or clocks seem to reset
 
 `state` resets on script edits, cancellation/failure, or AudioX restart.
+`script_config` and `storage` survive restart and edits under the script's
+stable ID; they are not included in the standard configuration backup.
 USB loss and keyboard disable do not globally reset non-keyboard scripts.
 `millis()` and `epoch()` are frozen to the original trigger while a plan waits
 in the queue; evaluate a later note-on to obtain a new snapshot. The device's
@@ -110,7 +118,8 @@ until system time is configured.
 
 A playback failure (such as a missing loaded sound) cancels pending scripts and
 resets state. Evaluation failures are atomic, but playback failures cannot undo
-actions already delivered.
+actions already delivered. Timer hooks start only after the startup interval
+and do not replay missed ticks; a busy script may see fewer than one per second.
 
 ## Web Run or a device control fails
 

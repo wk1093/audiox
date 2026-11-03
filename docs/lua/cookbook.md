@@ -34,6 +34,77 @@ invoked. Sound/controller hooks need no pad binding; add MIDI hooks only after
 binding the script to the desired channel/note. A `wait()` queues action delays,
 not a pause in Lua execution.
 
+## Startup options and a custom button
+
+These controls appear beside the saved script. The boot callback waits for the
+healthy-startup interval; it does not run immediately during registration.
+Replace the routing ID below with your actual source or processing node.
+
+```lua callbacks
+ui.option("enabled", {
+    label = "Apply startup volume", type = "boolean", default = true
+})
+ui.option("level", {
+    label = "Startup level (%)", type = "number", default = 50,
+    min = 0, max = 100
+})
+ui.button("apply", "Apply volume now")
+
+local function apply()
+    if script_config.get("enabled", true) then
+        volume.set("usb_gadget_in", script_config.get("level", 50))
+    end
+end
+
+hook("boot", apply)
+hook("ui", function(event)
+    if event.key == "apply" then apply() end
+end)
+hook("config_change", function(event)
+    log("Saved option: " .. event.key)
+end)
+```
+
+Changing a control saves the option without editing source or parsing raw
+configuration. `config_change` fires after that save. The Apply button queues
+`ui`; it is independent of Web Run. No official-device write permission is
+needed for these options or runtime volume changes.
+
+## Keep a private startup record
+
+```lua callbacks
+hook("boot", function()
+    local count = script_config.get("starts", 0) + 1
+    script_config.set("starts", count)
+    storage.write("startup.txt", "Startup " .. count .. "\n")
+    log("Startup " .. count)
+end)
+```
+
+The counter and file live in this script's isolated persistent directory,
+not the official device configuration. Writes occur after successful
+evaluation; they are separate actions, not a multi-file transaction. Write
+occasionally rather than on every timer tick.
+
+## React to Bluetooth changes
+
+```lua callbacks
+hook("bluetooth_change", function()
+    local status = bluetooth.devices()
+    for _, device in ipairs(status.devices) do
+        if device.connected then log("Connected: " .. device.name) end
+    end
+end)
+```
+
+Device management scripts require confirmation on save, even for this
+read-only example. To connect a saved device, use
+`bluetooth.connect("AA:BB:CC:DD:EE:FF")` inside a callback, then wait for
+`bluetooth_change`; do not edit pairing files or issue several requests at once.
+To inspect diagnostics, use `system.logs("stderr", 20)` inside a callback.
+`system.restart()` requests a whole-device reboot: avoid unconditional boot
+reboots, which would create a restart loop.
+
 ## Count triggers
 
 ```lua callbacks

@@ -13,6 +13,7 @@ int mountRootfs(void *context) WARN_UNUSED;
 int prepareBootUpdateRecovery() WARN_UNUSED;
 void initBootRecovery();
 void pollBootRecovery();
+bool bootStartupStable();
 int setupAudioGadget(void *context) WARN_UNUSED;
 int reloadAudioGadget(void *context) WARN_UNUSED;
 int setupNetworkGadget(void *context) WARN_UNUSED;

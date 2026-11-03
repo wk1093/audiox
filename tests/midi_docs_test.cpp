@@ -38,7 +38,7 @@ int main() {
                     if (callbacks) {
                         MidiScriptState state{};
                         MidiScriptPlan plan{};
-                        uint8_t mask = 0;
+                        uint16_t mask = 0;
                         if (!midiInspectHooks(source.c_str(), mask, error, sizeof(error))) {
                             std::cerr << file.path() << ':' << start << ": " << error << '\n';
                             return 1;

@@ -5,7 +5,8 @@ small: there is no arbitrary filesystem, shell, network, dynamic loading, or unr
 device access. `_G`, `_VERSION`, metatables, pattern matching, module loading,
 coroutines, `io`, `os`, `debug`, and `package` are not exposed. Each function
 below is available globally unless shown under
-`math`, `string`, `table`, `sound`, `midi`, `effects`, `volume`, or `config`.
+`math`, `string`, `table`, `sound`, `midi`, `effects`, `volume`, `config`,
+`settings`, `system`, `bluetooth`, `script_config`, `storage`, or `ui`.
 Unless shown as complete callback scripts, examples below are handler-body
 snippets: put them inside `hook("run", function(event) ... end)` or another
 event callback, not at top level.
@@ -14,20 +15,21 @@ event callback, not at top level.
 
 | Name | Description |
 | --- | --- |
-| `event.type` | `note_on`, `note_off`, `cc`, `sound_start`, `sound_finish`, `device_connect`, `device_disconnect`, or `run`. |
-| `event.source` | `"web"`, `"midi"`, `"audio"` or `"device"`; all hooks use the same bounded queue. |
+| `event.type` | `note_on`, `note_off`, `cc`, `sound_start`, `sound_finish`, `device_connect`, `device_disconnect`, `run`, `boot`, `timer`, `config_change`, `ui`, or `bluetooth_change`. |
+| `event.source` | `"web"`, `"midi"`, `"audio"`, `"device"`, `"system"`, or `"bluetooth"`; all hooks use the same bounded queue. |
 | `event.channel` | Triggering MIDI channel, `0`–`15`. |
 | `event.note` | Triggering note, `0`–`127`. |
 | `event.velocity` | MIDI velocity/value, `0`–`127`; zero for audio/device hooks. |
 | `event.pressed` | True for press/start/connect and Web Run; false for release/CC/finish/disconnect. |
 | `event.cc`, `event.value` | MIDI controller number and value; `value` mirrors velocity for notes. |
 | `event.sound`, `event.device` | Sound basename or selected controller device path; empty when inapplicable. |
+| `event.key` | Option/button key for `config_change` and `ui`; empty otherwise. |
 | `state` | Persistent flat table for this mapping; see [events and state](/lua/events-and-state). |
 
 ## Callback registration
 
 `hook(eventName, callback)` registers a script's event handlers. Event names
-are the eight `event.type` values above; the second argument must be a Lua
+are the `event.type` values above; the second argument must be a Lua
 function. Register up to 32 handlers at top level. Matching functions receive
 the fresh event table as their sole argument and run in registration order.
 Multiple handlers for the same event are supported; return values are ignored.
@@ -44,6 +46,124 @@ Any evaluation error discards the event's entire plan and state changes.
 The Web Run button invokes `hook("run", callback)` only. Without a run hook it
 is disabled and the Run API rejects execution.
 See [callback examples and lifetime rules](/lua/events-and-state#register-callbacks-in-one-script).
+
+### Startup and utility hooks
+
+- `boot`: once after the main runtime has been ready for **60 seconds**, using
+  the same healthy-startup interval as OS update recovery. Fires on ordinary
+  boots too, without needing a trial update. A watchdog runtime restart starts
+  a new interval; scripts saved after dispatch do not retroactively receive it.
+- `timer`: once per second after startup stabilizes. Pending timer events for
+  the same script coalesce; missed intervals are not replayed. This is a
+  control-loop timer, not an audio/sample-accurate clock.
+- `bluetooth_change`: Bluetooth adapter, discovery, pairing, device, or
+  connection status changed. Read `bluetooth.devices()` for the latest snapshot.
+- `config_change`: a WebUI option was persisted; `event.key` names it and
+  `event.value` is its typed value. Script-side `script_config.set()` does not
+  retrigger this hook, avoiding feedback loops.
+- `ui`: a registered WebUI button was pressed; `event.key` identifies it and
+  `event.value` is nil.
+
+No MIDI binding is needed for these hooks. All use the existing bounded action
+queue and evaluation limits; successful HTTP requests confirm queuing, not
+callback completion.
+
+## Script-owned configuration and WebUI
+
+| Call | Description |
+| --- | --- |
+| `script_config.get(key[, default])` | Read this script's saved scalar option; missing keys return the supplied default or nil. |
+| `script_config.set(key, value)` | Queue a persistent boolean, finite number, or string; nil removes the key. |
+| `ui.option(key, descriptor)` | Declare a native WebUI option at top level. Descriptor fields: `label`, `type`, `default`, optional numeric `min` and `max`. Types: `"boolean"`, `"number"`, `"string"`. |
+| `ui.button(key, label)` | Declare a native WebUI button at top level; handled by `hook("ui", ...)`. |
+
+Up to 16 controls and 32 saved scalar keys per script. Keys are bounded to 31
+bytes; strings to 127 bytes. Declared options validate both Lua and HTTP writes
+against their type/range. Defaults are used when no saved value exists and are
+not automatically written to flash. `script_config.get(key)` uses a declared
+option's default when unset; an explicit fallback overrides that default.
+Register declarations unconditionally,
+alongside hooks; read/write saved options inside callbacks.
+
+Controls appear beside the saved script on **Scripts**, not arbitrary pages.
+Labels and values are rendered as text; scripts cannot inject HTML, JavaScript,
+CSS, or external resources. Editing an option persists it before queuing
+`config_change`. These settings do not require official-device write permission.
+Script identity, not display name or MIDI binding, owns the stored data.
+
+## Script-owned files
+
+| Call | Description |
+| --- | --- |
+| `storage.list()` | List this script's custom file basenames. |
+| `storage.read(name)` | Read a custom file; nil if missing. |
+| `storage.write(name, data)` | Queue an atomic, flushed custom-file replacement. |
+| `storage.remove(name)` | Queue deletion of a custom file. |
+
+Custom files can contain arbitrary bytes, including NUL. Limits are **32 files**,
+**4,096 bytes per file**, and **65,536 bytes total per script**, including its
+reserved options store. Basenames are at most 63 ASCII bytes (`A–Z`, `a–z`,
+digits, `_`, `-`, `.`); leading dots and `..` are rejected. Reads/listing share
+a 32-call per-event limit and see earlier queued file changes from that event.
+Option reads also see earlier queued option changes.
+
+Storage is confined to `/audiox/scripts/<stable-script-id>/` on the persistent
+partition. Only flat, validated basenames are accepted: no absolute paths,
+directory traversal, symlinks, hard links, or access to another script.
+The options store is reserved and cannot be accessed through the file API.
+**Official device configuration and Bluetooth credentials are never exposed
+through this directory**; use `settings`, `effects`, `volume`, `bluetooth`,
+or the legacy allowlisted `config` API instead.
+
+Custom files and options survive reboot and source/name edits. Removing a
+script retains its data; newly allocated script IDs do not reuse stored
+directories. The standard configuration backup currently includes script
+definitions, **not this script-owned storage**. Export important data separately.
+Writes share the per-event action/payload budgets and occur only after successful
+evaluation. An execution failure does not undo earlier actions. Avoid writing
+on every timer, CC, or sound event to limit flash wear and control-loop stalls.
+
+## Structured device settings
+
+`settings.get()` returns an active-configuration table. `settings.set(key, value)`
+queues a validated update of one field, preserving the other supported fields:
+
+| Key | Value |
+| --- | --- |
+| `usb_sample_rate` | Integer 8000–192000; descriptors only, not DSP engine retuning. |
+| `usb_playback_channels`, `usb_capture_channels` | Integer 1–16. |
+| `usb_sample_size` | Integer 1–4 bytes. |
+| `keyboard_macros` | Boolean. |
+| `soundboard_mode` | `"play"` or `"hold"`. |
+| `framebuffer_view` | `"meters"` or `"soundboard"`. |
+| `midi_passthrough` | `"off"`, `"unmapped"`, or `"all"`. |
+
+Writes require **Allow device management/configuration writes**. Unlike the
+Config page's staged USB editor, these update active persistent configuration.
+USB descriptor changes need a gadget reload or reboot; they do not apply
+silently during the callback. Runtime-only effects/volume actions remain
+preferable for live control.
+
+## System and Bluetooth utilities
+
+| Call | Description |
+| --- | --- |
+| `system.restart()` | Queue a flushed whole-device reboot; requires device-management permission. |
+| `system.logs([source[, limit]])` | Read recent `"stdout"` (default) or `"stderr"` lines as text; default 32, maximum 128 lines, bounded output. |
+| `bluetooth.devices()` | Snapshot with `ready`, `scanning`, `pairing`, `message`, and a `devices` array. Entries contain `address`, `name`, `paired`, `auto_connect`, `connected`, `connecting`, `audio_source`, and `audio_sink`; no pairing keys. |
+| `bluetooth.scan()` | Queue discovery. |
+| `bluetooth.pair(address)` | Queue pairing of a discovered device. |
+| `bluetooth.connect(address)` | Queue connection. |
+| `bluetooth.disconnect([address])` | Queue disconnection; omitted address disconnects all audio links. |
+| `bluetooth.unpair(address)` | Queue removal of pairing. |
+| `bluetooth.auto_connect(address, enabled)` | Persist a boolean auto-connect preference. |
+
+Bluetooth mutations require device-management permission and use the existing
+worker request APIs. Busy/unavailable requests fail explicitly; request
+acceptance does not imply connection/pairing completion. Wait for
+`bluetooth_change` and inspect the snapshot rather than issuing several
+concurrent requests. Logs/settings/Bluetooth reads are callback-only and
+bounded; unavailable resources raise Lua errors.
 
 ## Persistent configuration
 
@@ -63,8 +183,8 @@ Reads happen during evaluation and are limited to four file reads per trigger
 Use `config.lines` to process large files with the bounded string helpers:
 the ordinary string-operation limit remains 4,096 bytes.
 
-The editor warns before saving scripts containing `config`, including read-only
-scripts and comments. **Allow configuration writes** explicitly requests
+The editor warns before saving scripts referencing device-management APIs, including read-only
+scripts and comments. **Allow device management/configuration writes** explicitly requests
 permission for dynamically accessed APIs. Every permission-granting save
 requires confirmation; cancellation sends no request. The device persists that
 permission with the script and rejects writes without it, even through aliases.

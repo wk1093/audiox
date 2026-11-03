@@ -47,7 +47,11 @@ struct MidiContext {
     MidiScriptState macroStates[MIDI_CHORDS_MAX]{};
     char macroErrors[MIDI_CHORDS_MAX][192]{};
     bool macroValid[MIDI_CHORDS_MAX]{};
-    uint8_t macroEventMasks[MIDI_CHORDS_MAX]{};
+    uint16_t macroEventMasks[MIDI_CHORDS_MAX]{};
+    bool bootHooksDispatched{false};
+    uint64_t nextScriptTimerMs{0};
+    uint64_t scriptBluetoothHash{0};
+    bool scriptBluetoothKnown{false};
     bool macroUsesKeyboard[MIDI_CHORDS_MAX]{};
     bool macroPressed[MIDI_CHORDS_MAX]{};
     int macroLight[MIDI_CHORDS_MAX]{};
@@ -95,6 +99,7 @@ struct MidiContext {
     bool triggerMacro(unsigned index, uint8_t velocity = 127, bool fromWeb = false);
     bool queueMacroEvent(unsigned index, MidiScriptEvent event);
     void dispatchMacroEvent(MidiScriptEvent event);
+    void pollScriptLifecycle(uint64_t now, bool startupStable);
     void pollMacros(uint64_t now);
     bool queueControllerMidi(const uint8_t *bytes, size_t count);
     bool flushControllerMidi();

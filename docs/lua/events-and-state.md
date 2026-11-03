@@ -55,13 +55,14 @@ connection hooks do not require a binding.
 
 | Field | Meaning |
 | --- | --- |
-| `event.type` | `note_on`, `note_off`, `cc`, `sound_start`, `sound_finish`, `device_connect`, `device_disconnect`, or `run`. |
-| `event.source` | `"web"` for Run, `"midi"` for MIDI messages, `"audio"` for sound voices, `"device"` for controller connections. |
+| `event.type` | MIDI/sound/controller events, `run`, `boot`, `timer`, `config_change`, `ui`, or `bluetooth_change`; see the [API](./api#startup-and-utility-hooks). |
+| `event.source` | `"web"` for Run/options/buttons, `"midi"` for MIDI, `"audio"` for sounds, `"device"` for the MIDI controller, `"system"` for boot/timer, `"bluetooth"` for Bluetooth changes. |
 | `event.channel` | MIDI source channel, `0`–`15`. |
 | `event.note` | MIDI note number, `0`–`127`. |
 | `event.velocity` | MIDI velocity/value, `0`–`127`; zero for audio/device hooks, `127` for Web Run. |
 | `event.pressed` | True for note press, sound start, controller connect and Web Run; false for note release, CC, sound finish and disconnect. |
-| `event.cc`, `event.value` | CC controller number and value, `0`–`127`; `value` also mirrors MIDI velocity. |
+| `event.cc`, `event.value` | CC controller number and value, `0`–`127`; `value` mirrors MIDI velocity except for `config_change` (typed option value) and `ui` (nil). |
+| `event.key` | Changed option or pressed custom button key; empty for other events. |
 | `event.sound` | Sound basename for audio hooks; empty otherwise. |
 | `event.device` | Selected controller device path for connection hooks; empty otherwise. |
 
@@ -82,8 +83,9 @@ replacement. `event.sound` identifies the clip, not a unique voice. Lua never
 runs on the audio thread: an audio-to-MIDI ring transfers up to 128 pending
 events; overflow is logged and excess events are dropped.
 
-Connection hooks cover the **selected MIDI controller**, not every USB,
-Bluetooth or audio device. Disconnect first cancels queued scripts and resets
+`device_connect`/`device_disconnect` cover the **selected MIDI controller**, not every USB,
+Bluetooth or audio device. Use `bluetooth_change` for Bluetooth state snapshots.
+MIDI disconnect first cancels queued scripts and resets
 their state, then queues disconnect subscribers. These scripts can still use
 configuration, effects and logging, but cannot send to the disconnected controller.
 
@@ -101,6 +103,13 @@ light(level)
 ```
 
 ## Clock snapshots
+
+Boot hooks wait for 60 healthy seconds after runtime readiness, including
+ordinary boots. Timer hooks then run once per second, coalescing pending ticks.
+They use the same trigger queue as MIDI/sound/UI hooks and are not hard realtime.
+`state` is still RAM-only; use `script_config` for values that must survive
+restart and `storage` for custom persistent files. Neither can access official
+device configuration. See [script-owned configuration](./api#script-owned-configuration-and-webui).
 
 `millis()` returns the system monotonic clock in milliseconds captured when
 the original trigger arrived. It is suitable for elapsed-time comparisons and

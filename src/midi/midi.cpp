@@ -11,12 +11,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/reboot.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "audio/context.hpp"
 #include "audio/processing_fx.hpp"
 #include "config/context.hpp"
+#include "bluetooth/context.hpp"
+#include "midi/script_device.hpp"
+#include "midi/script_storage.hpp"
+#include "init.hpp"
 
 namespace {
 
@@ -517,7 +522,7 @@ bool MidiContext::queueMacroEvent(unsigned index, MidiScriptEvent event) {
 
 void MidiContext::dispatchMacroEvent(MidiScriptEvent event) {
     const unsigned kind = static_cast<unsigned>(event.kind);
-    if (kind > 7) {
+    if (kind >= 13) {
         printf("[MIDI] [WARN] Invalid macro event kind %u\n", kind);
         return;
     }
@@ -527,6 +532,45 @@ void MidiContext::dispatchMacroEvent(MidiScriptEvent event) {
         if (!macroValid[i]) continue;
         if (!(macroEventMasks[i] & (1U << kind))) continue;
         if (midi && (!macro.midiEnabled || macro.channel != event.channel || macro.note != event.note)) continue;
+        if (!queueMacroEvent(i, event)) break;
+    }
+}
+
+void MidiContext::pollScriptLifecycle(uint64_t now, bool startupStable) {
+    if (!startupStable) return;
+    MidiScriptBluetoothSnapshot bluetooth{};
+    if (midiScriptBluetoothSnapshot(app, bluetooth)) {
+        const uint64_t hash = midiScriptBluetoothHash(bluetooth);
+        if (scriptBluetoothKnown && hash != scriptBluetoothHash) {
+            MidiScriptEvent event{};
+            event.kind = MidiScriptEventKind::BluetoothChange;
+            dispatchMacroEvent(event);
+        }
+        scriptBluetoothHash = hash;
+        scriptBluetoothKnown = true;
+    }
+    if (!bootHooksDispatched) {
+        unsigned subscribers = 0;
+        for (unsigned i = 0; i < compiledMacroCount; ++i)
+            if (macroValid[i] && (macroEventMasks[i] & (1U << 8))) ++subscribers;
+        if (subscribers > MIDI_CHORDS_MAX - macroQueueCount) return;
+        MidiScriptEvent event{};
+        event.kind = MidiScriptEventKind::Boot;
+        dispatchMacroEvent(event);
+        bootHooksDispatched = true;
+        nextScriptTimerMs = now + 1000;
+    }
+    if (now < nextScriptTimerMs) return;
+    nextScriptTimerMs = now + 1000;
+    for (unsigned i = 0; i < compiledMacroCount; ++i) {
+        if (!macroValid[i] || !(macroEventMasks[i] & (1U << 9))) continue;
+        bool pending = false;
+        for (unsigned j = 0; j < macroQueueCount; ++j)
+            if (macroQueue[j].index == i && macroQueue[j].event.kind == MidiScriptEventKind::Timer)
+                pending = true;
+        if (pending) continue;
+        MidiScriptEvent event{};
+        event.kind = MidiScriptEventKind::Timer;
         if (!queueMacroEvent(i, event)) break;
     }
 }
@@ -570,7 +614,7 @@ void MidiContext::pollMacros(uint64_t now) {
             if (!midiEvaluateScript(macro.script, trigger.event, nextState, macroPlan,
                                     macroErrors[activeMacro], sizeof(macroErrors[activeMacro]),
                                     app ? app->config : nullptr, macro.configWriteAllowed,
-                                    macro.hookMode, macroEventMasks[activeMacro])) {
+                                    macro.hookMode, macroEventMasks[activeMacro], macro.id)) {
                 printf("[MIDI] [WARN] Macro ch=%u note=%u failed: %s\n",
                        macro.channel, macro.note, macroErrors[activeMacro]);
                 activeMacro = -1;
@@ -680,6 +724,64 @@ void MidiContext::pollMacros(uint64_t now) {
             if (!app || !app->config || app->config->writeScriptConfig(action.target,
                 macroPlan.configText + action.value, static_cast<size_t>(action.number)) != RET_OK) {
                 failMacro("config.write failed; check file format, storage and write limits");
+                return;
+            }
+        } else if (action.kind == MidiScriptKind::SettingsSet) {
+            if (!app || !app->config ||
+                app->config->writeScriptSetting(action.target, action.setting) != RET_OK) {
+                failMacro("settings.set failed; check settings and persistent storage");
+                return;
+            }
+        } else if (action.kind == MidiScriptKind::StorageWrite ||
+                   action.kind == MidiScriptKind::StorageRemove ||
+                   action.kind == MidiScriptKind::ScriptConfigSet) {
+            ScriptStorage storage(compiledMacros[activeMacro].id);
+            int result = RET_ERR;
+            if (action.kind == MidiScriptKind::StorageWrite)
+                result = storage.writeFile(action.target, macroPlan.configText + action.value,
+                                           static_cast<size_t>(action.number));
+            else if (action.kind == MidiScriptKind::StorageRemove)
+                result = storage.removeFile(action.target);
+            else result = storage.setSetting(action.setting, action.value == 0);
+            if (result != RET_OK) {
+                char error[192];
+                snprintf(error, sizeof(error), "Script storage action failed: %s", strerror(errno));
+                failMacro(error);
+                return;
+            }
+        } else if (action.kind == MidiScriptKind::SystemRestart) {
+            printf("[MIDI] [LUA] Script %s requested device restart\n", compiledMacros[activeMacro].name);
+            flushLogs();
+            sync();
+            if (reboot(RB_AUTOBOOT) < 0) {
+                char error[192];
+                snprintf(error, sizeof(error), "system.restart failed: %s", strerror(errno));
+                failMacro(error);
+                return;
+            }
+        } else if (action.kind == MidiScriptKind::BluetoothScan ||
+                   action.kind == MidiScriptKind::BluetoothPair ||
+                   action.kind == MidiScriptKind::BluetoothConnect ||
+                   action.kind == MidiScriptKind::BluetoothDisconnect ||
+                   action.kind == MidiScriptKind::BluetoothUnpair ||
+                   action.kind == MidiScriptKind::BluetoothAutoConnect) {
+            auto *bluetooth = app ? app->bluetooth : nullptr;
+            int result = RET_ERR;
+            if (bluetooth) {
+                switch (action.kind) {
+                case MidiScriptKind::BluetoothScan: result = bluetooth->requestScan(); break;
+                case MidiScriptKind::BluetoothPair: result = bluetooth->requestPair(action.target); break;
+                case MidiScriptKind::BluetoothConnect: result = bluetooth->requestConnect(action.target); break;
+                case MidiScriptKind::BluetoothDisconnect: result = bluetooth->requestDisconnect(action.target); break;
+                case MidiScriptKind::BluetoothUnpair: result = bluetooth->requestUnpair(action.target); break;
+                case MidiScriptKind::BluetoothAutoConnect:
+                    result = bluetooth->requestAutoConnect(action.target, action.value != 0); break;
+                default: break;
+                }
+            }
+            if (result != RET_OK) {
+                failMacro(result == RET_WARN ? "Bluetooth request rejected: busy or unavailable device" :
+                                             "Bluetooth request failed: unavailable adapter or invalid address");
                 return;
             }
         } else if (action.kind == MidiScriptKind::SoundPlay) {

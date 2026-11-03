@@ -1839,12 +1839,20 @@ async function saveConfig() {
 let editingMacroId = null;
 const defaultScriptSource = 'hook("run", function(event)\n  log("Hello from AudioX")\nend)\n';
 let macroCount = 0;
+const scriptControlEdits = new Set();
 
-async function loadMidiChords() {
+function scriptListReloadSafe(preserveEditor) {
+  return !(preserveEditor && AudioxUI.hasUnsavedChanges('macro-editor')) &&
+    !Array.from(scriptControlEdits).some(control => control.pending || control.dirty);
+}
+
+async function loadMidiChords({ preserveEditor = false } = {}) {
+  if (!scriptListReloadSafe(preserveEditor)) return;
   try {
     const res = await fetch('/api/scripts', { cache: 'no-store' });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
-    renderMidiChords((await res.json()).scripts);
+    const data = await res.json();
+    if (scriptListReloadSafe(preserveEditor)) renderMidiChords(data.scripts);
   } catch (err) {
     setStatus(`Script load failed: ${err}`, 'warn', 'midi-chords');
   }
@@ -1854,6 +1862,7 @@ function renderMidiChords(chords) {
   macroCount = chords.length;
   const list = document.getElementById('chord-list');
   list.replaceChildren();
+  scriptControlEdits.clear();
   for (const chord of chords) {
     const row = document.createElement('div');
     const label = document.createElement('span');
@@ -1861,6 +1870,9 @@ function renderMidiChords(chords) {
       `(LED idle ${chord.idle_velocity ?? 0}, pressed ${chord.pressed_velocity ?? 0})`;
     if (chord.runtime_error_hex) {
       label.textContent += ` — Last execution failed: ${chordHexDecode(chord.runtime_error_hex)}`;
+    }
+    if (chord.ui_error_hex) {
+      label.textContent += ` — Script controls/settings load failed: ${chordHexDecode(chord.ui_error_hex)}`;
     }
     const edit = document.createElement('button');
     edit.textContent = 'Edit';
@@ -1902,8 +1914,103 @@ function renderMidiChords(chords) {
     actions.className = 'macro-actions';
     actions.append(edit, remove, run);
     row.append(label, actions);
+    if (Array.isArray(chord.ui) && chord.ui.length) {
+      const controls = document.createElement('div');
+      controls.className = 'script-controls';
+      for (const descriptor of chord.ui) {
+        if (!descriptor || typeof descriptor.key !== 'string' ||
+            !['boolean', 'number', 'string', 'button'].includes(descriptor.type)) continue;
+        const field = document.createElement('label');
+        field.className = 'script-control';
+        const input = document.createElement(descriptor.type === 'button' ? 'button' : 'input');
+        const caption = String(descriptor.label ?? descriptor.key);
+        if (descriptor.type === 'button') {
+          input.type = 'button';
+          input.textContent = caption;
+        } else {
+          const text = document.createElement('span');
+          text.textContent = caption;
+          field.append(text);
+          input.type = { boolean: 'checkbox', number: 'number', string: 'text' }[descriptor.type];
+          if (descriptor.type === 'number') {
+            input.step = 'any';
+            for (const bound of ['min', 'max']) {
+              if (typeof descriptor[bound] === 'number' && Number.isFinite(descriptor[bound])) {
+                input[bound] = String(descriptor[bound]);
+              }
+            }
+          } else if (descriptor.type === 'string') {
+            input.maxLength = 127;
+            input.title = 'Up to 127 UTF-8 bytes';
+          }
+        }
+        const control = { input, descriptor, savedValue: descriptor.value, pending: false, dirty: false };
+        scriptControlEdits.add(control);
+        restoreScriptControl(control);
+        input.addEventListener('input', () => { control.dirty = true; });
+        input.addEventListener(descriptor.type === 'button' ? 'click' : 'change',
+          () => saveScriptControl(chord.id, control));
+        field.append(input);
+        controls.append(field);
+      }
+      row.append(controls);
+    }
     list.appendChild(row);
   }
+}
+
+function restoreScriptControl(control) {
+  if (control.descriptor.type === 'boolean') control.input.checked = Boolean(control.savedValue);
+  else if (control.descriptor.type !== 'button') control.input.value = String(control.savedValue);
+  control.dirty = false;
+}
+
+async function saveScriptControl(id, control) {
+  if (control.pending || control.input.disabled) return;
+  const { input, descriptor } = control;
+  control.pending = true;
+  input.disabled = true;
+  let saved = false;
+  try {
+    let value;
+    if (descriptor.type === 'boolean') value = input.checked;
+    else if (descriptor.type === 'number') {
+      value = Number(input.value);
+      if (!String(input.value).trim() || !Number.isFinite(value) ||
+          (input.min !== undefined && input.min !== '' && value < Number(input.min)) ||
+          (input.max !== undefined && input.max !== '' && value > Number(input.max))) {
+        throw new Error('Enter a finite number within the displayed bounds');
+      }
+    } else if (descriptor.type === 'string') {
+      value = input.value;
+      if (new TextEncoder().encode(value).length > 127) {
+        throw new Error('Text must be at most 127 UTF-8 bytes');
+      }
+    }
+    const body = `id=${id}&key_hex=${chordHexEncode(descriptor.key)}` +
+      (descriptor.type === 'button' ? '' : `&value_hex=${chordHexEncode(String(value))}`);
+    const res = await fetch('/api/scripts/control', {
+      method: 'POST', headers: { 'Content-Type': 'text/plain' }, body,
+    });
+    if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+    const result = await res.text();
+    control.savedValue = value;
+    descriptor.value = value;
+    control.dirty = false;
+    saved = true;
+    setStatus(descriptor.type === 'button' ?
+      'Script button queued (not confirmation of completion)' :
+      result.includes('config_change queued') ?
+        'Script setting saved; config_change queued (not confirmation of completion)' :
+        'Script setting saved', 'ok', 'midi-chords');
+  } catch (err) {
+    restoreScriptControl(control);
+    setStatus(`Script control failed: ${err}`, 'warn', 'midi-chords');
+  } finally {
+    control.pending = false;
+    input.disabled = false;
+  }
+  if (saved) await loadMidiChords({ preserveEditor: true });
 }
 
 async function saveMidiChord(method, chord, button) {
@@ -1911,10 +2018,11 @@ async function saveMidiChord(method, chord, button) {
   button.disabled = true;
   try {
     const configurationScript = method === 'POST' &&
-      (Boolean(chord.config_write_allowed) || chordHexDecode(chord.script_hex || '').includes('config'));
+      (Boolean(chord.config_write_allowed) ||
+        /\b(?:config|settings|system|bluetooth)\b/.test(chordHexDecode(chord.script_hex || '')));
     if (configurationScript && !await AudioxUI.confirm(
-      'This script accesses configuration and may overwrite persistent settings, including MIDI bindings, routing and startup configuration. Writes replace whole files and are not format-validated. Back up your settings first; reload or restart may be required. Save this script?', {
-        title: 'Allow configuration writes?', label: 'Save configuration script',
+      'This script may write official configuration, restart the system, or manage Bluetooth devices. Configuration writes can replace persistent settings, including MIDI bindings, routing and startup configuration, and whole-file writes are not format-validated. Back up your settings first; reload or restart may be required. Allow these permissions and save this script?', {
+        title: 'Allow configuration and system management?', label: 'Allow and save script',
       })) return;
     const payload = method === 'DELETE' ? `id=${chord.id}` :
       (chord.id ? `id=${chord.id}&` : '') +

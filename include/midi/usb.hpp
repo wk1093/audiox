@@ -19,7 +19,7 @@ struct MidiChord {
     uint32_t id{0};
     char name[64]{};
     bool midiEnabled{true};
-    uint8_t eventMask{1};
+    uint16_t eventMask{1};
     bool configWriteAllowed{false};
     bool hookMode{false};
 };
@@ -40,6 +40,22 @@ inline bool midiMacroEqual(const MidiChord &a, const MidiChord &b) {
 inline bool midiMacroTriggersOverlap(const MidiChord &a, const MidiChord &b) {
     return a.midiEnabled && b.midiEnabled && a.channel == b.channel && a.note == b.note &&
         (a.eventMask & b.eventMask & 7) != 0;
+}
+
+inline bool midiScriptNeedsDevicePermission(const char *source) {
+    auto identifier = [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '_';
+    };
+    while (*source) {
+        if (!identifier(*source)) { ++source; continue; }
+        const char *start = source++;
+        while (identifier(*source)) ++source;
+        for (const char *name : {"config", "settings", "system", "bluetooth"})
+            if (static_cast<size_t>(source - start) == strlen(name) &&
+                !strncmp(start, name, static_cast<size_t>(source - start))) return true;
+    }
+    return false;
 }
 
 bool midiChordReport(const char *keys, uint8_t (&report)[8], bool allowModifiers = false);

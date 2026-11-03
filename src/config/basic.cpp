@@ -250,6 +250,65 @@ ConfigData ConfigStore::readConfigFile() const {
     return cfg;
 }
 
+int ConfigStore::readScriptSettings(ConfigData *out) const {
+    int result = readConfigPath(CONFIG_REAL_FILE_PATH, out, 1);
+    if (result != RET_OK)
+        printf("[CONFIG] [WARN] Cannot read structured Lua settings\n");
+    return result;
+}
+
+bool applyScriptSetting(ConfigData &cfg, const char *key, const MidiScriptStateEntry &value) {
+    if (!key) return false;
+    auto numeric = [&](uint32_t min, uint32_t max, uint32_t &target) {
+        if (value.kind != MidiScriptValueKind::Number || !std::isfinite(value.numberValue) ||
+            value.numberValue < min || value.numberValue > max ||
+            std::floor(value.numberValue) != value.numberValue) return false;
+        target = static_cast<uint32_t>(value.numberValue);
+        return true;
+    };
+    auto boolean = [&](uint8_t &target) {
+        if (value.kind != MidiScriptValueKind::Boolean) return false;
+        target = value.booleanValue;
+        return true;
+    };
+    auto choice = [&](const char *a, const char *b, const char *c, uint8_t &target) {
+        if (value.kind != MidiScriptValueKind::String) return false;
+        if (!strcmp(value.stringValue, a)) target = 0;
+        else if (!strcmp(value.stringValue, b)) target = 1;
+        else if (c && !strcmp(value.stringValue, c)) target = 2;
+        else return false;
+        return true;
+    };
+    if (!strcmp(key, "usb_sample_rate")) return numeric(8000, 192000, cfg.sampleRate);
+    if (!strcmp(key, "usb_playback_channels")) return numeric(1, 16, cfg.playbackChannels);
+    if (!strcmp(key, "usb_capture_channels")) return numeric(1, 16, cfg.captureChannels);
+    if (!strcmp(key, "usb_sample_size")) return numeric(1, 4, cfg.sampleSize);
+    if (!strcmp(key, "keyboard_macros")) return boolean(cfg.keyboardMacros);
+    if (!strcmp(key, "soundboard_mode")) return choice("play", "hold", nullptr, cfg.soundboardMode);
+    if (!strcmp(key, "framebuffer_view")) return choice("meters", "soundboard", nullptr, cfg.framebufferSoundboard);
+    if (!strcmp(key, "midi_passthrough")) return choice("off", "unmapped", "all", cfg.midiPassthrough);
+    return false;
+}
+
+int ConfigStore::writeScriptSetting(const char *key, const MidiScriptStateEntry &value) {
+    ConfigData cfg{};
+    if (readScriptSettings(&cfg) != RET_OK || !applyScriptSetting(cfg, key, value)) {
+        printf("[CONFIG] [WARN] Invalid structured Lua setting\n");
+        return RET_ERR;
+    }
+    if (writeConfigFile(&cfg) != RET_OK) return RET_ERR;
+    const int directory = open(ROOT_MOUNT_POINT, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    bool ok = directory >= 0;
+    int error = errno;
+    if (ok && fsync(directory) < 0) { ok = false; error = errno; }
+    if (directory >= 0 && close(directory) < 0 && ok) { ok = false; error = errno; }
+    if (!ok) {
+        printf("[CONFIG] [WARN] Cannot flush structured Lua settings: %s\n", strerror(error));
+        return RET_ERR;
+    }
+    return RET_OK;
+}
+
 int ConfigStore::readStagingConfigFile(ConfigData *out) const {
     return readConfigPath(CONFIG_STAGING_FILE_PATH, out, 0);
 }

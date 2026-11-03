@@ -71,6 +71,7 @@ extern "C" int __wrap_close(int fd) {
     return result;
 }
 
+#include "script_device_stubs.hpp"
 size_t BluetoothContext::copyRoutingDevices(BluetoothRoutingDevice *, size_t) const { return 0; }
 
 int main() {

@@ -2,7 +2,7 @@
   'use strict';
 
   const keywords = new Set(('and break do else elseif end false for function goto if in local nil not or repeat return then true until while').split(' '));
-  const builtins = new Set(('assert error ipairs next pairs pcall select tonumber tostring type xpcall math string table utf8 hook log state event sound midi effects volume config tap press release wait light millis epoch').split(' '));
+  const builtins = new Set(('assert error ipairs next pairs pcall select tonumber tostring type xpcall math string table utf8 hook log state event sound midi effects volume config settings system bluetooth script_config storage ui tap press release wait light millis epoch').split(' '));
   const escape = (text) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
   function highlight(source) {

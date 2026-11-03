@@ -82,6 +82,8 @@ in the newly opened download tab.
 The backup does **not** contain the installed kernel, bootloader, runtime
 firmware, arbitrary files elsewhere on the system, browser-only graph layout,
 or Lua's in-memory `state`. Dim-lights state and current playback are not saved.
+Script-owned persistent options and custom files under `/audiox/scripts/` are
+also excluded; export important script data separately.
 
 ::: warning Keep backups private
 Bluetooth pairing records contain keys. A backup can also include private audio

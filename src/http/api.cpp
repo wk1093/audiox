@@ -9,6 +9,7 @@
 #include "init.hpp"
 #include "boot_recovery.hpp"
 #include "midi/context.hpp"
+#include "midi/script_storage.hpp"
 #include "json.hpp"
 
 #include <ctype.h>
@@ -4608,6 +4609,162 @@ static int handleMidiLightSoundDelete(HttpServer *server,
 	return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
 }
 
+static std::string scriptScalarJson(const MidiScriptStateEntry &value) {
+    if (value.kind == MidiScriptValueKind::Boolean) return value.booleanValue ? "true" : "false";
+    if (value.kind == MidiScriptValueKind::String)
+        return "\"" + audiox::json::escape(value.stringValue) + "\"";
+    char number[64];
+    if (value.numberIsInteger)
+        snprintf(number, sizeof(number), "%lld", static_cast<long long>(value.integerValue));
+    else snprintf(number, sizeof(number), "%.17g", value.numberValue);
+    return number;
+}
+
+static std::string scriptUiJson(const MidiChord &script) {
+    MidiScriptUi ui{};
+    MidiScriptState settings{};
+    char error[192]{};
+    if (!midiInspectUi(script.script, ui, error, sizeof(error)) ||
+        ScriptStorage(script.id).readSettings(settings) != RET_OK) {
+        if (!error[0]) snprintf(error, sizeof(error), "Cannot read script options: %s", strerror(errno));
+        printf("[HTTP] [WARN] Script %u UI: %s\n", script.id, error);
+        return "\"ui\":[],\"ui_error_hex\":\"" + midiHexEncode(error) + "\"";
+    }
+    std::string result = "\"ui\":[";
+    for (unsigned i = 0; i < ui.count; ++i) {
+        const auto &control = ui.controls[i];
+        const char *type = control.kind == MidiScriptUiKind::Boolean ? "boolean" :
+            control.kind == MidiScriptUiKind::Number ? "number" :
+            control.kind == MidiScriptUiKind::String ? "string" : "button";
+        auto value = control.defaultValue;
+        for (unsigned j = 0; j < settings.count; ++j)
+            if (!strcmp(settings.entries[j].key, control.key)) value = settings.entries[j];
+        if (control.kind != MidiScriptUiKind::Button && !midiScriptUiValueValid(control, value)) {
+            snprintf(error, sizeof(error), "Saved option %s no longer matches its declaration", control.key);
+            printf("[HTTP] [WARN] Script %u UI: %s\n", script.id, error);
+            return "\"ui\":[],\"ui_error_hex\":\"" + midiHexEncode(error) + "\"";
+        }
+        if (i) result += ',';
+        result += "{\"key\":\"" + audiox::json::escape(control.key) +
+            "\",\"label\":\"" + audiox::json::escape(control.label) + "\",\"type\":\"" + type + "\"";
+        if (control.kind != MidiScriptUiKind::Button) result += ",\"value\":" + scriptScalarJson(value);
+        char bound[64];
+        if (control.hasMin) {
+            snprintf(bound, sizeof(bound), "%.17g", control.min);
+            result += ",\"min\":" + std::string(bound);
+        }
+        if (control.hasMax) {
+            snprintf(bound, sizeof(bound), "%.17g", control.max);
+            result += ",\"max\":" + std::string(bound);
+        }
+        result += '}';
+    }
+    return result + ']';
+}
+
+static int handleScriptControl(HttpServer *server, int cfd, const char *method,
+                               const char *body, size_t length) {
+    auto reply = [&](const char *status, const char *message) {
+        return server->sendResponse(cfd, status, "text/plain; charset=utf-8", message, strlen(message));
+    };
+    if (strcmp(method, "POST")) return sendMethodNotAllowed(server, cfd);
+    if (!server->app || !server->app->config || !server->app->midi)
+        return reply("503 Service Unavailable", "script runtime unavailable\n");
+    if (!body || !length || length > 512 || memchr(body, '\0', length))
+        return reply("400 Bad Request", "invalid control request\n");
+    char idText[32]{}, keyHex[64]{}, valueHex[256]{};
+    bool hasId = false, hasKey = false, hasValue = false;
+    for (size_t start = 0; start < length;) {
+        size_t end = start;
+        while (end < length && body[end] != '&' && body[end] != '\n') ++end;
+        const char *eq = static_cast<const char *>(memchr(body + start, '=', end - start));
+        if (!eq) return reply("400 Bad Request", "invalid control field\n");
+        const std::string key(body + start, eq);
+        char *target = nullptr;
+        size_t capacity = 0;
+        bool *present = nullptr;
+        if (key == "id") { target = idText; capacity = sizeof(idText); present = &hasId; }
+        else if (key == "key_hex") { target = keyHex; capacity = sizeof(keyHex); present = &hasKey; }
+        else if (key == "value_hex") { target = valueHex; capacity = sizeof(valueHex); present = &hasValue; }
+        else return reply("400 Bad Request", "unknown control field\n");
+        const size_t size = static_cast<size_t>(body + end - eq - 1);
+        if (*present || size >= capacity) return reply("400 Bad Request", "duplicate or oversized control field\n");
+        *present = true;
+        memcpy(target, eq + 1, size);
+        target[size] = '\0';
+        start = end + 1;
+    }
+    char *end = nullptr;
+    errno = 0;
+    const unsigned long parsed = strtoul(idText, &end, 10);
+    char key[32]{};
+    if (!hasId || !idText[0] || idText[0] == '-' || *end || errno || !parsed ||
+        parsed > UINT32_MAX || !hasKey || !midiHexDecode(keyHex, key, sizeof(key)) || !key[0])
+        return reply("400 Bad Request", "invalid script ID or control key\n");
+    auto data = server->app->config->readMidiMapFile();
+    unsigned index = 0;
+    while (index < data.chordCount && data.chords[index].id != parsed) ++index;
+    if (index == data.chordCount) return reply("404 Not Found", "script not found\n");
+    MidiScriptUi ui{};
+    char error[192]{};
+    if (!midiInspectUi(data.chords[index].script, ui, error, sizeof(error)))
+        return reply("409 Conflict", error);
+    const MidiScriptUiControl *control = nullptr;
+    for (unsigned i = 0; i < ui.count; ++i)
+        if (!strcmp(ui.controls[i].key, key)) control = &ui.controls[i];
+    if (!control) return reply("404 Not Found", "undeclared script control\n");
+    const bool button = control->kind == MidiScriptUiKind::Button;
+    if (button == hasValue) return reply("400 Bad Request", "buttons omit values; options require values\n");
+    MidiScriptEvent event{};
+    event.kind = button ? MidiScriptEventKind::Ui : MidiScriptEventKind::ConfigChange;
+    event.fromWeb = true;
+    event.hasValue = !button;
+    snprintf(event.key, sizeof(event.key), "%s", key);
+    snprintf(event.value.key, sizeof(event.value.key), "%s", key);
+    if (!button) {
+        char value[128]{};
+        if (!midiHexDecode(valueHex, value, sizeof(value)))
+            return reply("400 Bad Request", "invalid control value encoding\n");
+        if (control->kind == MidiScriptUiKind::Boolean) {
+            if (strcmp(value, "true") && strcmp(value, "false"))
+                return reply("400 Bad Request", "expected boolean control value\n");
+            event.value.kind = MidiScriptValueKind::Boolean;
+            event.value.booleanValue = !strcmp(value, "true");
+        } else if (control->kind == MidiScriptUiKind::String) {
+            event.value.kind = MidiScriptValueKind::String;
+            snprintf(event.value.stringValue, sizeof(event.value.stringValue), "%s", value);
+        } else {
+            errno = 0;
+            char *last = nullptr;
+            event.value.kind = MidiScriptValueKind::Number;
+            event.value.numberValue = strtod(value, &last);
+            if (!value[0] || *last || errno || !std::isfinite(event.value.numberValue))
+                return reply("400 Bad Request", "expected finite numeric control value\n");
+        }
+        if (!midiScriptUiValueValid(*control, event.value))
+            return reply("400 Bad Request", "control value violates declared type or range\n");
+    }
+    auto *midi = server->app->midi;
+    midi->cachedMidiMap = data;
+    midi->syncMacros();
+    if (index >= midi->compiledMacroCount || !midi->macroValid[index] ||
+        (button && !(midi->macroEventMasks[index] & (1U << 11))))
+        return reply("409 Conflict", "script unavailable or button has no ui hook\n");
+    const bool notify = midi->macroEventMasks[index] & (1U << static_cast<unsigned>(event.kind));
+    if (notify && midi->macroQueueCount == MIDI_CHORDS_MAX)
+        return reply("409 Conflict", "script trigger queue full\n");
+    if (notify && !midi->queueMacroEvent(index, event))
+        return reply("409 Conflict", "cannot capture or queue script event\n");
+    if (!button && ScriptStorage(data.chords[index].id).setSetting(event.value) != RET_OK) {
+        if (notify) --midi->macroQueueCount;
+        snprintf(error, sizeof(error), "Cannot persist script option: %s\n", strerror(errno));
+        printf("[HTTP] [WARN] %s", error);
+        return reply("500 Internal Server Error", error);
+    }
+    return reply("200 OK", button ? "button queued\n" : notify ?
+                 "setting saved and config_change queued\n" : "setting saved\n");
+}
+
 static int handleMidiChords(HttpServer *server, int cfd, const char *method,
                            const char *body, size_t body_len, bool named = false, bool run = false,
                            bool scripts = false) {
@@ -4744,7 +4901,7 @@ static int handleMidiChords(HttpServer *server, int cfd, const char *method,
 				if (!eventMask[0] || *end || mask < 0 ||
 					mask > (chord.hookMode ? MIDI_SCRIPT_EVENTS_MASK : MIDI_SCRIPT_LEGACY_EVENTS_MASK))
 					return reply("400 Bad Request", "invalid event_mask for this script mode\n");
-				chord.eventMask = static_cast<uint8_t>(mask);
+				chord.eventMask = static_cast<uint16_t>(mask);
 			}
 			if (!named && chord.eventMask != 1)
 				return reply("400 Bad Request", "event subscriptions require the named scripts API\n");
@@ -4754,8 +4911,8 @@ static int handleMidiChords(HttpServer *server, int cfd, const char *method,
 			if (ackField < 0 || (ackField && strcmp(acknowledge, "0") && strcmp(acknowledge, "1")))
 				return reply("400 Bad Request", "config_write_ack must be 0 or 1\n");
 			chord.configWriteAllowed = ackField == 1 && !strcmp(acknowledge, "1");
-			if (strstr(chord.script, "config") && !chord.configWriteAllowed)
-				return reply("409 Conflict", "Configuration scripts can overwrite persistent settings. Confirm the configuration-write warning before saving.\n");
+			if (midiScriptNeedsDevicePermission(chord.script) && !chord.configWriteAllowed)
+				return reply("409 Conflict", "This script accesses device configuration or management. Confirm the device-management/configuration-write warning before saving.\n");
 			if (!midiMigrateScript(chord, error, sizeof(error)))
 				return reply("400 Bad Request", error);
 			auto readVelocity = [&](const char *name, uint8_t &target) {
@@ -4780,6 +4937,16 @@ static int handleMidiChords(HttpServer *server, int cfd, const char *method,
 			for (uint32_t j = 0; j < data.chordCount; ++j) {
 				if (j != index && midiMacroTriggersOverlap(chord, data.chords[j]))
 					return reply("409 Conflict", "MIDI trigger already assigned to another script\n");
+			}
+			if (!chord.id) {
+			    uint32_t minimum = 1;
+			    for (uint32_t j = 0; j < data.chordCount; ++j) {
+			        if (data.chords[j].id == UINT32_MAX)
+			            return reply("409 Conflict", "script ID space exhausted\n");
+			        if (data.chords[j].id >= minimum) minimum = data.chords[j].id + 1;
+			    }
+			    if (ScriptStorage(0).nextId(minimum, chord.id) != RET_OK)
+			        return reply("500 Internal Server Error", "cannot allocate isolated script storage identity\n");
 			}
 			data.chords[index] = chord;
 		}
@@ -4823,7 +4990,9 @@ static int handleMidiChords(HttpServer *server, int cfd, const char *method,
 			midiMacroEqual(chord, server->app->midi->compiledMacros[i])) {
 			out += midiHexEncode(server->app->midi->macroErrors[i]);
 		}
-		out += "\"}";
+		out += "\"";
+		if (scripts) out += "," + scriptUiJson(chord);
+		out += "}";
 	}
 	out += "]}\n";
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out.data(), out.size());
@@ -5161,6 +5330,8 @@ int handleApiRequest(HttpServer *server,
 		return handleMidiChords(server, cfd, method, body, body_len, true,
 			strcmp(path, HTTP_API_PREFIX "macros/run") == 0);
 	}
+	if (strcmp(path, HTTP_API_PREFIX "scripts/control") == 0)
+	    return handleScriptControl(server, cfd, method, body, body_len);
 	if (strcmp(path, HTTP_API_PREFIX "scripts") == 0 ||
 		strcmp(path, HTTP_API_PREFIX "scripts/run") == 0) {
 		return handleMidiChords(server, cfd, method, body, body_len, true,

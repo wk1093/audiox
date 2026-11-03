@@ -1,11 +1,15 @@
 #include "midi/script.hpp"
 #include "midi/usb.hpp"
+#include "midi/script_storage.hpp"
 
 #include <cassert>
 #include <cmath>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <filesystem>
+#include <unistd.h>
 
 namespace {
 MidiScriptPlan plan{};
@@ -163,10 +167,10 @@ int main() {
         "assert(count==1); state.runs=(state.runs or 0)+1; log('run') end); "
         "hook('note_off',function(e) assert(not e.pressed); log('released') end); "
         "hook('run',function(e) assert(count==1); log('second') end)";
-    uint8_t hookMask = 0;
+    uint16_t hookMask = 0;
     assert(midiInspectHooks(callbacks, hookMask, error, sizeof(error)));
     assert(hookMask == 130);
-    auto callbackSuccess = [&](const char *text, MidiScriptEvent event, uint8_t expectedMask = 0) {
+    auto callbackSuccess = [&](const char *text, MidiScriptEvent event, uint16_t expectedMask = 0) {
         if (!midiEvaluateScript(text, event, state, plan, error, sizeof(error),
                                 nullptr, false, true, expectedMask)) {
             fprintf(stderr, "Callback failed: %s\n", error);
@@ -182,7 +186,7 @@ int main() {
         assert(!memcmp(&before, &state, sizeof(state)));
     };
     auto inspectFailure = [&](const char *text, const char *message) {
-        uint8_t mask = 255;
+        uint16_t mask = 255;
         assert(!midiInspectHooks(text, mask, error, sizeof(error)));
         assert(mask == 0 && strstr(error, message));
     };
@@ -228,6 +232,119 @@ int main() {
                                nullptr, false, true, 1));
     assert(strstr(error, "subscriptions changed") && plan.count == 0);
     failure("hook('run',function() end)", "Lua callbacks mode");
+    {
+        MidiScriptUi ui{};
+        const char *declarations =
+            "ui.option('enabled',{label='Enabled',type='boolean',default=true}); "
+            "ui.option('gain',{label='Gain',type='number',default=0.5,min=0,max=1}); "
+            "ui.option('title',{label='Title',type='string',default='hello'}); "
+            "ui.button('fire','Fire'); hook('ui',function() error('inspection must not execute') end)";
+        assert(midiInspectUi(declarations, ui, error, sizeof(error)));
+        assert(ui.count == 4 && ui.controls[0].kind == MidiScriptUiKind::Boolean);
+        assert(ui.controls[1].hasMin && ui.controls[1].hasMax && ui.controls[1].max == 1);
+        assert(ui.controls[2].kind == MidiScriptUiKind::String && ui.controls[3].kind == MidiScriptUiKind::Button);
+        MidiScriptStateEntry value = ui.controls[1].defaultValue;
+        assert(midiScriptUiValueValid(ui.controls[1], value));
+        value.numberValue = 2;
+        assert(!midiScriptUiValueValid(ui.controls[1], value));
+        auto uiFailure = [&](const char *text) {
+            assert(!midiInspectUi(text, ui, error, sizeof(error)));
+            assert(ui.count == 0 && error[0]);
+        };
+        uiFailure("ui.option('a',{label='A',type='integer',default=1})");
+        uiFailure("ui.option('a',{label='A',type='number',default=0,min=1,max=2})");
+        uiFailure("ui.option('a',{label='A',type='number',default=1,min=2,max=1})");
+        uiFailure("ui.option('a',{label='A',type='number',default=0/0})");
+        uiFailure("ui.option('a',{label='A',type='number',default=1,max=1/0})");
+        uiFailure("ui.option('a',{label='A',type='boolean',default=true,min=0})");
+        uiFailure("ui.option('a',{label='A',type='string',default=false})");
+        uiFailure("ui.option('a',{label='A',type='string',default='a',secret=1})");
+        uiFailure("ui.button('a','A'); ui.button('a','Again')");
+        uiFailure("for i=1,17 do ui.button('a'..i,'A') end");
+        uiFailure("ui.button('a',string.rep('x',64))");
+        uiFailure("storage.write('a','x')");
+        uiFailure("script_config.get('a')");
+        assert(midiInspectUi("ui.button('a','A')", ui, error, sizeof(error)) && ui.count == 1);
+        assert(midiInspectHooks("hook('boot',function() end); hook('timer',function() end); "
+                                "hook('config_change',function() end); hook('ui',function() end)",
+                                hookMask, error, sizeof(error)) && hookMask == 3840);
+        MidiScriptEvent event{};
+        event.kind = MidiScriptEventKind::Boot;
+        callbackSuccess("hook('boot',function(e) assert(e.type=='boot' and e.source=='system') end)", event, 256);
+        event.kind = MidiScriptEventKind::Timer;
+        callbackSuccess("hook('timer',function(e) assert(e.type=='timer' and e.source=='system') end)", event, 512);
+        event.kind = MidiScriptEventKind::BluetoothChange;
+        callbackSuccess("hook('bluetooth_change',function(e) assert(e.source=='bluetooth') end)", event, 4096);
+        event.kind = MidiScriptEventKind::Ui;
+        strcpy(event.key, "title");
+        event.value.kind = MidiScriptValueKind::String;
+        strcpy(event.value.stringValue, "hello");
+        callbackSuccess("hook('ui',function(e) assert(e.key=='title' and e.value=='hello' and e.source=='web') end)", event, 2048);
+        event.kind = MidiScriptEventKind::ConfigChange;
+        event.value.kind = MidiScriptValueKind::Number; event.value.numberValue = 0.5;
+        callbackSuccess("hook('config_change',function(e) assert(e.value==0.5 and e.source=='web') end)", event, 1024);
+        event.value.numberValue = INFINITY;
+        assert(!midiEvaluateScript("hook('config_change',function() end)", event, state, plan,
+                                  error, sizeof(error), nullptr, false, true));
+        event.kind = MidiScriptEventKind::Ui;
+        event.hasValue = false;
+        callbackSuccess("hook('ui',function(e) assert(e.value==nil and e.key=='title') end)", event, 2048);
+
+        const std::string storageRoot = std::string(ROOT_MOUNT_POINT) + "/scripts";
+        std::error_code ec;
+        assert(!std::filesystem::exists(storageRoot, ec));
+        ScriptStorage persistent(91);
+        assert(persistent.writeFile("old.txt", "before", 6) == RET_OK);
+        MidiScriptStateEntry setting{};
+        strcpy(setting.key, "gain"); setting.kind = MidiScriptValueKind::Number; setting.numberValue = 0.25;
+        assert(persistent.setSetting(setting) == RET_OK);
+        auto persistentEval = [&](const char *text, bool expected) {
+            MidiScriptState before = state;
+            bool result = midiEvaluateScript(text, runEvent, state, plan, error, sizeof(error),
+                                              nullptr, false, true, 128, 91);
+            if (result != expected) fprintf(stderr, "Persistent eval: %s\n", error);
+            assert(result == expected);
+            if (!expected) assert(!plan.count && !plan.configBytes && !memcmp(&before, &state, sizeof(state)));
+        };
+        persistentEval("hook('run',function() "
+                       "assert(storage.read('old.txt')=='before'); storage.write('new.txt','after'); "
+                       "assert(storage.read('new.txt')=='after'); storage.remove('old.txt'); "
+                       "assert(storage.read('old.txt')==nil and #storage.list()==1); "
+                       "assert(script_config.get('gain')==0.25); script_config.set('gain',0.5); "
+                       "assert(script_config.get('gain')==0.5); script_config.set('title','text'); "
+                       "script_config.set('title',nil); assert(script_config.get('title','fallback')=='fallback') end)", true);
+        assert(plan.count == 5 && plan.actions[0].kind == MidiScriptKind::StorageWrite);
+        assert(plan.actions[0].value == 0 && plan.actions[0].number == 5 && !strcmp(plan.configText, "after"));
+        assert(plan.actions[2].kind == MidiScriptKind::ScriptConfigSet && plan.actions[2].value == 1);
+        assert(plan.actions[2].setting.numberValue == 0.5 && plan.actions[4].value == 0);
+        std::string persisted;
+        assert(persistent.readFile("new.txt", persisted) == RET_ERR && errno == ENOENT);
+        assert(persistent.readFile("old.txt", persisted) == RET_OK && persisted == "before");
+        MidiScriptState settings{};
+        assert(persistent.readSettings(settings) == RET_OK && settings.entries[0].numberValue == 0.25);
+        persistentEval("hook('run',function() storage.write('old.txt','discard'); "
+                       "script_config.set('gain',0.9); state.discard=true; error('rollback') end)", false);
+        assert(persistent.readFile("old.txt", persisted) == RET_OK && persisted == "before");
+        persistentEval("hook('run',function() storage.read('../config.txt') end)", false);
+        persistentEval("hook('run',function() storage.read('.settings') end)", false);
+        persistentEval("hook('run',function() storage.write('x',string.rep('a',4096)..'a') end)", false);
+        persistentEval("hook('run',function() storage.write('x','a\\0b\\1'); "
+                       "assert(storage.read('x')=='a\\0b\\1') end)", true);
+        assert(plan.actions[0].number == 4 && !memcmp(plan.configText, "a\0b\1", 4));
+        persistentEval("hook('run',function() for i=1,33 do storage.read('missing') end end)", false);
+        persistentEval("ui.option('gain',{label='Gain',type='number',default=0,min=0,max=1}); "
+                       "hook('run',function() script_config.set('gain',2) end)", false);
+        persistentEval("ui.option('title',{label='Title',type='string',default='default'}); "
+                       "hook('run',function() assert(script_config.get('title')=='default'); "
+                       "assert(script_config.get('title','explicit')=='explicit'); "
+                       "script_config.set('title','new'); assert(script_config.get('title')=='new'); "
+                       "script_config.set('title',nil); assert(script_config.get('title')=='default') end)", true);
+        persistentEval("hook('run',function() for i=1,33 do script_config.set('k'..i,true) end end)", false);
+        failure("storage.read('x')", "stable script ID");
+        failure("script_config.set('x',true)", "stable script ID");
+        std::filesystem::remove_all(ROOT_MOUNT_POINT, ec);
+        assert(!ec);
+    }
     success("local n=0; for i=1,5000 do n=n+1 end; assert(n==5000)");
     state = {};
     MidiScriptEvent hooked{2, 7, 42, false};

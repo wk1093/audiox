@@ -20,7 +20,8 @@ CPP_SRCS := $(sort $(shell find src -type f -name '*.cpp' 2>/dev/null))
 BOOTLOADER_SRC := src/init/bootloader.cpp
 RUNTIME_MAIN_SRC := src/init/init.cpp
 WATCHDOG_SRC := src/init/watchdog.cpp
-RUNTIME_CPP_SRCS := $(filter-out $(BOOTLOADER_SRC) $(RUNTIME_MAIN_SRC) $(WATCHDOG_SRC),$(CPP_SRCS))
+PLUGIN_WORKER_SRC := src/plugin_worker/main.cpp
+RUNTIME_CPP_SRCS := $(filter-out $(BOOTLOADER_SRC) $(RUNTIME_MAIN_SRC) $(WATCHDOG_SRC) $(PLUGIN_WORKER_SRC),$(CPP_SRCS))
 RUNTIME_SRCS := $(RUNTIME_CPP_SRCS)
 RUNTIME_COMPILER := $(CXX)
 RUNTIME_FLAGS = $(CXXFLAGS)
@@ -99,7 +100,7 @@ RUNTIME_LIBS += $(LUA_STATIC_LIB) -lm
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 14
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.3
+AUDIOX_VERSION_PRERELEASE ?= beta.4
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
 $(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
@@ -185,7 +186,7 @@ FFMPEG_URL ?= https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-
 FFMPEG_ARCHIVE_SHA256 ?= 177e40c91564dec3840096f3bf1ffe696b94330585972462cfc739fa29fe0e1a
 FFMPEG_ARCHIVE ?= $(SHARED_OUT_DIR)/downloads/ffmpeg.pkg
 FFMPEG_CROSS_LIB_DIR ?= /usr/aarch64-linux-gnu/lib
-FFMPEG_RUNTIME_LIBS ?= ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 librt.so.1 libpthread.so.0 libgcc_s.so.1
+FFMPEG_RUNTIME_LIBS ?= ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 librt.so.1 libpthread.so.0 libgcc_s.so.1 libstdc++.so.6
 FFMPEG_STAGE_DIR ?= $(OUT_DIR)/ffmpeg_stage
 CONFIG_MENU_BIN = $(SHARED_OUT_DIR)/host/audiox-menuconfig
 CONFIG_MENU_SRC = $(SCRIPTS_DIR)/audiox-menuconfig.cpp
@@ -553,6 +554,29 @@ $(ROOTFS_DIR)/sbin/audiox-main: $(RUNTIME_DEPS) $(RUNTIME_OBJS) $(RUNTIME_MAIN_O
 	$(RUNTIME_COMPILER) $(RUNTIME_FLAGS) \
 		-o $@ $(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ) $(RUNTIME_LIBS)
 
+$(ROOTFS_DIR)/sbin/audiox-plugin-worker: $(PLUGIN_WORKER_SRC) include/audio/plugin_api.h include/audio/plugin_ipc.hpp
+	@mkdir -p "$(dir $@)"
+	$(CXX) $(filter-out -static,$(CXXFLAGS)) $(RUNTIME_DEFINES) -o "$@" "$<" -ldl -lm
+
+.PHONY: axm-pack plugin-examples test-plugin-package test-plugin-host
+axm-pack: $(OUT_DIR)/host/axm-pack
+
+plugin-examples: $(OUT_DIR)/plugins/gain.axm $(OUT_DIR)/plugins/softclip.axm
+
+$(OUT_DIR)/plugins/gain.so: examples/plugins/gain/gain.c include/audio/plugin_api.h
+$(OUT_DIR)/plugins/softclip.so: examples/plugins/softclip/softclip.c include/audio/plugin_api.h
+$(OUT_DIR)/plugins/gain.so $(OUT_DIR)/plugins/softclip.so:
+	@mkdir -p "$(dir $@)"
+	$(CC) -std=c11 -O2 -fPIC -shared -fvisibility=hidden -Iinclude -o "$@" "$<" -lm
+
+$(OUT_DIR)/plugins/%.axm: $(OUT_DIR)/plugins/%.so examples/plugins/%/axm.txt $(OUT_DIR)/host/axm-pack
+	@rm -f "$@"
+	"$(OUT_DIR)/host/axm-pack" "examples/plugins/$*/axm.txt" "$<" "$@" $(wildcard examples/plugins/$*/*.html examples/plugins/$*/*.js examples/plugins/$*/*.css)
+
+$(OUT_DIR)/host/axm-pack: tools/axm-pack.cpp src/audio/plugin_package.cpp include/audio/plugin_package.hpp include/audio/plugin_api.h
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tools/axm-pack.cpp src/audio/plugin_package.cpp
+
 bootloader_rootfs: $(BOOTLOADER_ROOTFS_DIR)/init $(BOOT_MODULE_LOAD_LIST) $(BOOT_MODULE_LOAD_BASE_LIST)
 	@echo "Creating bootloader rootfs structure..."
 	mkdir -p $(BOOTLOADER_ROOTFS_DIR)/etc $(BOOTLOADER_ROOTFS_DIR)/lib/modules
@@ -566,7 +590,7 @@ $(LUA_STAGED_LICENSE): $(LUA_LICENSE)
 	@mkdir -p "$(dir $@)"
 	install -m 0644 "$<" "$@"
 
-rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB) $(LUA_STAGED_LICENSE) $(DNSMASQ_BIN) check_dnsmasq_conf
+rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(ROOTFS_DIR)/sbin/audiox-plugin-worker $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB) $(LUA_STAGED_LICENSE) $(DNSMASQ_BIN) check_dnsmasq_conf
 	@echo "Creating runtime rootfs structure..."
 	mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/sbin $(ROOTFS_DIR)/etc
 	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev

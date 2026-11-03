@@ -39,6 +39,7 @@ export default defineConfig({
           { text: 'Routing', link: '/guide/routing' },
           { text: 'Bluetooth', link: '/guide/bluetooth' },
           { text: 'Effects', link: '/guide/effects' },
+          { text: 'Native plugins', link: '/plugins' },
           { text: 'Volume', link: '/guide/volume' },
           { text: 'Soundboard', link: '/guide/soundboard' },
           { text: 'MIDI', link: '/guide/midi' },

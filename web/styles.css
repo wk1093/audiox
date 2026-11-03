@@ -1813,3 +1813,42 @@ details > summary:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .page, .notification { animation: none; }
 }
+
+.plugin-manager { display: grid; gap: 8px; }
+.plugin-warning, .fx-plugin-warning, .fx-plugin-error, .fx-plugin-status.fault,
+.fx-plugin-status.unavailable, .fx-plugin-status.unknown { color: var(--warn); }
+.fx-plugin-status.ready { color: var(--accent); }
+.plugin-install {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.plugin-list { display: grid; gap: 8px; }
+.plugin-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid #2d5065;
+  border-radius: 8px;
+  background: #0d2230;
+  padding: 7px;
+}
+.plugin-meta { min-width: 0; overflow-wrap: anywhere; }
+.fx-plugin-ui {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.fx-plugin-ui > button { justify-self: start; }
+.fx-plugin-frame {
+  width: 100%;
+  min-height: 320px;
+  border: 1px solid #2d5065;
+  border-radius: 8px;
+  background: #fff;
+}
+.fx-plugin-error { overflow-wrap: anywhere; }

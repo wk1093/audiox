@@ -27,6 +27,7 @@ They are not paths on the computer running your browser.
 | `volumes.txt` | Saved gains keyed by audio thing ID |
 | `bluetooth/paired.txt` | Saved Bluetooth pairing records, Auto-connect flags, and sensitive key material |
 | `sfx/` | Soundboard audio files |
+| `plugins/` | Installed native `.axm` modules, metadata, and sandboxed UI assets; excluded from normal backups |
 
 Use the normal editors instead of hand-editing files where possible: edits can
 need validation, runtime reload, and corresponding LED/graph refresh. Backups
@@ -38,6 +39,9 @@ Raspberry Pi boot behavior, kernel selection, and overlays. Changing boot files
 can make the device unbootable.
 
 ## Request conventions
+
+For plugin upload, catalog, reload/removal, and UI asset routes, see
+[Native plugin HTTP management](../plugins#install-and-use).
 
 Base URLs in this page are relative to the device, such as
 `http://audiox.local/api/system/info`.

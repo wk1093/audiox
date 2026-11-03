@@ -7,6 +7,8 @@
 #include "audio/effects/gain.hpp"
 #include "audio/effects/pitch.hpp"
 #include "audio/effects/reverb.hpp"
+#include "audio/plugin_registry.hpp"
+#include "audio/plugin_host.hpp"
 
 #include <math.h>
 #include <string.h>
@@ -84,6 +86,7 @@ const char *resolveParamAlias(uint8_t type, const char *name) {
     if (!name || !name[0]) {
         return nullptr;
     }
+    if (audiox::plugin::isPluginType(type)) return name;
     if (strcmp(name, "gain") == 0) {
         if (type == EFFECT_GAIN) {
             return "level";
@@ -164,6 +167,7 @@ uint8_t effectTypeFromString(const char *text) {
     if (!text) {
         return EFFECT_GAIN;
     }
+    if (audiox::plugin::validTypeName(text)) return audiox::plugin::reserveType(text);
     if (strcmp(text, "gain") == 0) {
         return EFFECT_GAIN;
     }
@@ -186,6 +190,7 @@ uint8_t effectTypeFromString(const char *text) {
 }
 
 const char *effectTypeToString(uint8_t type) {
+    if (audiox::plugin::isPluginType(type)) return audiox::plugin::nameFor(type);
     switch (type) {
         case EFFECT_DISTORTION:
             return "distortion";
@@ -204,6 +209,7 @@ const char *effectTypeToString(uint8_t type) {
 }
 
 const EffectTypeSpec *effectTypeSpecFor(uint8_t type) {
+    if (audiox::plugin::isPluginType(type)) return audiox::plugin::specFor(type);
     for (const EffectTypeSpec &spec : kTypeSpecs) {
         if (spec.type == type) {
             return &spec;
@@ -304,7 +310,7 @@ void clampSlotParams(SlotParams *params) {
         params->type != EFFECT_PITCH &&
         params->type != EFFECT_REVERB &&
         params->type != EFFECT_GATE &&
-        params->type != EFFECT_CUT) {
+        params->type != EFFECT_CUT && !audiox::plugin::isPluginType(params->type)) {
         params->type = EFFECT_GAIN;
     }
 
@@ -324,6 +330,8 @@ void clampSlotParams(SlotParams *params) {
 bool slotHasPendingAudio(const char *effectId, uint8_t channel, const SlotParams &params,
                          float threshold) {
     if (!params.enabled) return false;
+    if (audiox::plugin::isPluginType(params.type))
+        return params.pluginHost && params.pluginHost->hasPendingAudio(threshold);
     switch (params.type) {
         case EFFECT_PITCH:
             return pitchHasPendingAudio(effectId, channel, threshold);
@@ -368,6 +376,10 @@ void processSlot(const char *effectId,
                  float *out,
                  uint32_t frames) {
     if (!in || !out) {
+        return;
+    }
+    if (audiox::plugin::isPluginType(params.type)) {
+        if (in != out) memcpy(out, in, sizeof(float) * frames);
         return;
     }
 

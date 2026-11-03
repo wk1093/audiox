@@ -167,19 +167,20 @@ The above last two features are mainly to improve my setup, but could probably b
 
 ## Plugin System and more built-in effects - v1.14
 - [x] Implement route-aware DSP idle sleep after 5 seconds for testing, ignoring inputs blocked by Cut/zero gain while keeping audio I/O running; preserve audible tails, clear muted tails on sleep entry, and wake on signal or control changes.
-- [ ] Implement custom plugin system for effects, allowing users to create and load their own effect modules into the audio engine.
-  - [ ] Create API
-  - [ ] Define plugin metadata format (axm)
-  - [ ] Implement plugin loader in the audio engine
-  - [ ] Provide example plugin for users to reference
-  - [ ] Document plugin development process for users
-  - [ ] Test plugin system with multiple plugins loaded simultaneously
-  - [ ] Handle plugin unloading and cleanup properly
-  - [ ] Ensure plugin system is compatible with existing effect system and routing logic
-  - [ ] Implement versioning for plugin API to allow for future updates without breaking existing plugins
-  - [ ] Implement plugin sandboxing to prevent faulty plugins from crashing the audio engine
-  - [ ] Provide a way for plugins to give a custom UI for their parameters:
+- [x] Implement custom plugin system for effects, allowing users to create and load their own effect modules into the audio engine.
+  - [x] Create API
+  - [x] Define plugin metadata format (axm)
+  - [x] Implement plugin loader in the audio engine
+  - [x] Provide example plugin for users to reference
+  - [x] Document plugin development process for users
+  - [x] Test plugin system with multiple plugins loaded simultaneously
+  - [x] Handle plugin unloading and cleanup properly
+  - [x] Ensure plugin system is compatible with existing effect system and routing logic
+  - [x] Implement versioning for plugin API to allow for future updates without breaking existing plugins
+  - [x] Implement plugin sandboxing to prevent faulty plugins from crashing the audio engine
+  - [x] Provide a way for plugins to give a custom UI for their parameters:
     - We should be able to dynamically serve custom JS or CSS for the plugin UI, since the HTTP server is custom. We could just add an api endpoint for the webui to grab a plugin's assets, and the plugin custom format can also contain multiple asset files (yet another custom archive format like axu and axb)
+  - Native and browser regressions pass and AArch64 binaries/packages build; physical-device kernel sandbox support and performance still need validation.
 - [ ] More advanced effects
   - [ ] Voice noise cancellation/reduction
   - [ ] Compressor

@@ -1,4 +1,5 @@
 #include "http/context.hpp"
+#include <limits.h>
 #include "http/ffmpeg.hpp"
 #include "audio/context.hpp"
 #include "system.hpp"
@@ -1189,46 +1190,106 @@ static ssize_t parseContentLength(const char *buf, size_t header_len) {
     return -1;
 }
 
+static bool pluginHeaders(HttpServer *server, const char *headers, size_t size,
+                          ssize_t *length) {
+  bool hasHost = false, hasLength = false;
+  snprintf(server->requestHost, sizeof(server->requestHost), "%s",
+           AUDIOX_USB_NET_SERVER_IP);
+  const char *end = headers + size;
+  for (const char *line = headers; line < end;) {
+    const char *next =
+        static_cast<const char *>(memchr(line, '\n', end - line));
+    const char *stop = next ? next : end;
+    if (stop > line && stop[-1] == '\r')
+      --stop;
+    if (stop - line >= 18 && !strncasecmp(line, "Transfer-Encoding:", 18))
+      return false;
+    const bool host = stop - line >= 5 && !strncasecmp(line, "Host:", 5);
+    const bool content =
+        stop - line >= 15 && !strncasecmp(line, "Content-Length:", 15);
+    if (host || (content && length)) {
+      const char *value = line + (host ? 5 : 15);
+      while (value < stop && (*value == ' ' || *value == '\t'))
+        ++value;
+      while (stop > value && (stop[-1] == ' ' || stop[-1] == '\t'))
+        --stop;
+      if (value == stop)
+        return false;
+      if (host) {
+        if (hasHost ||
+            stop - value >= static_cast<ptrdiff_t>(sizeof(server->requestHost)))
+          return false;
+        for (const char *p = value; p < stop; ++p)
+          if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+                (*p >= '0' && *p <= '9') || *p == '.' || *p == '-' ||
+                *p == ':' || *p == '[' || *p == ']'))
+            return false;
+        memcpy(server->requestHost, value, stop - value);
+        server->requestHost[stop - value] = '\0';
+        hasHost = true;
+      } else {
+        if (hasLength)
+          return false;
+        size_t count = 0;
+        for (const char *p = value; p < stop; ++p) {
+          if (*p < '0' || *p > '9' || count > (SIZE_MAX - (*p - '0')) / 10)
+            return false;
+          count = count * 10 + (*p - '0');
+        }
+        if (count > static_cast<size_t>(SSIZE_MAX))
+          return false;
+        *length = static_cast<ssize_t>(count);
+        hasLength = true;
+      }
+    }
+    if (!next)
+      break;
+    line = next + 1;
+  }
+  return !length || hasLength;
+}
+
 static int setNonBlocking(int fd) {
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags < 0) {
-        return -1;
-    }
-    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        return -1;
-    }
-    return 0;
+  int flags = fcntl(fd, F_GETFL, 0);
+  if (flags < 0)
+    return -1;
+  if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+    return -1;
+  }
+  return 0;
 }
 
 static void loadHtmlBody(HttpServer *server, const char *html_path) {
-    if (!server) {
-        return;
-    }
+  if (!server) {
+    return;
+  }
 
-    static const char fallback[] =
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>audiox</title></head>"
-        "<body><h1>audiox</h1><p>Web UI placeholder</p></body></html>\n";
+  static const char fallback[] =
+      "<!doctype html><html><head><meta "
+      "charset=\"utf-8\"><title>audiox</title></head>"
+      "<body><h1>audiox</h1><p>Web UI placeholder</p></body></html>\n";
 
-    memset(server->html_path, 0, sizeof(server->html_path));
-    const char *use_path = (html_path && html_path[0]) ? html_path : HTTP_DEFAULT_HTML_PATH;
-    size_t p_len = strnlen(use_path, sizeof(server->html_path) - 1);
-    memcpy(server->html_path, use_path, p_len);
-    server->html_path[p_len] = '\0';
+  memset(server->html_path, 0, sizeof(server->html_path));
+  const char *use_path =
+      (html_path && html_path[0]) ? html_path : HTTP_DEFAULT_HTML_PATH;
+  size_t p_len = strnlen(use_path, sizeof(server->html_path) - 1);
+  memcpy(server->html_path, use_path, p_len);
+  server->html_path[p_len] = '\0';
 
-    size_t fb_len = sizeof(fallback) - 1;
-    memcpy(server->body, fallback, fb_len);
-    server->body_len = fb_len;
+  size_t fb_len = sizeof(fallback) - 1;
+  memcpy(server->body, fallback, fb_len);
+  server->body_len = fb_len;
 
-    int fd = open(server->html_path, O_RDONLY);
-    if (fd < 0) {
-        return;
-    }
+  int fd = open(server->html_path, O_RDONLY);
+  if (fd < 0) {
+    return;
+  }
 
-    ssize_t n = read(fd, server->body, sizeof(server->body));
-    close(fd);
-    if (n > 0) {
-        server->body_len = (size_t)n;
-    }
+  ssize_t n = read(fd, server->body, sizeof(server->body));
+  close(fd);
+  if (n > 0) {
+    server->body_len = (size_t)n;
+  }
 }
 
 static void handleClient(HttpServer *server, int cfd) {
@@ -1286,6 +1347,41 @@ static void handleClient(HttpServer *server, int cfd) {
 
     size_t body_off = (size_t)header_end;
     size_t initial_body_len = have > body_off ? have - body_off : 0;
+
+    if (!strncmp(path, "/api/plugins", 12) &&
+        !pluginHeaders(server, req, body_off, !strcmp(path, "/api/plugins/install") ? &content_length : nullptr)) {
+        const char *error = "invalid plugin request headers\n";
+        (void)server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", error, strlen(error));
+        return;
+    }
+    if (strcmp(path, "/api/plugins/install") == 0) {
+        if (strcmp(method, "PUT") || content_length <= 0 || content_length > 12 * 1024 * 1024) {
+            const char *status = strcmp(method, "PUT") ? "405 Method Not Allowed" : "413 Payload Too Large";
+            const char *error = "expected PUT with a nonempty AXM package up to 12 MiB\n";
+            (void)server->sendResponse(cfd, status, "text/plain; charset=utf-8", error, strlen(error));
+            return;
+        }
+        if (setSocketTimeouts(cfd, 10000, 10000) < 0) {
+            (void)sendErrnoResponse(server, cfd, "500 Internal Server Error", "set plugin transfer timeout", errno);
+            return;
+        }
+        std::string package(req + body_off, std::min(initial_body_len, static_cast<size_t>(content_length)));
+        package.reserve(static_cast<size_t>(content_length));
+        char chunk[8192];
+        while (package.size() < static_cast<size_t>(content_length)) {
+            ssize_t got = recv(cfd, chunk, std::min(sizeof(chunk), static_cast<size_t>(content_length) - package.size()), 0);
+            if (got < 0 && errno == EINTR) continue;
+            if (got <= 0) {
+                const char *error = "incomplete plugin upload; no package installed\n";
+                (void)server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", error, strlen(error));
+                return;
+            }
+            package.append(chunk, static_cast<size_t>(got));
+            audioxWatchdogHeartbeat();
+        }
+        (void)handleApiRequest(server, cfd, method, path, package.data(), package.size(), query);
+        return;
+    }
 
     if (strcmp(path, "/api/config/restore/check") == 0) {
         (void)handleRestoreCheck(server, cfd, method, query);
@@ -1529,6 +1625,12 @@ int HttpServer::sendResponse(int cfd,
                              const void *body_data,
                              size_t body_size,
                              const char *download_name) const {
+    return sendResponseWithHeaders(cfd, status, content_type, body_data, body_size, download_name, nullptr);
+}
+
+int HttpServer::sendResponseWithHeaders(int cfd, const char *status, const char *content_type,
+                                       const void *body_data, size_t body_size,
+                                       const char *download_name, const char *headers) const {
     if (cfd < 0 || !status || !content_type) {
         return -1;
     }
@@ -1539,18 +1641,20 @@ int HttpServer::sendResponse(int cfd,
                          "Content-Disposition: attachment; filename=\"%s\"\r\nCache-Control: no-store\r\n", download_name);
         if (n <= 0 || (size_t)n >= sizeof(disposition)) return -1;
     }
-    char hdr[512];
+    char hdr[2048];
     int hlen = snprintf(hdr,
                         sizeof(hdr),
                         "HTTP/1.1 %s\r\n"
                         "Content-Type: %s\r\n"
                         "Content-Length: %zu\r\n"
                         "%s"
+                        "%s"
                         "Connection: close\r\n\r\n",
                         status,
                         content_type,
                         body_size,
-                        disposition);
+                        disposition,
+                        headers ? headers : "");
     if (hlen <= 0 || (size_t)hlen >= sizeof(hdr)) {
         return -1;
     }

@@ -1,4 +1,5 @@
 #include "config/context.hpp"
+#include "audio/plugin_registry.hpp"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -361,7 +362,7 @@ static int parseEffectStateLine(const char *value,
         strcmp(parts[1], "pitch") != 0 &&
         strcmp(parts[1], "reverb") != 0 &&
         strcmp(parts[1], "gate") != 0 &&
-        strcmp(parts[1], "cut") != 0) {
+        strcmp(parts[1], "cut") != 0 && !audiox::plugin::validTypeName(parts[1])) {
         return RET_ERR;
     }
 

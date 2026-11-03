@@ -3,6 +3,7 @@
 test: test-native test-web test-release
 
 test-native: test-audio-runtime test-audio-meters test-audio-graph test-audio-graph-mailbox \
+	test-plugin-package test-plugin-host test-plugin-integration \
 	test-audio-pcm-recover test-bluetooth-hci test-bluetooth-a2dp test-display-hotplug test-soundboard-config \
 	test-boot-recovery test-config-backup test-system-logs test-system test-gadget-setup test-mdns \
 	test-gadget-volume test-diagnostics test-midi-usb test-midi-script test-midi-script-storage test-midi-docs test-watchdog test-resolve-modules test-build-dependencies test-storage-expand
@@ -42,12 +43,55 @@ DNSMASQ_TEST_RUNNER ?= $(shell command -v qemu-aarch64 2>/dev/null)
 WATCHDOG_HOST_BIN := $(OUT_DIR)/host/audiox-watchdog-test
 WATCHDOG_HUNG_CHILD_BIN := $(OUT_DIR)/host/audiox-watchdog-hung-child
 AUDIO_EFFECT_SRCS = \
+	src/audio/plugin_package.cpp \
+	src/audio/plugin_registry.cpp \
+	src/audio/plugin_host.cpp \
 	src/audio/effects/slot.cpp \
 	src/audio/effects/gain.cpp \
 	src/audio/effects/distortion.cpp \
 	src/audio/effects/gate.cpp \
 	src/audio/effects/pitch.cpp \
 	src/audio/effects/reverb.cpp
+
+HOST_CXXFLAGS += -DAUDIOX_PLUGIN_WORKER_PATH='"$(OUT_DIR)/host/audiox-plugin-worker"'
+
+.PHONY: test-plugin-package test-plugin-host test-plugin-integration
+test-plugin-package: $(OUT_DIR)/host/plugin-package-test
+	@"$<"
+
+$(OUT_DIR)/host/plugin-package-test: tests/plugin_package_test.cpp src/audio/plugin_package.cpp include/audio/plugin_package.hpp include/audio/plugin_api.h
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/plugin_package_test.cpp src/audio/plugin_package.cpp
+
+$(OUT_DIR)/host/audiox-plugin-worker: src/plugin_worker/main.cpp include/audio/plugin_api.h include/audio/plugin_ipc.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" "$<" -ldl -lm
+
+PLUGIN_FIXTURES := $(addprefix $(OUT_DIR)/host/plugins/plugin-fixture-,$(addsuffix .so,0 1 2 3 4 5 6 7 8 9 10))
+
+$(OUT_DIR)/host/plugins/plugin-fixture-%.so: tests/plugin_host_test.cpp include/audio/plugin_api.h
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -fPIC -shared -DAUDIOX_PLUGIN_TEST_FIXTURE=$* -o "$@" "$<"
+
+test-plugin-host: $(OUT_DIR)/host/plugin-host-test $(OUT_DIR)/host/audiox-plugin-worker $(PLUGIN_FIXTURES) $(OUT_DIR)/host/plugins/softclip.so
+	@"$<" "$(OUT_DIR)/host/audiox-plugin-worker" "$(OUT_DIR)/host/plugins"
+
+$(OUT_DIR)/host/plugin-host-test: tests/plugin_host_test.cpp src/audio/plugin_host.cpp src/audio/plugin_package.cpp include/audio/plugin_host.hpp include/audio/plugin_ipc.hpp include/audio/plugin_api.h
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/plugin_host_test.cpp src/audio/plugin_host.cpp src/audio/plugin_package.cpp -pthread -lm
+
+$(OUT_DIR)/host/plugins/gain.so: examples/plugins/gain/gain.c include/audio/plugin_api.h
+$(OUT_DIR)/host/plugins/softclip.so: examples/plugins/softclip/softclip.c include/audio/plugin_api.h
+$(OUT_DIR)/host/plugins/gain.so $(OUT_DIR)/host/plugins/softclip.so:
+	@mkdir -p "$(dir $@)"
+	cc -std=c11 -O2 -fPIC -shared -fvisibility=hidden -Iinclude -o "$@" "$<"
+
+$(OUT_DIR)/host/plugins/gain.axm: $(OUT_DIR)/host/plugins/gain.so $(OUT_DIR)/host/axm-pack $(wildcard examples/plugins/gain/*)
+	@rm -f "$@"
+	"$(OUT_DIR)/host/axm-pack" examples/plugins/gain/axm.txt "$<" "$@" examples/plugins/gain/index.html examples/plugins/gain/controls.js examples/plugins/gain/style.css
+
+test-plugin-integration: $(OUT_DIR)/host/audiox-soundboard-config-test $(OUT_DIR)/host/audiox-plugin-worker $(OUT_DIR)/host/plugins/gain.axm $(OUT_DIR)/host/plugins/plugin-fixture-9.so
+	@AUDIOX_TEST_PLUGIN_PACKAGE="$(OUT_DIR)/host/plugins/gain.axm" AUDIOX_TEST_PLUGIN_HANG_MODULE="$(OUT_DIR)/host/plugins/plugin-fixture-9.so" "$(OUT_DIR)/host/audiox-soundboard-config-test"
 
 .PHONY: test-midi-usb test-display-hotplug test-soundboard-config \
 	test-boot-recovery test-config-backup test-audio-pcm-recover test-system-logs test-system \
@@ -133,7 +177,7 @@ test-soundboard-config: $(OUT_DIR)/host/audiox-soundboard-config-test
 
 SOUNDBOARD_CONFIG_TEST_SRCS = tests/soundboard_config_test.cpp src/context.cpp \
 	src/config/basic.cpp src/config/midi_map.cpp src/config/backup.cpp \
-	src/midi/midi.cpp src/midi/usb.cpp src/midi/script.cpp src/midi/script_storage.cpp src/midi/script_utilities.cpp src/audio/setup.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp \
+	src/midi/midi.cpp src/midi/usb.cpp src/midi/script.cpp src/midi/script_storage.cpp src/midi/script_utilities.cpp src/audio/setup.cpp src/audio/plugins.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp \
 	src/http/server.cpp src/http/logs.cpp src/init/recovery.cpp src/touch/touch.cpp src/bluetooth/hci.cpp \
 	$(AUDIO_EFFECT_SRCS)
 
@@ -151,11 +195,11 @@ $(OUT_DIR)/host/audiox-audio-graph-test: tests/audio_graph_test.cpp $(filter-out
 		src/audio/graph.cpp src/audio/hotplug.cpp src/config/router.cpp $(HOST_LUA_STATIC_LIB) \
 		$(shell pkg-config --cflags --libs alsa) -pthread -lm
 
-$(OUT_DIR)/host/audiox-soundboard-config-test: $(SOUNDBOARD_CONFIG_TEST_SRCS) tests/script_device_stubs.hpp src/http/api.cpp src/framebuffer/ui.cpp $(wildcard include/config/*.hpp include/midi/*.hpp include/bluetooth/*.hpp include/audio/*.hpp include/audio/effects/*.hpp include/http/*.hpp include/touch/*.hpp include/framebuffer/*.hpp) include/defs.hpp include/json.hpp include/watchdog_heartbeat.hpp $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
+$(OUT_DIR)/host/audiox-soundboard-config-test: $(SOUNDBOARD_CONFIG_TEST_SRCS) src/audio/graph.cpp src/audio/hotplug.cpp src/config/router.cpp tests/script_device_stubs.hpp src/http/api.cpp src/framebuffer/ui.cpp $(wildcard include/config/*.hpp include/midi/*.hpp include/bluetooth/*.hpp include/audio/*.hpp include/audio/effects/*.hpp include/http/*.hpp include/touch/*.hpp include/framebuffer/*.hpp) include/defs.hpp include/json.hpp include/watchdog_heartbeat.hpp $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-format-truncation -Wno-unused-parameter -Iinclude -I$(HOST_LUA_INCLUDE_DIR) \
 		-DROOT_MOUNT_POINT='"."' -ffunction-sections -fdata-sections \
-		-Wl,--gc-sections -o "$@" $(SOUNDBOARD_CONFIG_TEST_SRCS) \
+		-Wl,--gc-sections -o "$@" $(SOUNDBOARD_CONFIG_TEST_SRCS) src/audio/graph.cpp src/audio/hotplug.cpp src/config/router.cpp \
 		$(HOST_LUA_STATIC_LIB) $(shell pkg-config --cflags --libs alsa) -pthread -lm
 
 test-boot-recovery: $(OUT_DIR)/host/audiox-boot-recovery-test
@@ -215,7 +259,7 @@ $(OUT_DIR)/host/audiox-mdns-test: tests/mdns_test.cpp src/http/mdns.cpp include/
 test-gadget-volume: $(OUT_DIR)/host/audiox-gadget-volume-test
 	@"$<"
 
-test-audio-runtime: $(OUT_DIR)/host/audiox-audio-runtime-test
+test-audio-runtime: $(OUT_DIR)/host/audiox-audio-runtime-test $(OUT_DIR)/host/audiox-plugin-worker $(OUT_DIR)/host/plugins/plugin-fixture-0.so
 	@"$<"
 
 $(OUT_DIR)/host/audiox-audio-runtime-test: tests/audio_runtime_test.cpp src/audio/processing.cpp src/audio/processing_fx.cpp src/audio/gadget_volume.cpp $(AUDIO_EFFECT_SRCS) $(wildcard include/audio/*.hpp include/audio/*.h include/audio/effects/*.hpp) $(AUDIOX_CONFIG_FILE)

@@ -54,7 +54,21 @@ Deleting an effect from the Effects page removes its saved effect state and its
 node from Routing. Check the graph and save the route changes you intend to
 keep.
 
-## Effect controls and defaults
+## Custom native plugins
+
+The **Plugins** card installs `.axm` packages, lists their metadata, reloads
+faulted workers, and removes unused packages. Installed plugins appear in the
+Routing Add menu and use normal parameter sliders, MIDI mappings, and Lua calls.
+Optional **Open custom UI** controls run in an isolated iframe.
+
+Native DSP runs in a sandboxed worker, adding one block (about 2.67 ms at
+48 kHz/128 frames) per enabled plugin instance. A late block uses delayed dry
+audio; a repeatedly late or crashed worker stays bypassed until reloaded.
+Remove all live/saved effect instances before removing a package.
+See [Plugin development and package format](../plugins) for examples, limits,
+kernel requirements, and storage/backup caveats.
+
+## Built-in effect controls and defaults
 
 The controls below are the available parameter ranges and factory defaults.
 Values are not decibels unless the label says `dB`. WebUI controls are bounded

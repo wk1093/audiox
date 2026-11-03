@@ -105,6 +105,18 @@
           </div>
         </section>
         <div id="effects-map-grid" class="effects-map-grid"></div>
+        <section class="card plugin-manager">
+          <h2>Plugins</h2>
+          <p class="small plugin-warning">Plugins are native code that runs inside the audio engine. A malicious or faulty plugin can disrupt audio, read or damage device data, and its custom UI can show misleading controls. Install only .axm packages from authors you trust.</p>
+          <div class="plugin-install">
+            <label for="plugin-file">Plugin package (.axm, up to 12 MiB)</label>
+            <input id="plugin-file" type="file" accept=".axm">
+            <button id="btn-plugin-install" class="primary">Install plugin</button>
+          </div>
+          <div id="plugin-status" class="small" role="status" aria-live="polite"></div>
+          <div id="plugin-list" class="plugin-list"></div>
+          <p class="small">Add installed plugins as effects from the Routing menu. Reload restarts a faulted plugin from its installed package.</p>
+        </section>
       </div>
     </section>
 
@@ -571,6 +583,7 @@ end)
   <script src="/soundboard-grid.js"></script>
   <script src="/soundboard-order.js"></script>
   <script src="/logs.js"></script>
+  <script src="/plugins.js"></script>
   <script src="/effects.js"></script>
   <script src="/updates.js"></script>
   <script src="/backup.js"></script>

@@ -440,7 +440,7 @@ test('MIDI learning matches the next event and unbinding cancels learning', asyn
 
 test('leaving Scripts cancels MIDI learning; returning loads Scripts API', async () => {
   const f = fixture();
-  Object.assign(f.context, { stopSystemPolling() {}, loadLightDim() {},
+  Object.assign(f.context, { stopSystemPolling() {}, loadLightDim() {}, effectsManager: null,
     renderStopAllMidiStatus() {}, renderSamplerToggleMidiStatus() {} });
   vm.runInContext(source.slice(source.indexOf('function setActiveTab('),
     source.indexOf('\nfunction ', source.indexOf('function setActiveTab(') + 1)), f.context);

@@ -1,0 +1,5 @@
+id=plugin_softclip
+name=Example Soft Clip
+version=1.0.0
+api=1
+param=drive|Drive|0.1|10|1

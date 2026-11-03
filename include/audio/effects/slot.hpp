@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+namespace audiox::plugin { class PluginHost; }
+
 namespace audiox::effects {
 
 constexpr uint8_t EFFECT_PARAM_MAX = 8;
@@ -33,6 +35,7 @@ struct SlotParams {
     uint8_t enabled;
     uint8_t type;
     float values[EFFECT_PARAM_MAX];
+    audiox::plugin::PluginHost *pluginHost{nullptr};
 };
 
 uint8_t effectTypeFromString(const char *text);

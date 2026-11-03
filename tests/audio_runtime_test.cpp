@@ -4,6 +4,8 @@
 #include <cassert>
 #include <limits>
 #include <vector>
+#include <chrono>
+#include <thread>
 
 struct _snd_pcm { int token; };
 static snd_pcm_t testPcm{};
@@ -386,9 +388,75 @@ static void testDirectProcessing() {
     puts("Direct runtime mixing, channel isolation, bypass, Cut, gain and PCM tests passed");
 }
 
+static void testNativePlugin() {
+    audiox::plugin::PackageMetadata metadata{};
+    strcpy(metadata.id, "plugin_fixture");
+    strcpy(metadata.name, "Runtime fixture");
+    strcpy(metadata.version, "1");
+    metadata.api = 1;
+    metadata.paramCount = 1;
+    strcpy(metadata.params[0].name, "gain");
+    strcpy(metadata.params[0].label, "Gain");
+    metadata.params[0].min = -2;
+    metadata.params[0].max = 2;
+    metadata.params[0].defaultValue = 1;
+    std::string error;
+    assert(audiox::plugin::registerPackage(metadata, error));
+    const std::string worker = AUDIOX_PLUGIN_WORKER_PATH;
+    const std::string module = worker.substr(0, worker.find_last_of('/')) + "/plugins/plugin-fixture-0.so";
+    auto host = std::make_unique<audiox::plugin::PluginHost>();
+    assert(host->prepare(module.c_str(), metadata, SAMPLE_RATE, BUFFER_FRAMES, 2, error, worker.c_str()));
+    auto context = std::make_unique<AudioContext>(nullptr);
+    auto runtime = std::make_unique<RuntimeGraph>();
+    auto &thing = runtime->snapshot.things[0];
+    strcpy(thing.id, "native_effect");
+    thing.inputs = thing.outputs = 2;
+    runtime->snapshot.thingCount = 1;
+    runtime->nodeKind[0] = NODE_EFFECT;
+    runtime->processNodes[0] = 0;
+    runtime->processNodeCount = 1;
+    runtime->demandedOutputs[0] = 3;
+    auto &params = runtime->effectParamsCache[0];
+    params.type = audiox::plugin::findType(metadata.id);
+    params.enabled = 1;
+    params.pluginHost = host.get();
+    params.values[0] = 2;
+    clearRuntimeBuffers(runtime.get());
+    std::fill_n(runtime->inputs[0][0], BUFFER_FRAMES, 0.1f);
+    std::fill_n(runtime->inputs[0][1], BUFFER_FRAMES, 0.3f);
+    processNode(context.get(), runtime.get(), 0);
+    assert(runtime->outputs[0][0][0] == 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    processNode(context.get(), runtime.get(), 0);
+    assert(fabsf(runtime->outputs[0][0][0] - 0.2f) < 0.00001f);
+    assert(fabsf(runtime->outputs[0][1][0] - 0.6f) < 0.00001f);
+    assert(idleEffectsPending(runtime.get()));
+    assert(idleEffectsPending(runtime.get()));
+    assert(host->hasPendingAudio(0.01f));
+    params.enabled = 0;
+    processNode(context.get(), runtime.get(), 0);
+    assert(runtime->outputs[0][0][0] == 0.1f && runtime->outputs[0][1][0] == 0.3f);
+    params.enabled = 1;
+    beginAudioSleep(runtime.get());
+    assert(!host->hasPendingAudio(0.01f));
+    processNode(context.get(), runtime.get(), 0);
+    assert(runtime->outputs[0][0][0] == 0);
+    context->effectStates[thing.id] = params;
+    context->effectStatesSeq.store(7);
+    updateIdleControls(context.get(), runtime.get());
+    assert(context->pluginObservedSeq.load() == 7);
+    context->effectStates.erase(thing.id);
+    context->effectStatesSeq.store(8);
+    updateIdleControls(context.get(), runtime.get());
+    assert(!runtime->effectParamsCache[0].pluginHost);
+    assert(context->pluginObservedSeq.load() == 8);
+    puts("Native plugin planar processing, stereo, bypass, sleep-reset, tails and retirement observation tests passed");
+}
+
 int main() {
     testDirectProcessing();
     testIdleSleep();
+    testNativePlugin();
     auto context = std::make_unique<AudioContext>(nullptr);
     auto runtime = std::make_unique<RuntimeGraph>();
     auto capture = std::make_unique<AlsaCaptureBackend>();

@@ -32,9 +32,11 @@ int captureBackupReboot(int command) {
 
 int prepareBootUpdateRecovery() { assert(false); return -1; }
 int AudioContext::reloadSfxBank() { assert(false); return -1; }
-int handleApiRequest(HttpServer *, int, const char *, const char *, const char *, size_t, const char *) {
-    assert(false);
-    return -1;
+static std::string uploadedPlugin;
+int handleApiRequest(HttpServer *server, int cfd, const char *method, const char *path, const char *body, size_t size, const char *) {
+    assert(!strcmp(method, "PUT") && !strcmp(path, "/api/plugins/install"));
+    uploadedPlugin.assign(body, size);
+    return server->sendResponse(cfd, "200 OK", "text/plain", "received", 8);
 }
 
 namespace fs = std::filesystem;
@@ -97,6 +99,29 @@ int main() {
     const std::string sound(200000, 'x');
     put("sfx/kick.wav", sound);
     HttpServer server(nullptr);
+    ssize_t length = 0;
+    const auto checkedHeaders = [&](const char *headers) {
+        return pluginHeaders(&server, headers, strlen(headers), &length);
+    };
+    assert(checkedHeaders("Host: localhost:8766\r\nContent-Length: 200000\r\n"));
+    assert(length == 200000 && !strcmp(server.requestHost, "localhost:8766"));
+    for (const char *headers : {
+        "Content-Length: 5junk\r\n", "Content-Length: -1\r\n",
+        "Content-Length: 18446744073709551616\r\n",
+        "Content-Length: 1\r\nContent-Length: 1\r\n",
+        "Content-Length: 1\r\nTransfer-Encoding: chunked\r\n",
+        "Host: bad'host\r\nContent-Length: 1\r\n",
+        "Host: first\r\nHost: second\r\nContent-Length: 1\r\n"})
+        assert(!checkedHeaders(headers));
+    const std::string binaryPlugin(200000, '\0');
+    assert(exchange(server, "PUT", "/api/plugins/install", binaryPlugin, binaryPlugin.size()).find("200 OK") != std::string::npos);
+    assert(uploadedPlugin == binaryPlugin);
+    uploadedPlugin.clear();
+    assert(exchange(server, "PUT", "/api/plugins/install", "partial", 200000).find("400 Bad Request") != std::string::npos);
+    assert(uploadedPlugin.empty());
+    assert(exchange(server, "PUT", "/api/plugins/install", "", 12 * 1024 * 1024 + 1).find("413 Payload Too Large") != std::string::npos);
+    assert(exchange(server, "PUT", "/api/plugins/install", "", 0).find("413 Payload Too Large") != std::string::npos);
+    assert(exchange(server, "POST", "/api/plugins/install", "", 0).find("405 Method Not Allowed") != std::string::npos);
     lowStorage = true;
     std::string response = exchange(server, "GET", "/api/config/restore/check?size=46661632");
     assert(response.find("507 Insufficient Storage") != std::string::npos);

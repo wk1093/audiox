@@ -1,0 +1,5 @@
+id=plugin_gain
+name=Example Gain
+version=1.0.0
+api=1
+param=gain|Gain|0|2|1

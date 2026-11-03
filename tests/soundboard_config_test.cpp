@@ -19,8 +19,12 @@
 #include <string>
 #include <time.h>
 #include <unistd.h>
+#include <thread>
+#include <chrono>
+#include <limits>
 
 static bool testClockEnabled = false;
+size_t BluetoothContext::copyRoutingDevices(BluetoothRoutingDevice *, size_t) const { return 0; }
 static uint64_t testNowMs = 0;
 static unsigned midiPathChecks = 0;
 static bool midiPathPresent = true;
@@ -633,6 +637,164 @@ int main() {
 
         close(leds[0]);
         midi.disconnect();
+
+        auto pluginRequest = [&](const char *method, const char *path, const std::string &body) {
+            int sockets[2];
+            assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+            int result;
+            if (!strncmp(path, "/api/plugins", 12))
+                result = handlePlugins(&http, sockets[0], method, path, body.data(), body.size());
+            else if (!strcmp(path, "/api/effects/create"))
+                result = handleEffectCreate(&http, sockets[0], method, path, body.data(), body.size());
+            else if (!strcmp(path, "/api/effects/set"))
+                result = handleEffectSet(&http, sockets[0], method, path, body.data(), body.size());
+            else if (!strcmp(path, "/api/effects/delete"))
+                result = handleEffectDelete(&http, sockets[0], method, path, body.data(), body.size());
+            else result = handleEffects(&http, sockets[0], method, path);
+            assert(result == 0);
+            assert(shutdown(sockets[0], SHUT_WR) == 0);
+            std::string response;
+            char chunk[4096];
+            ssize_t got;
+            while ((got = read(sockets[1], chunk, sizeof(chunk))) > 0) response.append(chunk, got);
+            assert(got == 0);
+            close(sockets[0]);
+            close(sockets[1]);
+            return response;
+        };
+        const auto emptyCatalog = pluginRequest("GET", "/api/plugins", "");
+        if (emptyCatalog.find("\"plugins\":[]") == std::string::npos) fprintf(stderr, "%s\n", emptyCatalog.c_str());
+        assert(emptyCatalog.find("\"plugins\":[]") != std::string::npos);
+        assert(pluginRequest("PUT", "/api/plugins/install", "invalid").find("400 Bad Request") != std::string::npos);
+        assert(pluginRequest("POST", "/api/plugins/remove", "id=../../config").find("400 Bad Request") != std::string::npos);
+        assert(pluginRequest("GET", "/api/plugins/plugin_gain/assets/../midi_map.txt", "").find("404 Not Found") != std::string::npos);
+        assert(pluginRequest("POST", "/api/effects/create", "type=plugin_missing").find("400 Bad Request") != std::string::npos);
+        if (const char *fixture = getenv("AUDIOX_TEST_PLUGIN_PACKAGE")) {
+            assert(chmod(".", 0755) == 0);
+            std::ifstream input(fixture, std::ios::binary);
+            assert(input);
+            std::string packageBytes(std::istreambuf_iterator<char>(input), {});
+            audiox::plugin::Package package;
+            std::string error;
+            assert(audiox::plugin::parsePackage(reinterpret_cast<const uint8_t *>(packageBytes.data()),
+                packageBytes.size(), package, error));
+            const std::string id = package.metadata.id;
+            auto savedBefore = config.readMidiMapFile();
+            auto withMissing = savedBefore;
+            auto &missing = withMissing.effectStates[withMissing.effectStateCount++];
+            missing = {};
+            strcpy(missing.effectId, "fx_1234");
+            strcpy(missing.type, id.c_str());
+            missing.enabled = 1;
+            auto &stored = withMissing.effectParams[withMissing.effectParamCount++];
+            stored = {};
+            strcpy(stored.effectId, missing.effectId);
+            strcpy(stored.param, package.metadata.params[0].name);
+            stored.value = 1.6f;
+            audiox::effects::SlotParams unavailable{};
+            unavailable.enabled = 1;
+            unavailable.type = audiox::plugin::reserveType(id.c_str());
+            upsertEffectStateFromRuntime(&withMissing, missing.effectId, unavailable);
+            assert(withMissing.effectParamCount == savedBefore.effectParamCount + 1);
+            assert(config.writeMidiMapFile(&withMissing) == RET_OK);
+            audio.effectStates[missing.effectId] = unavailable;
+            assert(pluginRequest("PUT", "/api/plugins/install", packageBytes).find("200 OK") != std::string::npos);
+            assert(audiox::plugin::available(audiox::plugin::findType(id.c_str())));
+            assert(pluginRequest("PUT", "/api/plugins/install", packageBytes).find("409 Conflict") != std::string::npos);
+            assert(audiox::plugin::available(audiox::plugin::findType(id.c_str())));
+            assert(pluginRequest("GET", "/api/plugins", "").find(id) != std::string::npos);
+            assert(pluginRequest("POST", "/api/plugins/reload", "id=" + id).find("200 OK") != std::string::npos);
+            audiox::effects::SlotParams restored{};
+            assert(audio.getEffectParams("fx_1234", &restored) == RET_OK);
+            assert(restored.pluginHost && restored.values[0] == 1.6f);
+            assert(pluginRequest("POST", "/api/effects/delete", "id=fx_1234").find("200 OK") != std::string::npos);
+            const std::string ui = pluginRequest("GET", ("/api/plugins/" + id + "/assets/index.html").c_str(), "");
+            assert(ui.find("sandbox allow-scripts") != std::string::npos);
+            assert(ui.find("connect-src 'none'") != std::string::npos);
+            const std::string created = pluginRequest("POST", "/api/effects/create", "type=" + id);
+            assert(created.find("200 OK") != std::string::npos);
+            const auto persisted = config.readMidiMapFile();
+            const auto &effect = persisted.effectStates[persisted.effectStateCount - 1];
+            assert(!strcmp(effect.type, id.c_str()));
+            const std::string effectId = effect.effectId;
+            assert(pluginRequest("GET", "/api/effects", "").find("\"plugin_status\":\"ready\"") != std::string::npos);
+            assert(pluginRequest("POST", "/api/plugins/remove", "id=" + id).find("409 Conflict") != std::string::npos);
+            if (package.metadata.paramCount) {
+                const auto &parameter = package.metadata.params[0];
+                assert(pluginRequest("POST", "/api/effects/set",
+                    "id=" + effectId + "&param=" + parameter.name + "&value=" +
+                    std::to_string(parameter.max)).find("200 OK") != std::string::npos);
+                audiox::effects::SlotParams params{};
+                assert(audio.getEffectParams(effectId.c_str(), &params) == RET_OK);
+                float value = 0;
+                assert(audiox::effects::getSlotParamValue(params, parameter.name, &value) == RET_OK);
+                assert(value == parameter.max);
+            }
+            assert(pluginRequest("POST", "/api/plugins/reload", "id=" + id).find("200 OK") != std::string::npos);
+            assert(pluginRequest("POST", "/api/effects/delete", "id=" + effectId).find("200 OK") != std::string::npos);
+            audio.pollPlugins();
+            assert(pluginRequest("POST", "/api/plugins/remove", "id=" + id).find("200 OK") != std::string::npos);
+            assert(!audiox::plugin::available(audiox::plugin::findType(id.c_str())));
+            audiox::plugin::PackageMetadata wide{};
+            strcpy(wide.id, "plugin_wide");
+            strcpy(wide.name, "Wide metadata");
+            strcpy(wide.version, "1");
+            wide.paramCount = 8;
+            for (unsigned i = 0; i < wide.paramCount; ++i) {
+                auto &parameter = wide.params[i];
+                snprintf(parameter.name, sizeof(parameter.name), "p%u", i);
+                memset(parameter.label, '"', sizeof(parameter.label) - 1);
+                parameter.min = -std::numeric_limits<float>::max();
+                parameter.max = parameter.defaultValue = std::numeric_limits<float>::max();
+            }
+            assert(audiox::plugin::registerPackage(wide, error));
+            for (unsigned i = 0; i < 24; ++i) {
+                auto &effect = audio.effectStates["fx_" + std::to_string(2000 + i)];
+                effect.enabled = 1;
+                effect.type = audiox::plugin::findType(wide.id);
+                audiox::effects::setSlotDefaultsForType(&effect, effect.type);
+            }
+            const auto fullResponse = pluginRequest("GET", "/api/effects", "");
+            assert(fullResponse.find("200 OK") != std::string::npos);
+            assert(fullResponse.size() > 49152);
+            assert(fullResponse.find("\"id\":\"fx_2023\"") != std::string::npos);
+            assert(fullResponse.substr(fullResponse.size() - 3) == "]}\n");
+            for (unsigned i = 0; i < 24; ++i)
+                audio.effectStates.erase("fx_" + std::to_string(2000 + i));
+            if (const char *hangModule = getenv("AUDIOX_TEST_PLUGIN_HANG_MODULE")) {
+                std::ifstream library(hangModule, std::ios::binary);
+                assert(library);
+                const std::vector<uint8_t> module(std::istreambuf_iterator<char>(library), {});
+                for (auto &entry : package.entries)
+                    if (entry.kind == audiox::plugin::Module) entry.data = module;
+                std::vector<uint8_t> hanging;
+                assert(audiox::plugin::buildPackage(package.entries, hanging, error));
+                assert(pluginRequest("PUT", "/api/plugins/install",
+                    std::string(hanging.begin(), hanging.end())).find("200 OK") != std::string::npos);
+                std::atomic<bool> finished{false};
+                std::thread creation([&]() {
+                    char createdId[64]{};
+                    assert(audio.createEffect(id.c_str(), createdId, sizeof(createdId)) == RET_ERR);
+                    finished.store(true);
+                });
+                unsigned reads = 0;
+                while (!finished.load()) {
+                    const auto start = std::chrono::steady_clock::now();
+                    audiox::effects::SlotParams ignored{};
+                    (void)audio.getEffectParams("missing", &ignored);
+                    assert(std::chrono::steady_clock::now() - start < std::chrono::milliseconds(50));
+                    ++reads;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                creation.join();
+                assert(reads > 10);
+                assert(pluginRequest("POST", "/api/plugins/remove", "id=" + id).find("200 OK") != std::string::npos);
+            }
+            assert(config.writeMidiMapFile(&savedBefore) == RET_OK);
+            assert(unlink("plugins/.lock") == 0);
+            assert(rmdir("plugins") == 0);
+            assert(chmod(".", 0700) == 0);
+        }
 
         auto chordRequest = [&](const char *method, const char *body, const char *expected) {
             int sockets[2];

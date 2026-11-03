@@ -1,4 +1,5 @@
 #include "audio/context.hpp"
+#include "audio/plugin_registry.hpp"
 #include "audio/alsa_pcm.h"
 #include "audio/effects/slot.hpp"
 #include "audio/processing_fx.hpp"
@@ -1602,6 +1603,19 @@ static void processNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex)
 
     if (rt->nodeKind[nodeIndex] == NODE_EFFECT) {
         const auto &params = rt->effectParamsCache[nodeIndex];
+        if (audiox::plugin::isPluginType(params.type)) {
+            if (params.pluginHost && params.enabled) {
+                const float *inputs[kMaxChannelsPerThing]{};
+                for (uint8_t channel = 0; channel < channels; ++channel)
+                    inputs[channel] = rt->inputs[nodeIndex][channel];
+                params.pluginHost->process(inputs, rt->outputs[nodeIndex], BUFFER_FRAMES, params.values);
+            } else {
+                if (params.pluginHost) params.pluginHost->reset();
+                for (uint8_t channel = 0; channel < channels; ++channel)
+                    copyWithClamp(rt->inputs[nodeIndex][channel], rt->outputs[nodeIndex][channel]);
+            }
+            return;
+        }
         if (!params.enabled) {
             for (uint8_t channel = 0; channel < channels; ++channel) {
                 copyWithClamp(rt->inputs[nodeIndex][channel], rt->outputs[nodeIndex][channel]);
@@ -2135,6 +2149,7 @@ static bool updateIdleControls(AudioContext *ctx, RuntimeGraph *rt) {
         }
     }
     rt->idleControlsKnown = true;
+    ctx->pluginObservedSeq.store(effectSeq, std::memory_order_release);
     rt->idleEffectSeq = effectSeq;
     rt->idleCaptureGain = captureGain;
     rt->idlePlaybackGain = playbackGain;
@@ -2185,6 +2200,7 @@ static void beginAudioSleep(RuntimeGraph *rt) {
     for (uint16_t i = 0; i < rt->processNodeCount; ++i) {
         const uint16_t node = rt->processNodes[i];
         if (rt->nodeKind[node] != NODE_EFFECT) continue;
+        if (rt->effectParamsCache[node].pluginHost) rt->effectParamsCache[node].pluginHost->reset();
         const uint8_t channels = std::min<uint8_t>(rt->snapshot.things[node].outputs, kMaxChannelsPerThing);
         for (uint8_t channel = 0; channel < channels; ++channel) {
             audiox::effects::resetSlotAudio(rt->snapshot.things[node].id, channel);

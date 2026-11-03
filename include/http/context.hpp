@@ -25,6 +25,7 @@ struct HttpServer {
     char html_path[512];
     char body[16384];
     size_t body_len;
+    char requestHost[256]{};
 
     HttpServer(Audiox *context);
 
@@ -38,6 +39,9 @@ struct HttpServer {
                      const void *body,
                      size_t body_len,
                      const char *download_name = nullptr) const;
+    int sendResponseWithHeaders(int cfd, const char *status, const char *content_type,
+                                const void *body, size_t body_len,
+                                const char *download_name, const char *headers) const;
 
     int sendFilePath(int cfd,
                      const char *path,

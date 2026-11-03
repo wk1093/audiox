@@ -165,6 +165,90 @@ if (effectsManager) {
   effectsManager.mountPanel(effectsMapGridEl, effectsMapStatusEl);
 }
 
+const builtinEffectTypes = ['gain', 'distortion', 'pitch', 'reverb', 'gate', 'cut'];
+const pluginTemplateIds = new Set();
+
+function pluginTemplateNodeType(id) {
+  return `audiox/plugin_${id}`;
+}
+
+function registerPluginTemplates(plugins) {
+  const lite = window.LiteGraph;
+  const next = new Map();
+  for (const plugin of plugins) {
+    const id = window.AudioxPlugins?.normalizePluginId(plugin?.id);
+    if (id) next.set(id, plugin);
+  }
+  for (const id of [...pluginTemplateIds]) {
+    if (next.has(id)) continue;
+    pluginTemplateIds.delete(id);
+    const ctor = lite?.registered_node_types?.[pluginTemplateNodeType(id)];
+    if (ctor) ctor.filter = 'audiox-internal';
+  }
+  for (const [id, plugin] of next) {
+    pluginTemplateIds.add(id);
+    if (!lite?.registered_node_types) continue;
+    const type = pluginTemplateNodeType(id);
+    const label = `${plugin.name || id} (plugin)`;
+    const existing = lite.registered_node_types[type];
+    if (existing) {
+      existing.title = label;
+      existing.filter = 'audiox';
+      continue;
+    }
+    function AudioxPluginEffectNode() {
+      this.size = [220, 80];
+      this.properties = { effectTypeTemplate: id, nodeKind: 'template', pluginTemplate: true };
+      this.title = `Add ${label}`;
+      this.addInput('in 1', 'audio');
+      this.addInput('in 2', 'audio');
+      this.addOutput('out 1', 'audio');
+      this.addOutput('out 2', 'audio');
+    }
+    AudioxPluginEffectNode.title = label;
+    AudioxPluginEffectNode.filter = 'audiox';
+    lite.registerNodeType(type, AudioxPluginEffectNode);
+  }
+}
+
+function isCreatableEffectType(type) {
+  return builtinEffectTypes.includes(type) || pluginTemplateIds.has(type);
+}
+
+async function refreshAfterPluginChange() {
+  if (effectsManager) await effectsManager.loadEffects();
+  await loadRoutingThingsWithOptions({ silent: true });
+}
+
+const pluginManager = (window.AudioxPlugins && typeof window.AudioxPlugins.createManager === 'function')
+  ? window.AudioxPlugins.createManager({
+    setStatus,
+    onCatalog: (plugins) => {
+      effectsManager?.setPluginCatalog(plugins);
+      registerPluginTemplates(plugins);
+    },
+    onChanged: refreshAfterPluginChange,
+  })
+  : null;
+
+if (pluginManager) {
+  pluginManager.mount({
+    listEl: document.getElementById('plugin-list'),
+    statusEl: document.getElementById('plugin-status'),
+    fileInput: document.getElementById('plugin-file'),
+    installButton: document.getElementById('btn-plugin-install'),
+  });
+}
+
+async function loadPluginCatalog() {
+  if (!pluginManager) return;
+  try {
+    await pluginManager.load();
+  } catch (err) {
+    pluginManager.setPanelStatus(String(err?.message || err), 'warn');
+  }
+}
+
 function setActiveTab(tab) {
   if (tab !== 'scripts') {
     cancelChordLearn();
@@ -208,6 +292,11 @@ function setActiveTab(tab) {
     loadLightDim();
     renderStopAllMidiStatus();
     renderSamplerToggleMidiStatus();
+  }
+  if (tab === 'effects') {
+    loadPluginCatalog();
+  } else {
+    effectsManager?.closeCustomUis();
   }
   if (tab === 'effects' && effectsManager) {
     effectsManager.loadEffects().catch((err) => {
@@ -661,8 +750,11 @@ async function deleteRoutingHelper() {
 }
 
 async function createEffectFromTemplate(type) {
-  const allowed = new Set(['gain', 'distortion', 'pitch', 'reverb', 'gate', 'cut']);
-  const safeType = allowed.has(String(type || '').trim()) ? String(type).trim() : 'gain';
+  const requested = String(type || '').trim();
+  if (requested && !isCreatableEffectType(requested)) {
+    throw new Error(`effect create failed: plugin ${requested} is not installed`);
+  }
+  const safeType = requested || 'gain';
   const res = await fetch('/api/effect/create', {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain' },
@@ -1253,12 +1345,7 @@ function ensureRoutingGraph() {
         .catch((err) => setStatus(String(err), 'warn'));
       return;
     }
-    if (templateType === 'gain' ||
-      templateType === 'distortion' ||
-      templateType === 'pitch' ||
-      templateType === 'reverb' ||
-      templateType === 'gate' ||
-      templateType === 'cut') {
+    if (templateType && (isCreatableEffectType(templateType) || node.properties?.pluginTemplate)) {
       const pos = Array.isArray(node.pos) ? { x: node.pos[0], y: node.pos[1] } : null;
       state.internalGraphMutation = true;
       state.graph.remove(node);
@@ -2098,6 +2185,7 @@ document.addEventListener('visibilitychange', () => {
   else if (state.activeTab === 'volume') startMeterPolling();
   if (document.hidden) {
     cancelChordLearn();
+    effectsManager?.closeCustomUis();
   }
 });
 
@@ -3386,6 +3474,7 @@ async function initializeGraphFromConfig() {
   await loadMidiActions();
   await loadSamplerConfig();
   await loadRoutingThings();
+  await loadPluginCatalog();
   if (effectsManager) {
     try {
       await effectsManager.loadEffects();

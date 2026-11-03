@@ -11,6 +11,8 @@
 #include "midi/context.hpp"
 #include "midi/script_storage.hpp"
 #include "json.hpp"
+#include "audio/plugin_registry.hpp"
+#include <algorithm>
 
 #include <ctype.h>
 #include <cmath>
@@ -1743,6 +1745,7 @@ static void upsertEffectStateFromRuntime(MidiMapData *map,
 	MidiEffectState &state = map->effectStates[(uint32_t)idx];
 	copy_bound(state.type, sizeof(state.type), audiox::effects::effectTypeToString(params.type));
 	state.enabled = params.enabled ? 1U : 0U;
+	if (audiox::plugin::isPluginType(params.type) && !audiox::plugin::metadataFor(params.type)) return;
 
 	float value = 0.0f;
 	state.gain = (audiox::effects::getSlotParamValue(params, "gain", &value) == RET_OK) ? value : 1.0f;
@@ -2254,7 +2257,7 @@ static int handleEffects(HttpServer *server,
 
 	MidiMapData map = server->app->config->readMidiMapFile();
 
-	char out[HTTP_BODY_MAX];
+	char out[AUDIO_GRAPH_MAX_THINGS * 8192U];
 	size_t off = 0;
 	int n = snprintf(out + off, sizeof(out) - off, "{\"effects\":[");
 	if (n <= 0 || (size_t)n >= sizeof(out) - off) {
@@ -2264,6 +2267,7 @@ static int handleEffects(HttpServer *server,
 	off += (size_t)n;
 
 	int first = 1;
+    int encodedEffects = 0;
 	for (int i = 0; i < slotCount; ++i) {
 		audiox::effects::SlotParams params = {};
 		if (server->app->audio->getEffectParams(slots[i].thingId, &params) != RET_OK) {
@@ -2374,7 +2378,7 @@ static int handleEffects(HttpServer *server,
 						 "%s{\"name\":\"%s\",\"label\":\"%s\",\"min\":%.4f,\"max\":%.4f,\"default\":%.4f}",
 						 (p == 0U) ? "" : ",",
 						 typeSpec->params[p].name,
-						 typeSpec->params[p].label,
+						 audiox::json::escape(typeSpec->params[p].label).c_str(),
 						 (double)typeSpec->params[p].minValue,
 						 (double)typeSpec->params[p].maxValue,
 						 (double)typeSpec->params[p].defaultValue);
@@ -2411,18 +2415,34 @@ static int handleEffects(HttpServer *server,
 			break;
 		}
 
+		std::string pluginFields;
+		if (audiox::plugin::isPluginType(params.type)) {
+		    const bool ui = audiox::plugin::hasUi(params.type);
+		    const auto status = params.pluginHost ? params.pluginHost->status() :
+		        audiox::plugin::PluginHost::Status::Stopped;
+		    const char *state = status == audiox::plugin::PluginHost::Status::Ready ? "ready" :
+		        status == audiox::plugin::PluginHost::Status::Fault ? "fault" : "unavailable";
+		    pluginFields = ",\"plugin_ui\":" + std::string(ui ? "true" : "false") +
+		        ",\"plugin_status\":\"" + state + "\",\"plugin_error\":\"" +
+		        audiox::json::escape(params.pluginHost ? params.pluginHost->error() : "Plugin worker unavailable") + "\"";
+		}
 		n = snprintf(out + off,
 					 sizeof(out) - off,
-					 "},\"light\":{\"enabled_vel\":%u,\"bypassed_vel\":%u}}}",
+					 "},\"light\":{\"enabled_vel\":%u,\"bypassed_vel\":%u}}%s}",
 					 (unsigned)lightEnabledVel,
-					 (unsigned)lightBypassedVel);
+					 (unsigned)lightBypassedVel, pluginFields.c_str());
 		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
 			break;
 		}
 		off += (size_t)n;
 		first = 0;
+        ++encodedEffects;
 	}
 
+    if (encodedEffects != slotCount) {
+        static const char error[] = "effect response could not be encoded completely\n";
+        return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", error, sizeof(error) - 1);
+    }
 	n = snprintf(out + off, sizeof(out) - off, "]}\n");
 	if (n > 0 && (size_t)n < sizeof(out) - off) {
 		off += (size_t)n;
@@ -2511,13 +2531,18 @@ static int handleEffectSet(HttpServer *server,
 	char typeBuf[24] = {};
 	if (body_get_value(body, body_len, "type", typeBuf, sizeof(typeBuf))) {
 		uint8_t type = audiox::effects::effectTypeFromString(typeBuf);
+		if (strcmp(typeBuf, audiox::effects::effectTypeToString(type)) ||
+		    (audiox::plugin::isPluginType(type) && !audiox::plugin::available(type)))
+		    return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8",
+		        "unknown or unavailable effect type\n", 35);
 		if (server->app->audio->setEffectType(idBuf, type) == RET_OK) {
 			changed = 1;
 			if (hadPreviousParams &&
 				(previousParams.type == audiox::effects::EFFECT_CUT || type == audiox::effects::EFFECT_CUT)) {
 				routingShapeChanged = 1;
 			}
-		}
+		} else return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8",
+			"effect preparation failed; check device logs\n", 45);
 	}
 
 	char enabledBuf[16] = {};
@@ -2634,6 +2659,11 @@ static int handleEffectCreate(HttpServer *server,
 	}
 
 	char idBuf[64] = {};
+	const uint8_t type = audiox::effects::effectTypeFromString(typeBuf);
+	if (strcmp(typeBuf, audiox::effects::effectTypeToString(type)) ||
+	    (audiox::plugin::isPluginType(type) && !audiox::plugin::available(type)))
+	    return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8",
+	        "unknown or unavailable effect type\n", 35);
 	if (server->app->audio->createEffect(typeBuf, idBuf, sizeof(idBuf)) != RET_OK) {
 		static const char err[] = "failed to create effect\n";
 		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
@@ -4765,6 +4795,105 @@ static int handleScriptControl(HttpServer *server, int cfd, const char *method,
                  "setting saved and config_change queued\n" : "setting saved\n");
 }
 
+static int handlePlugins(HttpServer *server, int cfd, const char *method, const char *path,
+                         const char *body, size_t length) {
+    auto reply = [&](const char *status, const std::string &message, const char *mime = "text/plain; charset=utf-8") {
+        return server->sendResponse(cfd, status, mime, message.data(), message.size());
+    };
+    std::string error;
+    if (!strcmp(path, "/api/plugins")) {
+        if (strcmp(method, "GET")) return sendMethodNotAllowed(server, cfd);
+        std::vector<audiox::plugin::PackageMetadata> catalog;
+        if (!audiox::plugin::listPackages(audiox::plugin::ROOT, catalog, error))
+            return reply("500 Internal Server Error", error);
+        std::string out = "{\"plugins\":[";
+        for (size_t i = 0; i < catalog.size(); ++i) {
+            const auto &plugin = catalog[i];
+            const bool hasUi = audiox::plugin::hasUi(audiox::plugin::findType(plugin.id));
+            if (i) out += ',';
+            out += "{\"id\":\"" + audiox::json::escape(plugin.id) + "\",\"name\":\"" +
+                audiox::json::escape(plugin.name) + "\",\"version\":\"" + audiox::json::escape(plugin.version) +
+                "\",\"ui\":" + (hasUi ? "true" : "false") + ",\"params\":[";
+            for (unsigned p = 0; p < plugin.paramCount; ++p) {
+                const auto &param = plugin.params[p];
+                char numbers[128];
+                snprintf(numbers, sizeof(numbers), "\",\"min\":%.9g,\"max\":%.9g,\"default\":%.9g}",
+                         param.min, param.max, param.defaultValue);
+                if (p) out += ',';
+                out += "{\"name\":\"" + audiox::json::escape(param.name) + "\",\"label\":\"" +
+                    audiox::json::escape(param.label) + numbers;
+            }
+            out += "]}";
+        }
+        return reply("200 OK", out + "]}\n", "application/json; charset=utf-8");
+    }
+    if (!strcmp(path, "/api/plugins/install")) {
+        if (strcmp(method, "PUT")) return sendMethodNotAllowed(server, cfd);
+        audiox::plugin::Package package;
+        if (!body || !audiox::plugin::parsePackage(reinterpret_cast<const uint8_t *>(body), length, package, error))
+            return reply("400 Bad Request", error.empty() ? "invalid AXM package\n" : error);
+        const bool previouslyAvailable = audiox::plugin::available(audiox::plugin::findType(package.metadata.id));
+        if (previouslyAvailable) return reply("409 Conflict", "plugin already installed; remove it explicitly first\n");
+        const bool ui = std::any_of(package.entries.begin(), package.entries.end(),
+            [](const auto &entry) { return entry.kind == audiox::plugin::Asset && entry.name == "index.html"; });
+        if (!audiox::plugin::registerPackage(package.metadata, error, ui))
+            return reply("409 Conflict", error);
+        if (!audiox::plugin::installPackage(reinterpret_cast<const uint8_t *>(body), length, audiox::plugin::ROOT, error)) {
+            if (!previouslyAvailable) audiox::plugin::markUnavailable(audiox::plugin::findType(package.metadata.id));
+            return reply("409 Conflict", error);
+        }
+        return reply("200 OK", "plugin installed\n");
+    }
+    if (!strcmp(path, "/api/plugins/remove") || !strcmp(path, "/api/plugins/reload")) {
+        if (strcmp(method, "POST")) return sendMethodNotAllowed(server, cfd);
+        char id[24]{};
+        if (!body || length > 64 || memchr(body, '\0', length) ||
+            !body_get_value(body, length, "id", id, sizeof(id)) || !audiox::plugin::validTypeName(id))
+            return reply("400 Bad Request", "invalid plugin ID\n");
+        auto *audio = server->app ? server->app->audio : nullptr;
+        if (!audio) return reply("503 Service Unavailable", "audio runtime unavailable\n");
+        if (!strcmp(path, "/api/plugins/reload")) {
+            if (audio->reloadPlugins(id) != RET_OK)
+                return reply("409 Conflict", "plugin reload failed; check device logs\n");
+            return reply("200 OK", "plugin workers reloaded\n");
+        }
+        if (audio->pluginInUse(id)) return reply("409 Conflict", "remove all effects using this plugin first\n");
+        if (server->app->config) {
+            const auto map = server->app->config->readMidiMapFile();
+            for (uint32_t i = 0; i < map.effectStateCount && i < MIDI_EFFECT_STATES_MAX; ++i)
+                if (!strcmp(map.effectStates[i].type, id))
+                    return reply("409 Conflict", "saved effects still reference this plugin\n");
+        }
+        if (!audiox::plugin::removePackage(id, audiox::plugin::ROOT, error))
+            return reply("409 Conflict", error);
+        audiox::plugin::markUnavailable(audiox::plugin::findType(id));
+        return reply("200 OK", "plugin removed\n");
+    }
+    const std::string prefix = "/api/plugins/";
+    std::string assetPath = path;
+    const size_t separator = assetPath.find("/assets/", prefix.size());
+    if (separator != std::string::npos && assetPath.compare(0, prefix.size(), prefix) == 0) {
+        if (strcmp(method, "GET")) return sendMethodNotAllowed(server, cfd);
+        const std::string id = assetPath.substr(prefix.size(), separator - prefix.size());
+        const std::string name = assetPath.substr(separator + 8);
+        std::string asset;
+        if (!audiox::plugin::readPluginAsset(id.c_str(), name.c_str(), audiox::plugin::ROOT, asset, error))
+            return reply("404 Not Found", error);
+        const char *mime = name.size() > 3 && name.compare(name.size() - 3, 3, ".js") == 0 ?
+            "application/javascript; charset=utf-8" : name.size() > 4 &&
+            name.compare(name.size() - 4, 4, ".css") == 0 ? "text/css; charset=utf-8" : "text/html; charset=utf-8";
+        const std::string source = "http://" + std::string(server->requestHost[0] ?
+            server->requestHost : AUDIOX_USB_NET_SERVER_IP) + prefix + id + "/assets/";
+        const std::string policy = "X-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\n"
+            "Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' " +
+            source + "; style-src 'unsafe-inline' " + source +
+            "; connect-src 'none'; img-src data:; form-action 'none'; "
+            "base-uri 'none'; frame-src 'none'\r\n";
+        return server->sendResponseWithHeaders(cfd, "200 OK", mime, asset.data(), asset.size(), nullptr, policy.c_str());
+    }
+    return reply("404 Not Found", "unknown plugin endpoint\n");
+}
+
 static int handleMidiChords(HttpServer *server, int cfd, const char *method,
                            const char *body, size_t body_len, bool named = false, bool run = false,
                            bool scripts = false) {
@@ -5059,6 +5188,8 @@ int handleApiRequest(HttpServer *server,
 	if (!server || cfd < 0 || !method || !path) {
 		return -1;
 	}
+	if (!strcmp(path, "/api/plugins") || !strncmp(path, "/api/plugins/", 13))
+	    return handlePlugins(server, cfd, method, path, body, body_len);
 
 	if (strcmp(path, "/api/system/logs") == 0) return handleSystemLogs(server, cfd, method, query);
 

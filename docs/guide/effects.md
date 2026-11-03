@@ -161,7 +161,12 @@ longer exist. A newly created Cut is in its passing (not muted) state.
 Delays affect only routes through the corresponding enabled effect, never
 unrelated routes. Bypass is immediate and clears effect history. There is no
 automatic latency compensation between parallel graph routes; mixing an external
-dry route with a delayed effect can comb-filter. Re-enabling or changing type
+dry route with a delayed effect can comb-filter. Bypass is a direct graph
+connection, without a per-effect copy or clamp; final device output still clamps
+to its PCM range. An enabled Cut is a disconnection, not a DSP zero-fill pass.
+Built-in silent branches skip DSP once their tails and control release settle;
+see [Runtime optimizations](./routing.md#runtime-optimizations).
+Re-enabling or changing type
 does not replay old tails.
 
 ## Audio idle sleep

@@ -189,6 +189,7 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Multi-band compressor
   - [x] Correct pitch normalization, transparent zero shift and internal dry/wet delay alignment; bound per-effect DSP state without audio-callback allocation.
   - [x] Fix plugin-host lifecycle linking in meter, display-hotplug and gadget-volume host tests; cover their build rules and verify the full CI test suite, including graph ThreadSanitizer.
+  - [x] Make Cut and bypass routing-only operations; skip silent built-in chains while preserving tails and control release, retain direct buffer aliases and avoid clearing unused DSP buffers.
   - DSP/sanitizer, routing, HTTP persistence, MIDI/Lua and WebUI regressions pass; physical Pi listening and realtime performance still need validation.
 
 ## Release - v2.0+

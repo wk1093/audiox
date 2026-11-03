@@ -220,7 +220,8 @@ static void testIdleSleep() {
     float impulse[BUFFER_FRAMES]{};
     float tail[BUFFER_FRAMES]{};
     impulse[0] = 1.0f;
-    audiox::effects::processSlot("idle_effect", 0, effect, impulse, tail, BUFFER_FRAMES);
+    runtime->inputs[1][0] = impulse;
+    processNode(context.get(), runtime.get(), 1);
     assert(audiox::effects::slotHasPendingAudio("idle_effect", 0, effect));
     runtime->lastActivityMs = 30000;
     processGraphBlock(context.get(), runtime.get(), capture.get(), 35000);
@@ -346,6 +347,9 @@ static void testDirectProcessing() {
     effect.enabled = 0;
     render();
     expect(0.25f);
+    assert(runtime->outputs[2][0] == runtime->inputs[2][0]);
+    assert(runtime->outputs[2][1] == runtime->inputs[2][1]);
+    assert(runtime->outputs[0][0][0] == .1f && runtime->outputs[1][0][0] == .2f);
     effect.enabled = 1;
     effect.type = audiox::effects::EFFECT_CUT;
     audiox::effects::setSlotDefaultsForType(&effect, effect.type);
@@ -356,6 +360,7 @@ static void testDirectProcessing() {
     effect.enabled = 0;
     render();
     expect(0.25f);
+    assert(runtime->outputs[2][0] == runtime->inputs[2][0]);
 
     for (uint8_t type : {audiox::effects::EFFECT_COMPRESSOR, audiox::effects::EFFECT_LIMITER,
                         audiox::effects::EFFECT_EQ, audiox::effects::EFFECT_MULTIBAND,
@@ -440,10 +445,30 @@ static void testDirectProcessing() {
     routeCompiledEdge(context.get(), runtime.get(), {1, 2, 0, 0});
     assert(runtime->inputs[2][0] == runtime->inputStorage[2][0]);
     assert(fabsf(runtime->inputs[2][0][0] - 0.3f) < 0.0001f);
+    assert(runtime->outputs[0][0][0] == .1f && runtime->outputs[1][0][0] == .2f);
+
+    effect.type = audiox::effects::EFFECT_REVERB;
+    effect.enabled = 1;
+    audiox::effects::setSlotDefaultsForType(&effect, effect.type);
+    clearRuntimeBuffers(runtime.get());
+    runtime->outputs[0][0][0] = .1f;
+    runtime->outputs[1][0][0] = -.1f;
+    routeCompiledEdge(context.get(), runtime.get(), {0, 2, 0, 0});
+    routeCompiledEdge(context.get(), runtime.get(), {1, 2, 0, 0});
+    const uint64_t cancellationBefore = runtime->effectChannelsProcessed;
+    processNode(context.get(), runtime.get(), 2);
+    assert(runtime->outputs[2][0] == runtime->silence);
+    assert(runtime->effectChannelsProcessed == cancellationBefore);
 
     effect.type = audiox::effects::EFFECT_GAIN;
     effect.enabled = 1;
     audiox::effects::setSlotDefaultsForType(&effect, effect.type);
+    clearRuntimeBuffers(runtime.get());
+    runtime->outputs[0][0][0] = 1e-9f;
+    routeCompiledEdge(context.get(), runtime.get(), {0, 2, 0, 0});
+    processNode(context.get(), runtime.get(), 2);
+    assert(runtime->outputs[2][0][0] == 1e-9f);
+    assert(runtime->effectChannelsProcessed == cancellationBefore + 1);
     assert(audiox::effects::setSlotParamValue(&effect, "level", 4.0f) == RET_OK);
     render();
     expect(1.0f);
@@ -451,7 +476,7 @@ static void testDirectProcessing() {
     context->nodeGainAtomics[0].store(4.0f);
     context->nodeGainAtomics[1].store(4.0f);
     render();
-    expect(1.0f);
+    expect(1.2f);
 
     effect.type = audiox::effects::EFFECT_DISTORTION;
     audiox::effects::setSlotDefaultsForType(&effect, effect.type);
@@ -460,6 +485,221 @@ static void testDirectProcessing() {
     assert(audiox::effects::setSlotParamValue(&effect, "drive",
         std::numeric_limits<float>::quiet_NaN()) == RET_ERR);
     puts("Direct runtime mixing, channel isolation, bypass, Cut, gain and PCM tests passed");
+}
+
+static void testGraphFastPaths() {
+    auto context = std::make_unique<AudioContext>(nullptr);
+    auto runtime = std::make_unique<RuntimeGraph>();
+    auto capture = std::make_unique<AlsaCaptureBackend>();
+    runtime->snapshot.thingCount = 9;
+    runtime->sourceNodes[0] = 0;
+    runtime->sourceNodeCount = 1;
+    runtime->sinkNodes[0] = 8;
+    runtime->sinkNodeCount = 1;
+    runtime->nodeKind[0] = NODE_SOURCE;
+    runtime->nodeKind[8] = NODE_SINK;
+    strcpy(runtime->snapshot.things[0].id, "mic_in");
+    strcpy(runtime->snapshot.things[8].id, "fast_path_out");
+    runtime->snapshot.things[0].outputs = runtime->snapshot.things[8].inputs = 2;
+    const uint8_t types[]{audiox::effects::EFFECT_CUT, audiox::effects::EFFECT_PITCH,
+        audiox::effects::EFFECT_REVERB, audiox::effects::EFFECT_NOISE_REDUCTION,
+        audiox::effects::EFFECT_LIMITER, audiox::effects::EFFECT_EQ, audiox::effects::EFFECT_GAIN};
+    for (uint16_t node = 1; node <= 7; ++node) {
+        auto &thing = runtime->snapshot.things[node];
+        snprintf(thing.id, sizeof(thing.id), "fast_path_%u", node);
+        thing.inputs = thing.outputs = 2;
+        runtime->nodeKind[node] = NODE_EFFECT;
+        runtime->processNodes[runtime->processNodeCount++] = node;
+        auto &params = context->effectStates[thing.id];
+        params.type = types[node - 1];
+        params.enabled = 1;
+        audiox::effects::setSlotDefaultsForType(&params, params.type);
+    }
+    auto &mute = context->effectStates["fast_path_1"];
+    auto &pitch = context->effectStates["fast_path_2"];
+    pitch.values[1] = 7;
+    auto &independent = context->effectStates["fast_path_7"];
+    independent.values[0] = .5f;
+    for (unsigned node = 0; node < 9; ++node) context->nodeGainAtomics[node].store(1);
+    runtime->sourceRoutes[runtime->sourceRouteCount++] = {0, 1, 0, 0};
+    runtime->sourceRoutes[runtime->sourceRouteCount++] = {0, 7, 1, 1};
+    for (uint16_t node = 1; node <= 6; ++node)
+        runtime->processRoutes[runtime->processRouteCount++] = {node, uint16_t(node == 6 ? 8 : node + 1), 0, 0};
+    runtime->processRoutes[runtime->processRouteCount++] = {7, 8, 1, 1};
+    buildProcessRouteIndex(runtime.get());
+    capture->reset();
+    capture->count = 1;
+    capture->nodeToStream[0] = 0;
+    auto &input = capture->streams[0];
+    input.pcm = &testPcm;
+    input.channels = 2;
+    input.format = SND_PCM_FORMAT_S16_LE;
+    initAdaptiveSrc(&input.src, .5f, 1);
+    captureSample = 16384;
+    for (uint16_t node = 1; node <= 6; ++node) {
+        std::fill_n(runtime->inputStorage[node][0], BUFFER_FRAMES, 123.f);
+        std::fill_n(runtime->outputStorage[node][0], BUFFER_FRAMES, 456.f);
+    }
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 100);
+    assert(runtime->effectChannelsProcessed == 1);
+    assert(!runtime->sleeping);
+    for (uint16_t node = 1; node <= 6; ++node) {
+        assert(runtime->inputs[node][0] == runtime->silence);
+        assert(runtime->outputs[node][0] == runtime->silence);
+        assert(runtime->inputContributionCount[node][0] == 0);
+        assert(runtime->inputStorage[node][0][0] == 123);
+        assert(runtime->outputStorage[node][0][0] == 456);
+    }
+    assert(runtime->inputs[8][0] == runtime->silence);
+    assert(context->nodeChannelLevels[0][0].load() > .4f);
+    assert(fabsf(runtime->inputs[8][1][0] - .25f) < 1e-5f);
+    const uint64_t before = runtime->effectChannelsProcessed;
+    for (unsigned block = 0; block < 20; ++block)
+        processGraphBlock(context.get(), runtime.get(), capture.get(), 101 + block);
+    assert(runtime->effectChannelsProcessed == before + 20);
+
+    // Unmuted Cut aliases the source; bypass chains preserve identity and node gains.
+    mute.enabled = 0;
+    for (uint16_t node = 2; node <= 6; ++node)
+        context->effectStates[runtime->snapshot.things[node].id].enabled = 0;
+    context->nodeGainAtomics[2].store(.5f);
+    context->effectStatesSeq.fetch_add(1);
+    const uint64_t bypassBefore = runtime->effectChannelsProcessed;
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 200);
+    assert(runtime->effectChannelsProcessed == bypassBefore + 1);
+    assert(runtime->outputs[1][0] == runtime->outputs[0][0]);
+    assert(runtime->outputs[2][0] == runtime->outputs[0][0]);
+    for (uint16_t node = 3; node <= 6; ++node)
+        assert(runtime->outputs[node][0] == runtime->inputStorage[3][0]);
+    assert(fabsf(runtime->inputs[8][0][0] - .25f) < 1e-5f);
+    assert(runtime->inputStorage[2][0][0] == 123);
+    assert(runtime->outputStorage[2][0][0] == 456);
+
+    // Zero volume stops graph DSP without stopping source capture.
+    mute.enabled = 1;
+    independent.enabled = 1;
+    context->nodeGainAtomics[0].store(0);
+    context->effectStatesSeq.fetch_add(1);
+    const uint64_t zeroGainBefore = runtime->effectChannelsProcessed;
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 210);
+    assert(runtime->effectChannelsProcessed == zeroGainBefore);
+    assert(runtime->outputs[7][1] == runtime->silence);
+    context->nodeGainAtomics[0].store(1);
+    context->effectStatesSeq.fetch_add(1);
+
+    // A downstream reverb keeps its audible tail after an upstream Cut closes.
+    mute.enabled = 0;
+    for (uint16_t node = 2; node <= 6; ++node)
+        context->effectStates[runtime->snapshot.things[node].id].enabled = 1;
+    context->nodeGainAtomics[2].store(1);
+    context->effectStatesSeq.fetch_add(1);
+    for (unsigned block = 0; block < 60; ++block)
+        processGraphBlock(context.get(), runtime.get(), capture.get(), 300 + block);
+    assert(audiox::effects::slotHasPendingAudio("fast_path_3", 0, runtime->effectParamsCache[3]));
+    mute.enabled = 1;
+    context->effectStatesSeq.fetch_add(1);
+    const uint64_t tailBefore = runtime->effectChannelsProcessed;
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 400);
+    assert(runtime->effectChannelsProcessed > tailBefore + 1);
+    assert(runtime->outputs[1][0] == runtime->silence);
+    bool audibleTail = false;
+    for (unsigned block = 0; block < 4000; ++block) {
+        processGraphBlock(context.get(), runtime.get(), capture.get(), 401 + block);
+        for (float sample : runtime->outputStorage[3][0])
+            audibleTail |= fabsf(sample) > .001f;
+    }
+    assert(audibleTail && !runtime->sleeping);
+    const uint64_t settled = runtime->effectChannelsProcessed;
+    processGraphBlock(context.get(), runtime.get(), capture.get(), 4500);
+    assert(runtime->effectChannelsProcessed == settled + 1);
+    for (uint16_t node = 1; node <= 6; ++node)
+        assert(runtime->outputs[node][0] == runtime->silence);
+    puts("Cut disconnects a five-effect chain immediately; bypass aliases buffers, gains persist, tails drain and independent routes keep running");
+}
+
+static void testSilentRelease() {
+    auto context = std::make_unique<AudioContext>(nullptr);
+    auto runtime = std::make_unique<RuntimeGraph>();
+    runtime->snapshot.thingCount = 2;
+    runtime->snapshot.things[0].outputs = 1;
+    runtime->snapshot.things[1].inputs = runtime->snapshot.things[1].outputs = 1;
+    strcpy(runtime->snapshot.things[1].id, "release_graph");
+    runtime->nodeKind[0] = NODE_SOURCE;
+    runtime->nodeKind[1] = NODE_EFFECT;
+    context->nodeGainAtomics[0].store(1);
+    float reference[BUFFER_FRAMES]{};
+    for (uint8_t type : {audiox::effects::EFFECT_GATE, audiox::effects::EFFECT_COMPRESSOR,
+                        audiox::effects::EFFECT_LIMITER, audiox::effects::EFFECT_MULTIBAND}) {
+        auto &params = runtime->effectParamsCache[1];
+        params.type = type;
+        params.enabled = 1;
+        audiox::effects::setSlotDefaultsForType(&params, type);
+        const auto *release = audiox::effects::effectParamSpecFor(type, "release_ms");
+        assert(audiox::effects::setSlotParamValue(&params, "release_ms", release->maxValue) == RET_OK);
+        audiox::effects::resetSlotAudio("release_reference", 0);
+        const auto render = [&](float amplitude) {
+            clearRuntimeBuffers(runtime.get());
+            std::fill_n(runtime->outputs[0][0], BUFFER_FRAMES, amplitude);
+            routeCompiledEdge(context.get(), runtime.get(), {0, 1, 0, 0});
+            processNode(context.get(), runtime.get(), 1);
+            audiox::effects::processSlot("release_reference", 0, params,
+                runtime->outputs[0][0], reference, BUFFER_FRAMES);
+            for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame)
+                assert(fabsf(runtime->outputs[1][0][frame] - reference[frame]) < 1e-5f);
+        };
+        for (unsigned block = 0; block < 200; ++block) render(.8f);
+        bool settled = false;
+        for (unsigned block = 0; block < 16000; ++block) {
+            render(0);
+            if (runtime->outputs[1][0] == runtime->silence) {
+                settled = true;
+                break;
+            }
+        }
+        assert(settled);
+        const uint64_t before = runtime->effectChannelsProcessed;
+        for (unsigned block = 0; block < 10; ++block) render(0);
+        assert(runtime->effectChannelsProcessed == before);
+        render(.8f);
+        assert(runtime->effectChannelsProcessed == before + 1);
+    }
+    puts("Gate, compressor, limiter and multiband releases match continuously running DSP and eventually stop, including maximum release times");
+}
+
+static void testMultichannelCut() {
+    auto context = std::make_unique<AudioContext>(nullptr);
+    auto runtime = std::make_unique<RuntimeGraph>();
+    runtime->snapshot.thingCount = 3;
+    runtime->nodeKind[0] = NODE_SOURCE;
+    runtime->nodeKind[1] = NODE_EFFECT;
+    runtime->nodeKind[2] = NODE_SINK;
+    runtime->snapshot.things[0].outputs = 16;
+    runtime->snapshot.things[1].inputs = runtime->snapshot.things[1].outputs = 16;
+    runtime->snapshot.things[2].inputs = 16;
+    strcpy(runtime->snapshot.things[1].id, "fast_cut_16");
+    context->nodeGainAtomics[0].store(1);
+    context->nodeGainAtomics[1].store(1);
+    auto &params = runtime->effectParamsCache[1];
+    params.type = audiox::effects::EFFECT_CUT;
+    audiox::effects::setSlotDefaultsForType(&params, params.type);
+    params.values[0] = 16;
+    for (uint8_t enabled : {0, 1, 0}) {
+        params.enabled = enabled;
+        clearRuntimeBuffers(runtime.get());
+        for (uint8_t channel = 0; channel < 16; ++channel) {
+            runtime->outputs[0][channel][0] = (channel + 1) * .01f;
+            routeCompiledEdge(context.get(), runtime.get(), {0, 1, channel, channel});
+        }
+        processNode(context.get(), runtime.get(), 1);
+        for (uint8_t channel = 0; channel < 16; ++channel) {
+            routeCompiledEdge(context.get(), runtime.get(), {1, 2, channel, channel});
+            assert(runtime->inputs[2][channel] ==
+                (enabled ? runtime->silence : runtime->outputs[0][channel]));
+            assert(runtime->outputs[0][channel][0] == (channel + 1) * .01f);
+        }
+        assert(runtime->effectChannelsProcessed == 0);
+    }
+    puts("Sixteen-channel Cut toggles between direct aliases and disconnections without DSP");
 }
 
 static void testNativePlugin() {
@@ -496,6 +736,8 @@ static void testNativePlugin() {
     params.pluginHost = host.get();
     params.values[0] = 2;
     clearRuntimeBuffers(runtime.get());
+    runtime->inputs[0][0] = runtime->inputStorage[0][0];
+    runtime->inputs[0][1] = runtime->inputStorage[0][1];
     std::fill_n(runtime->inputs[0][0], BUFFER_FRAMES, 0.1f);
     std::fill_n(runtime->inputs[0][1], BUFFER_FRAMES, 0.3f);
     processNode(context.get(), runtime.get(), 0);
@@ -510,6 +752,8 @@ static void testNativePlugin() {
     params.enabled = 0;
     processNode(context.get(), runtime.get(), 0);
     assert(runtime->outputs[0][0][0] == 0.1f && runtime->outputs[0][1][0] == 0.3f);
+    assert(runtime->outputs[0][0] == runtime->inputs[0][0]);
+    assert(runtime->outputs[0][1] == runtime->inputs[0][1]);
     params.enabled = 1;
     beginAudioSleep(runtime.get());
     assert(!host->hasPendingAudio(0.01f));
@@ -529,6 +773,9 @@ static void testNativePlugin() {
 
 int main() {
     testDirectProcessing();
+    testGraphFastPaths();
+    testSilentRelease();
+    testMultichannelCut();
     testIdleSleep();
     testNativePlugin();
     auto context = std::make_unique<AudioContext>(nullptr);

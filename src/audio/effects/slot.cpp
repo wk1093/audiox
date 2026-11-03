@@ -452,6 +452,42 @@ bool slotHasPendingAudio(const char *effectId, uint8_t channel, const SlotParams
     }
 }
 
+bool slotNeedsSilentProcessing(const char *effectId, uint8_t channel, const SlotParams &params) {
+    if (slotHasPendingAudio(effectId, channel, params)) return true;
+    // Detector release and coefficient transitions must not freeze during silence.
+    if (params.type == EFFECT_GATE) {
+        const auto *state = getGateStateFor(effectId, channel, false);
+        if (!state) return false;
+        if (state->envelope > 1e-12f) return true;
+        const float floor = powf(10.0f, -params.values[3] / 20.0f);
+        const float ms = floor > state->gain ? params.values[1] : params.values[2];
+        const float samples = ms * float(SAMPLE_RATE) / 1000.0f;
+        const float coefficient = samples <= 1 ? 0 : expf(-1 / samples);
+        return coefficient * state->gain + (1 - coefficient) * floor != state->gain;
+    }
+    if (params.type == EFFECT_COMPRESSOR) {
+        const auto *state = compressorStates.find(effectId, channel, false);
+        return state && state->reductionDb > 1e-12;
+    }
+    if (params.type == EFFECT_LIMITER) {
+        const auto *state = limiterStates.find(effectId, channel, false);
+        const double release = exp(-1000.0 / (params.values[1] * SAMPLE_RATE));
+        return state && fabs(state->gain - 1.0) > 1e-12 &&
+            1 + release * (state->gain - 1) != state->gain;
+    }
+    if (params.type == EFFECT_MULTIBAND) {
+        const auto *state = multibandStates.find(effectId, channel, false);
+        if (state)
+            for (double reduction : state->reductionDb)
+                if (reduction > 1e-12) return true;
+    }
+    if (params.type == EFFECT_EQ) {
+        const auto *state = equalizerStates.find(effectId, channel, false);
+        return state && state->transitioning;
+    }
+    return false;
+}
+
 void resetSlotAudio(const char *effectId, uint8_t channel) {
     ReverbState *reverb = getReverbStateFor(effectId, channel, false);
     if (reverb)

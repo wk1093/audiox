@@ -1,14 +1,16 @@
 # System and maintenance
 
-Open **System** in the device Web UI for device information, filesystem/power actions, runtime logs, and firmware updates. Configuration backup and restore are on **Config**, not System; follow [Config and backups](/guide/config) before maintenance.
-
-This guide describes the checked-in source, not a guarantee that every released or currently installed image has these controls. Read the device's reported version first. Older firmware may lack bounded logs, complete AXU updates, board metadata, or boot recovery; building new source on a computer does not update the running device. A newer browser UI alone cannot add missing server endpoints.
+Use **System** for device information, filesystem and power actions, runtime
+logs, and firmware updates. Configuration backups and restores are on
+**Config**; see [Config and backups](/guide/config) before maintenance.
 
 ::: warning Before changing firmware or power state
 Save pending edits, stop critical audio work, reduce monitoring levels, and download a configuration backup to another machine. Restart, shutdown, USB reconfiguration, and firmware installation interrupt audio. Keep power and the data cable stable until an update has completed.
 :::
 
-The current HTTP API has no login/authentication layer and runs without TLS on port 80. Treat anyone able to reach it as able to administer the device. See [Networking](/guide/networking) before adding bridges, forwards, or other interfaces.
+The HTTP API has no authentication or TLS and runs on port 80. Anyone who can
+reach it can administer the device. See [Networking](/guide/networking) before
+adding bridges, forwards, or other interfaces.
 
 ## Device Info
 
@@ -93,7 +95,8 @@ There is **no log-delete action** in this toolbar. Clear Filter does not erase l
 
 The backend scans at most the last 2 MiB per source, clips returned lines to 2,048 bytes, and caps the response at 512 KiB. Max Lines is an upper bound, not a guarantee of that many rows. Combined stdout/stderr is not a timestamp-synchronized journal.
 
-Long lines are marked as clipped. A bounded-tail result with no matches does not prove the event never happened. The UI deliberately does not fall back to downloading complete logs from older firmware without the bounded-query endpoint.
+Long lines are marked as clipped. A bounded-tail result with no matches does not
+prove the event never happened.
 
 For scripted reads:
 
@@ -172,7 +175,9 @@ Only the **browser/computer needs internet**. It queries GitHub without a token,
 
 Nightly lookup resolves the rolling release to a versioned nightly. The browser uses the project's CORS-enabled download mirror for archive bytes and requires its tag/path/size to match GitHub metadata. It checks download size and AXU magic, then the device checks archive entries. **The browser does not independently verify the SHA-256 sidecar.** For a manual SHA-256 check, use the local-file workflow above.
 
-If the mirror is not deployed yet, GitHub is rate-limited, or the browser is offline, the status explains the failure. **Download matching AXU manually** remains an alternative when a release asset exists. Older releases may have no AXU; previously published releases are not automatically backfilled.
+If the mirror is unavailable, GitHub is rate-limited, or the browser is offline,
+the status explains the failure. **Download matching AXU manually** remains an
+alternative when a release asset exists.
 
 ### If an update appears to fail
 
@@ -207,7 +212,8 @@ The report includes failed/restored versions, attempts, restored files, trial ev
 
 If no backup was available, the banner can report a failed boot without claiming that restoration succeeded. `GET /api/system/boot-failure` returns `204` when no report exists.
 
-There is no general **Revert now** button or permanent history of previous firmware. Once a healthy trial deletes its boot backup, returning to an older version requires a suitable older AXU or reflash.
+There is no **Revert now** control. After a successful trial boot, the backup is
+deleted; to return to an earlier version, install a compatible AXU or reflash.
 
 ::: danger Rollback is limited
 It depends on boot reaching the bootloader and on failures causing a reboot. An early kernel/bootloader hang or loss of power while writing boot files can defeat it. The first update from firmware without recovery is not protected by a feature its old runtime does not have. Current generated command lines include `panic=10`; older cards may not. Never remove `rdinit=/init` from the single-line boot command line.
@@ -236,7 +242,3 @@ AudioX uses a two-stage initramfs, not a persistent root Linux installation:
 Persistent does not mean included in a configuration backup. See [Config](/guide/config) for the precise managed files, restore semantics, and exclusions.
 
 Outside a trial, the watchdog restarts an exiting or unresponsive runtime with capped backoff. Its startup grace is two minutes, then it expects periodic main-loop heartbeats (12-second timeout). Realtime audio does not supply that heartbeat. A runtime restart rotates logs and unbinds/rebinds the gadget, so the host may observe a USB disconnect even without a kernel reboot.
-
-## Implementation references
-
-Controls and behavior are grounded in `web/index.html`, `web/app.js`, `web/logs.js`, `web/ui.js`, `web/updates.js`, `src/http/api.cpp`, `src/http/logs.cpp`, `src/http/server.cpp`, `src/init/bootloader.cpp`, `src/init/watchdog.cpp`, `src/init/recovery.cpp`, `src/init/filesystem.cpp`, and `include/boot_recovery.hpp`. Regression coverage includes `tests/web_ui_test.js`, `tests/web_logs_test.js`, `tests/web_updates_test.js`, `tests/system_logs_test.cpp`, and `tests/boot_recovery_test.cpp`; that coverage does not replace physical boot/update testing.

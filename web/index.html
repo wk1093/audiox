@@ -21,7 +21,7 @@
         <div class="brand-meta">
           <h1 class="brand-title">audiox routing desk</h1>
           <div class="version" id="app-version">version unknown</div>
-          <a class="docs-link" href="https://wklab.net/audiox/docs/guide/web-interface" target="_blank" rel="noopener noreferrer" title="New to AudioX? Open the device guide in a new tab (requires internet).">Need help? Start here</a>
+          <a class="docs-link" href="https://wklab.net/audiox/docs/guide/web-interface" target="_blank" rel="noopener noreferrer" title="Open the device manual in a new tab (requires internet).">Manual</a>
         </div>
       </div>
 
@@ -82,13 +82,13 @@
         <section class="card bluetooth-header">
           <div>
             <h2>Bluetooth</h2>
-            <p id="bluetooth-status" class="small" role="status">Connect your saved audio devices or discover a new one.</p>
+            <p id="bluetooth-status" class="small" role="status">Connect a saved device or scan for audio devices.</p>
             <p id="bluetooth-scan-hint" class="small" hidden></p>
             <label class="bluetooth-filter">
               <input id="bluetooth-hide-unnamed" type="checkbox" role="switch" checked aria-describedby="bluetooth-filter-hint">
               Hide unnamed devices
             </label>
-            <p id="bluetooth-filter-hint" class="small">Only Classic Bluetooth is scanned. Turn this off to show nearby devices identified only by an address. Saved devices are always shown.</p>
+            <p id="bluetooth-filter-hint" class="small">Scans Classic Bluetooth. Disable this filter to include unnamed devices. Saved devices remain visible.</p>
           </div>
           <button id="btn-bluetooth-scan" class="primary">Add device</button>
         </section>
@@ -101,7 +101,7 @@
         <section class="card">
           <h2>Effects</h2>
           <div id="effects-map-status" class="small" style="margin-top:8px;">
-            Name and tune your effects here. Changes save automatically. Add effects from the Routing menu; expand MIDI controls only when you need them.
+            Adjust processing and MIDI assignments. Parameter changes save automatically; names require Save name. Add effects in Routing.
           </div>
         </section>
         <div id="effects-map-grid" class="effects-map-grid"></div>
@@ -114,8 +114,8 @@
         <div class="vol-header card">
           <div class="vol-header-left">
             <h2>Mixer</h2>
-            <p class="small">Vertical faders control outgoing-route gain. 100% is unity; meters show signal before this gain.</p>
-            <span class="small" id="vol-cc-status">Click &ldquo;Assign CC&rdquo; on a channel to map a MIDI knob.</span>
+            <p class="small">Outgoing gain: 100% = unity. Meters are pre-fader.</p>
+            <span class="small" id="vol-cc-status">Use Assign CC to map a hardware control.</span>
           </div>
           <label class="vol-effect-filter"><input id="vol-show-effects" type="checkbox"> Show effect channels</label>
           <button id="btn-vol-refresh" class="flat">Refresh</button>
@@ -135,7 +135,7 @@
             <button id="btn-sb-edit-mode" class="flat" aria-pressed="false">Edit</button>
           </div>
           <div class="sb-topbar-left">
-            <span class="small" id="sb-mapping-status">Tap a sound to play. Switch to Edit to manage sounds and MIDI.</span>
+            <span class="small" id="sb-mapping-status">Trigger clips in Play. Manage clips and MIDI assignments in Edit.</span>
           </div>
           <div class="grid-2">
             <button id="btn-sb-stop-all" class="warn">Stop All</button>
@@ -148,7 +148,7 @@
         <details class="card sb-setup-panel" id="sb-grid-settings">
           <summary>Layout &amp; MIDI setup</summary>
           <div class="stack sb-panel-content">
-          <p class="small">Choose your layout and connect grid positions to your controller.</p>
+          <p class="small">Set the pad layout and MIDI grid calibration.</p>
           <div class="cfg-row">
             <label for="sb-layout-mode">Layout</label>
             <select id="sb-layout-mode">
@@ -161,14 +161,14 @@
               <label>Rows <input id="sb-grid-rows" type="number" min="1" max="8" value="4"></label>
               <label>Columns <input id="sb-grid-columns" type="number" min="1" max="8" value="4"></label>
             </div>
-            <p class="small">Choose a grid from 1×1 to 8×8. Converting a normal layout places existing sounds in their current order. MIDI corner learning needs at least two rows and columns.</p>
+            <p class="small">Grid size: 1×1 to 8×8. Initial placement follows the sound order. Corner calibration requires at least two rows and columns.</p>
             <div class="grid-2">
               <button type="button" class="flat sb-grid-learn" data-corner="top_left">Learn top-left</button>
               <button type="button" class="flat sb-grid-learn" data-corner="top_right">Learn top-right</button>
               <button type="button" class="flat sb-grid-learn" data-corner="bottom_left">Learn bottom-left</button>
               <button type="button" class="flat sb-grid-learn" data-corner="bottom_right">Learn bottom-right</button>
             </div>
-            <p id="sb-grid-learn-status" class="small" role="status">Learn the four physical pad corners to connect grid cells to MIDI notes.</p>
+            <p id="sb-grid-learn-status" class="small" role="status">Learn each corner pad to map grid positions to MIDI notes.</p>
           </div>
           </div>
         </details>
@@ -196,11 +196,11 @@
         </details>
         </div>
 
-        <p id="sb-order-status" class="small sb-edit-only" role="status">Drag sound cards to reorder them (on touch, drag the sound name). With a keyboard, focus a name and press Space, use arrow keys, then Enter to save. Changes also update the device display.</p>
+        <p id="sb-order-status" class="small sb-edit-only" role="status">Drag to reorder; on touch, drag the clip name. Keyboard: focus a name, press Space, move with arrow keys, then Enter to save. Order is shared with the device display.</p>
         <div id="sb-grid" class="sb-grid"></div>
         <section id="sb-unassigned" class="card stack sb-grid-only" data-grid-unassigned hidden>
           <h2>Unassigned sounds and actions</h2>
-          <p class="small">Drag tiles here to remove them from the grid and clear their MIDI bindings. Sounds remain available for browser playback. Stop All and Sampler Toggle can be placed like sounds.</p>
+          <p class="small">Drop tiles here to unassign their grid position and MIDI binding. Clips remain playable in the browser. Action tiles use the same placement controls.</p>
           <div id="sb-unassigned-list" class="sb-grid"></div>
         </section>
       </div>
@@ -211,7 +211,11 @@
       <div class="macros-layout">
         <section class="card stack">
           <h2>Scripts</h2>
-          <p class="small">Save up to 16 named Lua scripts with multiple event callbacks. Only keyboard actions need USB Keyboard enabled in Config and a connected USB host. Light/MIDI actions need the selected controller connected. Sound, effects and volume actions do not need either device. Existing sequences and keyboard shortcuts are automatically converted to callbacks, retaining their triggers and Run behavior.</p>
+          <p class="small">Up to 16 Lua scripts, triggered by MIDI, audio events, or Run. Run uses the saved source.</p>
+          <details class="reference-panel">
+            <summary>Device requirements</summary>
+            <p class="small">Keyboard output requires USB Keyboard enabled in Config and a connected host. MIDI and pad lighting require the selected controller. Sound, effects, and volume actions require neither connection.</p>
+          </details>
           <div class="cfg-row">
             <label for="macro-name">Name (up to 63 UTF-8 bytes)</label>
             <input id="macro-name" type="text" maxlength="63" autocomplete="off" placeholder="My automation" data-unsaved-key="macro-editor">
@@ -227,12 +231,12 @@
             <input id="chord-note" type="number" min="0" max="127" value="60" data-unsaved-key="macro-editor">
           </div>
           <button id="btn-chord-learn" type="button" aria-pressed="false" disabled>Learn MIDI Pad</button>
-          <p id="chord-learn-status" class="small" role="status">Choose a channel/note above, or learn the next pad you press.</p>
+          <p id="chord-learn-status" class="small" role="status">Enter a channel and note, or select Learn MIDI Pad.</p>
           </div>
           <div id="chord-script-editor" class="stack">
-            <details>
-              <summary>Callback example and lifetime rules</summary>
-              <p class="small">Register callbacks in code, for example:</p>
+            <details class="reference-panel">
+              <summary>Callbacks and state</summary>
+              <p class="small">Register a handler for each event:</p>
               <pre><code>hook("run", function(event)
   state.runs = (state.runs or 0) + 1
   log("Run " .. state.runs)
@@ -243,21 +247,26 @@ hook("sound_finish", function(event)
     log("Intro finished")
   end
 end)</code></pre>
-              <p class="small">Subscriptions come from hook calls. Script setup reruns for each event; ordinary variables reset. Only explicit state values persist between events (not across restart). Put actions and configuration reads inside callbacks. Register hooks unconditionally at top level; event and state are available only in callbacks. Up to 32 callbacks, called in registration order. Add a run hook for the Run button. MIDI hooks still require the optional pad binding above; for CC the Note field is the controller number. Keyboard shortcuts use tap("CTRL+A") inside a callback.</p>
+              <p class="small">Register hooks unconditionally at top level; place actions, configuration I/O, and event/state access inside handlers. Setup reruns for every event. Only scalar state fields persist between events, not across restart. Up to 32 handlers run in registration order. Run requires a run hook. MIDI hooks require a binding; for CC, Note specifies the controller number.</p>
             </details>
             <label><input id="macro-config-write" type="checkbox" data-unsaved-key="macro-editor"> Allow configuration writes (requires confirmation on save)</label>
             <label for="chord-script">Lua Script</label>
             <textarea id="chord-script" rows="14" maxlength="17408" spellcheck="false" data-unsaved-key="macro-editor">hook("run", function(event)
-  log("Hello from AudioX")
+  log("Script triggered")
 end)
 </textarea>
-            <p class="small">tap("CTRL+A"), press("SHIFT+A"), release(), type("Hello!", 80), wait(milliseconds), light(velocity). press replaces the held chord; release clears all keys. Taps/text release any previous hold first; sequence completion/cancellation releases everything automatically. type uses US-layout ASCII (including newline and tab); its optional interval is milliseconds between character presses (default 50, minimum 30). Host layout and Caps Lock must match.</p>
-            <p class="small">event.type identifies the trigger: note_on, note_off, cc, sound_start, sound_finish, device_connect, device_disconnect, or run. event.source is web, midi, audio, or device. MIDI fields: channel, note, velocity, pressed; CC fields: cc and value. Sound/device hooks include event.sound or event.device. Web Run invokes the run hook with velocity 127. state persists across triggers (32 named scalar values). Edits, cancellation and restart reset state; failed evaluations discard their state changes. millis() and epoch() are trigger snapshots.</p>
-            <p class="small">sound.play("clip.wav", 1.0), sound.stop_all(), midi.note_on(0,60,100), midi.note_off(0,60), midi.cc(0,1,64), midi.program(0,5), and midi.send(status,...) queue device actions. Sound must already be preloaded; MIDI goes to the controller, not the USB host. log("message") writes to device logs. No arbitrary files, shell, network, or module loading. <a href="https://wklab.net/audiox/docs/lua/" target="_blank" rel="noopener noreferrer">Lua guide, API reference and recipes</a> (requires internet on your browser).</p>
-            <p class="small">config.list() lists allowed persistent settings files; config.read(name) reads up to 64 KiB of text. config.write(name, text) queues a full replacement (up to 4 KiB per write, 8 KiB total payload). Saving configuration scripts requires confirmation. Writes are not format-validated: back up first, preserve the file format, and reload/restart after changes. Bluetooth pairing credentials are deliberately inaccessible. Avoid event scripts that repeatedly write settings or trigger their own sound events.</p>
-            <p class="small">effects.enable(id, true), effects.toggle(id), effects.set(id, parameter, value) use existing effect IDs and actual parameter ranges (invalid values report runtime errors). volume.set(id, 0..100) and volume.adjust(id, -100..100) use routing thing IDs from GET /api/audio/volumes, not display names. 100% is unity gain; adjustments are percentage points clamped to 0..100. Device controls are runtime-only; routing automation is planned later.</p>
-            <p class="small">Limits per event: 17,408 UTF-8 source bytes (including migration wrappers), 128 actions, 1,024 typed characters (255 per type call), 60 seconds scheduled time, 100,000 instructions, 1 MiB Lua memory. Registration and callbacks share these budgets. Saving validates registration without executing handlers. Execution errors appear in device logs and here after Reload Scripts. No actions or state updates from a failed evaluation are applied. Lua never runs on the audio thread.</p>
+            <details class="reference-panel">
+              <summary>Lua API quick reference and execution limits</summary>
+            <p class="small">Keyboard: tap("CTRL+A"), press("SHIFT+A"), release(), type("Text", 80). press replaces held keys; tap and type release them first. Completion or cancellation releases all keys. type uses US-layout ASCII; match the host layout and Caps Lock state. Typing interval: 50 ms default, 30 ms minimum. wait(ms) schedules a delay; light(velocity) sets the bound pad LED.</p>
+            <p class="small">Events: note_on, note_off, cc, sound_start, sound_finish, device_connect, device_disconnect, run. event.source identifies web, midi, audio, or device. Use event.sound or event.device for audio/controller events. Run supplies velocity 127. state holds 32 scalar fields; edits, cancellation, and restart may reset it. millis() and epoch() are trigger-time snapshots.</p>
+            <p class="small">Output: sound.play("clip.wav", 1.0), sound.stop_all(), midi.note_on(0,60,100), midi.note_off(0,60), midi.cc(0,1,64), midi.program(0,5), midi.send(status,...). Clips must be preloaded. MIDI output targets the controller, not the USB host. log("message") writes to device logs. Shell, network, arbitrary file access, and module loading are unavailable. <a href="https://wklab.net/audiox/docs/lua/" target="_blank" rel="noopener noreferrer">Lua API and examples</a> (internet required).</p>
+            <p class="small">Configuration: config.list(), config.read(name), config.write(name, text). Reads: 64 KiB/file. Writes replace the whole file: 4 KiB/write, 8 KiB total payload. Saving requires confirmation. Back up first: file contents are not format-validated and may require reload/restart. Pairing credentials are inaccessible. Avoid repeated writes and recursive sound triggers.</p>
+            <p class="small">Processing: effects.enable(id, true), effects.toggle(id), effects.set(id, parameter, value). Use valid effect IDs and parameter ranges. volume.set(id, 0..100) and volume.adjust(id, -100..100) use IDs from GET /api/audio/volumes, not names. 100% is unity; adjustments are percentage points clamped to 0..100. These changes are runtime-only.</p>
+            <p class="small">Per event: 17,408 UTF-8 source bytes, 128 actions, 1,024 typed characters (255/call), 60 seconds scheduled duration, 100,000 instructions, 1 MiB Lua memory. Registration and handlers share the budgets. Save validates registration without running handlers. Failed evaluation discards pending actions and state changes. Lua runs outside the audio thread. Reload Scripts or inspect logs for errors.</p>
+            </details>
           </div>
+          <details class="reference-panel">
+          <summary>Pad lighting</summary>
           <div class="grid-2">
             <div class="stack">
               <label for="chord-idle-velocity">Idle LED Velocity / Color</label>
@@ -268,7 +277,8 @@ end)
               <input id="chord-pressed-velocity" type="number" min="0" max="127" value="0" data-unsaved-key="macro-editor">
             </div>
           </div>
-          <p class="small">Leave both velocities at 0 for scripts with no default lighting. 0 turns the LED off; 1&ndash;127 selects your controller's velocity/color. Uses the global lighting output channel. MIDI-bound script colors override sound/action colors on the same note; Dim Lights still applies. Lua light() requires an enabled MIDI binding and the selected controller connected, even for web Run.</p>
+          <p class="small">0 = off; 1&ndash;127 = controller color/velocity. Output uses the global lighting channel. Script colors take priority over sound/action mappings on the same note; Dim Lights overrides all colors. light() requires an enabled MIDI binding and connected controller, including for Run.</p>
+          </details>
           <div class="macro-actions">
             <button id="btn-chord-save" class="primary">Save Script</button>
             <button id="btn-macro-new" class="flat">New Script</button>
@@ -334,7 +344,7 @@ end)
 
         <section class="card stack">
           <h2>Lighting</h2>
-          <p class="small" style="margin:0 0 8px;">Sets LED colors on the MIDI controller per playback state. Velocity 0 = off.</p>
+          <p class="small" style="margin:0 0 8px;">Controller LED velocities by playback state. 0 = off.</p>
           <div class="cfg-row">
             <label for="light_channel">MIDI Channel (0&ndash;15)</label>
             <input id="light_channel" type="number" min="0" max="15" step="1" value="0" data-unsaved-key="light-config">
@@ -356,7 +366,7 @@ end)
             <button id="btn-light-refresh" class="flat">Refresh LEDs</button>
           </div>
           <button id="btn-light-dim" class="flat" aria-pressed="false" disabled>Dim lights</button>
-          <p class="small" style="margin:0;">Temporarily turns off all MIDI lights without stopping audio or changing saved colors. Restore them here or reboot to return to normal lighting.</p>
+          <p class="small" style="margin:0;">Dim Lights turns LEDs off without affecting audio or saved colors. Restore here or reboot.</p>
         </section>
       </div>
     </section>
@@ -393,7 +403,7 @@ end)
               <option value="1">Enabled</option>
             </select>
           </div>
-          <p class="small">Save stages these settings. Reload applies them and briefly reconnects USB audio, MIDI, keyboard, and networking. MIDI flows from the selected controller to the host only; host input is not routed back. Choose Unmapped when enabling passthrough for the first time.</p>
+          <p class="small">Save stages settings; Reload applies them and reconnects USB audio, MIDI, keyboard, and networking. MIDI passthrough sends controller input to the host only. Unmapped excludes messages assigned to AudioX controls.</p>
           <div class="actions-3">
             <button id="btn-load">Load Config</button>
             <button id="btn-save" class="primary">Save Config</button>
@@ -402,15 +412,15 @@ end)
         </div>
         <section class="card stack">
           <h2>Configuration Backup</h2>
-          <p class="small">Save all AudioX settings, routing, MIDI/lighting, effects, volumes, Bluetooth pairings, and soundboard audio in one .axb file. Save any pending UI edits first. Backups contain Bluetooth keys; keep them private.</p>
+          <p class="small">Export settings, routing, MIDI assignments, effects, gains, pairings, and clips as an .axb archive. Save pending edits first. Archives contain Bluetooth keys; store them securely.</p>
           <button id="btn-config-backup" class="primary">Backup Configuration</button>
           <div class="cfg-row">
             <label for="backup_file">Backup Archive</label>
             <input id="backup_file" type="file" accept=".axb,application/octet-stream">
           </div>
-          <p class="small">Restore after reflashing to recover your setup. Restore replaces settings and sounds, then reboots. Firmware and boot files are not changed. Maximum backup size: 4 GiB; free device storage must fit the upload and extracted files.</p>
+          <p class="small">Restore replaces settings and clips, then reboots. Firmware and boot files are unchanged. Maximum archive: 4 GiB. Free storage must hold both the archive and extracted files.</p>
           <progress id="backup-progress" class="update-progress" max="100" value="0" hidden></progress>
-          <div id="backup-status" class="small" role="status" aria-live="polite">No backup or restore requested.</div>
+          <div id="backup-status" class="small" role="status" aria-live="polite">Ready.</div>
           <button id="btn-config-restore" class="warn">Restore Configuration</button>
         </section>
       </div>
@@ -509,7 +519,7 @@ end)
 
         <section class="card stack">
           <h2>Firmware Update</h2>
-          <p class="small">Check GitHub using this browser's internet connection. The Pi does not need internet access. Installation requires confirmation and reboots the device.</p>
+          <p class="small">Download releases through this browser; the device does not need internet access. Installation requires confirmation and reboots the device.</p>
           <div class="cfg-row">
             <label for="update-channel">Release Channel</label>
             <select id="update-channel">
@@ -518,7 +528,7 @@ end)
             </select>
           </div>
           <button id="btn-update-check" class="flat">Check GitHub Releases</button>
-          <div id="update-release" class="small" aria-live="polite">No release checked yet.</div>
+          <div id="update-release" class="small" aria-live="polite">Select a release channel, then check for updates.</div>
           <a id="update-download" class="small" target="_blank" rel="noopener noreferrer" hidden>Download matching AXU manually</a>
           <button id="btn-update-online" class="warn" disabled>Download and Install Release</button>
           <div class="cfg-row" style="margin-top: 0;">
@@ -526,7 +536,7 @@ end)
             <input id="update_file" type="file" accept=".axu,application/octet-stream">
           </div>
           <progress id="update-progress" class="update-progress" max="100" value="0" hidden></progress>
-          <div id="update-status" class="small" role="status" aria-live="polite">Upload an .axu image built with make update_archive. The device reboots after installing it.</div>
+          <div id="update-status" class="small" role="status" aria-live="polite">Select an .axu update archive. Installation reboots the device.</div>
           <button id="btn-update-upload" class="warn">Install Update</button>
         </section>
       </div>

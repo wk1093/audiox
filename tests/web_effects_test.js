@@ -79,7 +79,7 @@ test('effects use saved or readable names, never internal IDs in their graph tit
   const advanced = find(f.panel, el => el.tagName === 'DETAILS' && el.children[0]?.textContent === 'Advanced and delete');
   assert.match(advanced.children[1].textContent, /fx_7/);
   const midi = find(f.panel, el => el.className === 'fx-midi-details');
-  assert.equal(midi.open, undefined);
+  assert.equal(midi.open, false);
 });
 
 test('rename saves UTF-8 safely, updates graph, and preserves routing IDs', async () => {
@@ -110,10 +110,15 @@ test('parameter controls pair sliders and numeric fields with help, units and re
   f.setEffects([gain]);
   await f.manager.loadEffects();
   const control = find(f.panel, el => el.className === 'fx-parameter');
-  assert.match(control.children[0].textContent, /Level \(x\)/);
-  assert.match(control.children[1].textContent, /1 is unchanged/);
-  const [slider, number, reset] = control.children[2].children;
-  assert.equal(number['aria-describedby'], control.children[1].id);
+  assert.match(control.children[0].children[0].textContent, /Level \(x\)/);
+  const info = control.children[0].children[1];
+  assert.equal(info.tagName, 'DETAILS');
+  assert.equal(info.open, undefined);
+  assert.equal(info.children[0]['aria-label'], 'Help for Level');
+  assert.match(info.children[0].title, /1 is unchanged/);
+  assert.match(info.children[1].textContent, /1 is unchanged/);
+  const [slider, number, reset] = control.children[1].children;
+  assert.equal(number['aria-describedby'], info.children[1].id);
   number.value = '2.5';
   number.listeners.change();
   assert.equal(slider.value, '2.5');
@@ -128,6 +133,30 @@ test('parameter controls pair sliders and numeric fields with help, units and re
   await f.flush();
   assert.equal(number.value, '1');
   assert.equal(new URLSearchParams(f.calls.at(-1).body).get('value'), '1.0000');
+});
+
+test('parameter help closes on Escape and effect disclosures survive rerendering', async () => {
+  const f = fixture();
+  f.setEffects([gain]);
+  await f.manager.loadEffects();
+  const info = find(f.panel, el => el.className === 'fx-param-info');
+  let focused = false, stopped = false;
+  info.children[0].focus = () => { focused = true; };
+  info.open = true;
+  info.listeners.keydown({ key: 'Escape', stopPropagation: () => { stopped = true; } });
+  assert.equal(info.open, false);
+  assert.equal(focused, true);
+  assert.equal(stopped, true);
+  const midi = find(f.panel, el => el.className === 'fx-midi-details');
+  midi.open = true;
+  midi.listeners.toggle();
+  f.manager.renderPanel();
+  assert.equal(find(f.panel, el => el.className === 'fx-midi-details').open, true);
+  const reopened = find(f.panel, el => el.className === 'fx-midi-details');
+  reopened.open = false;
+  reopened.listeners.toggle();
+  f.manager.renderPanel();
+  assert.equal(find(f.panel, el => el.className === 'fx-midi-details').open, false);
 });
 
 test('noise floor keeps four decimals, channels stay integral, and failures are visible', async () => {

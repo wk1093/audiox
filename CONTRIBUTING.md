@@ -1,217 +1,144 @@
 # Contributing to AudioX
 
-Thanks for checking out AudioX and for considering a contribution.
+Contributions to AudioX are welcome, especially focused fixes, reliability work,
+tests, hardware validation, and documentation. For a substantial feature or
+design change, open an issue before implementation.
 
-This project has grown quickly and welcomes contributors and additional maintainers, especially for bug fixes, reliability, tests, docs, and small focused features.
+## Development environment
 
-## First things first
+Builds target AArch64 and are run from the repository root on Linux. On Ubuntu,
+install the base toolchain and image utilities with:
 
-- Be respectful and constructive.
-- Prefer small pull requests over large rewrites.
-- Keep behavior changes explicit and documented.
-- If you plan a big change, open an issue first to align on direction.
+```sh
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential autoconf automake libtool \
+  gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+  cpio curl wget parted e2fsprogs dosfstools mtools \
+  libarchive-tools libncurses-dev xz-utils jq pkg-config
+```
 
-## Ways to help
-
-Good contribution areas right now:
-
-- Check the TODO.md for the main things I am working on, maybe you can help with one of those. Try to focus on things that are in the same version milestone, I don't want to have work on future versions get in the way of current work (If you have a suggestion for a re-ordering of the TODO.md, or new things that should be added in a certain release, feel free to open an issue or PR, I am happy to discuss and re-prioritize things).
-- I would love help with testing and bug reports. If you find a bug, please open an issue with as much detail as possible.
-- If you notice any issues in my code in a recent commit, please open an issue or PR. I am happy to review and merge small fixes/fix them myself.
-- Boot and update safety
-- Audio stability and latency improvements
-- HTTP API hardening and error handling
-- UI and UX polish (framebuffer and web, especially web since it had heavy AI assistance)
-- Documentation updates and cleanup
-
-## Development setup
-
-Prereqs on Ubuntu-like host:
-
-- build-essential
-- gcc-aarch64-linux-gnu
-- g++-aarch64-linux-gnu
-- cpio
-- curl
-- parted
-- dosfstools
-- e2fsprogs
+Additional dependencies depend on the target. Host audio tests require ALSA
+development files; browser tests require Node.js; docs require Node.js/npm;
+some target checks use `qemu-aarch64`. The [development guide](docs/guide/development.md)
+lists commands, outputs, and optional tooling.
 
 Common commands:
 
-```bash
-make show_kernel # show kernel build config
-make show_alsa # show ALSA build config
-make alsa # build ALSA from source
-make initramfs # build bootloader and program initramfs
-make image # build full SD card image
-make dev # build and upload matching kernel, bootloader, and runtime (requires a running AudioX device)
+```sh
+make show_kernel
+make show_alsa
+make alsa
+make initramfs
+make image
 ```
 
-WARNING: `make dev` replaces the device kernel and bootloader before staging the runtime update, so use it only with a running AudioX device. It does not provide recovery if an update breaks boot; you may need to reflash the SD card (via `make fancyexport` or `make image`). Be careful when testing kernel and bootloader changes.
+`make` defaults to `make initramfs`. The outputs
+`out/initramfs.cpio.gz` and `out/program.cpio.gz` are host-side artifacts.
+`make image` creates an image file; it does not flash a card.
+
+::: danger Device and card writes
+`make dev` and `make upload_update` install firmware on a real device.
+`make export` and `make fancyexport` overwrite boot files on a mounted card.
+Verify the destination, keep stable power, and retain a backup and recovery
+image. Kernel or bootloader changes can prevent startup; automatic update
+reversion does not cover every failure.
+:::
 
 ## Project layout
 
-- src/: runtime and bootloader C++ implementation
-- include/: shared headers
-- scripts/: build and image tooling
-- web/: static web UI
-- root/: runtime rootfs seed files
+- `src/`, `include/`: C++ runtime, bootloader, and shared headers.
+- `scripts/`: build, image, QEMU, and release tools.
+- `web/`: device control interface.
+- `root/`: runtime root-filesystem seed files.
+- `tests/`: host regressions and desktop audio-bench targets.
+- `docs/`: VitePress documentation.
+- `out/`: generated dependencies, images, and build outputs.
 
-Two-stage boot artifacts:
+## Contribution workflow
 
-- out/initramfs.cpio.gz (bootloader)
-- out/program.cpio.gz (runtime)
+Use a short-lived branch from an up-to-date `main`. For example:
 
-Ordinary CI builds run regression tests and build/upload both initramfs artifacts
-for each supported board. FFmpeg download, SD image creation, compressed Imager
-packaging (`.img.xz`), and update archives (`.axu`) run only for stable or nightly
-releases. Locally, plain `make` also defaults to initramfs; use `make image` or
-`make update_archive` explicitly when you need release packages.
-
-## Coding guidelines
-
-- Use focused changes. Avoid unrelated refactors in the same PR.
-- Match existing code style in touched files. (I will probably add clang-format in the future)
-- Do not add new runtime dependencies unless necessary (you will probably need to discuss this with me, I am happy to add new dependencies if they are useful, but I want to avoid adding unnecessary bloat. I also prefer lightweight solutions, and enjoy the learning process of writing things from scratch).
-- Keep logs useful and brief. If the logs are too verbose, and the device is left on for a long time, the SD card can wear out quickly, and/or fill up the SD card and cause problems. I want to avoid this, so please be careful with logging.
-- Prefer deterministic behavior, explicit error handling, and safe fallbacks.
-
-## Branches and collaboration
-
-Use short-lived public branches and pull requests rather than a permanent
-development branch:
-
-- `main` is the integration branch and should stay tested and releasable.
-- `feat/descriptive-name` is for one feature or a closely related set of changes.
-- `fix/descriptive-name` is for a focused bug fix.
-- `docs/descriptive-name` and `test/descriptive-name` are useful for documentation
-  and test-only changes.
-- Release tags such as `v1.12.2` identify published versions. A separate release
-  branch is only needed when maintaining an older version alongside `main`.
-
-Start each branch from an up-to-date `main`, with a clean working tree:
-
-```bash
-# This checkout calls the public GitHub remote "github".
+```sh
 git switch main
-git pull --ff-only github main
-git switch -c feat/my-feature
-
-# Work, make focused commits, and run the relevant tests.
-git add path/to/changed-file
-git commit
-git push -u github feat/my-feature
+git pull --ff-only origin main
+git switch -c fix/describe-the-change
 ```
 
-If your clone calls that remote `origin`, substitute `origin` for `github`.
-Contributors without repository write access should push to their own fork and
-open a PR against AudioX's `main`.
+Use a descriptive branch name such as `feat/...`, `fix/...`, `docs/...`, or
+`test/...`. Contributors without write access should push to a fork and open a
+pull request against `main`.
 
-Open a draft PR early when feedback would help. Explain the problem, intended
-behavior, testing, and any design decisions so another maintainer can follow the
-work. Keep unrelated changes in separate PRs and mark a draft ready for review
-when it is complete.
+Keep pull requests scoped and explain the problem, intended behavior, risk, and
+validation. Update documentation when behavior changes. Open a draft PR early
+when design feedback would help. Before publishing, check commits and files for
+private information; anything pushed to a public remote should be treated as
+public.
 
-Prefer squash merges with a clear title and a body containing one release-note
-entry per line, for example:
+Prefer a squash merge with a concise title and one release-note entry per
+user-facing change:
 
 ```text
 Improve volume controls
 
-[feat] Allow volume adjustments up to 200%
-[fix] Correct unity-gain percentage display
+[feat] Extend the volume range
+[fix] Correct the unity-gain display
 ```
 
-Use `[feat]` for user-facing additions and `[fix]` for corrections; describe
-documentation or test-only changes plainly rather than inventing a feature.
-The squash message becomes the commit on `main`, but the original branch
-commits may remain visible in the PR even after deleting its branch. Treat
-anything pushed to a public remote as public permanently; clean up messages
-and check for private information before pushing.
+Use `[feat]` for user-facing additions and `[fix]` for corrections. Describe
+documentation- or test-only changes plainly.
 
-After a PR is merged and you have no uncommitted changes:
+## Code and runtime guidelines
 
-```bash
-git switch main
-git pull --ff-only github main
-git branch -d feat/my-feature
+- Keep changes focused and follow the style of nearby code.
+- Avoid new runtime dependencies unless they provide clear value.
+- Prefer deterministic behavior, explicit errors, and safe fallbacks.
+- Keep logs brief and actionable. Excessive logging can fill or wear the SD card.
+- Preserve real-time constraints in audio processing. Avoid locks, allocation,
+  or retry loops on the audio thread.
+- Do not add a second consumer to the routing snapshot mailbox; the audio thread
+  is its sole consumer. Publishers are serialized on the control side, while UI
+  readers use a separate mutex-protected copy.
+- Keep routing helper expansion on the control side. The runtime accepts at
+  most 128 compiled paths; report skipped paths rather than dropping them
+  silently.
+
+## Validation
+
+Run the smallest relevant test set while iterating. Before a release, run
+`make test` and build the affected firmware target.
+
+```sh
+make test-web
+make test-native
+make test-build-dependencies
+make test-audio-graph-tsan
 ```
 
-For squash merges, Git may refuse `-d` because the original commits are not
-ancestors of `main`. Verify the PR was merged and no work remains to preserve
-before intentionally using `git branch -D feat/my-feature`. Delete the public
-remote branch through the PR page after merging.
+`make test` runs native C++/Bash, Node.js, and release-workflow regression
+suites. Host dependencies include a C++17 compiler, `pkg-config`,
+ALSA/libsndfile/ncurses/SBC development headers, Node.js 22+, Python 3, Bash,
+and `jq`; Make builds the host Lua library.
+`make test-build-dependencies` runs Bash-only Makefile and incremental header
+dependency checks. `make test-audio-graph-tsan` checks graph publication with
+ThreadSanitizer. `make test-dnsmasq-config` additionally needs the target
+dnsmasq build and `qemu-aarch64` (or host dnsmasq).
 
-### Maintainer setup and legacy history
+Host tests and QEMU do not establish physical-device behavior. Changes involving
+boot, power, audio, USB, MIDI, or displays need corresponding hardware checks on
+the target board.
 
-Configure GitHub branch protection or a ruleset for `main` to require PRs and
-passing CI checks, disallow force pushes and deletion, and require review by
-another maintainer as the team grows. These are repository settings, not
-settings enabled by this document.
+## Pull requests and issue reports
 
-The historical `dev` branch is archived on Gitea for reference, not used as an
-integration branch or merged into public feature branches. Start new work from
-public `main`; publishing or merging the old branch could expose private
-development history. Push named branches explicitly rather than using
-`git push --all` or `git push --mirror` to GitHub.
+Include in a pull request:
 
-Merge reviewed PRs on GitHub and use release tags. The archived Gitea history
-does not need to be deleted to adopt this workflow.
+- The behavior changed and the reason.
+- Relevant tests/builds and their results.
+- Additional risk and hardware-validation details for boot, updates,
+  partitioning, or audio-thread changes.
 
-## Pull request guidelines
-
-Before opening a PR:
-
-1. Build locally and confirm your change compiles.
-2. Run the relevant tests, then `make test` before release. This runs the native
-   C++/Bash, Node.js, and release-workflow regression suites. Host dependencies
-   include a C++17 compiler, pkg-config, ALSA/libsndfile/ncurses/SBC development
-   headers, Node.js 22+, Python 3, Bash, and jq; Make builds its host Lua library.
-   `make test-native` and `make test-web` run individual suites.
-   `make test-build-dependencies` runs the Bash-only Makefile and incremental
-   header dependency checks without Node.js.
-   `make test-audio-graph-tsan` checks graph publication with ThreadSanitizer.
-   The separate `make test-dnsmasq-config` target additionally needs the target
-   dnsmasq build and qemu-aarch64 (or host dnsmasq). Build the relevant firmware
-   target when changing runtime code.
-3. Update docs when behavior changes.
-4. Keep commits readable and scoped.
-
-PR description should include:
-
-- What changed
-- Why it changed
-- Risk level
-- How you tested it
-
-If your change affects boot/update flow, partitioning, or audio thread behavior, include extra detail and test notes.
-
-Routing snapshots use a fixed triple-buffer ownership handoff: publishers are
-serialized on the control side, with exactly one audio-thread consumer. The
-consumer exchanges an atomic slot index once per update, without taking a lock,
-allocating, or retrying. Do not add a second consumer to this mailbox. UI readers
-use a separate mutex-protected copy. ALSA rescans advance the topology generation
-only when devices actually change; the control loop then republishes the graph
-so saved routes resume on hotplug without periodically reopening unchanged PCMs.
-Helper expansion also runs on the control side, before publication. The runtime
-receives at most 128 compiled paths; skipped helper paths are counted and
-reported rather than silently discarded on the audio thread.
-
-## Reporting issues
-
-Please include (when applicable):
-
-- Host OS and toolchain details
-- Raspberry Pi model
-- Exact command run
-- Full error output
-- Steps to reproduce
-
-For runtime regressions, include whether the issue appears in make dev uploads, full image flashes, or both.
-
-## Scope and roadmap
-
-AudioX is still pre-2.0 and actively evolving. Stability and maintainability improvements are especially valuable.
-
-Thanks again for helping move the project forward.
+For an issue, include the Pi model, AudioX/kernel versions, host OS and
+toolchain where relevant, connected hardware, exact steps and commands, full
+error output, and relevant log excerpts. Do not attach a full configuration
+backup publicly: it can contain Bluetooth pairing keys, private audio clips,
+and script text.

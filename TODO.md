@@ -159,6 +159,12 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Refine mixer styling with compact custom faders, tightly packed per-channel segmented bars without per-channel text, one averaged reading per strip, and error-only meter status.
   - [x] Fix Firefox collapsing the channel-bar bank; verify mono, stereo, and 16-channel layouts in Firefox and Chromium at desktop/mobile widths.
 
+## WebUI polish - v1.13.1
+- [x] Rewrite WebUI copy, the manual, README, and contributor documentation for concise current-operation guidance; remove migration/history narration while preserving technical contracts and safety warnings.
+- [x] Unify shared panels, navigation, buttons, fields, file pickers and focus states; improve touch targets, responsive MIDI layout, and Scripts information hierarchy.
+- [x] Restyle Effects sliders to match the mixer, move parameter descriptions behind accessible info controls, and preserve expanded mapping/advanced sections across refreshes.
+- [x] Replace native disclosure triangles throughout the WebUI with consistent custom chevrons and focus states; polish Soundboard setup/Add panels without changing Play.
+
 ## Plugin System and more built-in effects - v1.14
 - [ ] Implement custom plugin system for effects, allowing users to create and load their own effect modules into the audio engine.
   - [ ] Create API

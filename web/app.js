@@ -418,7 +418,7 @@ async function bluetoothRequest(path, body) {
   bluetoothBusy = true;
   document.getElementById('btn-bluetooth-scan').disabled = true;
   bluetoothDevicesEl.querySelectorAll('button').forEach((button) => { button.disabled = true; });
-  bluetoothStatusEl.textContent = 'Working on your device request...';
+  bluetoothStatusEl.textContent = 'Applying Bluetooth request...';
   try {
     const res = await fetch(path, { method: 'POST', body });
     const data = await res.json();
@@ -2026,7 +2026,7 @@ document.getElementById('btn-chord-learn').addEventListener('click', async () =>
     state.mappingAssignTarget = '__macro__';
     if (!state.mappingPollTimer) state.mappingPollTimer = setInterval(pollMappingCapture, 220);
     button.setAttribute('aria-pressed', 'true');
-    document.getElementById('chord-learn-status').textContent = 'Press the desired MIDI pad. Click Learn MIDI Pad again to cancel.';
+    document.getElementById('chord-learn-status').textContent = 'Press a pad. Select Learn MIDI Pad again to cancel.';
   } catch (err) {
     setStatus(`MIDI learn failed: ${err}`, 'warn', 'midi-chords');
   } finally {
@@ -2411,7 +2411,7 @@ async function listSfxFiles() {
     let res = await fetch('/api/soundboard/order', { method: 'GET' });
     state.soundboardOrderSupported = res.status !== 404;
     if (!state.soundboardOrderSupported) {
-      setStatus('Update the device firmware to save a shared soundboard order. Showing the existing sound list for now.', 'warn', 'soundboard-order-support');
+      setStatus('Shared sound ordering is unavailable on this firmware. The file list remains playable.', 'warn', 'soundboard-order-support');
       res = await fetch('/api/rootfs/sfx/', { method: 'GET' });
     } else {
       AudioxUI.resolve('soundboard-order-support');
@@ -3183,7 +3183,7 @@ async function pollMappingCapture() {
         document.getElementById('chord-channel').value = data.last_channel;
         document.getElementById('chord-note').value = note;
         AudioxUI.setUnsaved('macro-editor');
-        statusEl2.textContent = `Selected channel ${data.last_channel}, note ${note}. Record a chord or enter a script, then save.`;
+        statusEl2.textContent = `Channel ${data.last_channel}, note ${note} captured. Save Script to apply the binding.`;
       } else if (target === '__action_stop_all__') {
         await saveStopAllActionMapping(note);
         if (midiActionCaptureStatusEl) midiActionCaptureStatusEl.textContent = `Assigned note ${note} to stop all.`;

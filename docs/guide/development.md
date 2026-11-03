@@ -1,8 +1,15 @@
 # Development and builds
 
-AudioX builds a custom AArch64 initramfs system, not a package installed into a normal Raspberry Pi OS root filesystem. Run the commands below from the repository root. Start with `CONTRIBUTING.md` for contribution expectations.
+AudioX builds a custom AArch64 initramfs system. Run these commands from the
+repository root on a Linux host. See
+[CONTRIBUTING.md](https://github.com/wk1093/audiox/blob/main/CONTRIBUTING.md)
+for workflow and validation expectations.
 
-Commands in this guide are source-tree developer commands, not commands to paste into an assumed SSH session on AudioX. Building `initramfs`, `image`, or `update_archive` produces host-side artifacts only. **Upload targets contact and modify the real device; `make dev` and `make upload_update` also trigger installation and reboots.** Export targets overwrite a mounted card's boot files; QEMU reset/clean targets delete VM data. Review each section before running its commands.
+Build targets such as `initramfs`, `image`, and `update_archive` create
+host-side artifacts. `make dev` and `make upload_update` install firmware on a
+device; export targets overwrite boot files on a mounted card; QEMU reset and
+clean targets delete VM data. Check the target and destination before running
+it.
 
 Pi 4 Model B and Pi 5 are hardware-tested targets. The Pi 5 framebuffer UI remains untested with a connected display. Host tests and QEMU complement hardware testing but do not replace it.
 
@@ -61,7 +68,8 @@ make menuconfig
 make print-config
 ```
 
-`make defconfig` is an alias for Pi 4 defaults. A defconfig command **regenerates `.config`**; keep a copy of custom settings before resetting it.
+`make defconfig` selects Pi 4 defaults. A defconfig command regenerates
+`.config`; save custom settings before resetting it.
 
 The repository builds its own ncurses menu program. In menuconfig:
 
@@ -70,7 +78,9 @@ The repository builds its own ncurses menu program. In menuconfig:
 - `R` resets to the selected board's defaults.
 - `s` saves.
 
-Switching boards also changes options still at the previous board's default; explicitly customized values can remain and need review. Use `make olddefconfig` to retain choices while adding new defaults. It also runs automatically when required by configuration dependencies.
+Review board-specific options after changing boards. Use `make olddefconfig` to
+retain selected values while adding defaults; it also runs when configuration
+dependencies require it.
 
 ### Settings worth checking
 
@@ -83,7 +93,9 @@ Switching boards also changes options still at the previous board's default; exp
 
 The build-time engine sample rate is distinct from the runtime USB format saved under `/audiox/config.txt`. The Web UI preserves the latter's sample-rate field rather than exposing it as a sample-rate control. See [Config](/guide/config).
 
-Boot configuration is generated as `out/dev-config.txt` and `out/dev-cmdline.txt`. The selected kernel keeps its firmware filename, such as `kernel_2712.img`; the generated `kernel=` selects it. Do not follow stale assumptions that every kernel is renamed to `kernel8.img`.
+Boot configuration is generated as `out/dev-config.txt` and
+`out/dev-cmdline.txt`. The generated `kernel=` entry uses the selected firmware
+filename (for example, `kernel_2712.img`).
 
 After switching boards, run `make fetch_deps` to restage boot files. Retain `rdinit=/init` in the single-line command line. Current defaults include `panic=10`; framebuffer console defaults are not a serial login setup.
 
@@ -129,7 +141,9 @@ normal(pi5): drivers/example/pi5-only
 normal(!qemu): drivers/example/pi-only
 ```
 
-These are syntax examples, not real module paths to add. The resolver includes transitive dependencies; `base` loads early for boot/display-critical drivers, then `normal` loads later. The compatibility combined list remains available.
+These are syntax examples, not module paths to add. The resolver includes
+transitive dependencies; `base` loads early for boot/display-critical drivers,
+then `normal` loads later.
 
 Board filters support `pi4`, `pi5`, and `qemu`, including comma-separated and negated filters. Unknown prefixes/boards fail the build. Inspect `out/module-load.summary.txt` for skipped seeds and use `make show_modules` / `make test-resolve-modules` while changing this area.
 
@@ -179,7 +193,7 @@ Upload from System, or to an already-running compatible device:
 make upload_update PI_HOST=audiox.local
 ```
 
-`PI_HOST` defaults to the configured USB address; `PI_PORT` defaults to 80. If `/api/update` is missing, the target tells you to use one initial `make dev` on older firmware.
+`PI_HOST` defaults to the configured USB address; `PI_PORT` defaults to 80.
 
 ::: danger Uploads change real boot files
 Back up [Config](/guide/config), confirm the destination board/model, and keep stable power before any upload. Automatic rollback has early-boot limitations. Neither `make dev` nor an AXU guarantees recovery from a broken kernel/bootloader; keep a card reader and a known image available.
@@ -196,8 +210,6 @@ Back up [Config](/guide/config), confirm the destination board/model, and keep s
 | `make upload_ffmpeg` | Uploads converter to persistent storage |
 
 The separate targets do not ensure that an unrelated existing kernel/module/runtime set is compatible. Runtime-only `PUT /api/initram` is appropriate only when its boot/kernel prerequisites match.
-
-Very old firmware (1.9.0 and earlier) has stricter archive-entry compatibility; use the documented `make dev` transition rather than assuming it accepts today's optional command-line entry. See [System updates and reversion](/guide/system#firmware-updates) for the browser procedure and failure reports.
 
 ## QEMU debugging
 
@@ -238,11 +250,11 @@ make debug-clean       # Deletes out/qemu/
 
 Useful overrides include `QEMU_HTTP_PORT`, `QEMU_USBIP_PORT`, `QEMU_MEMORY`, `QEMU_SMP`, `QEMU_DISK_SIZE_MB`, `QEMU_CMDLINE`, `QEMU_UI_DISPLAY`, and `QEMU_EXTRA_ARGS`. On a suitable AArch64 host with `/dev/kvm`, the script can use KVM.
 
-The older `make qemu` target attempts `raspi4b` emulation and is documented as not working adequately because of limited Pi GUI/USB/audio emulation. Do not use it as a hardware acceptance test.
-
 ## Test organization
 
-Host tests and desktop bench rules are in `tests/Makefile`, included from the root Makefile. Run targets from the root; there is no single implied `make test` covering every category. Choose tests for the changed behavior.
+Host tests and desktop bench rules are in `tests/Makefile`, included from the
+root Makefile. Run the focused targets for each change; `make test` runs the
+native, WebUI, and release-workflow suites.
 
 | Area | Targets |
 | --- | --- |
@@ -305,9 +317,15 @@ npm run docs:dev --prefix docs
 npm run docs:preview --prefix docs
 ```
 
-Keep development/preview servers bound to loopback; production publishes static output, not the development server. VitePress 1.6.4 is pinned by the docs manifest/lockfile. The current dependency audit reports one high finding for Vite and two moderate findings for esbuild/VitePress. These concern build/development tooling, not firmware or a deployed development server; no unsupported dependency overrides are applied. Review current audit output when updating the tooling.
+Keep development and preview servers bound to loopback. Production publishes
+static output, not the development server. VitePress is pinned by the docs
+manifest and lockfile.
 
-CI builds Pi 4 and Pi 5 separately, packages compressed SD images/checksums/manifests, and publishes board-matched AXUs with SHA-256 sidecars. Stable releases are workflow-driven; versioned Nightly history retains 25 builds. `scripts/package-imager.sh`, `scripts/publish-imager.sh`, and `scripts/mirror-updates.sh` handle packaging, catalogs, and browser-update mirrors. A successful image build and a successful mirror deployment are separate events.
+Release tooling builds Pi 4 and Pi 5 images, checksums, manifests, and
+board-matched AXU archives. `scripts/package-imager.sh`,
+`scripts/publish-imager.sh`, and `scripts/mirror-updates.sh` handle packaging,
+catalogs, and browser-update mirrors. Firmware publication and mirror
+deployment are separate workflows.
 
 Forks must review repository/mirror URLs in `web/updates.js`, Imager catalogs, and site links before publishing. Do not change upstream URLs just to perform a local firmware build.
 
@@ -319,7 +337,8 @@ retention, version strings, catalog behavior, and required repository permission
 1. Keep the change scoped and update the directly affected guide/API behavior.
 2. Run the smallest relevant host/browser tests and build targets.
 3. For boot/audio/hardware changes, state separately what was checked on a real device and what remains unverified.
-4. Include board, host OS/toolchain, firmware/kernel version, exact commands, and whether the fault occurs after full flashing, AXU upload, or `make dev`.
-5. Preserve current/previous logs and automatic-revert reports before another update or reboot.
+4. Include board, host OS/toolchain, firmware/kernel version, exact commands,
+   and whether the fault occurs after flashing, AXU upload, or `make dev`.
+5. Save relevant logs and automatic-revert reports before another update or reboot.
 
 Related operation guides: [Routing](/guide/routing), [Effects](/guide/effects), [Volume](/guide/volume), [Bluetooth](/guide/bluetooth), [Soundboard](/guide/soundboard), [MIDI](/guide/midi), [Scripts](/guide/macros), [Config](/guide/config), and [Troubleshooting](/guide/troubleshooting).

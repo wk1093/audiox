@@ -4,14 +4,25 @@ The AudioX WebUI is the control panel running **on your device**. Open it using
 the address in [Getting started](./getting-started). This documentation site is
 separate: reading a guide or an example here does not change your Pi.
 
-Feeling lost? Choose **Need help? Start here** under the device version in the
-WebUI header. It opens this guide in a new tab without leaving your current
+Choose **Manual** under the device version in the WebUI header to open this
+guide in a new tab without leaving your current
 controls or discarding unsaved edits. The documentation is hosted online, so
 your browser needs internet access to open it.
 
 The interface is designed for both a desktop browser and a phone or tablet.
 On a narrow screen, scroll the navigation tabs horizontally to reach every page.
 Only one page is visible at a time; switching pages does not stop audio.
+
+Controls share a compact, studio-style appearance: consistent panels, inset
+value fields, explicit primary/destructive buttons, and visible keyboard focus.
+On touch devices, action controls have larger targets. Expand chevron sections
+for secondary setup and reference information; errors and safety confirmations
+remain visible. Effects parameter help is available from the **i** controls.
+
+The Scripts page keeps the editor and save/run workflow prominent. Expand
+**Device requirements**, **Lua API quick reference and execution limits**, or
+**Pad lighting** when you need those details. Configuration-write permission
+remains beside the editor.
 
 ## Page map
 

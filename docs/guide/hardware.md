@@ -1,6 +1,9 @@
 # Hardware and cabling
 
-AudioX currently targets a Raspberry Pi running a custom software image with USB audio/network gadget support. The proposed reverse-HAT audio board, microphone preamps, instrument inputs, dedicated headphone/monitor outputs, patch bays, and phantom power are **future hardware plans**, not connectors or features supplied by today's software image.
+AudioX runs a custom Raspberry Pi image with USB audio and USB networking.
+Analog inputs, outputs, and other peripherals depend on the audio hardware you
+connect; the software image does not provide microphone preamps or phantom
+power.
 
 ## Board status
 
@@ -12,7 +15,9 @@ AudioX currently targets a Raspberry Pi running a custom software image with USB
 
 The kernel, device trees, firmware, overlays, USB controller, and modules must match the board. Pi 5's preset is not simply a faster Pi 4 preset: it uses different boot/display/controller defaults. Do not rename a Pi 4 download to make it look like a Pi 5 build.
 
-USB host compatibility also needs care. Linux wire-level mDNS behavior has been tested, but Windows/macOS hardware validation for mDNS remains unverified. Physical gadget enumeration, USB MIDI/keyboard behavior, simultaneous multichannel audio, and host volume behavior require hardware checks; passing host unit tests or booting QEMU is not equivalent.
+Host compatibility depends on its USB networking, audio, and MIDI support.
+Physical enumeration, multichannel audio, and host volume behavior require
+hardware checks; host tests and QEMU do not establish them.
 
 ## Power and port roles
 
@@ -43,7 +48,9 @@ The USB-C connection is also a power connection. AudioX does not make an arbitra
 - Power off before changing internal ribbon cables, GPIO wiring, or the SD card.
 - Keep power and the USB data connection stable throughout an update. A browser reconnect message is not permission to unplug.
 
-The repository does not specify a universally validated powered-hub, USB-C splitter, or GPIO power-injection design. Follow the board/peripheral manufacturers' electrical instructions rather than treating this guide as such a design.
+Follow the board and peripheral manufacturers' electrical instructions. This
+guide does not specify a universally validated powered-hub, USB-C splitter, or
+GPIO power-injection design.
 
 ### USB-A: attach peripherals to the Pi
 
@@ -92,14 +99,12 @@ Cable-loss detection depends on the framebuffer's driver. DRM connector status i
 6. Test a simple audio route quietly before adding effects or increasing gain.
 7. Save settings, create a [configuration backup](/guide/config), and use [System shutdown](/guide/system#device-actions) before removing power.
 
-If nothing enumerates, eliminate the data cable and power arrangement as causes before changing firmware. If a device disappears under load, collect System logs and note the complete power/peripheral arrangement in the report.
+If a device does not enumerate, check the data cable, port, and power before
+changing firmware. If it disconnects under load, collect System logs and note
+the connected hardware and power arrangement.
 
 ## Serial diagnostics
 
 Advanced kernel-fault investigation can use a **3.3 V UART adapter**, never RS-232 or 5 V signaling. Connect ground and the selected Pi UART TX to the adapter RX; do not connect the adapter's power pin. Confirm the UART/pins for the board and Bluetooth overlay before wiring.
 
 The normal command line uses framebuffer consoles. Serial logging requires an appropriate console option, normally `console=serial0,115200`, while preserving the single-line command line and `rdinit=/init`. On the Pi 4, Bluetooth keeps the PL011 UART, so `serial0` (GPIO 14/15) is the mini UART. The optional `CONFIG_BT_MINIUART` setting swaps them, but it drops incoming Bluetooth audio packets and is not recommended. Pi 5 has different UART defaults. This is diagnostic work, not a guaranteed login shell. See [Troubleshooting](/guide/troubleshooting) and [Development](/guide/development) before modifying boot files.
-
-## Implementation references
-
-Hardware scope and defaults are grounded in `Kconfig`, `Makefile`'s generated boot configuration, `depmod.txt`, `bootmod.txt`, `src/init/gadget.cpp`, `src/framebuffer/context.cpp`, and the hardware/testing limitations in `README.md` and `TODO.md`. No additional physical hardware validation is claimed by this guide.

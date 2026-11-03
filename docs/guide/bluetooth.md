@@ -81,10 +81,9 @@ the stream only while something is playing.
 ## What AudioX saves and supports
 
 Pairing keys, device names, and Auto-connect settings are saved on the AudioX
-device and reloaded on startup, so previously paired devices remain in **My
-devices**. Existing saved devices default to Auto-connect when upgraded.
-Configuration backups include Bluetooth pairing data and Auto-connect
-settings; the archive contains pairing keys, so keep it private.
+device and loaded at startup. Configuration backups include Bluetooth pairing
+data and Auto-connect settings; the archive contains pairing keys, so keep it
+private.
 
 Bluetooth audio uses the SBC codec. AudioX does not offer a codec selector or
 AAC/aptX/LDAC support. For outgoing audio, the remote sink must support
@@ -135,10 +134,7 @@ edge=bt_A4C6F0A57AA7_in,usb_gadget_out,1,1
 A device's nodes pass audio only while it is connected; at other times its In
 node is silent. Routes for a device that is no longer paired disappear from
 the graph but stay saved, and return if you pair it again. Saving routing does
-not remove them. Older single `bluetooth_in`/`bluetooth_out` routes are
-converted to per-device routes automatically. Volume settings, MIDI
-mappings, and scripts that used those older IDs must be pointed at the new
-per-device IDs.
+not remove them.
 
 The Soundboard currently uses only the first sample channel of a clip, even
 when the clip is stereo. Its Routing node exposes that signal on channel 0, so

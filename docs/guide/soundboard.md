@@ -109,9 +109,6 @@ positions append in filename order. With no saved order, filename order is used.
 
 If another client changes the file list while you reorder it, AudioX rejects a
 stale order rather than discarding that change. Refresh and retry.
-Older firmware may allow playback but not shared ordering; the WebUI explains
-when ordering is unavailable.
-
 ## Normal and grid layouts
 
 In **Edit**, expand **Layout & MIDI setup** and choose **Normal list** or **MIDI grid**.

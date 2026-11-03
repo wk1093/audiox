@@ -1,21 +1,16 @@
 # Lua script cookbook
 
-These complete examples assume each script's state starts empty. Name and edit a
-script on the **Scripts** page, save it, and click **Run**.
-Each recipe registers its own callbacks. To also run a recipe from a MIDI pad,
-bind the script and register the same handler for `note_on`.
-They run on AudioX firmware. Only keyboard action plans need USB Keyboard
-enabled and a connected USB host; light/MIDI plans need the selected controller
-connected. Preload any referenced sound before triggering. For web-only scripts
-with no default light output, leave both LED velocities at `0`. Recipes using
-`light()` require an enabled MIDI binding and the selected connected controller,
-even on web Run; otherwise `light()` reports a runtime error.
+Each example is a complete script for the **Scripts** page. Save it before
+choosing **Run**. To add a MIDI trigger, bind the script and register the same
+handler for `note_on`. Keyboard actions require USB Keyboard and a connected
+host; MIDI and lighting require the selected controller; sound playback
+requires a loaded clip. `light()` also requires a saved MIDI binding, including
+for Web Run.
 
 ## One script, several callbacks
 
-Run counts button presses; sound completion updates a
-separate counter. Setup variables are temporary; only explicit `state` fields
-remember previous events.
+This script counts Web Run events and tracks completion of a named sound.
+Setup variables reset per event; explicit `state` fields retain simple values.
 
 ```lua callbacks
 local temporary = 0

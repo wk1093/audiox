@@ -82,10 +82,7 @@ audio.
 
 Routes to a Bluetooth device that is not paired (for example after
 **Forget**) are not shown in the graph. **Save Routing** keeps them in the
-file untouched, and they come back when the device is paired again. Older
-configurations that used the single `bluetooth_in` or `bluetooth_out` node are
-converted to one route per paired device with that role. If no such device is
-paired yet, the old lines are kept until one is.
+file untouched, and they return when the device is paired again.
 
 The ALSA ID pattern is illustrative; the card ID and device number depend on
 the connected hardware. IDs are hidden from ordinary controls. For scripts
@@ -188,5 +185,5 @@ into an earlier node.
 Related guides: [Getting started](./getting-started.md),
 [Soundboard](./soundboard.md), [MIDI](./midi.md), [Scripts](./macros.md),
 [Configuration](./config.md), [Hardware](./hardware.md), and
-[Development](./development.md). The planned [Reference](./reference.md) will
-group the relevant API endpoints and configuration files.
+[Development](./development.md). See the [HTTP reference](./reference.md) for
+API endpoints and persistent files.

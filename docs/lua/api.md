@@ -42,8 +42,7 @@ Setup and all matching handlers share instruction/memory/action budgets.
 Any evaluation error discards the event's entire plan and state changes.
 
 The Web Run button invokes `hook("run", callback)` only. Without a run hook it
-is disabled and the Run API rejects execution. Automatically converted
-sequences preserve their previous note-on-shaped event inside the generated wrapper.
+is disabled and the Run API rejects execution.
 See [callback examples and lifetime rules](/lua/events-and-state#register-callbacks-in-one-script).
 
 ## Persistent configuration
@@ -195,10 +194,10 @@ Gain applies to a thing's outgoing routes. A final sink such as `usb_gadget_out`
 does not attenuate its incoming signal using that gain; choose the source or
 an intermediate processing node for audible level changes. See [Volume](/guide/volume).
 
-The existing mixer allows gains up to `2`, but script controls deliberately
-cap at unity. Percentages are not dB. Effect and volume actions are queued
-runtime-only changes; they do not rewrite saved configuration and need no USB
-keyboard host or MIDI controller. Route-changing automation is planned later.
+The mixer allows gains up to `2`, but script volume controls cap at unity.
+Percentages are not dB. Effect and volume actions are runtime-only; they do not
+rewrite saved configuration and need no USB keyboard host or MIDI controller.
+The Lua API does not change routing.
 
 ## Utility functions
 

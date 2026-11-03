@@ -160,9 +160,9 @@ The list includes plain `name`, boolean `midi_enabled`, derived `event_mask`,
 `script_hex` / `runtime_error_hex`. Decode error text as text, not HTML.
 Saving inspects unconditional top-level `hook()` registrations without running
 handlers. Run is rejected without a `run` hook. Configuration permission
-requires explicit acknowledgment. The old `/api/macros` and `/api/midi/chords`
-routes remain compatibility bridges that automatically convert legacy input;
-`/api/macros` retains its original `macros` response property.
+requires explicit acknowledgment. `/api/macros` and `/api/midi/chords` remain
+available for compatibility. `/api/macros` retains its `macros` response
+property.
 
 Saving syntax-valid Lua does not guarantee every branch will execute
 successfully. Device requirements and actual effect/volume targets are checked
@@ -221,7 +221,5 @@ CRC-checked and skipped unless bit 31 is set, which requires the reader to
 understand that entry. Missing optional entries leave the existing file intact.
 A header-version bump is for changes that cannot be expressed compatibly.
 
-The implementation also accepts the four-entry v1 format without metadata and
-installs its kernel as `kernel8.img`. Firmware at 1.9.0 or earlier has stricter
-entry-count rules; see [Development](./development#build-and-install-an-axu)
-before deploying to it.
+The reader also accepts the four-entry v1 format without metadata and installs
+its kernel as `kernel8.img`.

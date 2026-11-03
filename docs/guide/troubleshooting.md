@@ -1,8 +1,7 @@
 # Troubleshooting
 
-Start with one source and one output. Remove optional effects and automation
-from the test until that path works. Keep output levels low when changing routes
-or gain; a wrong connection can produce unexpectedly loud audio.
+Isolate faults with one source and one output. Remove effects and automation
+until that path works. Keep levels low while changing routes or gain.
 
 ## The WebUI does not open
 

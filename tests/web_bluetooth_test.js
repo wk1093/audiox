@@ -182,7 +182,7 @@ test('connected devices report each direction and disconnect by address', async 
 test('Bluetooth page exposes a checked and labelled switch with an explanation', () => {
   const html = fs.readFileSync(require.resolve('../web/index.html'), 'utf8');
   assert.match(html, /<label class="bluetooth-filter">\s*<input id="bluetooth-hide-unnamed"[^>]*role="switch"[^>]*checked[^>]*>\s*Hide unnamed devices\s*<\/label>/);
-  assert.match(html, /id="bluetooth-filter-hint"[^>]*>Only Classic Bluetooth is scanned/);
+  assert.match(html, /id="bluetooth-filter-hint"[^>]*>Scans Classic Bluetooth/);
 });
 
 function routingFixture(thingIds) {

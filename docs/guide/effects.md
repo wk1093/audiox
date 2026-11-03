@@ -24,12 +24,16 @@ automatic name. Names allow 63 UTF-8 bytes and cannot contain control characters
 Names need not be unique; use distinct names when building larger patches.
 
 Each parameter has a slider, a precise numeric input, a unit where applicable,
-and an explanation below its label (also available on hover). **Reset** restores
+and an **i** info control beside its label. Hover the info control for a tooltip,
+or click/tap it to open the explanation. Keyboard users can focus it and press
+Enter or Space; Escape closes the explanation and returns focus to the control.
+**Reset** restores
 that parameter's factory default and saves it. Gain values use multipliers:
 `1x` is unchanged. Mix values remain fractions from 0 to 1, not percentages.
 The pitch noise-floor control retains four decimal places for fine adjustment.
 
 Expand **MIDI controls and pad lighting** only when assigning hardware controls.
+MIDI and advanced sections retain their expanded state while Effects refreshes.
 **Advanced and delete** holds the stable `fx_N` scripting/routing ID and Delete.
 Renaming never changes IDs, script references, audio parameters, or connections.
 The Volume card's **Advanced** disclosure also shows its scripting/routing ID.

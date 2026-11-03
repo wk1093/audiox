@@ -1,109 +1,92 @@
-# Scripts and automation
+# Scripts
 
-The **Scripts** page holds up to **16 named Lua scripts**. Each script can
-register several callbacks with `hook("event_name", function(event) ... end)`.
-Use them for Web Run, MIDI presses/releases and CC, sound voice start/finish,
-and selected MIDI controller connect/disconnect events.
+The **Scripts** page stores up to **16 named Lua scripts**. A script registers
+event callbacks with `hook()`. Triggers include Web Run, MIDI note/CC events,
+sound voice start/finish, and selected controller connect/disconnect events.
+See [Lua scripting](/lua/) for callback behavior and the complete API.
 
 ## Create and run a script
 
-1. Open **Scripts** and choose **New Script**.
-2. Enter a recognizable name, up to **63 UTF-8 bytes**.
-3. Edit the default `run` callback, then choose **Save Script**.
-4. Choose **Run** beside the saved entry.
+1. Choose **New Script**, enter a name (1–63 UTF-8 bytes), and edit the source.
+2. Choose **Save Script**.
+3. Choose **Run** beside the saved script.
 
-Run queues the **saved version**, not the unsaved editor, and confirms queuing,
-not completion. It is disabled without a `run` hook. Use **Reload Scripts** to
-see execution errors and check [System logs](./system) for context.
-**Edit** preserves the stable ID, even when changing the name or binding.
-**Remove** deletes that definition.
+Run queues the saved source; it does not execute unsaved editor text or confirm
+completion. It is unavailable unless the script registers a `run` callback.
+Choose **Reload Scripts** to refresh runtime errors. Editing preserves the
+script's stable ID; **Remove** deletes its definition.
 
-## Existing shortcuts and sequences
+Scripts register up to 32 callbacks. Setup code runs in a fresh environment for
+each trigger; ordinary variables reset. Only supported scalar values assigned
+to `state` persist in RAM. Register hooks unconditionally at top level; access
+`event`, `state`, clocks, configuration, and device actions inside callbacks.
+Each trigger evaluates atomically into a bounded action plan. See
+[events and state](/lua/events-and-state) and
+[limits and troubleshooting](/lua/limits-and-troubleshooting).
 
-The old Keyboard chord and Lua sequence editor modes have been removed.
-Existing saved entries are automatically converted to callback source when the
-MIDI map is loaded. Keyboard shortcuts become `tap("...")` calls. Sequences
-keep their source inside a generated function registered for their previous
-subscriptions and Web Run. The wrapper preserves the old note-on-shaped
-`event.type` for Run. IDs, names, bindings, LED colors, and configuration-write
-permissions are retained; conversion never grants new permission.
+## Trigger from MIDI
 
-Conversion happens in memory. The converted source is persisted on the next
-successful MIDI-map/settings save, not by rewriting files during reads.
-Existing callback scripts are unchanged. Invalid entries are logged and
-disabled rather than silently discarded.
+Enable **Bind to a MIDI pad**, then enter channel (0–15) and note (0–127), or
+choose **Learn MIDI Pad** and press the control. Learning sets channel and note;
+save the script after editing. Register `note_on`, `note_off`, or `cc` callbacks
+as needed. For CC, the Note field is the controller number.
 
-The old `/api/macros`, `/api/macros/run`, and `/api/midi/chords` routes remain
-compatibility import bridges. New integrations should use `/api/scripts` and
-`/api/scripts/run`. The list response is `{"scripts":[...]}`; save requests
-use named entries and callback source, not shortcut or sequence modes.
+Two scripts cannot use overlapping MIDI subscriptions on the same binding.
+Web-only scripts reserve no MIDI trigger. Script bindings coexist with sound,
+action, and effect mappings. Note-off triggers a new evaluation; it does not
+cancel an existing plan. Sound and controller connection callbacks do not
+require a pad binding.
 
-## Keyboard shortcuts
+## Keyboard, MIDI, and lighting requirements
 
-Put `tap("CTRL+SHIFT+F13")` inside a callback. Enable **USB Keyboard** in
-[Config](./config), apply the configuration, and connect AudioX's USB gadget
-port to the target computer. Output goes to the **USB host**, not necessarily
-the machine running the browser, and affects its focused application.
-There is no separate shortcut recorder or shortcut editor mode.
-
-## Add a MIDI trigger
-
-Check **Bind to a MIDI pad**, then enter channel (0-15) and note (0-127), or
-choose **Learn MIDI Pad** and press it. Add `hook("note_on", callback)` for
-presses, `note_off` for releases, or `cc` for control changes. For CC the Note
-field is the controller number. Save after learning.
-
-Two scripts cannot share overlapping MIDI subscriptions on the same binding.
-Web-only entries reserve no MIDI trigger. Script bindings do not remove
-separate sound/action mappings: one pad can still run both. Note release
-queues another evaluation; it does not automatically cancel an existing plan.
-Sound/controller hooks need no pad binding.
-
-## Device requirements and lighting
-
-| Action | Requirements |
+| Action | Requirement |
 | --- | --- |
-| `tap`, `press`, `release`, `type` | USB Keyboard enabled and connected USB host |
+| `tap`, `press`, `release`, `type` | USB Keyboard enabled and USB host connected |
 | `light` | Enabled MIDI binding and selected controller connected |
 | `midi.*` | Selected controller connected |
-| `sound.*` | Audio subsystem and named clip already loaded |
-| `effects.*`, `volume.*` | Existing effect/audio thing IDs |
-| Calculations, `state`, logging | No USB host or MIDI controller required |
+| `sound.*` | Audio subsystem and named clip loaded |
+| `effects.*`, `volume.*` | Existing effect or routing thing ID |
+| Calculations, `state`, logging | No attached host or controller |
 
-Set idle/pressed LED velocities for MIDI-bound scripts: zero means off,
-1-127 selects the controller's color/velocity. The global output channel
-is configured on **MIDI > Lighting**. Script colors override other mapped
-colors on the same note; **Dim lights** still wins. Temporary `light()` output
-is restored after playback or cancellation. Leave default velocities at zero
-for web-only scripts. Calling `light()` without a binding reports an error.
+Keyboard output reaches the connected USB host's focused application, not
+necessarily the computer running the browser. Enable **USB Keyboard** in
+[Config](/guide/config) and reload USB configuration before using keyboard
+actions. The host layout affects `type()`; see
+[keyboard behavior](/lua/keyboard-and-lighting).
 
-## Lifetime and safety
+Set idle/pressed velocities for a MIDI-bound script; 0 means off and 1–127 is
+controller-specific. The output channel is set under **MIDI > Lighting**.
+Script colors override other mapped colors on the same note; **Dim lights**
+overrides all output. `light()` temporarily changes the bound pad and is
+restored when playback ends or is canceled. Web-only scripts should keep both
+default velocities at zero.
 
-Ordinary variables reset per event; only explicitly assigned scalar `state`
-values persist in RAM. Register hooks unconditionally at top level; put
-actions, event/state access, clocks, and configuration I/O inside callbacks.
-Up to 32 handlers may share a script and run in registration order.
-Saving inspects registration without executing handlers.
+## Runtime and configuration
 
-Each event evaluates atomically into a bounded action plan: **17,408 UTF-8
-source bytes** including migration wrappers, 100,000 instructions, 1 MiB Lua
-memory, 128 actions, 1,024 typed characters, and 60 seconds scheduled duration.
-`wait()` delays playback, not evaluation. Lua never runs on the audio thread.
-Evaluation failure discards that event's pending actions and state changes.
-Already-delivered physical actions cannot be undone if playback later fails.
+Definitions persist across reboot; `state` does not. Edits, cancellation,
+failure, controller disconnect, or restart can reset state. USB loss resets
+keyboard-dependent work, not unrelated scripts. Evaluation failure discards
+that event's actions and state changes; already-delivered actions cannot be
+undone if playback later fails.
 
-Definitions survive reboot; `state` does not. Edits, cancellation/failure,
-controller disconnect and restart may reset it. USB session changes reset
-keyboard-using scripts, not all scripts globally.
+Per event, limits include **17,408 UTF-8 source bytes**, 100,000 instructions,
+1 MiB Lua memory, 128 actions, 1,024 typed characters, 60 seconds of scheduled
+duration, and 16 pending triggers. `wait()` delays playback, not evaluation.
+Lua does not run on the audio thread.
 
-Effects and volume actions are runtime-only. Configuration APIs can instead
-read or replace allowlisted persistent files; saving requires confirmation.
-**Allow configuration writes** explicitly requests write permission, including
-for dynamic API access. Raw edits are not format-validated and may require
-reload/restart. Back up first.
+Effects and volume actions are runtime-only. Configuration APIs can read or
+replace allowlisted text files. Writes require explicit **Allow configuration
+writes** permission and confirmation when saving the script. Writes are raw
+replacements, not format-validated updates; back up first and reload or restart
+the relevant subsystem as needed. See [Config](/guide/config) and the
+[configuration API](/lua/api#persistent-configuration).
 
-- [Getting started](/lua/getting-started)
-- [Events and state](/lua/events-and-state)
-- [API reference](/lua/api)
-- [Cookbook](/lua/cookbook)
-- [Limits and troubleshooting](/lua/limits-and-troubleshooting)
+## HTTP integration
+
+Use `/api/scripts` to list, create, or update named callback scripts and
+`/api/scripts/run` to queue a saved `run` callback. The currently supported
+`/api/macros` and `/api/midi/chords` routes remain compatibility endpoints; new
+clients can use the script routes. See the [HTTP reference](/guide/reference#named-scripts).
+
+Continue with [Lua getting started](/lua/getting-started), the
+[API reference](/lua/api), and the [cookbook](/lua/cookbook).

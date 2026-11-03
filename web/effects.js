@@ -183,6 +183,7 @@
       this.loadEpoch = 0;
       this.effectsSignature = '';
       this.nameDrafts = new Map();
+      this.openSections = new Set();
     }
 
     mountPanel(panelEl, statusEl) {
@@ -215,12 +216,29 @@
       const inputId = `${fx.id}-${row.name}-value`;
       label.htmlFor = inputId;
       label.textContent = row.label + (row.unit ? ` (${row.unit})` : '');
-      control.appendChild(label);
+      const heading = document.createElement('div');
+      heading.className = 'fx-param-heading';
+      heading.appendChild(label);
+      const info = document.createElement('details');
+      info.className = 'fx-param-info';
+      const infoToggle = document.createElement('summary');
+      infoToggle.textContent = 'i';
+      infoToggle.setAttribute('aria-label', `Help for ${row.label}`);
       const help = document.createElement('p');
       help.className = 'small fx-param-help';
       help.id = `${inputId}-help`;
       help.textContent = row.description || `Adjust ${row.label.toLowerCase()} between ${row.min} and ${row.max}.`;
-      control.appendChild(help);
+      infoToggle.title = help.textContent;
+      info.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+          info.open = false;
+          infoToggle.focus();
+          event.stopPropagation();
+        }
+      });
+      info.append(infoToggle, help);
+      heading.appendChild(info);
+      control.appendChild(heading);
       const inputs = document.createElement('div');
       inputs.className = 'fx-param-inputs';
       const slider = document.createElement('input');
@@ -264,6 +282,14 @@
       parent.appendChild(control);
     }
 
+    rememberSection(section, key) {
+      section.open = this.openSections.has(key);
+      section.addEventListener('toggle', () => {
+        if (section.open) this.openSections.add(key);
+        else this.openSections.delete(key);
+      });
+    }
+
     renderPanel() {
       if (!this.panelEl) {
         return;
@@ -277,7 +303,7 @@
       if (!effects.length) {
         const empty = document.createElement('div');
         empty.className = 'small';
-        empty.textContent = 'No effects yet. Add one from Routing > Add menu.';
+        empty.textContent = 'No effects. Add a processor from the Routing menu.';
         this.panelEl.appendChild(empty);
         return;
       }
@@ -358,6 +384,7 @@
 
         const mapping = document.createElement('details');
         mapping.className = 'fx-midi-details';
+        this.rememberSection(mapping, `${effectId}-midi`);
         const summary = document.createElement('summary');
         summary.textContent = 'MIDI controls and pad lighting';
         mapping.appendChild(summary);
@@ -517,6 +544,8 @@
         mapping.appendChild(lightRow);
         card.appendChild(mapping);
         const advanced = document.createElement('details');
+        advanced.className = 'fx-advanced';
+        this.rememberSection(advanced, `${effectId}-advanced`);
         const advancedTitle = document.createElement('summary');
         advancedTitle.textContent = 'Advanced and delete';
         advanced.appendChild(advancedTitle);

@@ -29,7 +29,8 @@ An AXU is not something to flash with an imaging tool. Conversely, do not upload
 
 The [download page](https://wklab.net/audiox/#download) separates Stable and Nightly releases and offers Pi 4 and Pi 5 files. Stable is the release channel; Nightly tracks development and may be unstable. A Stable label does not override the project's overall development status or the remaining Pi 5 framebuffer testing limitation.
 
-Use the board-matched image, AXU, and checksum from the **same release**. Versioned release downloads are preferable when recording a reproducible installation. Nightly history is retained for the latest 25 versioned builds; older nightly links can expire. Stable releases are not pruned by that policy.
+Use the board-matched image, AXU, and checksum from the **same release**. For a
+reproducible installation, record the release version alongside the checksum.
 
 ## Install with Raspberry Pi Imager
 
@@ -114,7 +115,3 @@ For peripherals and automation, continue with [Bluetooth](/guide/bluetooth), [MI
 - Use **Shutdown Device**, confirm, and allow the device to halt before removing power or the card. Do not pull power during firmware installation.
 - An update has limited automatic boot rollback, not a full rescue environment. Early kernel/bootloader hangs can still require a card reader and reflash.
 - If the UI is unreachable or audio is not working, preserve logs where possible and follow [Troubleshooting](/guide/troubleshooting).
-
-## Implementation references
-
-This workflow follows the repository's `README.md` installation/update notes, `os_list.json`, `scripts/package-imager.sh`, `scripts/build_image.sh`, `root/etc/dnsmasq.conf`, and `web/updates.js`. For building your own images rather than installing a release, see [Development](/guide/development).

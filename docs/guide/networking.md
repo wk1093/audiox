@@ -19,7 +19,6 @@ This is not a router or an internet-sharing setup. The Pi does not need internet
 | HTTP UI | Port 80, plain HTTP |
 | mDNS name | `audiox.local`, answered on `usb0` |
 
-Older instructions using `169.254.1.2/16` describe the previous link-local setup. They do not match the current DHCP network.
 
 ## Connect with DHCP
 
@@ -35,13 +34,9 @@ AudioX's dnsmasq serves only `usb0`. It advertises DNS and a search domain, but 
 
 In the network settings for the newly discovered adapter, select automatic IPv4/DHCP. Use `ip -br addr` or `nmcli device status` to identify the actual interface; it may be `enx...`, not `usb0`.
 
-If you previously created the old link-local profile named `audiox-usb0`, remove it **only if it is that obsolete AudioX profile**:
-
-```bash
-sudo nmcli connection delete audiox-usb0
-```
-
-Then activate an automatic/DHCP connection for the current adapter. Do not remove unrelated profiles. A host profile pinned to a different interface name or MAC address may not apply after changing devices.
+Activate an automatic/DHCP connection for the current adapter. A host profile
+pinned to a different interface name or MAC address may not apply to a new
+adapter.
 
 Linux name resolution for `.local` requires an enabled mDNS path, such as Avahi/nss-mdns or systemd-resolved with mDNS support. An IP connection can work even while this host service is missing.
 
@@ -136,7 +131,3 @@ This is a build-time setting, not a System-page field:
 5. Remember that the public `audiox.wklab.net` record still points at the default address; it will not follow your private build's new subnet.
 
 See [Development](/guide/development) for build and upload safety, and [Config](/guide/config) for USB function settings.
-
-## Implementation references
-
-Defaults and behavior come from `Kconfig`, `include/defs.hpp`, `root/etc/dnsmasq.conf`, `src/http/network.cpp`, `src/http/mdns.cpp`, `src/http/server.cpp`, `src/init/watchdog.cpp`, and `tests/mdns_test.cpp`. QEMU-specific networking is documented separately in [Development](/guide/development#qemu-debugging).

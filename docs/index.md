@@ -1,73 +1,59 @@
 # AudioX documentation
 
-AudioX turns a Raspberry Pi into a configurable audio workstation: connect
-sources to outputs, insert effects, play short clips, and control the setup
-from a browser, a MIDI controller, or a supported touchscreen.
+AudioX routes audio between USB, ALSA, Bluetooth, and soundboard sources,
+through effects, and to connected outputs. Operate it from the WebUI, a MIDI
+controller, or an optional touchscreen.
 
-These guides describe the current firmware. AudioX is under active development;
-older installed versions may not include every control described here.
-Raspberry Pi 4 and Pi 5 are hardware-tested targets. The Pi 5 framebuffer UI
-remains untested with a connected display; see [Display and touch](./guide/display).
+AudioX is under active development. Raspberry Pi 4 Model B and Raspberry Pi 5
+are hardware-tested; the Pi 5 framebuffer UI has not been tested with a
+connected display. Start with [Getting started](./guide/getting-started) for
+installation, connection, and a first audio route.
 
-::: tip New device?
-Start with [Getting started](./guide/getting-started): choose an image, flash an
-SD card, connect to the WebUI, and make your first audible route.
-:::
+## Set up the device
 
-## Set up your device
+- [Hardware and compatibility](./guide/hardware)
+- [Networking](./guide/networking)
+- [WebUI](./guide/web-interface)
+- [Display and touch](./guide/display)
 
-- [Getting started](./guide/getting-started) - installation and your first session.
-- [Hardware and compatibility](./guide/hardware) - Pi models, ports, cables,
-  optional devices, and current limitations.
-- [Networking](./guide/networking) - USB networking, addressing, name resolution,
-  and offline use.
-- [WebUI overview](./guide/web-interface) - every page, save behavior, notifications,
-  and long-running operations.
+## Build an audio setup
 
-## Build your audio workflow
-
-| I want to... | Read |
+| Task | Guide |
 | --- | --- |
-| Connect inputs to outputs and understand channels | [Routing](./guide/routing) |
-| Pair a phone or Bluetooth output device | [Bluetooth](./guide/bluetooth) |
-| Add gain, distortion, gate, pitch, reverb, or a multi-channel cut | [Effects](./guide/effects) |
-| Adjust levels or assign a MIDI knob | [Volume](./guide/volume) |
-| Upload, play, order, and map short clips | [Soundboard](./guide/soundboard) |
-| Configure controller actions, sampler playback, lights, and USB passthrough | [MIDI](./guide/midi) |
-| Run a named shortcut or scripted scene from the WebUI/MIDI | [Scripts](./guide/macros) |
-| Use local meters and touch pads | [Display and touch](./guide/display) |
+| Connect sources, processing, and outputs | [Routing](./guide/routing) |
+| Pair a phone or Bluetooth output | [Bluetooth](./guide/bluetooth) |
+| Add gain, distortion, gate, pitch, reverb, or cut | [Effects](./guide/effects) |
+| Set node gain or map a MIDI controller | [Volume](./guide/volume) |
+| Upload, play, order, and map audio clips | [Soundboard](./guide/soundboard) |
+| Configure controller actions, sampler, or lighting | [MIDI](./guide/midi) |
+| Create named shortcuts and automations | [Scripts](./guide/macros) |
 
-## Keep a working setup
+## Maintain and troubleshoot
 
-- [Config and backups](./guide/config) explains staged USB settings and `.axb`
-  backup/restore.
-- [System and updates](./guide/system) covers information, logs, power actions,
-  firmware installation, and failed-boot recovery.
-- [Troubleshooting](./guide/troubleshooting) follows failures from connection
-  through the signal path.
-- [Files and HTTP reference](./guide/reference) maps persistent data and
-  advanced integration endpoints.
-- [Building and development](./guide/development) covers custom images,
-  configuration, tests, and local docs.
-- [Releases and publishing](./guide/publishing) covers maintainer workflows,
-  version strings, and Imager catalogs.
+- [Config and backups](./guide/config)
+- [System, logs, and updates](./guide/system)
+- [Troubleshooting](./guide/troubleshooting)
+- [Persistent files and HTTP API](./guide/reference)
+- [Builds and tests](./guide/development)
+- [Release publishing](./guide/publishing)
 
-## Program automations with Lua
+## Lua scripting
 
-Named scripts can run functions, make decisions, maintain bounded runtime state,
-and queue keyboard, sound, MIDI, effect, or volume actions.
-Start with [Lua scripting](./lua/), then use the
+Scripts use event callbacks to run bounded actions, maintain simple in-memory
+state, and control sounds, effects, volumes, keyboard output, and a MIDI
+controller. Begin with [Lua scripting](./lua/), then use the
 [API reference](./lua/api) and [cookbook](./lua/cookbook).
 
-Lua runs on the device, not on this documentation website. Only keyboard
-actions require a USB keyboard connection; MIDI/lighting actions need their
-controller, and sound/effect/volume actions need the corresponding AudioX target.
-Route-changing scripts are not implemented.
+Lua runs on the device. Keyboard actions require an enabled USB keyboard and a
+connected host; MIDI and lighting require the selected controller; sound,
+effect, and volume actions require the corresponding AudioX target. Scripts
+cannot change routing.
 
 ## Downloads and source
 
-Use the [AudioX website](https://wklab.net/audiox/) for board-specific SD images
-and firmware archives, or browse the
+Download board-specific images and firmware from the
+[AudioX website](https://wklab.net/audiox/), or browse the
 [source repository](https://github.com/wk1093/audiox).
-Keep a backup before updating or reflashing, and use AudioX on a trusted local
-connection rather than exposing its device-control server to the internet.
+
+The device's HTTP control server has no authentication or TLS. Keep it on a
+trusted local connection; do not expose it directly to the internet.

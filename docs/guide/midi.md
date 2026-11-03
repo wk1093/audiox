@@ -1,14 +1,13 @@
 # MIDI controllers and USB passthrough
 
-AudioX uses a connected raw-MIDI controller for soundboard pads, action buttons,
-effect bypass, volume/effect CC control, and script triggers. Supported USB
-controllers need to appear as compatible ALSA raw-MIDI devices. A controller
-requiring proprietary drivers or a proprietary lighting protocol may not work
-as expected.
+AudioX uses a selected raw-MIDI controller for soundboard pads, global actions,
+effect bypass, volume/effect CC control, and script triggers. The controller
+must appear as a compatible ALSA raw-MIDI device. Proprietary drivers or LED
+protocols may not be supported.
 
-The current device discovery selects a controller automatically, preferring
-USB candidates, and excludes AudioX's own gadget MIDI endpoint. There is no
-WebUI controller chooser or multi-controller MIDI patchbay.
+AudioX selects the controller automatically, preferring USB devices and
+excluding its own gadget MIDI endpoint. The WebUI has no controller selector
+or multi-controller patchbay.
 
 ## What goes on each page?
 

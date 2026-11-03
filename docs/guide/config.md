@@ -1,8 +1,8 @@
 # Config and backups
 
-The **Config** page controls the USB gadget presented to the host computer and
-the configuration backup/restore workflow. Audio routing, effect mappings,
-soundboard files, and scripts have their own editors on other pages.
+Use **Config** to set USB gadget functions and back up or restore AudioX
+settings. Routing, effect, soundboard, and script settings are edited on their
+respective pages.
 
 ## USB audio settings
 
@@ -14,10 +14,9 @@ soundboard files, and scripts have their own editors on other pages.
 | USB MIDI Passthrough | Whether to expose USB MIDI, and whether to forward mapped messages |
 | USB Keyboard Chords | Whether to expose the optional USB HID keyboard function |
 
-The channel controls offer 1-16; sample size offers 1-4 bytes. The usual starting
-point is stereo in both directions and two bytes per sample (16-bit). Leave a
-working format unchanged unless your host or signal path requires something else.
-The host software must select the matching AudioX input/output and channel count.
+Channels range from 1–16 and sample size from 1–4 bytes. Stereo in each
+direction with two bytes per sample (16-bit) is a typical starting format.
+Select the matching AudioX device and channel count in host software.
 
 These form labels follow the gadget's ALSA direction, **not the host application's
 playback/recording labels**. A host playback stream enters AudioX as
@@ -110,18 +109,15 @@ the upload and extracted/staged contents, not merely the compressed-looking file
 size in the browser. The `.axb` archive is an AudioX backup format, not a ZIP
 file; changing another archive's extension will not make it compatible.
 
-The browser checks available storage before starting the upload. The check
-requires twice the archive size plus 16 MiB for staging overhead; a rejection
-shows the required and available bytes without uploading or changing settings.
-For example, a 44.5 MiB backup requires at least 105 MiB free. Storage is checked
-again when the upload starts because available space may have changed.
+Before upload, the browser checks for free space equal to twice the archive
+size plus 16 MiB of staging overhead. A 44.5 MiB archive therefore requires at
+least 105 MiB free. The check runs again when upload starts; a rejection reports
+required and available bytes without changing settings.
 
-On boot, AudioX expands the image's storage partition and its ext4 filesystem
-to fill the SD card before applying a pending restore. This also handles cards
-flashed with older fixed-size images once the updated runtime is installed;
-reflashing is not required. The boot partition and existing files are preserved.
-The first expansion may delay startup; keep power connected until boot completes.
-Subsequent boots leave an already expanded filesystem unchanged.
+Before applying a pending restore, AudioX expands the storage partition and its
+ext4 filesystem to fill the SD card. The boot partition and existing files are
+preserved. The first expansion can delay startup; keep power connected until
+boot completes. Later boots leave an expanded filesystem unchanged.
 
 Automatic expansion supports the shipped two-primary-partition MBR layout on
 512-byte-sector disks up to the MBR size limit (approximately 2 TiB). Custom GPT,
@@ -142,4 +138,5 @@ device before retrying instead of repeatedly submitting it.
 | `.axu` | Board-specific firmware update | System > Firmware Update |
 | `.img.xz` | Full SD-card image | An SD-card flashing tool; erases the selected drive |
 
-Continue with [System and updates](./system) or [persistent files and HTTP reference](./reference).
+Continue with [System and updates](./system) or the
+[persistent-files and HTTP reference](./reference).

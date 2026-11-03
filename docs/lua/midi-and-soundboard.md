@@ -1,12 +1,9 @@
 # MIDI output and soundboard
 
-Scripts can trigger preloaded AudioX soundboard files and send MIDI back to the
-connected controller. These are separate from MIDI input mapping: a firmware
-automation script runs on web Run or subscribed events, then plays its queued plan.
-MIDI and lighting plans require the selected MIDI controller connected. Only
-keyboard action plans need USB Keyboard enabled and a connected USB host.
-Sound-only plans need neither; preload sounds before running. These are bounded
-event-triggered scripts, not independent always-on automation.
+Scripts can trigger preloaded sounds and send MIDI to the selected controller.
+These queued outputs are separate from incoming MIDI mappings. MIDI and lighting
+require the controller; keyboard actions require USB Keyboard and a connected
+host; sound actions require a loaded clip.
 
 ## Play a sound
 

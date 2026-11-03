@@ -51,10 +51,6 @@ Add a `"run"` hook to enable the Web Run button; Web Run does not invoke
 and match its channel/note (controller number for CC). Sound and controller
 connection hooks do not require a binding.
 
-Existing sequences and shortcuts are automatically wrapped as callbacks,
-preserving their subscriptions and note-on-shaped Web Run event.
-See [migration details](/guide/macros#existing-shortcuts-and-sequences).
-
 ## The triggering event
 
 | Field | Meaning |
@@ -71,8 +67,7 @@ See [migration details](/guide/macros#existing-shortcuts-and-sequences).
 
 Web triggers still supply numeric channel/note from the script's configuration
 and velocity `127`, including when the MIDI binding is disabled.
-Web Run supplies `event.type == "run"`; generated migration wrappers translate
-it to `"note_on"` inside converted legacy source.
+Web Run supplies `event.type == "run"`.
 
 Register subscriptions using `hook()` in the script editor.
 MIDI press, release (including

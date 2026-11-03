@@ -1,12 +1,12 @@
 # Lua scripting
 
-AudioX's [Scripts system](/guide/macros) uses Lua callbacks. They run on AudioX
-from a saved WebUI Run button or subscribed MIDI, sound and controller hooks, not in this website.
+The [Scripts system](/guide/macros) runs Lua callbacks on AudioX when triggered
+from Web Run or subscribed MIDI, sound, and controller events. Scripts do not
+run in this documentation site.
 
-You can combine functions, conditionals, loops, arithmetic, bounded string/table/
-math helpers, trigger information, and per-script runtime state. Device functions
-queue actions for keyboard output, controller lights/MIDI, preloaded sounds,
-effects, and volume.
+Scripts combine Lua control flow and bounded standard-library helpers with
+trigger data and per-script runtime state. Device functions queue keyboard,
+controller MIDI/lighting, sound, effect, and volume actions.
 
 ## Read in order
 

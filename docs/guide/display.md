@@ -1,8 +1,8 @@
 # Display and touch
 
-AudioX can run without a display. Its framebuffer and touch UI are optional
-companions to the WebUI, useful for monitoring and playing sounds directly.
-They do not expose the full routing/effect/configuration editor.
+The framebuffer and touch UI provide local metering and soundboard controls.
+They are optional and do not replace the WebUI's routing, effects, and
+configuration editors.
 
 The Pi 5 framebuffer UI remains **untested on hardware** because Pi 5 testing
 was performed without a connected screen. Display rendering, touch interaction,
@@ -17,8 +17,8 @@ is plug-and-play: start with [hardware guidance](./hardware).
 
 The default local view shows device/channel metering with system CPU and RAM
 metrics. Scroll the device list when there are more devices than fit on screen.
-Meters indicate signal activity; they are not a calibrated loudness measurement
-or a guarantee that a downstream speaker is receiving audio.
+Meters show signal activity, not calibrated loudness or proof that a downstream
+speaker is producing sound.
 
 Audio bars use the same logarithmic -60 to 0 dBFS scale as the web Volume
 meters, with local attack/release smoothing. Signals at or below -60 dBFS

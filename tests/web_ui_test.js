@@ -28,10 +28,10 @@ test('HTML responses and invalid JSON become actionable errors, not markup or pa
     assert.doesNotMatch(message, /[<>]|Internal error|Gateway error/);
   }
   assert.match(formatMessage('upload failed: 413 <h1>Too large</h1>'), /file is too large/);
-  assert.match(formatMessage('load failed: 404 <html>Missing</html>'), /newer device firmware/);
+  assert.match(formatMessage('load failed: 404 <html>Missing</html>'), /Endpoint not found.*firmware version/);
   assert.match(formatMessage('save failed: 503 <html>Busy</html>'), /busy or restarting/);
-  assert.match(formatMessage('SyntaxError: Unexpected token \'<\', "<!doctype "... is not valid JSON'), /unexpected response/);
-  assert.match(formatMessage('save error: {"error":"<html>private</html>"}'), /unexpected response/);
+  assert.match(formatMessage('SyntaxError: Unexpected token \'<\', "<!doctype "... is not valid JSON'), /Unexpected response/);
+  assert.match(formatMessage('save error: {"error":"<html>private</html>"}'), /Unexpected response/);
 });
 
 test('network failures, plain validation messages and very long errors are readable', () => {

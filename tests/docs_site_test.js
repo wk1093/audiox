@@ -56,7 +56,7 @@ test('public site links to documentation instead of README setup instructions', 
   assert.ok(resolvePage('/lua/'), 'Existing public Lua landing link must work');
 });
 
-test('device WebUI provides a persistent beginner help link without leaving the controls', () => {
+test('device WebUI provides a persistent manual link without leaving the controls', () => {
   const html = readFileSync(path.join(root, 'web/index.html'), 'utf8');
   const header = html.match(/<header class="app-header">([\s\S]*?)<\/header>/)?.[1];
   assert.ok(header, 'Device header must exist');
@@ -66,7 +66,7 @@ test('device WebUI provides a persistent beginner help link without leaving the 
   assert.match(help[1], /target="_blank"/);
   assert.match(help[1], /rel="noopener noreferrer"/);
   assert.match(help[1], /title="[^"]*requires internet[^"]*"/);
-  assert.equal(help[2], 'Need help? Start here');
+  assert.equal(help[2], 'Manual');
   assert.ok(resolvePage('/guide/web-interface'));
 });
 

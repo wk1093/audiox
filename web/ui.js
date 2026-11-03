@@ -7,10 +7,10 @@
     const context = text.match(/^([^:<>{}\n]*(?:failed|error|rejected))\s*:/i)?.[1];
     const fallback = context ? `${context[0].toUpperCase()}${context.slice(1)}.` : 'The request could not be completed.';
     if (/failed to fetch|fetch failed|networkerror|network request failed|^load failed$/i.test(text)) {
-      return 'Cannot reach AudioX. Check your connection to the device, then try again.';
+      return 'Cannot reach AudioX. Check your connection to the device.';
     }
     if (/unexpected token|unexpected end of json|is not valid json|json\.parse/i.test(text)) {
-      return `${fallback} The device returned an unexpected response. Reload the page and try again.`;
+      return `${fallback} Unexpected response from device. Reload the page.`;
     }
     // Error strings often have an operation and HTTP code before the response body.
     const jsonBody = text.match(/(?:^|:\s*|\b[45]\d\d\s+)([{[])/);
@@ -26,10 +26,10 @@
     }
     if (/<[a-z!/][^>]*>/i.test(text)) {
       const code = String(value).match(/\b(4\d\d|5\d\d)\b/)?.[1];
-      const hint = code === '404' ? 'This feature may require newer device firmware.'
+      const hint = code === '404' ? 'Endpoint not found. Check the device firmware version.'
         : code === '413' ? 'The selected file is too large.'
           : code === '503' ? 'The device is busy or restarting. Try again shortly.'
-            : 'The device returned an unexpected response. Try again, or check System logs.';
+            : 'Unexpected response from device. Try again or check System logs.';
       return `${fallback} ${hint}`;
     }
     text = text.split(/\n\s*(?:at\s|Traceback\b|File ")/)[0].replace(/\s+/g, ' ').trim();

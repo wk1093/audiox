@@ -1,8 +1,8 @@
 # Limits and troubleshooting
 
-Lua is intended for short, bounded controller actions, not general-purpose
-programs or long-running tasks. Each queued event builds one plan, which
-AudioX replays later. The following limits apply to an evaluation:
+Lua scripts build bounded action plans for each trigger. AudioX evaluates a
+plan, then replays it outside the audio thread. These limits apply per
+evaluation:
 
 | Resource | Limit |
 | --- | ---: |
@@ -124,5 +124,5 @@ Use the exact routing thing ID returned by `/api/audio/volumes` for volume
 actions, not a display name or generic `"master"`. Script volume percentages
 stop at unity (`100%`); adjustments are percentage points clamped to `0`–`100`.
 Effect values use actual parameter ranges, not normalized `0`–`1` values;
-out-of-range values are runtime errors. These controls are runtime-only and
-do not save configuration. Routing automation is not yet supported.
+out-of-range values are runtime errors. These controls are runtime-only and do
+not save configuration. Lua scripts cannot change routing.

@@ -1,12 +1,11 @@
 # Keyboard and lighting
 
-The script keyboard API sends physical HID key reports to the USB host. Enable
-**USB Keyboard** in AudioX Config before relying on it. Only keyboard action
-plans need this setting and a connected USB host. Light/MIDI plans need the
-selected controller connected; sound/effects/volume plans need neither. These are
-firmware-side scripts triggered by web Run or MIDI—not browser automation or
-always-on scripts. The keyboard does not paste text or target a specific
-application; the host's currently focused app receives the keys.
+Keyboard actions send physical HID reports to the connected USB host. Enable
+**USB Keyboard** in Config; only scripts with keyboard actions require it. These
+are event-triggered firmware actions, not browser automation. The host's
+focused application receives the keys; AudioX does not paste text or choose a
+target application. MIDI/lighting plans need the selected controller, while
+sound, effect, and volume plans need neither device.
 
 ## Chords and key names
 

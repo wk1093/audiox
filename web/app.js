@@ -3490,8 +3490,9 @@ function renderVolGrid() {
   if (!volGridEl) return;
   volumeMeters.clear();
   volGridEl.innerHTML = '';
-  const effects = state.volumes.filter(vol => isEffectThingId(vol.id));
-  const visibleVolumes = state.volumes.filter(vol => state.volShowEffects || !isEffectThingId(vol.id));
+  const audioVolumes = state.volumes.filter(vol => vol.id !== 'routing_helper');
+  const effects = audioVolumes.filter(vol => isEffectThingId(vol.id));
+  const visibleVolumes = audioVolumes.filter(vol => state.volShowEffects || !isEffectThingId(vol.id));
   const effectSummary = document.getElementById('vol-effect-summary');
   if (effectSummary) {
     const adjusted = effects.filter(vol => vol.gain !== 1).length;
@@ -3504,7 +3505,7 @@ function renderVolGrid() {
   if (!visibleVolumes.length) {
     const empty = document.createElement('div');
     empty.className = 'small';
-    empty.textContent = state.volumes.length
+    empty.textContent = audioVolumes.length
       ? 'Only effect channels are available. Enable Show effect channels to see them.'
       : 'No active devices. Open the Routing tab first.';
     volGridEl.appendChild(empty);

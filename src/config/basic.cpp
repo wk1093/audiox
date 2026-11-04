@@ -175,7 +175,7 @@ int ConfigStore::readScriptConfig(const char *name, char *out, size_t capacity, 
     int fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
     struct stat st{};
     if (fd < 0 || fstat(fd, &st) < 0 || !S_ISREG(st.st_mode) ||
-        st.st_size > static_cast<off_t>(MIDI_SCRIPT_CONFIG_READ_MAX)) {
+        st.st_size > static_cast<off_t>(SCRIPT_CONFIG_READ_MAX)) {
         printf("[CONFIG] [WARN] Lua cannot read %s: %s\n", path,
                fd < 0 ? strerror(errno) : "not a readable regular file within 64 KiB");
         if (fd >= 0) close(fd);
@@ -203,7 +203,7 @@ int ConfigStore::readScriptConfig(const char *name, char *out, size_t capacity, 
 
 int ConfigStore::writeScriptConfig(const char *name, const char *text, size_t length) {
     char path[256]{};
-    if (!midiScriptConfigTextValid(text, length) ||
+    if (!scriptConfigTextValid(text, length) ||
         !scriptConfigPath(name, path, sizeof(path))) {
         printf("[CONFIG] [WARN] Invalid Lua configuration write\n");
         return RET_ERR;
@@ -257,22 +257,22 @@ int ConfigStore::readScriptSettings(ConfigData *out) const {
     return result;
 }
 
-bool applyScriptSetting(ConfigData &cfg, const char *key, const MidiScriptStateEntry &value) {
+bool applyScriptSetting(ConfigData &cfg, const char *key, const ScriptStateEntry &value) {
     if (!key) return false;
     auto numeric = [&](uint32_t min, uint32_t max, uint32_t &target) {
-        if (value.kind != MidiScriptValueKind::Number || !std::isfinite(value.numberValue) ||
+        if (value.kind != ScriptValueKind::Number || !std::isfinite(value.numberValue) ||
             value.numberValue < min || value.numberValue > max ||
             std::floor(value.numberValue) != value.numberValue) return false;
         target = static_cast<uint32_t>(value.numberValue);
         return true;
     };
     auto boolean = [&](uint8_t &target) {
-        if (value.kind != MidiScriptValueKind::Boolean) return false;
+        if (value.kind != ScriptValueKind::Boolean) return false;
         target = value.booleanValue;
         return true;
     };
     auto choice = [&](const char *a, const char *b, const char *c, uint8_t &target) {
-        if (value.kind != MidiScriptValueKind::String) return false;
+        if (value.kind != ScriptValueKind::String) return false;
         if (!strcmp(value.stringValue, a)) target = 0;
         else if (!strcmp(value.stringValue, b)) target = 1;
         else if (c && !strcmp(value.stringValue, c)) target = 2;
@@ -290,7 +290,7 @@ bool applyScriptSetting(ConfigData &cfg, const char *key, const MidiScriptStateE
     return false;
 }
 
-int ConfigStore::writeScriptSetting(const char *key, const MidiScriptStateEntry &value) {
+int ConfigStore::writeScriptSetting(const char *key, const ScriptStateEntry &value) {
     ConfigData cfg{};
     if (readScriptSettings(&cfg) != RET_OK || !applyScriptSetting(cfg, key, value)) {
         printf("[CONFIG] [WARN] Invalid structured Lua setting\n");

@@ -172,7 +172,7 @@ int main() {
         mdns.poll();
         audio.poll(); // no audio processing, only hotplug/talking to config for device/routing settings.
         midi.poll();
-        midi.pollScriptLifecycle(nowMs, bootStartupStable());
+        mainContext.scripts->pollScriptLifecycle(nowMs, bootStartupStable());
     }
 
 }

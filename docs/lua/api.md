@@ -216,8 +216,8 @@ actions when persistence is unnecessary.
 
 | Call | Description |
 | --- | --- |
-| `tap(keys)` | Tap a chord and release it. Example: `tap("CTRL+A")`. |
-| `press(keys)` | Replace the currently held chord. Modifier-only chords are allowed. |
+| `tap(keys)` | Tap a chord or one consumer media key and release it. Examples: `tap("CTRL+A")`, `tap("MEDIA_PLAY_PAUSE")`. |
+| `press(keys)` | Replace the currently held chord or media key. Modifier-only ordinary chords are allowed. |
 | `release()` | Release all keys held by the script. |
 | `type(text, interval_ms)` | Type supported US-ASCII text. The interval defaults to 50 ms. |
 | `wait(ms)` | Add a playback delay, `0`–`60000` ms. |

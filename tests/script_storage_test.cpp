@@ -1,4 +1,4 @@
-#include "midi/script_storage.hpp"
+#include "scripting/storage.hpp"
 
 #include <cassert>
 #include <cerrno>
@@ -17,7 +17,7 @@ int main() {
     ScriptStorage store(7, root.c_str()), other(8, root.c_str()), invalid(0, root.c_str());
     std::string text;
     std::vector<std::string> names;
-    MidiScriptState settings{};
+    ScriptState settings{};
     assert(invalid.writeFile("x", "x", 1) == RET_ERR && errno == EINVAL);
     assert(invalid.listFiles(names) == RET_ERR);
     assert(store.readFile("absent", text) == RET_ERR && errno == ENOENT);
@@ -56,15 +56,15 @@ int main() {
         assert(store.removeFile("recovered") == RET_OK);
     }
 
-    MidiScriptStateEntry entry{};
-    strcpy(entry.key, "enabled"); entry.kind = MidiScriptValueKind::Boolean; entry.booleanValue = true;
+    ScriptStateEntry entry{};
+    strcpy(entry.key, "enabled"); entry.kind = ScriptValueKind::Boolean; entry.booleanValue = true;
     assert(store.setSetting(entry) == RET_OK);
-    strcpy(entry.key, "number"); entry.kind = MidiScriptValueKind::Number; entry.numberValue = 0.125;
+    strcpy(entry.key, "number"); entry.kind = ScriptValueKind::Number; entry.numberValue = 0.125;
     assert(store.setSetting(entry) == RET_OK);
     strcpy(entry.key, "integer"); entry.numberIsInteger = true; entry.integerValue = INT64_MAX;
     entry.numberValue = static_cast<double>(INT64_MAX);
     assert(store.setSetting(entry) == RET_OK);
-    strcpy(entry.key, "text\t\n"); entry.kind = MidiScriptValueKind::String;
+    strcpy(entry.key, "text\t\n"); entry.kind = ScriptValueKind::String;
     strcpy(entry.stringValue, "quote \" slash \\ newline\n");
     assert(store.setSetting(entry) == RET_OK);
     assert(store.readSettings(settings) == RET_OK && settings.count == 4);
@@ -75,11 +75,11 @@ int main() {
     assert(store.listFiles(names) == RET_OK && names.empty());
     assert(store.setSetting(entry, true) == RET_OK);
     assert(store.readSettings(settings) == RET_OK && settings.count == 3);
-    entry = {}; strcpy(entry.key, "bad"); entry.kind = MidiScriptValueKind::Number; entry.numberValue = INFINITY;
+    entry = {}; strcpy(entry.key, "bad"); entry.kind = ScriptValueKind::Number; entry.numberValue = INFINITY;
     assert(store.setSetting(entry) == RET_ERR);
     entry.numberValue = 1; entry.numberIsInteger = true; entry.integerValue = 2;
     assert(store.setSetting(entry) == RET_ERR);
-    entry = {}; entry.kind = MidiScriptValueKind::Boolean;
+    entry = {}; entry.kind = ScriptValueKind::Boolean;
     assert(store.setSetting(entry) == RET_ERR);
 
     ScriptStorage countStore(20, root.c_str());
@@ -96,9 +96,9 @@ int main() {
     assert(quotaStore.writeFile("f0", "short", 5) == RET_OK);
     assert(quotaStore.writeFile("overflow", "x", 1) == RET_OK);
     ScriptStorage settingsStore(22, root.c_str());
-    for (unsigned i = 0; i < MIDI_SCRIPT_STATE_ENTRIES_MAX; ++i) {
+    for (unsigned i = 0; i < SCRIPT_STATE_ENTRIES_MAX; ++i) {
         entry = {}; snprintf(entry.key, sizeof(entry.key), "k%u", i);
-        entry.kind = MidiScriptValueKind::Boolean;
+        entry.kind = ScriptValueKind::Boolean;
         assert(settingsStore.setSetting(entry) == RET_OK);
     }
     strcpy(entry.key, "overflow");

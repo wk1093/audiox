@@ -33,6 +33,35 @@ release()
 Do not use `press("CTRL"); tap("A")` expecting Ctrl+A. Use the supported key
 names and join simultaneous keys with `+`.
 
+## Media keys
+
+`tap("MEDIA_PLAY_PAUSE")` sends a real USB Consumer Control report, not a
+keyboard shortcut. `press("MEDIA_VOLUME_UP")` holds a media key; `release()`
+or sequence completion releases it. Names are case-insensitive:
+
+| Key | Function |
+| --- | --- |
+| `MEDIA_PLAY`, `MEDIA_PAUSE`, `MEDIA_PLAY_PAUSE` | Separate play/pause or toggle |
+| `MEDIA_NEXT`, `MEDIA_PREVIOUS`, `MEDIA_STOP` | Track skip and stop |
+| `MEDIA_REWIND`, `MEDIA_FAST_FORWARD` | Seek |
+| `MEDIA_VOLUME_UP`, `MEDIA_VOLUME_DOWN`, `MEDIA_MUTE` | Host volume |
+| `MEDIA_RECORD`, `MEDIA_EJECT` | Record/eject where supported |
+
+Use one media key per call; media keys cannot be combined with modifiers or
+ordinary keys using `+`. Taps release automatically after at least 30 ms.
+Switching between a held media key and an ordinary chord releases the previous
+report first. Both share the bounded playback queue and cancellation rules.
+
+**USB Keyboard** exposes keyboard and Consumer Control collections through one
+HID interface (`/dev/hidg0`). Report ID 1 carries eight keyboard bytes; report
+ID 2 carries two media bytes. Sharing the interface avoids exhausting the Pi's
+USB gadget endpoints when audio, networking, and MIDI are also enabled. This is
+a report-protocol keyboard, not a BIOS/UEFI boot-protocol keyboard.
+Apply the USB configuration or reboot after updating to enumerate it. Media keys
+are dispatched by the computer's OS/player, which may not support every usage.
+The [Bluetooth bridge](./cookbook#bluetooth-media-keys-to-computer-keyboard) uses
+these by default, with configurable ordinary-chord overrides.
+
 ## Typing text
 
 `type(text)` uses a 50 ms interval by default. `type(text, interval_ms)` accepts

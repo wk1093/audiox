@@ -11,7 +11,7 @@ grep -Fxq 'include $(CURDIR)/tests/Makefile' Makefile
 grep -Fxq '.DEFAULT_GOAL := all' Makefile
 ! grep -Eq '^test-[[:alnum:]_-]+:' Makefile
 targets=(
-    test-midi-usb test-midi-script test-midi-docs
+    test-midi-usb test-script test-script-docs
     test-display-hotplug test-soundboard-config test-boot-recovery test-config-backup
     test-audio-pcm-recover test-system-logs test-system test-gadget-setup test-mdns
     test-gadget-volume test-audio-runtime test-diagnostics test-watchdog

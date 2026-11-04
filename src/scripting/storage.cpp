@@ -1,4 +1,4 @@
-#include "midi/script_storage.hpp"
+#include "scripting/storage.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -48,7 +48,7 @@ int scan(int fd, std::vector<std::string> &names, size_t &total, bool cleanup = 
             result = fail(EINVAL); break;
         }
         if (pending) {
-            if (++pendingCount > MIDI_SCRIPT_ACTIONS_MAX) { result = fail(EDQUOT); break; }
+            if (++pendingCount > SCRIPT_ACTIONS_MAX) { result = fail(EDQUOT); break; }
             if (cleanup) {
                 if (unlinkat(fd, name, 0) < 0) { result = RET_ERR; break; }
                 removed = true;
@@ -108,13 +108,13 @@ bool ScriptStorage::validName(const char *name) {
     return true;
 }
 
-bool ScriptStorage::validSetting(const MidiScriptStateEntry &entry) {
+bool ScriptStorage::validSetting(const ScriptStateEntry &entry) {
     size_t length = strnlen(entry.key, sizeof(entry.key));
     if (!length || length == sizeof(entry.key)) return false;
-    if (entry.kind == MidiScriptValueKind::Boolean) return true;
-    if (entry.kind == MidiScriptValueKind::String)
+    if (entry.kind == ScriptValueKind::Boolean) return true;
+    if (entry.kind == ScriptValueKind::String)
         return strnlen(entry.stringValue, sizeof(entry.stringValue)) < sizeof(entry.stringValue);
-    return entry.kind == MidiScriptValueKind::Number && std::isfinite(entry.numberValue) &&
+    return entry.kind == ScriptValueKind::Number && std::isfinite(entry.numberValue) &&
         (!entry.numberIsInteger || entry.numberValue == static_cast<double>(entry.integerValue));
 }
 
@@ -255,7 +255,7 @@ int ScriptStorage::removeFile(const char *name) const {
     return RET_OK;
 }
 
-int ScriptStorage::readSettings(MidiScriptState &settings) const {
+int ScriptStorage::readSettings(ScriptState &settings) const {
     settings = {};
     std::string text;
     if (read(SCRIPT_STORAGE_SETTINGS_NAME, text) != RET_OK)
@@ -265,8 +265,8 @@ int ScriptStorage::readSettings(MidiScriptState &settings) const {
     while (start < text.size()) {
         size_t end = text.find('\n', start), tab = text.find('\t', start);
         if (end == std::string::npos || tab == std::string::npos || tab + 2 >= end ||
-            text[tab + 2] != '\t' || settings.count == MIDI_SCRIPT_STATE_ENTRIES_MAX) return fail(EINVAL);
-        MidiScriptStateEntry entry{};
+            text[tab + 2] != '\t' || settings.count == SCRIPT_STATE_ENTRIES_MAX) return fail(EINVAL);
+        ScriptStateEntry entry{};
         if (!unhex(text.substr(start, tab - start), entry.key, sizeof(entry.key))) return fail(EINVAL);
         std::string value = text.substr(tab + 3, end - tab - 3);
         char *tail = nullptr;
@@ -274,20 +274,20 @@ int ScriptStorage::readSettings(MidiScriptState &settings) const {
         switch (text[tab + 1]) {
         case 'b':
             if (value != "0" && value != "1") return fail(EINVAL);
-            entry.kind = MidiScriptValueKind::Boolean; entry.booleanValue = value == "1"; break;
+            entry.kind = ScriptValueKind::Boolean; entry.booleanValue = value == "1"; break;
         case 'i':
-            entry.kind = MidiScriptValueKind::Number; entry.numberIsInteger = true;
+            entry.kind = ScriptValueKind::Number; entry.numberIsInteger = true;
             entry.integerValue = strtoll(value.c_str(), &tail, 10);
             entry.numberValue = static_cast<double>(entry.integerValue);
             if (errno || value.empty() || !tail || *tail) return fail(EINVAL);
             break;
         case 'n':
-            entry.kind = MidiScriptValueKind::Number;
+            entry.kind = ScriptValueKind::Number;
             entry.numberValue = strtod(value.c_str(), &tail);
             if (errno || value.empty() || !tail || *tail) return fail(EINVAL);
             break;
         case 's':
-            entry.kind = MidiScriptValueKind::String;
+            entry.kind = ScriptValueKind::String;
             if (!unhex(value, entry.stringValue, sizeof(entry.stringValue))) return fail(EINVAL);
             break;
         default: return fail(EINVAL);
@@ -300,12 +300,12 @@ int ScriptStorage::readSettings(MidiScriptState &settings) const {
     }
     return RET_OK;
 }
-int ScriptStorage::setSetting(const MidiScriptStateEntry &entry, bool remove) const {
+int ScriptStorage::setSetting(const ScriptStateEntry &entry, bool remove) const {
     if (remove ? (!entry.key[0] || strnlen(entry.key, sizeof(entry.key)) == sizeof(entry.key)) :
         !validSetting(entry)) return fail(EINVAL);
     Fd directory(openDirectory(true));
     if (directory.value < 0 || flock(directory.value, LOCK_EX) < 0) return RET_ERR;
-    MidiScriptState state{};
+    ScriptState state{};
     if (readSettings(state) != RET_OK) return RET_ERR;
     unsigned index = 0;
     while (index < state.count && strcmp(state.entries[index].key, entry.key)) ++index;
@@ -313,7 +313,7 @@ int ScriptStorage::setSetting(const MidiScriptStateEntry &entry, bool remove) co
         if (index < state.count) state.entries[index] = state.entries[--state.count];
     } else {
         if (index == state.count) {
-            if (state.count == MIDI_SCRIPT_STATE_ENTRIES_MAX) return fail(EDQUOT);
+            if (state.count == SCRIPT_STATE_ENTRIES_MAX) return fail(EDQUOT);
             ++state.count;
         }
         state.entries[index] = entry;
@@ -323,8 +323,8 @@ int ScriptStorage::setSetting(const MidiScriptStateEntry &entry, bool remove) co
         const auto &value = state.entries[i];
         text += hex(value.key); text += '\t';
         char number[64];
-        if (value.kind == MidiScriptValueKind::String) text += "s\t" + hex(value.stringValue);
-        else if (value.kind == MidiScriptValueKind::Boolean) text += value.booleanValue ? "b\t1" : "b\t0";
+        if (value.kind == ScriptValueKind::String) text += "s\t" + hex(value.stringValue);
+        else if (value.kind == ScriptValueKind::Boolean) text += value.booleanValue ? "b\t1" : "b\t0";
         else {
             if (value.numberIsInteger) snprintf(number, sizeof(number), "i\t%lld", static_cast<long long>(value.integerValue));
             else snprintf(number, sizeof(number), "n\t%.17g", value.numberValue);

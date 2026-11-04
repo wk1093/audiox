@@ -1,6 +1,6 @@
 #pragma once
 
-#include "midi/script.hpp"
+#include "scripting/script.hpp"
 #include "defs.hpp"
 #include <string>
 #include <vector>
@@ -23,11 +23,11 @@ public:
         return writeFile(name, text.data(), text.size());
     }
     int removeFile(const char *name) const;
-    int readSettings(MidiScriptState &settings) const;
-    int setSetting(const MidiScriptStateEntry &entry, bool remove = false) const;
+    int readSettings(ScriptState &settings) const;
+    int setSetting(const ScriptStateEntry &entry, bool remove = false) const;
     int nextId(uint32_t minimum, uint32_t &out) const;
     static bool validName(const char *name);
-    static bool validSetting(const MidiScriptStateEntry &entry);
+    static bool validSetting(const ScriptStateEntry &entry);
 private:
     uint32_t id_;
     std::string root_;

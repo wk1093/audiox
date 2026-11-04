@@ -20,6 +20,8 @@ Pi 4 Model B and Pi 5 are hardware-tested targets. The Pi 5 framebuffer UI remai
 | `src/`, `include/` | C++ runtime, bootloader, watchdog, and shared headers |
 | `src/init/` | Boot stages, mounts, modules, gadget setup, logging/recovery |
 | `src/http/` | HTTP/API, bounded logs, USB network setup, mDNS |
+| `src/scripting/`, `include/scripting/` | Lua compiler/API, independent script runtime/state, storage, utilities and media-key definitions |
+| `src/midi/`, `include/midi/` | MIDI controller input, lighting, and USB transport adapters used by scripts |
 | `web/` | Device browser UI, staged into `/etc/www` |
 | `root/` | Runtime rootfs seed files, including dnsmasq configuration |
 | `scripts/` | Dependency, module, image, QEMU, and release tools |
@@ -29,6 +31,13 @@ Pi 4 Model B and Pi 5 are hardware-tested targets. The Pi 5 framebuffer UI remai
 | `docs/` | VitePress documentation; separate dependencies |
 | `site/` | Public download site, distinct from device UI/docs |
 | `out/` | Generated binaries, dependencies, firmware, rootfs trees, and images |
+
+Scripting has its own `ScriptContext`; MIDI is an event source and output
+adapter, not the Lua runtime. The control loop owns script evaluation. Existing
+script IDs, options, callback names, HTTP endpoints, and serialized entries in
+the MIDI mapping file are retained for compatibility. `make test-script`,
+`test-script-storage`, and `test-script-docs` cover scripting; the old
+`test-midi-script*`/`test-midi-docs` targets remain aliases.
 
 ## Linux build prerequisites
 
@@ -271,7 +280,7 @@ the real plugin-host lifecycle, even when they do not instantiate plugins.
 | Direct audio runtime / PCM recovery | `make test-audio-runtime test-audio-pcm-recover` |
 | Runtime audio / gadget host gain | `make test-audio-runtime test-gadget-volume` |
 | Display/config/soundboard | `make test-display-hotplug test-soundboard-config` |
-| MIDI, automation, embedded docs | `make test-midi-usb test-midi-script test-midi-docs` |
+| MIDI, automation, embedded docs | `make test-midi-usb test-script test-script-docs` |
 
 Some targets use sanitizers, need host ALSA headers, or build host Lua. `test-dnsmasq-config` checks the target binary (through `qemu-aarch64` where available). Consult the rule when a dependency is missing rather than treating all failures as firmware regressions.
 

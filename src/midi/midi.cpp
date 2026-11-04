@@ -19,8 +19,6 @@
 #include "audio/processing_fx.hpp"
 #include "config/context.hpp"
 #include "bluetooth/context.hpp"
-#include "midi/script_device.hpp"
-#include "midi/script_storage.hpp"
 #include "init.hpp"
 
 namespace {
@@ -410,11 +408,11 @@ void MidiContext::disconnect() {
     const bool wasConnected = connected != 0;
     char previousDevice[sizeof(devPath)]{};
     copyBounded(previousDevice, sizeof(previousDevice), devPath);
-    stopMacros();
-    (void)flushControllerMidi();
-    controllerPendingSize = 0;
-    controllerOutputFailed = false;
-    usb.closeDevices();
+    scripts.stopMacros();
+    (void)scripts.flushControllerMidi();
+    scripts.controllerPendingSize = 0;
+    scripts.controllerOutputFailed = false;
+    scripts.usb.closeDevices();
     usbStream = {};
     if (fd >= 0) {
         close(fd);
@@ -435,497 +433,11 @@ void MidiContext::disconnect() {
         ledStateByNote[i] = 255;
     }
     if (wasConnected) {
-        MidiScriptEvent event{};
-        event.kind = MidiScriptEventKind::DeviceDisconnect;
+        ScriptEvent event{};
+        event.kind = ScriptEventKind::DeviceDisconnect;
         event.pressed = false;
         copyBounded(event.device, sizeof(event.device), previousDevice);
-        dispatchMacroEvent(event);
-    }
-}
-
-void MidiContext::stopMacros() {
-    releaseMacroMidi();
-    usb.cancelChords();
-    activeMacro = -1;
-    macroQueueCount = 0;
-    macroWaitingTap = false;
-    macroTextIndex = 0;
-    macroTextPending = false;
-    macroWaitingController = false;
-    for (auto &state : macroStates) state = {};
-    memset(macroPressed, 0, sizeof(macroPressed));
-    for (auto &light : macroLight) light = -1;
-}
-
-void MidiContext::syncMacros() {
-    unsigned count = std::min(cachedMidiMap.chordCount, MIDI_CHORDS_MAX);
-    if (count == compiledMacroCount &&
-        std::equal(compiledMacros, compiledMacros + count, cachedMidiMap.chords, midiMacroEqual)) return;
-    stopMacros();
-    compiledMacroCount = count;
-    memcpy(compiledMacros, cachedMidiMap.chords, count * sizeof(MidiChord));
-    for (unsigned i = 0; i < count; ++i) {
-        const auto &macro = compiledMacros[i];
-        macroErrors[i][0] = '\0';
-        char error[192]{};
-        macroEventMasks[i] = macro.eventMask;
-        if (macro.script[0]) {
-            macroValid[i] = macro.hookMode &&
-                midiInspectHooks(macro.script, macroEventMasks[i], error, sizeof(error));
-        } else {
-            macroValid[i] = false;
-        }
-        if (!macroValid[i]) {
-            snprintf(macroErrors[i], sizeof(macroErrors[i]), "%s", error[0] ? error : "script requires callback conversion");
-            printf("[MIDI] [WARN] Macro ch=%u note=%u disabled: %s\n",
-                   macro.channel, macro.note, macroErrors[i]);
-        }
-    }
-    refreshLightingFromState();
-}
-
-bool MidiContext::triggerMacro(unsigned index, uint8_t velocity, bool fromWeb) {
-    if (index >= compiledMacroCount) return false;
-    const auto &macro = compiledMacros[index];
-    MidiScriptEvent event{macro.channel, macro.note, velocity, true};
-    event.fromWeb = fromWeb;
-    if (macro.hookMode && fromWeb) {
-        event.kind = MidiScriptEventKind::Run;
-        if (!(macroEventMasks[index] & (1U << static_cast<unsigned>(event.kind)))) {
-            printf("[MIDI] [WARN] Callback macro has no run hook\n");
-            return false;
-        }
-    }
-    return queueMacroEvent(index, event);
-}
-
-bool MidiContext::queueMacroEvent(unsigned index, MidiScriptEvent event) {
-    if (index >= compiledMacroCount || !macroValid[index]) {
-        printf("[MIDI] [WARN] Cannot queue unavailable macro %u\n", index);
-        return false;
-    }
-    if (macroQueueCount == MIDI_CHORDS_MAX) {
-        printf("[MIDI] [WARN] Macro trigger queue full; dropping trigger\n");
-        return false;
-    }
-    struct timespec monotonic{}, wall{};
-    if (clock_gettime(CLOCK_MONOTONIC, &monotonic) != 0 || clock_gettime(CLOCK_REALTIME, &wall) != 0) {
-        printf("[MIDI] [WARN] Cannot capture macro clocks: %s\n", strerror(errno));
-        return false;
-    }
-    event.monotonicMs = static_cast<uint64_t>(monotonic.tv_sec) * 1000 +
-        static_cast<uint64_t>(monotonic.tv_nsec) / 1000000;
-    event.epochSeconds = static_cast<int64_t>(wall.tv_sec);
-    macroQueue[macroQueueCount++] = {static_cast<uint8_t>(index), event};
-    return true;
-}
-
-void MidiContext::dispatchMacroEvent(MidiScriptEvent event) {
-    const unsigned kind = static_cast<unsigned>(event.kind);
-    if (kind >= MIDI_SCRIPT_EVENT_COUNT) {
-        printf("[MIDI] [WARN] Invalid macro event kind %u\n", kind);
-        return;
-    }
-    const bool midi = kind <= static_cast<unsigned>(MidiScriptEventKind::ControlChange);
-    for (unsigned i = 0; i < compiledMacroCount; ++i) {
-        const auto &macro = compiledMacros[i];
-        if (!macroValid[i]) continue;
-        if (!(macroEventMasks[i] & (1U << kind))) continue;
-        if (midi && (!macro.midiEnabled || macro.channel != event.channel || macro.note != event.note)) continue;
-        if (!queueMacroEvent(i, event)) break;
-    }
-}
-
-void MidiContext::pollBluetoothMediaEvents() {
-    auto *bluetooth = app ? app->bluetooth : nullptr;
-    if (!bluetooth) return;
-    BluetoothMediaEvent media{};
-    for (unsigned i = 0; i < BluetoothContext::MEDIA_EVENTS_MAX && bluetooth->popMediaEvent(media); ++i) {
-        const char *key = bt::mediaKeyName(media.key.operation);
-        if (!key) {
-            printf("[MIDI] [WARN] Invalid Bluetooth media key 0x%02x\n", media.key.operation);
-            continue;
-        }
-        MidiScriptEvent event{};
-        event.kind = MidiScriptEventKind::BluetoothMediaKey;
-        event.pressed = media.key.pressed;
-        bt::formatAddress(media.address, event.device, sizeof(event.device));
-        copyBounded(event.key, sizeof(event.key), key);
-        dispatchMacroEvent(event);
-    }
-    const unsigned dropped = bluetooth->takeMediaEventsDropped();
-    if (dropped) printf("[MIDI] [WARN] Dropped %u Bluetooth media Lua events: event queue full\n", dropped);
-}
-
-void MidiContext::pollScriptLifecycle(uint64_t now, bool startupStable) {
-    if (!startupStable) return;
-    MidiScriptBluetoothSnapshot bluetooth{};
-    if (midiScriptBluetoothSnapshot(app, bluetooth)) {
-        const uint64_t hash = midiScriptBluetoothHash(bluetooth);
-        if (scriptBluetoothKnown && hash != scriptBluetoothHash) {
-            MidiScriptEvent event{};
-            event.kind = MidiScriptEventKind::BluetoothChange;
-            dispatchMacroEvent(event);
-        }
-        scriptBluetoothHash = hash;
-        scriptBluetoothKnown = true;
-    }
-    if (!bootHooksDispatched) {
-        unsigned subscribers = 0;
-        for (unsigned i = 0; i < compiledMacroCount; ++i)
-            if (macroValid[i] && (macroEventMasks[i] & (1U << 8))) ++subscribers;
-        if (subscribers > MIDI_CHORDS_MAX - macroQueueCount) return;
-        MidiScriptEvent event{};
-        event.kind = MidiScriptEventKind::Boot;
-        dispatchMacroEvent(event);
-        bootHooksDispatched = true;
-        nextScriptTimerMs = now + 1000;
-    }
-    if (now < nextScriptTimerMs) return;
-    nextScriptTimerMs = now + 1000;
-    for (unsigned i = 0; i < compiledMacroCount; ++i) {
-        if (!macroValid[i] || !(macroEventMasks[i] & (1U << 9))) continue;
-        bool pending = false;
-        for (unsigned j = 0; j < macroQueueCount; ++j)
-            if (macroQueue[j].index == i && macroQueue[j].event.kind == MidiScriptEventKind::Timer)
-                pending = true;
-        if (pending) continue;
-        MidiScriptEvent event{};
-        event.kind = MidiScriptEventKind::Timer;
-        if (!queueMacroEvent(i, event)) break;
-    }
-}
-
-void MidiContext::failMacro(const char *error) {
-    if (activeMacro >= 0) {
-        snprintf(macroErrors[activeMacro], sizeof(macroErrors[activeMacro]), "%s", error);
-        printf("[MIDI] [WARN] Macro ch=%u note=%u failed: %s\n",
-               compiledMacros[activeMacro].channel, compiledMacros[activeMacro].note, error);
-    }
-    stopMacros();
-    refreshLightingFromState();
-}
-
-void MidiContext::pollMacros(uint64_t now) {
-    if (!flushControllerMidi() && macroWaitingController && activeMacro >= 0) {
-        failMacro("controller MIDI output failed");
-        return;
-    }
-    if (macroUsbGeneration != usb.sessionGeneration) {
-        macroUsbGeneration = usb.sessionGeneration;
-        if (activeMacro >= 0 && macroUsesKeyboard[activeMacro]) {
-            failMacro("USB keyboard session ended");
-            return;
-        }
-        for (unsigned i = 0; i < compiledMacroCount; ++i)
-            if (macroUsesKeyboard[i]) macroStates[i] = {};
-    }
-    if (activeMacro < 0) {
-        if (!macroQueueCount || now < nextMacroEvalMs || usb.keyDown || usb.chordCount) return;
-        const auto trigger = macroQueue[0];
-        activeMacro = trigger.index;
-        --macroQueueCount;
-        memmove(macroQueue, macroQueue + 1, macroQueueCount * sizeof(macroQueue[0]));
-        nextMacroEvalMs = now + 10;
-        const auto &macro = compiledMacros[activeMacro];
-        macroPlan = {};
-        macroErrors[activeMacro][0] = '\0';
-        MidiScriptState nextState = macroStates[activeMacro];
-        {
-            if (!midiEvaluateScript(macro.script, trigger.event, nextState, macroPlan,
-                                    macroErrors[activeMacro], sizeof(macroErrors[activeMacro]),
-                                    app ? app->config : nullptr, macro.configWriteAllowed,
-                                    macro.hookMode, macroEventMasks[activeMacro], macro.id)) {
-                printf("[MIDI] [WARN] Macro ch=%u note=%u failed: %s\n",
-                       macro.channel, macro.note, macroErrors[activeMacro]);
-                activeMacro = -1;
-                return;
-            }
-        }
-        bool needsKeyboard = false, needsController = false;
-        for (unsigned i = 0; i < macroPlan.count; ++i) {
-            auto kind = macroPlan.actions[i].kind;
-            if (kind == MidiScriptKind::Light && !macro.midiEnabled) {
-                snprintf(macroErrors[activeMacro], sizeof(macroErrors[activeMacro]),
-                         "light actions require a MIDI binding");
-                printf("[MIDI] [WARN] Macro %s failed: %s\n", macro.name, macroErrors[activeMacro]);
-                activeMacro = -1;
-                return;
-            }
-            needsKeyboard |= kind == MidiScriptKind::Tap || kind == MidiScriptKind::Press ||
-                kind == MidiScriptKind::Release || kind == MidiScriptKind::Type;
-            needsController |= kind == MidiScriptKind::Light || kind == MidiScriptKind::Midi;
-        }
-        macroUsesKeyboard[activeMacro] = needsKeyboard;
-        if ((needsKeyboard && (!keyboardEnabled || usb.keyboardFd < 0)) ||
-            (needsController && (!connected || fd < 0))) {
-            snprintf(macroErrors[activeMacro], sizeof(macroErrors[activeMacro]), "%s",
-                needsKeyboard && (!keyboardEnabled || usb.keyboardFd < 0) ?
-                "keyboard actions require USB Keyboard enabled and a connected host" :
-                "MIDI and light actions require a connected controller");
-            printf("[MIDI] [WARN] Macro %s failed: %s\n", macro.name, macroErrors[activeMacro]);
-            activeMacro = -1;
-            return;
-        }
-        macroStates[activeMacro] = nextState;
-        macroStep = 0;
-        macroWakeMs = now;
-        macroDeadlineMs = now + 65000;
-        macroWaitingTap = false;
-        macroTextIndex = 0;
-        macroTextPending = false;
-        macroWaitingController = false;
-    }
-    if (now >= macroDeadlineMs) {
-        failMacro("macro timed out; cancelling pending actions");
-        return;
-    }
-    if (macroUsesKeyboard[activeMacro] && (!keyboardEnabled || usb.keyboardFd < 0)) {
-        failMacro("USB keyboard unavailable");
-        return;
-    }
-    if (macroWaitingController && controllerPendingSize) return;
-    macroWaitingController = false;
-    if (macroWaitingTap && (usb.chordCount || (usb.keyDown && !usb.keyHeld))) return;
-    macroWaitingTap = false;
-    if (macroTextPending) {
-        const auto &action = macroPlan.actions[macroStep];
-        if (action.text[macroTextIndex]) macroWakeMs = usb.keyboardPressMs + action.value;
-        macroTextPending = false;
-    }
-    if (now < macroWakeMs) return;
-    for (unsigned budget = 0; budget < MIDI_SCRIPT_ACTIONS_MAX && macroStep < macroPlan.count; ++budget) {
-        const auto &action = macroPlan.actions[macroStep];
-        if (action.kind == MidiScriptKind::Tap || action.kind == MidiScriptKind::Type) {
-            if (usb.keyHeld) {
-                (void)usb.release();
-                macroWaitingTap = true;
-                return;
-            }
-            if (action.kind == MidiScriptKind::Type) {
-                if (!action.text[macroTextIndex]) {
-                    macroTextIndex = 0;
-                    ++macroStep;
-                    continue;
-                }
-                uint8_t report[8];
-                if (!midiAsciiReport(action.text[macroTextIndex], report) || !usb.queueKeyboardReport(report)) {
-                    failMacro("typing report could not be queued");
-                    return;
-                }
-                ++macroTextIndex;
-                macroTextPending = true;
-            } else {
-                usb.trigger(action.keys);
-                ++macroStep;
-            }
-            macroWaitingTap = true;
-            return;
-        }
-        ++macroStep;
-        if (action.kind == MidiScriptKind::Press || action.kind == MidiScriptKind::Release) {
-            bool queued = action.kind == MidiScriptKind::Press ? usb.press(action.keys) : usb.release();
-            if (!queued) {
-                failMacro("keyboard report could not be queued");
-                return;
-            }
-            macroWaitingTap = true;
-            return;
-        }
-        if (action.kind == MidiScriptKind::Wait) {
-            macroWakeMs = now + action.value;
-            if (action.value) return;
-        } else if (action.kind == MidiScriptKind::Light) {
-            macroLight[activeMacro] = action.value;
-            refreshLightingFromState();
-        } else if (action.kind == MidiScriptKind::Log) {
-            printf("[MIDI] [LUA] ch=%u note=%u %s\n", compiledMacros[activeMacro].channel,
-                   compiledMacros[activeMacro].note, action.text);
-        } else if (action.kind == MidiScriptKind::ConfigWrite) {
-            if (!app || !app->config || app->config->writeScriptConfig(action.target,
-                macroPlan.configText + action.value, static_cast<size_t>(action.number)) != RET_OK) {
-                failMacro("config.write failed; check file format, storage and write limits");
-                return;
-            }
-        } else if (action.kind == MidiScriptKind::SettingsSet) {
-            if (!app || !app->config ||
-                app->config->writeScriptSetting(action.target, action.setting) != RET_OK) {
-                failMacro("settings.set failed; check settings and persistent storage");
-                return;
-            }
-        } else if (action.kind == MidiScriptKind::StorageWrite ||
-                   action.kind == MidiScriptKind::StorageRemove ||
-                   action.kind == MidiScriptKind::ScriptConfigSet) {
-            ScriptStorage storage(compiledMacros[activeMacro].id);
-            int result = RET_ERR;
-            if (action.kind == MidiScriptKind::StorageWrite)
-                result = storage.writeFile(action.target, macroPlan.configText + action.value,
-                                           static_cast<size_t>(action.number));
-            else if (action.kind == MidiScriptKind::StorageRemove)
-                result = storage.removeFile(action.target);
-            else result = storage.setSetting(action.setting, action.value == 0);
-            if (result != RET_OK) {
-                char error[192];
-                snprintf(error, sizeof(error), "Script storage action failed: %s", strerror(errno));
-                failMacro(error);
-                return;
-            }
-        } else if (action.kind == MidiScriptKind::SystemRestart) {
-            printf("[MIDI] [LUA] Script %s requested device restart\n", compiledMacros[activeMacro].name);
-            flushLogs();
-            sync();
-            if (reboot(RB_AUTOBOOT) < 0) {
-                char error[192];
-                snprintf(error, sizeof(error), "system.restart failed: %s", strerror(errno));
-                failMacro(error);
-                return;
-            }
-        } else if (action.kind == MidiScriptKind::BluetoothScan ||
-                   action.kind == MidiScriptKind::BluetoothPair ||
-                   action.kind == MidiScriptKind::BluetoothConnect ||
-                   action.kind == MidiScriptKind::BluetoothDisconnect ||
-                   action.kind == MidiScriptKind::BluetoothUnpair ||
-                   action.kind == MidiScriptKind::BluetoothAutoConnect) {
-            auto *bluetooth = app ? app->bluetooth : nullptr;
-            int result = RET_ERR;
-            if (bluetooth) {
-                switch (action.kind) {
-                case MidiScriptKind::BluetoothScan: result = bluetooth->requestScan(); break;
-                case MidiScriptKind::BluetoothPair: result = bluetooth->requestPair(action.target); break;
-                case MidiScriptKind::BluetoothConnect: result = bluetooth->requestConnect(action.target); break;
-                case MidiScriptKind::BluetoothDisconnect: result = bluetooth->requestDisconnect(action.target); break;
-                case MidiScriptKind::BluetoothUnpair: result = bluetooth->requestUnpair(action.target); break;
-                case MidiScriptKind::BluetoothAutoConnect:
-                    result = bluetooth->requestAutoConnect(action.target, action.value != 0); break;
-                default: break;
-                }
-            }
-            if (result != RET_OK) {
-                failMacro(result == RET_WARN ? "Bluetooth request rejected: busy or unavailable device" :
-                                             "Bluetooth request failed: unavailable adapter or invalid address");
-                return;
-            }
-        } else if (action.kind == MidiScriptKind::SoundPlay) {
-            if (!app || !app->audio ||
-                app->audio->triggerPreloadedSfxPitch(action.text, static_cast<float>(action.pitchRatio)) != RET_OK) {
-                failMacro("sound.play failed; ensure the WAV is uploaded and preloaded");
-                return;
-            }
-        } else if (action.kind == MidiScriptKind::SoundStopAll) {
-            if (!app || !app->audio) {
-                failMacro("sound.stop_all failed; audio unavailable");
-                return;
-            }
-            app->audio->stopAllSfx();
-        } else if (action.kind == MidiScriptKind::EffectEnable ||
-                   action.kind == MidiScriptKind::EffectToggle || action.kind == MidiScriptKind::EffectSet) {
-            auto *audio = app ? app->audio : nullptr;
-            int result = RET_ERR;
-            if (audio) {
-                if (action.kind == MidiScriptKind::EffectEnable)
-                    result = audio->setEffectEnabled(action.target, action.value);
-                else if (action.kind == MidiScriptKind::EffectToggle)
-                    result = audio->toggleEffectEnabled(action.target);
-                else {
-                    audiox::effects::SlotParams params{};
-                    if (audio->getEffectParams(action.target, &params) == RET_OK) {
-                        const auto *spec = audiox::effects::effectParamSpecFor(params.type, action.parameter);
-                        if (spec && action.number >= spec->minValue && action.number <= spec->maxValue)
-                            result = audio->setEffectParam(action.target, action.parameter,
-                                                          static_cast<float>(action.number));
-                    }
-                }
-            }
-            if (result != RET_OK) {
-                failMacro("effect action failed; check effect ID, parameter and range");
-                return;
-            }
-            refreshLightingFromState();
-        } else if (action.kind == MidiScriptKind::VolumeSet || action.kind == MidiScriptKind::VolumeAdjust) {
-            auto *audio = app ? app->audio : nullptr;
-            bool found = false;
-            if (audio) {
-                std::lock_guard<std::mutex> lock(audio->routingGraphMutex);
-                for (unsigned i = 0; i < audio->routingGraph.thingCount; ++i)
-                    if (!strcmp(audio->routingGraph.things[i].id, action.target)) found = true;
-            }
-            if (!found) {
-                failMacro("volume action failed; unknown audio thing ID");
-                return;
-            }
-            double percent = action.number;
-            if (action.kind == MidiScriptKind::VolumeAdjust)
-                percent += audio->getThingGain(action.target) * 100;
-            audio->setThingGain(action.target, static_cast<float>(std::clamp(percent, 0.0, 100.0) / 100));
-        } else if (action.kind == MidiScriptKind::Midi) {
-            if (!queueControllerMidi(action.midiBytes, action.midiSize)) {
-                failMacro("controller MIDI output failed or its queue is full");
-                return;
-            }
-            unsigned kind = action.midiBytes[0] & 0xf0, channel = action.midiBytes[0] & 15;
-            if (action.midiSize == 3 && (kind == 0x80 || kind == 0x90)) {
-                macroMidiNotes[channel][action.midiBytes[1]] = kind == 0x90 && action.midiBytes[2] != 0;
-            } else if (action.midiSize == 3 && kind == 0xb0 && action.midiBytes[1] == 64) {
-                macroMidiSustain[channel] = action.midiBytes[2] >= 64;
-            }
-            if (controllerPendingSize) {
-                macroWaitingController = true;
-                return;
-            }
-        }
-    }
-    if (macroStep == macroPlan.count) {
-        if (usb.keyHeld) {
-            (void)usb.release();
-            macroWaitingTap = true;
-            return;
-        }
-        releaseMacroMidi();
-        macroLight[activeMacro] = -1;
-        activeMacro = -1;
-        refreshLightingFromState();
-    }
-}
-
-bool MidiContext::flushControllerMidi() {
-    if (!controllerPendingSize) return !controllerOutputFailed;
-    if (fd < 0 || !connected || controllerOutputFailed) return false;
-    ssize_t n = write(fd, controllerPending, controllerPendingSize);
-    if (n > 0) {
-        controllerPendingSize -= static_cast<size_t>(n);
-        memmove(controllerPending, controllerPending + n, controllerPendingSize);
-        return true;
-    }
-    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return true;
-    printf("[MIDI] [WARN] Controller MIDI write failed: %s\n", n < 0 ? strerror(errno) : "zero-length write");
-    controllerOutputFailed = true;
-    return false;
-}
-
-bool MidiContext::queueControllerMidi(const uint8_t *bytes, size_t count) {
-    if (fd < 0 || !connected || !count || !flushControllerMidi()) return false;
-    if (count > sizeof(controllerPending) - controllerPendingSize) {
-        printf("[MIDI] [WARN] Controller MIDI output queue full\n");
-        return false;
-    }
-    memcpy(controllerPending + controllerPendingSize, bytes, count);
-    controllerPendingSize += count;
-    return flushControllerMidi();
-}
-
-void MidiContext::releaseMacroMidi() {
-    for (unsigned channel = 0; channel < 16; ++channel) {
-        if (macroMidiSustain[channel]) {
-            uint8_t off[] = {static_cast<uint8_t>(0xb0 | channel), 64, 0};
-            if (!queueControllerMidi(off, sizeof(off))) printf("[MIDI] [WARN] Cannot release macro MIDI sustain\n");
-            macroMidiSustain[channel] = false;
-        }
-        for (unsigned note = 0; note < 128; ++note) {
-            if (!macroMidiNotes[channel][note]) continue;
-            uint8_t off[] = {static_cast<uint8_t>(0x80 | channel), static_cast<uint8_t>(note), 0};
-            if (!queueControllerMidi(off, sizeof(off))) printf("[MIDI] [WARN] Cannot release macro MIDI note\n");
-            macroMidiNotes[channel][note] = false;
-        }
+        scripts.dispatchMacroEvent(event);
     }
 }
 
@@ -934,7 +446,7 @@ void MidiContext::sendRawMidi(uint8_t b0, uint8_t b1, uint8_t b2) {
         return;
     }
     uint8_t msg[3] = {b0, b1, b2};
-    if (!queueControllerMidi(msg, sizeof(msg))) printf("[MIDI] [WARN] Cannot queue controller lighting\n");
+    if (!scripts.queueControllerMidi(msg, sizeof(msg))) printf("[MIDI] [WARN] Cannot queue controller lighting\n");
 }
 
 void MidiContext::sendLightNote(uint8_t note, uint8_t channel, uint8_t velocity) {
@@ -1005,7 +517,7 @@ int MidiContext::reloadSoundboardMappings() {
         samplerSelectedSfx[0] = '\0';
     }
     cachedMidiMap = data;
-    syncMacros();
+    scripts.syncMacros();
     refreshAllLighting();
     return RET_OK;
 }
@@ -1090,11 +602,11 @@ void MidiContext::refreshLightingFromState() {
     }
 
     {
-        for (unsigned i = 0; i < compiledMacroCount; ++i) {
-            const auto &macro = compiledMacros[i];
-            if (!macroValid[i] || !macro.midiEnabled) continue;
-            desired[macro.note] = macroLight[i] >= 0 ? macroLight[i] :
-                (macroPressed[i] ? macro.pressedVelocity : macro.idleVelocity);
+        for (unsigned i = 0; i < scripts.compiledMacroCount; ++i) {
+            const auto &macro = scripts.compiledMacros[i];
+            if (!scripts.macroValid[i] || !macro.midiEnabled) continue;
+            desired[macro.note] = scripts.macroLight[i] >= 0 ? scripts.macroLight[i] :
+                (scripts.macroPressed[i] ? macro.pressedVelocity : macro.idleVelocity);
         }
     }
 
@@ -1124,25 +636,25 @@ void MidiContext::poll() {
         }
         nextUsbConfigMs = now + AUDIOX_DEVICE_POLL_INTERVAL_MS;
     }
-    usb.poll(now, passthroughMode, keyboardEnabled);
+    scripts.usb.poll(now, passthroughMode, keyboardEnabled);
     if (now >= nextMidiMapReloadMs) {
         cachedMidiMap = app->config->readMidiMapFile();
         nextMidiMapReloadMs = now + kMidiMapReloadIntervalMs;
-        syncMacros();
+        scripts.syncMacros();
         refreshLightingFromState();
     }
-    pollBluetoothMediaEvents();
-    pollMacros(now);
-    usb.poll(now, passthroughMode, keyboardEnabled);
+    scripts.pollBluetoothMediaEvents();
+    scripts.pollMacros(now);
+    scripts.usb.poll(now, passthroughMode, keyboardEnabled);
 
     if (app->audio) {
         AudioContext::ScriptSoundEvent soundEvent{};
         for (unsigned i = 0; i < 128 && app->audio->popScriptSoundEvent(&soundEvent); ++i) {
-            MidiScriptEvent event{};
-            event.kind = soundEvent.started ? MidiScriptEventKind::SoundStart : MidiScriptEventKind::SoundFinish;
+            ScriptEvent event{};
+            event.kind = soundEvent.started ? ScriptEventKind::SoundStart : ScriptEventKind::SoundFinish;
             event.pressed = soundEvent.started;
             copyBounded(event.sound, sizeof(event.sound), soundEvent.sound);
-            dispatchMacroEvent(event);
+            scripts.dispatchMacroEvent(event);
         }
         unsigned dropped = app->audio->scriptSoundDropped.exchange(0, std::memory_order_relaxed);
         if (dropped) printf("[MIDI] [WARN] Dropped %u audio Lua events: event queue full\n", dropped);
@@ -1210,10 +722,10 @@ void MidiContext::poll() {
                    (unsigned)cachedMidiMap.globalLight.mappedVel,
                    (unsigned)cachedMidiMap.globalLight.playingVel);
             refreshAllLighting();
-            MidiScriptEvent event{};
-            event.kind = MidiScriptEventKind::DeviceConnect;
+            ScriptEvent event{};
+            event.kind = ScriptEventKind::DeviceConnect;
             copyBounded(event.device, sizeof(event.device), devPath);
-            dispatchMacroEvent(event);
+            scripts.dispatchMacroEvent(event);
             return;
         }
 
@@ -1260,25 +772,25 @@ void MidiContext::poll() {
                         for (uint32_t j = 0; j < cachedMidiMap.chordCount; ++j) {
                             const auto &chord = cachedMidiMap.chords[j];
                             if (!chord.midiEnabled || chord.channel != channel || chord.note != number ||
-                                j >= compiledMacroCount || !macroValid[j]) continue;
+                                j >= scripts.compiledMacroCount || !scripts.macroValid[j]) continue;
                             mapped = true;
                             if (length == 3 && (kind == 0x80 || kind == 0x90)) {
                                 bool pressed = kind == 0x90 && message[2] != 0;
-                                macroPressed[j] = pressed;
-                                const auto eventKind = pressed ? MidiScriptEventKind::NoteOn : MidiScriptEventKind::NoteOff;
-                                if (macroEventMasks[j] & (1U << static_cast<unsigned>(eventKind))) {
-                                    MidiScriptEvent event{channel, number, message[2], pressed};
+                                scripts.macroPressed[j] = pressed;
+                                const auto eventKind = pressed ? ScriptEventKind::NoteOn : ScriptEventKind::NoteOff;
+                                if (scripts.macroEventMasks[j] & (1U << static_cast<unsigned>(eventKind))) {
+                                    ScriptEvent event{channel, number, message[2], pressed};
                                     event.kind = eventKind;
-                                    queueMacroEvent(j, event);
+                                    scripts.queueMacroEvent(j, event);
                                 }
                                 refreshLightingFromState();
                             }
                         }
                     } else if (kind == 0xb0) {
-                        for (unsigned j = 0; j < compiledMacroCount; ++j) {
-                            const auto &macro = compiledMacros[j];
+                        for (unsigned j = 0; j < scripts.compiledMacroCount; ++j) {
+                            const auto &macro = scripts.compiledMacros[j];
                             if (macro.midiEnabled && macro.channel == channel && macro.note == number &&
-                                (macroEventMasks[j] & 4)) mapped = true;
+                                (scripts.macroEventMasks[j] & 4)) mapped = true;
                         }
                         for (uint32_t j = 0; j < cachedMidiMap.ccVolumeMappingCount; ++j) {
                             if (cachedMidiMap.ccVolumeMappings[j].cc == number) mapped = true;
@@ -1287,7 +799,7 @@ void MidiContext::poll() {
                             if (cachedMidiMap.effectCcMappings[j].cc == number) mapped = true;
                         }
                     }
-                    usb.forward(message, length, mapped);
+                    scripts.usb.forward(message, length, mapped);
                 });
                 uint8_t status = 0;
                 uint8_t d0 = 0;
@@ -1303,9 +815,9 @@ void MidiContext::poll() {
                 int isCc = (kind == 0xB0);
 
                 if (isCc) {
-                    MidiScriptEvent event{channel, d0, d1, false};
-                    event.kind = MidiScriptEventKind::ControlChange;
-                    dispatchMacroEvent(event);
+                    ScriptEvent event{channel, d0, d1, false};
+                    event.kind = ScriptEventKind::ControlChange;
+                    scripts.dispatchMacroEvent(event);
                     ++lastCcSeq;
                     lastCc = d0;
                     lastCcValue = d1;
@@ -1532,8 +1044,8 @@ void MidiContext::poll() {
                            triggerRc);
                 }
             }
-            pollMacros(now);
-            usb.poll(now, passthroughMode, keyboardEnabled);
+            scripts.pollMacros(now);
+            scripts.usb.poll(now, passthroughMode, keyboardEnabled);
             continue;
         }
 

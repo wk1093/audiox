@@ -2,11 +2,16 @@
 .PHONY: test test-native test-web test-release test-audio-graph test-audio-graph-mailbox test-audio-graph-tsan test-build-dependencies test-storage-expand
 test: test-native test-web test-release
 
+.PHONY: test-midi-script test-midi-script-storage test-midi-docs
+test-midi-script: test-script
+test-midi-script-storage: test-script-storage
+test-midi-docs: test-script-docs
+
 test-native: test-audio-runtime test-builtin-effects test-audio-meters test-audio-graph test-audio-graph-mailbox \
 	test-plugin-package test-plugin-host test-plugin-integration \
 	test-audio-pcm-recover test-bluetooth-hci test-bluetooth-a2dp test-display-hotplug test-soundboard-config \
 	test-boot-recovery test-config-backup test-system-logs test-system test-gadget-setup test-mdns \
-	test-gadget-volume test-diagnostics test-midi-usb test-midi-script test-midi-script-storage test-midi-docs test-watchdog test-resolve-modules test-build-dependencies test-storage-expand
+	test-gadget-volume test-diagnostics test-midi-usb test-script test-script-storage test-script-docs test-watchdog test-resolve-modules test-build-dependencies test-storage-expand
 
 test-storage-expand: $(OUT_DIR)/host/audiox-storage-expand-test
 	@"$<"
@@ -122,13 +127,13 @@ test-plugin-integration: $(OUT_DIR)/host/audiox-soundboard-config-test $(OUT_DIR
 test-midi-usb: $(OUT_DIR)/host/audiox-midi-usb-test
 	@"$<"
 
-.PHONY: test-midi-script test-midi-script-storage test-midi-docs
-test-midi-script-storage: $(OUT_DIR)/host/audiox-midi-script-storage-test
+.PHONY: test-script test-script-storage test-script-docs
+test-script-storage: $(OUT_DIR)/host/audiox-script-storage-test
 	@"$<"
 
-$(OUT_DIR)/host/audiox-midi-script-storage-test: tests/midi_script_storage_test.cpp src/midi/script_storage.cpp include/midi/script_storage.hpp include/midi/script.hpp include/defs.hpp
+$(OUT_DIR)/host/audiox-script-storage-test: tests/script_storage_test.cpp src/scripting/storage.cpp include/scripting/storage.hpp include/scripting/script.hpp include/defs.hpp
 	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/midi_script_storage_test.cpp src/midi/script_storage.cpp
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/script_storage_test.cpp src/scripting/storage.cpp
 .PHONY: test-bluetooth-hci
 test-bluetooth-hci: $(OUT_DIR)/host/audiox-bluetooth-hci-test
 	@"$<"
@@ -147,31 +152,31 @@ $(OUT_DIR)/host/audiox-bluetooth-a2dp-test: tests/bluetooth_a2dp_test.cpp src/bl
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/bluetooth_a2dp_test.cpp src/bluetooth/a2dp.cpp
 
-test-midi-docs: $(OUT_DIR)/host/audiox-midi-docs-test
+test-script-docs: $(OUT_DIR)/host/audiox-script-docs-test
 	@"$<"
 
-$(OUT_DIR)/host/audiox-midi-docs-test: tests/midi_docs_test.cpp src/midi/script.cpp src/midi/script_storage.cpp src/midi/script_utilities.cpp src/midi/usb.cpp src/config/basic.cpp src/http/logs.cpp src/bluetooth/hci.cpp \
-		$(wildcard include/midi/*.hpp include/bluetooth/*.hpp include/http/*.hpp) include/config/context.hpp include/defs.hpp $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
+$(OUT_DIR)/host/audiox-script-docs-test: tests/script_docs_test.cpp src/scripting/script.cpp src/scripting/storage.cpp src/scripting/utilities.cpp src/midi/usb.cpp src/scripting/keyboard.cpp src/config/basic.cpp src/http/logs.cpp src/bluetooth/hci.cpp \
+		$(wildcard include/midi/*.hpp include/scripting/*.hpp include/bluetooth/*.hpp include/http/*.hpp) include/config/context.hpp include/defs.hpp $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -fno-exceptions -fno-rtti -Iinclude -I$(HOST_LUA_INCLUDE_DIR) \
-		-DROOT_MOUNT_POINT='"tests/.midi-docs-test-storage"' \
+		-DROOT_MOUNT_POINT='"tests/.script-docs-test-storage"' \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections \
-		-o "$@" tests/midi_docs_test.cpp src/midi/script.cpp src/midi/script_storage.cpp src/midi/script_utilities.cpp src/midi/usb.cpp src/config/basic.cpp src/http/logs.cpp src/bluetooth/hci.cpp $(HOST_LUA_STATIC_LIB) -lm
+		-o "$@" tests/script_docs_test.cpp src/scripting/script.cpp src/scripting/storage.cpp src/scripting/utilities.cpp src/midi/usb.cpp src/scripting/keyboard.cpp src/config/basic.cpp src/http/logs.cpp src/bluetooth/hci.cpp $(HOST_LUA_STATIC_LIB) -lm
 
-test-midi-script: $(OUT_DIR)/host/audiox-midi-script-test
+test-script: $(OUT_DIR)/host/audiox-script-test
 	@"$<"
 
-$(OUT_DIR)/host/audiox-midi-script-test: tests/midi_script_test.cpp src/midi/script.cpp src/midi/script_storage.cpp src/midi/script_utilities.cpp src/midi/usb.cpp src/config/basic.cpp src/http/logs.cpp src/bluetooth/hci.cpp \
-		$(wildcard include/midi/*.hpp include/bluetooth/*.hpp include/http/*.hpp) include/config/context.hpp include/defs.hpp $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
+$(OUT_DIR)/host/audiox-script-test: tests/script_test.cpp src/scripting/script.cpp src/scripting/storage.cpp src/scripting/utilities.cpp src/midi/usb.cpp src/scripting/keyboard.cpp src/config/basic.cpp src/http/logs.cpp src/bluetooth/hci.cpp \
+		$(wildcard include/midi/*.hpp include/scripting/*.hpp include/bluetooth/*.hpp include/http/*.hpp) include/config/context.hpp include/defs.hpp $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
 	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -fno-exceptions -fno-rtti -Iinclude -I$(HOST_LUA_INCLUDE_DIR) -DROOT_MOUNT_POINT='"tests/.midi-script-test-storage"' \
+	$(HOSTCXX) $(HOST_CXXFLAGS) -fno-exceptions -fno-rtti -Iinclude -I$(HOST_LUA_INCLUDE_DIR) -DROOT_MOUNT_POINT='"tests/.script-test-storage"' \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections \
-		-o "$@" tests/midi_script_test.cpp src/midi/script.cpp src/midi/script_storage.cpp src/midi/script_utilities.cpp src/midi/usb.cpp src/config/basic.cpp src/http/logs.cpp src/bluetooth/hci.cpp $(HOST_LUA_STATIC_LIB) -lm
+		-o "$@" tests/script_test.cpp src/scripting/script.cpp src/scripting/storage.cpp src/scripting/utilities.cpp src/midi/usb.cpp src/scripting/keyboard.cpp src/config/basic.cpp src/http/logs.cpp src/bluetooth/hci.cpp $(HOST_LUA_STATIC_LIB) -lm
 
-$(OUT_DIR)/host/audiox-midi-usb-test: tests/midi_usb_test.cpp src/midi/usb.cpp include/midi/usb.hpp include/midi/script.hpp include/defs.hpp
+$(OUT_DIR)/host/audiox-midi-usb-test: tests/midi_usb_test.cpp src/midi/usb.cpp src/scripting/keyboard.cpp include/midi/usb.hpp include/scripting/script.hpp include/scripting/keyboard.hpp include/defs.hpp
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -Wl,--wrap=fopen -Wl,--wrap=write \
-		-o "$@" tests/midi_usb_test.cpp src/midi/usb.cpp
+		-o "$@" tests/midi_usb_test.cpp src/midi/usb.cpp src/scripting/keyboard.cpp
 
 test-display-hotplug: $(OUT_DIR)/host/audiox-display-hotplug-test
 	@"$<"
@@ -189,7 +194,7 @@ $(OUT_DIR)/host/audiox-audio-meters-test: tests/audio_meters_test.cpp src/audio/
 $(OUT_DIR)/host/audiox-display-hotplug-test: tests/display_hotplug_test.cpp src/context.cpp \
 		src/audio/plugin_host.cpp \
 		src/framebuffer/hardware.cpp src/framebuffer/drawing.cpp src/framebuffer/ui.cpp src/touch/touch.cpp \
-		$(wildcard include/framebuffer/*.hpp include/touch/*.hpp include/audio/*.hpp include/config/*.hpp include/midi/*.hpp) include/context.hpp include/defs.hpp
+		$(wildcard include/framebuffer/*.hpp include/touch/*.hpp include/audio/*.hpp include/config/*.hpp include/midi/*.hpp include/scripting/*.hpp) include/context.hpp include/defs.hpp
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-parameter -Iinclude \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections \
@@ -200,7 +205,7 @@ test-soundboard-config: $(OUT_DIR)/host/audiox-soundboard-config-test
 
 SOUNDBOARD_CONFIG_TEST_SRCS = tests/soundboard_config_test.cpp src/context.cpp \
 	src/config/basic.cpp src/config/midi_map.cpp src/config/backup.cpp \
-	src/midi/midi.cpp src/midi/usb.cpp src/midi/script.cpp src/midi/script_storage.cpp src/midi/script_utilities.cpp src/audio/setup.cpp src/audio/plugins.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp \
+	src/midi/midi.cpp src/scripting/runtime.cpp src/midi/usb.cpp src/scripting/keyboard.cpp src/scripting/script.cpp src/scripting/storage.cpp src/scripting/utilities.cpp src/audio/setup.cpp src/audio/plugins.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp \
 	src/http/server.cpp src/http/logs.cpp src/init/recovery.cpp src/touch/touch.cpp src/bluetooth/hci.cpp \
 	$(AUDIO_EFFECT_SRCS)
 
@@ -218,7 +223,7 @@ $(OUT_DIR)/host/audiox-audio-graph-test: tests/audio_graph_test.cpp $(filter-out
 		src/audio/graph.cpp src/audio/hotplug.cpp src/config/router.cpp $(HOST_LUA_STATIC_LIB) \
 		$(shell pkg-config --cflags --libs alsa) -pthread -lm
 
-$(OUT_DIR)/host/audiox-soundboard-config-test: $(SOUNDBOARD_CONFIG_TEST_SRCS) src/audio/graph.cpp src/audio/hotplug.cpp src/config/router.cpp tests/script_device_stubs.hpp src/http/api.cpp src/framebuffer/ui.cpp $(wildcard include/config/*.hpp include/midi/*.hpp include/bluetooth/*.hpp include/audio/*.hpp include/audio/effects/*.hpp include/http/*.hpp include/touch/*.hpp include/framebuffer/*.hpp) include/defs.hpp include/json.hpp include/watchdog_heartbeat.hpp $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
+$(OUT_DIR)/host/audiox-soundboard-config-test: $(SOUNDBOARD_CONFIG_TEST_SRCS) src/audio/graph.cpp src/audio/hotplug.cpp src/config/router.cpp tests/script_device_stubs.hpp src/http/api.cpp src/framebuffer/ui.cpp $(wildcard include/config/*.hpp include/midi/*.hpp include/scripting/*.hpp include/bluetooth/*.hpp include/audio/*.hpp include/audio/effects/*.hpp include/http/*.hpp include/touch/*.hpp include/framebuffer/*.hpp) include/defs.hpp include/json.hpp include/watchdog_heartbeat.hpp $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-format-truncation -Wno-unused-parameter -Iinclude -I$(HOST_LUA_INCLUDE_DIR) \
 		-DROOT_MOUNT_POINT='"."' -ffunction-sections -fdata-sections \
@@ -240,7 +245,7 @@ $(OUT_DIR)/host/audiox-config-backup-test: tests/config_backup_test.cpp src/conf
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/config_backup_test.cpp src/config/backup.cpp
 
-$(OUT_DIR)/host/audiox-config-backup-http-test: tests/config_backup_http_test.cpp src/config/backup.cpp src/http/server.cpp src/http/api.cpp include/config/backup.hpp include/http/context.hpp include/json.hpp include/update_archive.hpp include/watchdog_heartbeat.hpp $(wildcard include/midi/*.hpp)
+$(OUT_DIR)/host/audiox-config-backup-http-test: tests/config_backup_http_test.cpp src/config/backup.cpp src/http/server.cpp src/http/api.cpp include/config/backup.hpp include/http/context.hpp include/json.hpp include/update_archive.hpp include/watchdog_heartbeat.hpp $(wildcard include/midi/*.hpp include/scripting/*.hpp)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-format-truncation -Wno-unused-parameter -Iinclude \
 		-DROOT_MOUNT_POINT='"."' -ffunction-sections -fdata-sections -Wl,--gc-sections \
@@ -266,7 +271,7 @@ $(OUT_DIR)/host/audiox-system-test: tests/system_test.cpp include/system.hpp inc
 test-gadget-setup: $(OUT_DIR)/host/audiox-gadget-setup-test
 	@"$<"
 
-$(OUT_DIR)/host/audiox-gadget-setup-test: tests/gadget_setup_test.cpp src/init/gadget.cpp $(wildcard include/audio/*.hpp include/config/*.hpp include/midi/*.hpp) include/context.hpp include/init.hpp include/system.hpp include/defs.hpp
+$(OUT_DIR)/host/audiox-gadget-setup-test: tests/gadget_setup_test.cpp src/init/gadget.cpp $(wildcard include/audio/*.hpp include/config/*.hpp include/midi/*.hpp include/scripting/*.hpp) include/context.hpp include/init.hpp include/system.hpp include/defs.hpp
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-parameter -Iinclude \
 		-DGADGET_ROOT='"gadget"' -ffunction-sections -fdata-sections -Wl,--gc-sections \

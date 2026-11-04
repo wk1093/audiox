@@ -217,26 +217,26 @@ in Config, and connect AudioX's USB gadget port to the computer. Pair/connect yo
 Classic Bluetooth headphones or remote. This example is opt-in; it is not
 automatically installed or enabled.
 
-Play/pause defaults to Space; next/previous default to Ctrl+Right/Ctrl+Left.
-These are ordinary application-specific keyboard shortcuts, **not USB consumer
-media-key reports**. Set them to your player's shortcuts in the script's controls.
-Blank mappings ignore that key. Other media keys are unmapped by default.
+Defaults send actual USB consumer media keys, including play/pause, track skip,
+and volume, so they are not tied to a focused player's keyboard shortcuts.
+You can still set ordinary chords such as `SPACE` or `CTRL+RIGHT` in the script's
+controls for application-specific behavior. Blank mappings ignore that key.
 The optional device address restricts the bridge to one paired device.
 
 ```lua callbacks
 local mappings = {
-    {"play", "Play", "SPACE"},
-    {"pause", "Pause", "SPACE"},
-    {"next", "Next track", "CTRL+RIGHT"},
-    {"previous", "Previous track", "CTRL+LEFT"},
-    {"stop", "Stop", ""},
-    {"rewind", "Rewind", ""},
-    {"fast_forward", "Fast forward", ""},
-    {"volume_up", "Volume up", ""},
-    {"volume_down", "Volume down", ""},
-    {"mute", "Mute", ""},
-    {"record", "Record", ""},
-    {"eject", "Eject", ""}
+    {"play", "Play", "MEDIA_PLAY"},
+    {"pause", "Pause", "MEDIA_PAUSE"},
+    {"next", "Next track", "MEDIA_NEXT"},
+    {"previous", "Previous track", "MEDIA_PREVIOUS"},
+    {"stop", "Stop", "MEDIA_STOP"},
+    {"rewind", "Rewind", "MEDIA_REWIND"},
+    {"fast_forward", "Fast forward", "MEDIA_FAST_FORWARD"},
+    {"volume_up", "Volume up", "MEDIA_VOLUME_UP"},
+    {"volume_down", "Volume down", "MEDIA_VOLUME_DOWN"},
+    {"mute", "Mute", "MEDIA_MUTE"},
+    {"record", "Record", "MEDIA_RECORD"},
+    {"eject", "Eject", "MEDIA_EJECT"}
 }
 
 ui.option("enabled", {label="Enabled", type="boolean", default=true})
@@ -258,8 +258,10 @@ end)
 Only presses send a tap, so the corresponding Bluetooth release does not toggle
 playback a second time. A held button may send repeated presses, depending on the
 device. Taps include their own USB release, avoiding stuck keys if a Bluetooth
-release is lost. Keyboard input goes to the focused computer application; test
-in a safe window. Invalid chord names surface as script execution errors.
+release is lost. Ordinary keyboard input goes to the focused computer application; media keys
+are dispatched by the host OS/player. Not every player supports separate
+Play/Pause, Record, or Eject; use `MEDIA_PLAY_PAUSE` for players that only support
+toggle. Test safely. Invalid key names surface as script execution errors.
 
 ## Note with a timed release
 

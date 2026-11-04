@@ -4,6 +4,7 @@
 
 #include "../context.hpp"
 #include "config/context.hpp"
+#include "scripting/context.hpp"
 
 struct MidiContext {
     Audiox *app;
@@ -36,45 +37,11 @@ struct MidiContext {
     uint8_t samplerModeActive;
     uint8_t samplerSelectedValid;
     char samplerSelectedSfx[MIDI_SFX_PATH_MAX];
-    MidiUsbOutput usb;
     MidiStream usbStream;
     uint64_t nextUsbConfigMs{0};
     uint8_t passthroughMode{0};
     bool keyboardEnabled{false};
-    MidiChord compiledMacros[MIDI_CHORDS_MAX]{};
-    unsigned compiledMacroCount{0};
-    MidiScriptPlan macroPlan{};
-    MidiScriptState macroStates[MIDI_CHORDS_MAX]{};
-    char macroErrors[MIDI_CHORDS_MAX][192]{};
-    bool macroValid[MIDI_CHORDS_MAX]{};
-    uint16_t macroEventMasks[MIDI_CHORDS_MAX]{};
-    bool bootHooksDispatched{false};
-    uint64_t nextScriptTimerMs{0};
-    uint64_t scriptBluetoothHash{0};
-    bool scriptBluetoothKnown{false};
-    bool macroUsesKeyboard[MIDI_CHORDS_MAX]{};
-    bool macroPressed[MIDI_CHORDS_MAX]{};
-    int macroLight[MIDI_CHORDS_MAX]{};
-    struct MacroTrigger {
-        uint8_t index;
-        MidiScriptEvent event;
-    } macroQueue[MIDI_CHORDS_MAX]{};
-    unsigned macroQueueCount{0};
-    int activeMacro{-1};
-    unsigned macroStep{0};
-    uint64_t macroWakeMs{0};
-    uint64_t macroDeadlineMs{0};
-    bool macroWaitingTap{false};
-    unsigned macroTextIndex{0};
-    bool macroTextPending{false};
-    bool macroWaitingController{false};
-    uint64_t nextMacroEvalMs{0};
-    uint64_t macroUsbGeneration{0};
-    uint8_t controllerPending[4096]{};
-    size_t controllerPendingSize{0};
-    bool controllerOutputFailed{false};
-    bool macroMidiNotes[16][128]{};
-    bool macroMidiSustain[16]{};
+    ScriptContext scripts{*this};
 
     MidiContext(Audiox *context);
 
@@ -94,16 +61,4 @@ struct MidiContext {
     void refreshLightingFromState();
     void toggleSamplerMode();
     int reloadSoundboardMappings();
-    void syncMacros();
-    void stopMacros();
-    bool triggerMacro(unsigned index, uint8_t velocity = 127, bool fromWeb = false);
-    bool queueMacroEvent(unsigned index, MidiScriptEvent event);
-    void dispatchMacroEvent(MidiScriptEvent event);
-    void pollScriptLifecycle(uint64_t now, bool startupStable);
-    void pollBluetoothMediaEvents();
-    void pollMacros(uint64_t now);
-    bool queueControllerMidi(const uint8_t *bytes, size_t count);
-    bool flushControllerMidi();
-    void releaseMacroMidi();
-    void failMacro(const char *error);
 };

@@ -43,6 +43,14 @@ static std::vector<uint8_t> receive(int fd, size_t count) {
     return result;
 }
 
+static std::vector<uint8_t> receiveHid(int fd, size_t count) {
+    std::vector<uint8_t> report(count + 1);
+    assert(recv(fd, report.data(), report.size(), MSG_TRUNC) == static_cast<ssize_t>(report.size()));
+    assert(report[0] == (count == 2 ? SCRIPT_MEDIA_REPORT_ID : SCRIPT_KEYBOARD_REPORT_ID));
+    report.erase(report.begin());
+    return report;
+}
+
 static void empty(int fd) {
     uint8_t byte;
     assert(read(fd, &byte, 1) == -1 && errno == EAGAIN);
@@ -51,43 +59,43 @@ static void empty(int fd) {
 int main() {
     uint8_t ascii[8];
     for (int c = 32; c <= 126; ++c) {
-        assert(midiAsciiReport(static_cast<char>(c), ascii));
+        assert(scriptAsciiReport(static_cast<char>(c), ascii));
         assert((ascii[0] == 0 || ascii[0] == 2) && ascii[2] >= 4 && ascii[2] <= 56);
         for (unsigned i : {1U, 3U, 4U, 5U, 6U, 7U}) assert(!ascii[i]);
     }
-    assert(midiAsciiReport('a', ascii) && ascii[0] == 0 && ascii[2] == 4);
-    assert(midiAsciiReport('A', ascii) && ascii[0] == 2 && ascii[2] == 4);
-    assert(midiAsciiReport('!', ascii) && ascii[0] == 2 && ascii[2] == 30);
-    assert(midiAsciiReport('@', ascii) && ascii[0] == 2 && ascii[2] == 31);
-    assert(midiAsciiReport('\\', ascii) && !ascii[0] && ascii[2] == 49);
-    assert(midiAsciiReport('~', ascii) && ascii[0] == 2 && ascii[2] == 53);
-    assert(midiAsciiReport('\n', ascii) && !ascii[0] && ascii[2] == 40);
-    assert(midiAsciiReport('\t', ascii) && !ascii[0] && ascii[2] == 43);
-    for (char c : {'\0', '\r', '\b', '\x7f', '\xff'}) assert(!midiAsciiReport(c, ascii));
-    assert(midiChordReport("CTRL+SHIFT", ascii, true) && ascii[0] == 3 && !ascii[2]);
-    assert(!midiChordReport("CTRL+SHIFT", ascii));
-    assert(!midiChordReport("CTRL+", ascii, true));
+    assert(scriptAsciiReport('a', ascii) && ascii[0] == 0 && ascii[2] == 4);
+    assert(scriptAsciiReport('A', ascii) && ascii[0] == 2 && ascii[2] == 4);
+    assert(scriptAsciiReport('!', ascii) && ascii[0] == 2 && ascii[2] == 30);
+    assert(scriptAsciiReport('@', ascii) && ascii[0] == 2 && ascii[2] == 31);
+    assert(scriptAsciiReport('\\', ascii) && !ascii[0] && ascii[2] == 49);
+    assert(scriptAsciiReport('~', ascii) && ascii[0] == 2 && ascii[2] == 53);
+    assert(scriptAsciiReport('\n', ascii) && !ascii[0] && ascii[2] == 40);
+    assert(scriptAsciiReport('\t', ascii) && !ascii[0] && ascii[2] == 43);
+    for (char c : {'\0', '\r', '\b', '\x7f', '\xff'}) assert(!scriptAsciiReport(c, ascii));
+    assert(scriptChordReport("CTRL+SHIFT", ascii, true) && ascii[0] == 3 && !ascii[2]);
+    assert(!scriptChordReport("CTRL+SHIFT", ascii));
+    assert(!scriptChordReport("CTRL+", ascii, true));
     char decoded[32]{};
     const char *encodedSource = "tap(\"CTRL+A\")\n-- & = +";
-    assert(midiHexDecode(midiHexEncode(encodedSource).c_str(), decoded, sizeof(decoded)));
+    assert(scriptHexDecode(scriptHexEncode(encodedSource).c_str(), decoded, sizeof(decoded)));
     assert(!strcmp(decoded, encodedSource));
     for (const char *invalidHex : {"00", "1", "zz", "a0q2"}) {
-        assert(!midiHexDecode(invalidHex, decoded, sizeof(decoded)));
+        assert(!scriptHexDecode(invalidHex, decoded, sizeof(decoded)));
     }
-    assert(!midiHexDecode("6162", decoded, 2));
-    assert(!midiHexDecode("", decoded, 0));
-    assert(midiHexDecode("", decoded, sizeof(decoded)) && !decoded[0]);
+    assert(!scriptHexDecode("6162", decoded, 2));
+    assert(!scriptHexDecode("", decoded, 0));
+    assert(scriptHexDecode("", decoded, sizeof(decoded)) && !decoded[0]);
     assert(midiGadgetNode("midiC7D0"));
     assert(!midiGadgetNode("midiC8D0"));
     assert(!midiGadgetNode("controlC7"));
     uint8_t report[8];
-    assert(midiChordReport("CTRL+SHIFT+F13", report));
+    assert(scriptChordReport("CTRL+SHIFT+F13", report));
     assert(report[0] == 3 && report[2] == 104);
-    assert(midiChordReport("gui+alt+0+F24+SPACE", report));
+    assert(scriptChordReport("gui+alt+0+F24+SPACE", report));
     assert(report[0] == 12 && report[2] == 39 && report[3] == 115 && report[4] == 44);
     for (const char *invalid : {"", "CTRL", "CTRL+", "+A", "A+A", "F0", "F25",
                               "A+B+C+D+E+F+G", "CTRL+ A", "ENTER\n", "a,b", "F 1", "F\t1"}) {
-        assert(!midiChordReport(invalid, report));
+        assert(!scriptChordReport(invalid, report));
     }
 
     MidiStream stream;
@@ -160,19 +168,19 @@ int main() {
         usb.trigger("CTRL+SHIFT+F13");
         usb.trigger("ALT+TAB");
         usb.poll(10, 2, true);
-        auto press = receive(keyboard[1], 8);
+        auto press = receiveHid(keyboard[1], 8);
         assert(press[0] == 3 && press[2] == 104);
         usb.poll(39, 2, true);
         empty(keyboard[1]);
         usb.poll(40, 2, true);
-        assert(receive(keyboard[1], 8) == std::vector<uint8_t>(8));
+        assert(receiveHid(keyboard[1], 8) == std::vector<uint8_t>(8));
         usb.poll(50, 2, true);
-        press = receive(keyboard[1], 8);
+        press = receiveHid(keyboard[1], 8);
         assert(press[0] == 4 && press[2] == 43);
         hostConnected = false;
         usb.nextProbeMs = 51;
         usb.poll(51, 2, true);
-        assert(receive(keyboard[1], 8) == std::vector<uint8_t>(8));
+        assert(receiveHid(keyboard[1], 8) == std::vector<uint8_t>(8));
         auto silence = receive(midi[1], 144);
         assert(silence[1] == 64 && silence[4] == 123 && silence[7] == 120);
         assert(usb.midiFd == -1 && usb.keyboardFd == -1 && !usb.keyDown && !usb.chordCount);
@@ -204,10 +212,10 @@ int main() {
         usb.keyboardEnabled = true;
         usb.keyboardFd = keyboard[0];
         usb.nextProbeMs = UINT64_MAX;
-        for (unsigned i = 0; i < MIDI_CHORDS_MAX + 1; ++i) usb.trigger("CTRL+A");
-        assert(usb.chordCount == MIDI_CHORDS_MAX);
+        for (unsigned i = 0; i < SCRIPTS_MAX + 1; ++i) usb.trigger("CTRL+A");
+        assert(usb.chordCount == SCRIPTS_MAX);
         usb.poll(0, 0, true);
-        assert(receive(keyboard[1], 8)[2] == 4);
+        assert(receiveHid(keyboard[1], 8)[2] == 4);
         limitedFd = keyboard[0];
         writeError = EAGAIN;
         usb.poll(30, 0, true);
@@ -215,7 +223,7 @@ int main() {
         empty(keyboard[1]);
         writeError = 0;
         usb.poll(31, 0, true);
-        assert(!usb.keyDown && receive(keyboard[1], 8) == std::vector<uint8_t>(8));
+        assert(!usb.keyDown && receiveHid(keyboard[1], 8) == std::vector<uint8_t>(8));
         limitedFd = -1;
     }
     close(keyboard[1]);
@@ -234,12 +242,12 @@ int main() {
         writeError = 0;
         usb.poll(10, 0, true);
         assert(usb.keyDown && usb.keyHeld && usb.keyboardPressMs == 10);
-        assert(receive(keyboard[1], 8) == std::vector<uint8_t>({1,0,0,0,0,0,0,0}));
+        assert(receiveHid(keyboard[1], 8) == std::vector<uint8_t>({1,0,0,0,0,0,0,0}));
         usb.poll(500, 0, true);
         empty(keyboard[1]);
         assert(usb.press("SHIFT+B"));
         usb.poll(510, 0, true);
-        assert(receive(keyboard[1], 8) == std::vector<uint8_t>({2,0,5,0,0,0,0,0}));
+        assert(receiveHid(keyboard[1], 8) == std::vector<uint8_t>({2,0,5,0,0,0,0,0}));
         assert(usb.release());
         writeError = EAGAIN;
         usb.poll(520, 0, true);
@@ -247,22 +255,169 @@ int main() {
         empty(keyboard[1]);
         writeError = 0;
         usb.poll(530, 0, true);
-        assert(receive(keyboard[1], 8) == std::vector<uint8_t>(8));
+        assert(receiveHid(keyboard[1], 8) == std::vector<uint8_t>(8));
         assert(!usb.keyDown && !usb.keyHeld && !usb.chordCount);
         assert(usb.press("ALT+A"));
         usb.poll(540, 0, true);
-        receive(keyboard[1], 8);
+        receiveHid(keyboard[1], 8);
         usb.cancelChords();
         usb.poll(541, 0, true);
-        assert(receive(keyboard[1], 8) == std::vector<uint8_t>(8));
+        assert(receiveHid(keyboard[1], 8) == std::vector<uint8_t>(8));
         assert(!usb.keyDown && !usb.keyHeld);
         assert(usb.press("GUI"));
         usb.poll(550, 0, true);
-        receive(keyboard[1], 8);
+        receiveHid(keyboard[1], 8);
         usb.closeDevices();
-        assert(receive(keyboard[1], 8) == std::vector<uint8_t>(8));
+        assert(receiveHid(keyboard[1], 8) == std::vector<uint8_t>(8));
         assert(usb.sessionGeneration == 1 && !usb.keyHeld);
         limitedFd = -1;
+    }
+    close(keyboard[1]);
+    int consumer[2];
+    assert(socketpair(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK, 0, consumer) == 0);
+    assert(socketpair(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK, 0, keyboard) == 0);
+    {
+        MidiUsbOutput usb;
+        usb.keyboardEnabled = true;
+        usb.keyboardFd = keyboard[0];
+        usb.mediaFd = consumer[0];
+        usb.nextProbeMs = UINT64_MAX;
+        const char *keys[] = {"MEDIA_PLAY", "MEDIA_PAUSE", "MEDIA_RECORD", "MEDIA_FAST_FORWARD",
+            "MEDIA_REWIND", "MEDIA_NEXT", "MEDIA_PREVIOUS", "MEDIA_STOP", "MEDIA_EJECT",
+            "MEDIA_PLAY_PAUSE", "MEDIA_MUTE", "MEDIA_VOLUME_UP", "MEDIA_VOLUME_DOWN"};
+        const uint16_t usages[] = {0xb0,0xb1,0xb2,0xb3,0xb4,0xb5,0xb6,0xb7,0xb8,0xcd,0xe2,0xe9,0xea};
+        uint64_t now = 0;
+        for (unsigned i = 0; i < 13; ++i) {
+            assert(scriptMediaUsage(keys[i]) == usages[i]);
+            assert(usb.trigger(keys[i]));
+            usb.poll(now, 0, true);
+            assert(receiveHid(consumer[1], 2) == std::vector<uint8_t>({static_cast<uint8_t>(usages[i]), 0}));
+            empty(keyboard[1]);
+            usb.poll(now + 29, 0, true);
+            empty(consumer[1]);
+            usb.poll(now + 30, 0, true);
+            assert(receiveHid(consumer[1], 2) == std::vector<uint8_t>(2));
+            now += 40;
+        }
+        assert(scriptMediaUsage("media_play_pause") == 0xcd);
+        assert(!scriptMediaUsage("MEDIA_UNKNOWN") && !scriptMediaUsage("CTRL+MEDIA_NEXT"));
+        assert(usb.press("MEDIA_VOLUME_UP"));
+        limitedFd = consumer[0];
+        writeError = EAGAIN;
+        usb.poll(now, 0, true);
+        assert(usb.chordCount == 1 && !usb.keyDown);
+        writeError = 0;
+        usb.poll(now + 1, 0, true);
+        assert(receiveHid(consumer[1], 2) == std::vector<uint8_t>({0xe9,0}));
+        usb.poll(now + 100, 0, true);
+        empty(consumer[1]);
+        assert(usb.keyHeld);
+        usb.keyboardNeedsRelease = true;
+        limitedFd = keyboard[0];
+        writeError = EAGAIN;
+        usb.poll(now + 100, 0, true);
+        assert(usb.keyboardNeedsRelease && usb.keyHeld && usb.currentMedia);
+        writeError = 0;
+        usb.poll(now + 100, 0, true);
+        assert(receiveHid(keyboard[1], 8) == std::vector<uint8_t>(8));
+        assert(!usb.keyboardNeedsRelease && usb.keyHeld && usb.currentMedia);
+        empty(consumer[1]);
+        limitedFd = consumer[0];
+        assert(usb.release());
+        usb.poll(now + 100, 0, true);
+        assert(receiveHid(consumer[1], 2) == std::vector<uint8_t>(2));
+        assert(!usb.keyDown && !usb.keyHeld);
+        assert(usb.press("MEDIA_VOLUME_UP"));
+        usb.poll(now + 100, 0, true);
+        assert(receiveHid(consumer[1], 2) == std::vector<uint8_t>({0xe9,0}));
+        // Switching report domains must release the old domain first.
+        assert(usb.press("CTRL+A"));
+        usb.poll(now + 101, 0, true);
+        assert(receiveHid(consumer[1], 2) == std::vector<uint8_t>(2));
+        empty(keyboard[1]);
+        usb.poll(now + 102, 0, true);
+        assert(receiveHid(keyboard[1], 8) == std::vector<uint8_t>({1,0,4,0,0,0,0,0}));
+        assert(usb.press("MEDIA_NEXT"));
+        usb.poll(now + 103, 0, true);
+        assert(receiveHid(keyboard[1], 8) == std::vector<uint8_t>(8));
+        usb.poll(now + 104, 0, true);
+        assert(receiveHid(consumer[1], 2) == std::vector<uint8_t>({0xb5,0}));
+        usb.cancelChords();
+        writeError = EAGAIN;
+        usb.poll(now + 105, 0, true);
+        assert(usb.keyDown && !usb.keyHeld);
+        writeError = 0;
+        usb.poll(now + 106, 0, true);
+        assert(receiveHid(consumer[1], 2) == std::vector<uint8_t>(2));
+        assert(!usb.keyDown);
+        usb.mediaNeedsRelease = true;
+        writeError = EAGAIN;
+        usb.poll(now + 107, 0, true);
+        assert(usb.mediaNeedsRelease && usb.mediaFd >= 0);
+        writeError = 0;
+        usb.poll(now + 108, 0, true);
+        assert(receiveHid(consumer[1], 2) == std::vector<uint8_t>(2));
+        assert(!usb.mediaNeedsRelease);
+        for (unsigned i = 0; i < SCRIPTS_MAX; ++i) assert(usb.trigger("MEDIA_PAUSE"));
+        assert(!usb.trigger("MEDIA_PAUSE"));
+        usb.cancelChords();
+        assert(usb.press("MEDIA_MUTE"));
+        usb.poll(now + 109, 0, true);
+        assert(receiveHid(consumer[1], 2) == std::vector<uint8_t>({0xe2,0}));
+        limitedFd = -1;
+        hostConnected = false;
+        usb.nextProbeMs = 0;
+        usb.poll(now + 110, 0, true);
+        assert(receiveHid(consumer[1], 2) == std::vector<uint8_t>(2));
+        assert(receiveHid(keyboard[1], 8) == std::vector<uint8_t>(8));
+        assert(usb.mediaFd < 0 && usb.keyboardFd < 0 && !usb.keyDown && !usb.chordCount);
+        assert(!usb.trigger("MEDIA_NEXT"));
+        hostConnected = true;
+    }
+    close(consumer[1]);
+    close(keyboard[1]);
+    assert(socketpair(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK, 0, consumer) == 0);
+    {
+        MidiUsbOutput usb;
+        usb.mediaFd = consumer[0];
+        usb.keyboardEnabled = true;
+        usb.nextProbeMs = UINT64_MAX;
+        assert(usb.trigger("MEDIA_NEXT"));
+        limitedFd = consumer[0];
+        writeLimit = 1;
+        usb.poll(0, 0, true);
+        assert(usb.mediaFd < 0 && !usb.chordCount && !usb.keyDown);
+        assert(receive(consumer[1], 1) == std::vector<uint8_t>({SCRIPT_MEDIA_REPORT_ID}));
+        receive(consumer[1], 1); // Best-effort release on short-write failure.
+        limitedFd = -1;
+        writeLimit = SIZE_MAX;
+    }
+    close(consumer[1]);
+    assert(socketpair(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK, 0, keyboard) == 0);
+    {
+        MidiUsbOutput usb;
+        usb.keyboardEnabled = true;
+        usb.keyboardFd = keyboard[0];
+        usb.mediaFd = fcntl(keyboard[0], F_DUPFD_CLOEXEC, 0);
+        assert(usb.mediaFd >= 0);
+        usb.nextProbeMs = UINT64_MAX;
+        usb.keyboardNeedsRelease = usb.mediaNeedsRelease = true;
+        usb.poll(0, 0, true);
+        assert(receiveHid(keyboard[1], 8) == std::vector<uint8_t>(8));
+        assert(receiveHid(keyboard[1], 2) == std::vector<uint8_t>(2));
+        assert(usb.press("CTRL+A") && usb.trigger("MEDIA_NEXT"));
+        usb.poll(1, 0, true);
+        assert(receiveHid(keyboard[1], 8) == std::vector<uint8_t>({1,0,4,0,0,0,0,0}));
+        usb.poll(2, 0, true);
+        assert(receiveHid(keyboard[1], 8) == std::vector<uint8_t>(8));
+        usb.poll(3, 0, true);
+        assert(receiveHid(keyboard[1], 2) == std::vector<uint8_t>({0xb5,0}));
+        usb.poll(33, 0, true);
+        assert(receiveHid(keyboard[1], 2) == std::vector<uint8_t>(2));
+        usb.closeDevices();
+        assert(receiveHid(keyboard[1], 2) == std::vector<uint8_t>(2));
+        assert(receiveHid(keyboard[1], 8) == std::vector<uint8_t>(8));
+        empty(keyboard[1]);
     }
     close(keyboard[1]);
     puts("MIDI stream, filtering, note releases, and USB keyboard chord tests passed");

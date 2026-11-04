@@ -8,109 +8,6 @@
 #include <dirent.h>
 #include <unistd.h>
 
-std::string midiHexEncode(const char *text) {
-    static constexpr char digits[] = "0123456789abcdef";
-    std::string hex;
-    for (const unsigned char *p = reinterpret_cast<const unsigned char *>(text); *p; ++p) {
-        hex += digits[*p >> 4];
-        hex += digits[*p & 15];
-    }
-    return hex;
-}
-
-bool midiHexDecode(const char *hex, char *text, size_t capacity) {
-    size_t length = strlen(hex);
-    if (!capacity || length % 2 || length / 2 >= capacity) return false;
-    auto digit = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-        return -1;
-    };
-    for (size_t i = 0; i < length; i += 2) {
-        int hi = digit(hex[i]), lo = digit(hex[i + 1]);
-        if (hi < 0 || lo < 0 || (hi == 0 && lo == 0)) return false;
-        text[i / 2] = static_cast<char>((hi << 4) | lo);
-    }
-    text[length / 2] = '\0';
-    return true;
-}
-
-bool midiChordReport(const char *keys, uint8_t (&report)[8], bool allowModifiers) {
-    memset(report, 0, sizeof(report));
-    if (!keys || !*keys || strlen(keys) >= 64) return false;
-    char copy[64];
-    strcpy(copy, keys);
-    unsigned used = 2;
-    char *start = copy;
-    while (start) {
-        char *end = strchr(start, '+');
-        if (end) *end++ = '\0';
-        for (char *p = start; *p; ++p) {
-            if (*p >= 'a' && *p <= 'z') *p -= 'a' - 'A';
-            if (!(*p >= 'A' && *p <= 'Z') && !(*p >= '0' && *p <= '9')) return false;
-        }
-        uint8_t key = 0;
-        if (strcmp(start, "CTRL") == 0) report[0] |= 1;
-        else if (strcmp(start, "SHIFT") == 0) report[0] |= 2;
-        else if (strcmp(start, "ALT") == 0) report[0] |= 4;
-        else if (strcmp(start, "GUI") == 0) report[0] |= 8;
-        else {
-            if (strlen(start) == 1 && *start >= 'A' && *start <= 'Z') key = 4 + *start - 'A';
-            else if (strlen(start) == 1 && *start >= '1' && *start <= '9') key = 30 + *start - '1';
-            else if (strcmp(start, "0") == 0) key = 39;
-            else if (*start == 'F') {
-                char *tail = nullptr;
-                long f = strtol(start + 1, &tail, 10);
-                if (*tail == '\0' && f >= 1 && f <= 24) key = f <= 12 ? 57 + f : 91 + f;
-            }
-            struct NamedKey { const char *name; uint8_t code; };
-            static constexpr NamedKey names[] = {
-                {"ENTER", 40}, {"ESC", 41}, {"BACKSPACE", 42}, {"TAB", 43}, {"SPACE", 44},
-                {"DELETE", 76}, {"RIGHT", 79}, {"LEFT", 80}, {"DOWN", 81}, {"UP", 82},
-                {"HOME", 74}, {"END", 77}, {"PAGEUP", 75}, {"PAGEDOWN", 78},
-            };
-            for (const auto &name : names) if (strcmp(start, name.name) == 0) key = name.code;
-            if (!key || used == 8) return false;
-            for (unsigned i = 2; i < used; ++i) if (report[i] == key) return false;
-            report[used++] = key;
-        }
-        start = end;
-    }
-    return used > 2 || (allowModifiers && report[0]);
-}
-
-bool midiAsciiReport(char character, uint8_t (&report)[8]) {
-    memset(report, 0, sizeof(report));
-    if (character >= 'a' && character <= 'z') report[2] = 4 + character - 'a';
-    else if (character >= 'A' && character <= 'Z') {
-        report[0] = 2;
-        report[2] = 4 + character - 'A';
-    } else if (character >= '1' && character <= '9') report[2] = 30 + character - '1';
-    else {
-        struct AsciiKey { char plain; char shifted; uint8_t usage; };
-        static constexpr AsciiKey keys[] = {
-            {'0', ')', 39}, {'1', '!', 30}, {'2', '@', 31}, {'3', '#', 32},
-            {'4', '$', 33}, {'5', '%', 34}, {'6', '^', 35}, {'7', '&', 36},
-            {'8', '*', 37}, {'9', '(', 38}, {'-', '_', 45}, {'=', '+', 46},
-            {'[', '{', 47}, {']', '}', 48}, {'\\', '|', 49}, {';', ':', 51},
-            {'\'', '"', 52}, {'`', '~', 53}, {',', '<', 54}, {'.', '>', 55},
-            {'/', '?', 56},
-        };
-        if (character == ' ') report[2] = 44;
-        else if (character == '\n') report[2] = 40;
-        else if (character == '\t') report[2] = 43;
-        else for (const auto &key : keys) {
-            if (character == key.plain || character == key.shifted) {
-                report[0] = character == key.shifted ? 2 : 0;
-                report[2] = key.usage;
-                break;
-            }
-        }
-    }
-    return report[2] != 0;
-}
-
 bool midiGadgetNode(const char *node) {
     unsigned card;
     if (sscanf(node, "midiC%uD", &card) != 1) return false;
@@ -125,6 +22,13 @@ bool midiGadgetNode(const char *node) {
 }
 
 MidiUsbOutput::~MidiUsbOutput() { closeDevices(); }
+
+static ssize_t writeHidReport(int fd, bool media, const uint8_t *payload, size_t size) {
+    uint8_t report[SCRIPT_HID_REPORT_LENGTH]{};
+    report[0] = media ? SCRIPT_MEDIA_REPORT_ID : SCRIPT_KEYBOARD_REPORT_ID;
+    memcpy(report + 1, payload, size);
+    return write(fd, report, size + 1);
+}
 
 void MidiUsbOutput::cancelChords() {
     chordCount = 0;
@@ -146,11 +50,19 @@ static bool usbHostConfigured() {
 }
 
 void MidiUsbOutput::closeDevices() {
-    if (midiFd >= 0 || keyboardFd >= 0) ++sessionGeneration;
+    if (midiFd >= 0 || keyboardFd >= 0 || mediaFd >= 0) ++sessionGeneration;
+    if (mediaFd >= 0) {
+        const uint8_t release[2]{};
+        const ssize_t n = writeHidReport(mediaFd, true, release, sizeof(release));
+        if (n != static_cast<ssize_t>(sizeof(release) + 1))
+            printf("[SCRIPT] [WARN] Could not release USB media keys: %s\n",
+                   n < 0 ? strerror(errno) : "short report");
+        close(mediaFd);
+    }
     if (keyboardFd >= 0) {
         uint8_t released[8]{};
-        ssize_t n = write(keyboardFd, released, sizeof(released));
-        if (n != (ssize_t)sizeof(released)) {
+        ssize_t n = writeHidReport(keyboardFd, false, released, sizeof(released));
+        if (n != static_cast<ssize_t>(sizeof(released) + 1)) {
             printf("[MIDI] [WARN] Could not release USB keyboard keys: %s\n", n < 0 ? strerror(errno) : "short report");
         }
         close(keyboardFd);
@@ -171,9 +83,11 @@ void MidiUsbOutput::closeDevices() {
         }
         close(midiFd);
     }
-    midiFd = keyboardFd = -1;
+    midiFd = keyboardFd = mediaFd = -1;
     pendingSize = chordCount = 0;
-    keyDown = keyHeld = false;
+    keyDown = keyHeld = currentMedia = false;
+    mediaNeedsRelease = false;
+    keyboardNeedsRelease = false;
     memset(notePolicy, 0, sizeof(notePolicy));
 }
 
@@ -198,30 +112,49 @@ void MidiUsbOutput::forward(const uint8_t *bytes, size_t count, bool mapped) {
     pendingSize += count;
 }
 
-void MidiUsbOutput::trigger(const char *keys) {
-    if (!keyboardEnabled || keyboardFd < 0) return;
+bool MidiUsbOutput::trigger(const char *keys) {
+    if (const uint16_t usage = scriptMediaUsage(keys)) return queueMediaReport(usage);
     uint8_t report[8];
-    if (!midiChordReport(keys, report)) {
+    if (!scriptChordReport(keys, report)) {
         printf("[MIDI] [WARN] Invalid keyboard chord: %s\n", keys);
-        return;
+        return false;
     }
-    (void)queueKeyboardReport(report);
+    return queueKeyboardReport(report);
 }
 
 bool MidiUsbOutput::queueKeyboardReport(const uint8_t (&report)[8], bool hold) {
     if (!keyboardEnabled || keyboardFd < 0) return false;
-    if (chordCount == MIDI_CHORDS_MAX) {
+    if (chordCount == SCRIPTS_MAX) {
         printf("[MIDI] [WARN] Keyboard chord queue full; dropping trigger\n");
         return false;
     }
     memcpy(chords[chordCount], report, sizeof(report));
+    chordMedia[chordCount] = false;
+    chordHolds[chordCount++] = hold;
+    return true;
+}
+
+bool MidiUsbOutput::queueMediaReport(uint16_t usage, bool hold) {
+    if (!keyboardEnabled || mediaFd < 0) {
+        printf("[SCRIPT] [WARN] USB media keys require Consumer Control enabled and a connected host\n");
+        return false;
+    }
+    if (chordCount == SCRIPTS_MAX) {
+        printf("[SCRIPT] [WARN] Keyboard/media queue full; dropping trigger\n");
+        return false;
+    }
+    memset(chords[chordCount], 0, sizeof(chords[0]));
+    chords[chordCount][0] = static_cast<uint8_t>(usage);
+    chords[chordCount][1] = static_cast<uint8_t>(usage >> 8);
+    chordMedia[chordCount] = true;
     chordHolds[chordCount++] = hold;
     return true;
 }
 
 bool MidiUsbOutput::press(const char *keys) {
+    if (const uint16_t usage = scriptMediaUsage(keys)) return queueMediaReport(usage, true);
     uint8_t report[8];
-    if (!midiChordReport(keys, report, true)) {
+    if (!scriptChordReport(keys, report, true)) {
         printf("[MIDI] [WARN] Invalid held keyboard chord: %s\n", keys);
         return false;
     }
@@ -229,6 +162,7 @@ bool MidiUsbOutput::press(const char *keys) {
 }
 
 bool MidiUsbOutput::release() {
+    if (currentMedia) return queueMediaReport(0);
     uint8_t report[8]{};
     return queueKeyboardReport(report);
 }
@@ -244,7 +178,7 @@ void MidiUsbOutput::poll(uint64_t now, uint8_t passthrough, bool keyboard) {
     if (now >= nextProbeMs) {
         nextProbeMs = now + AUDIOX_DEVICE_POLL_INTERVAL_MS;
         if (!usbHostConfigured()) {
-            if (midiFd >= 0 || keyboardFd >= 0) closeDevices();
+            if (midiFd >= 0 || keyboardFd >= 0 || mediaFd >= 0) closeDevices();
             return;
         }
         if (mode && midiFd < 0) {
@@ -266,10 +200,39 @@ void MidiUsbOutput::poll(uint64_t now, uint8_t passthrough, bool keyboard) {
             if (keyboardFd < 0 && errno != ENOENT) {
                 printf("[MIDI] [WARN] Cannot open USB keyboard: %s\n", strerror(errno));
             } else if (keyboardFd >= 0) {
-                keyDown = true;
-                releaseMs = now;
+                keyboardNeedsRelease = true;
             }
         }
+        if (keyboardEnabled && keyboardFd >= 0 && mediaFd < 0) {
+            mediaFd = fcntl(keyboardFd, F_DUPFD_CLOEXEC, 0);
+            if (mediaFd < 0)
+                printf("[SCRIPT] [WARN] Cannot duplicate USB keyboard/media output: %s\n", strerror(errno));
+            else if (mediaFd >= 0) mediaNeedsRelease = true;
+        }
+    }
+    if (keyboardFd >= 0 && keyboardNeedsRelease) {
+        const uint8_t release[8]{};
+        const ssize_t n = writeHidReport(keyboardFd, false, release, sizeof(release));
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return;
+        if (n != static_cast<ssize_t>(sizeof(release) + 1)) {
+            printf("[SCRIPT] [WARN] Cannot initialize USB keyboard: %s\n",
+                   n < 0 ? strerror(errno) : "short report");
+            closeDevices();
+            return;
+        }
+        keyboardNeedsRelease = false;
+    }
+    if (mediaFd >= 0 && mediaNeedsRelease) {
+        const uint8_t release[2]{};
+        const ssize_t n = writeHidReport(mediaFd, true, release, sizeof(release));
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return;
+        if (n != static_cast<ssize_t>(sizeof(release) + 1)) {
+            printf("[SCRIPT] [WARN] Cannot initialize USB consumer control: %s\n",
+                   n < 0 ? strerror(errno) : "short report");
+            closeDevices();
+            return;
+        }
+        mediaNeedsRelease = false;
     }
     if (midiFd >= 0 && pendingSize) {
         ssize_t n = write(midiFd, pending, pendingSize);
@@ -281,28 +244,40 @@ void MidiUsbOutput::poll(uint64_t now, uint8_t passthrough, bool keyboard) {
             closeDevices();
         }
     }
-    if (keyboardFd < 0 || (keyDown && !keyHeld && now < releaseMs)) return;
-    bool automaticRelease = keyDown && !keyHeld;
+    if (keyDown && !keyHeld && now < releaseMs) return;
+    const bool switching = keyDown && chordCount && currentMedia != chordMedia[0];
+    bool automaticRelease = keyDown && (!keyHeld || switching);
     if (!automaticRelease && !chordCount) return;
     uint8_t release[8]{};
     const uint8_t *report = automaticRelease ? release : chords[0];
-    ssize_t n = write(keyboardFd, report, sizeof(release));
-    if (n == (ssize_t)sizeof(release)) {
+    const bool media = automaticRelease ? currentMedia : chordMedia[0];
+    const int outputFd = media ? mediaFd : keyboardFd;
+    const size_t reportSize = media ? 2 : sizeof(release);
+    if (outputFd < 0) {
+        printf("[SCRIPT] [WARN] USB keyboard/media output unavailable\n");
+        closeDevices();
+        return;
+    }
+    ssize_t n = writeHidReport(outputFd, media, report, reportSize);
+    if (n == static_cast<ssize_t>(reportSize + 1)) {
         if (automaticRelease) {
             keyDown = false;
             keyHeld = false;
         } else {
-            keyDown = report[0] || report[2] || report[3] || report[4] ||
-                      report[5] || report[6] || report[7];
+            currentMedia = media;
+            keyDown = media ? (report[0] || report[1]) :
+                (report[0] || report[2] || report[3] || report[4] ||
+                 report[5] || report[6] || report[7]);
             keyHeld = keyDown && chordHolds[0];
             if (keyDown) keyboardPressMs = now;
             releaseMs = now + 30;
             --chordCount;
             memmove(chords, chords + 1, chordCount * sizeof(chords[0]));
             memmove(chordHolds, chordHolds + 1, chordCount * sizeof(chordHolds[0]));
+            memmove(chordMedia, chordMedia + 1, chordCount * sizeof(chordMedia[0]));
         }
     } else if (n >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
-        printf("[MIDI] [WARN] USB keyboard write failed: %s\n", n < 0 ? strerror(errno) : "short report");
+        printf("[SCRIPT] [WARN] USB keyboard/media write failed: %s\n", n < 0 ? strerror(errno) : "short report");
         closeDevices();
     }
 }

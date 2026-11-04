@@ -5,7 +5,7 @@
 #include <cstdio>
 #include <cstring>
 
-struct MidiScriptBluetoothDevice {
+struct ScriptBluetoothDevice {
     char address[BT_ADDRESS_TEXT]{};
     char name[BT_NAME_MAX]{};
     bool paired{false};
@@ -16,16 +16,16 @@ struct MidiScriptBluetoothDevice {
     bool audioSink{false};
 };
 
-struct MidiScriptBluetoothSnapshot {
+struct ScriptBluetoothSnapshot {
     bool ready{false};
     bool scanning{false};
     bool pairing{false};
     char message[BT_MESSAGE_MAX]{};
     unsigned count{0};
-    MidiScriptBluetoothDevice devices[BT_MAX_DEVICES]{};
+    ScriptBluetoothDevice devices[BT_MAX_DEVICES]{};
 };
 
-inline bool midiScriptBluetoothSnapshot(Audiox *app, MidiScriptBluetoothSnapshot &out) {
+inline bool scriptBluetoothSnapshot(Audiox *app, ScriptBluetoothSnapshot &out) {
     auto *bt = app ? app->bluetooth : nullptr;
     if (!bt) return false;
     std::lock_guard<std::mutex> lock(bt->mutex);
@@ -53,7 +53,7 @@ inline bool midiScriptBluetoothSnapshot(Audiox *app, MidiScriptBluetoothSnapshot
     return true;
 }
 
-inline uint64_t midiScriptBluetoothHash(const MidiScriptBluetoothSnapshot &status) {
+inline uint64_t scriptBluetoothHash(const ScriptBluetoothSnapshot &status) {
     uint64_t hash = 14695981039346656037ULL;
     auto byte = [&](unsigned char value) { hash = (hash ^ value) * 1099511628211ULL; };
     auto text = [&](const char *value) { while (*value) byte(static_cast<unsigned char>(*value++)); byte(0); };

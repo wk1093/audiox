@@ -1,5 +1,5 @@
-#include "midi/script_utilities.hpp"
-#include "midi/script_device.hpp"
+#include "scripting/utilities.hpp"
+#include "scripting/device.hpp"
 #include "config/context.hpp"
 #include "http/logs.hpp"
 
@@ -28,22 +28,22 @@ const char *text(lua_State *lua, int index, size_t max) {
     return value;
 }
 
-MidiScriptStateEntry scalar(lua_State *lua, int index) {
-    MidiScriptStateEntry value{};
+ScriptStateEntry scalar(lua_State *lua, int index) {
+    ScriptStateEntry value{};
     if (lua_type(lua, index) == LUA_TBOOLEAN) {
-        value.kind = MidiScriptValueKind::Boolean;
+        value.kind = ScriptValueKind::Boolean;
         value.booleanValue = lua_toboolean(lua, index);
     } else if (lua_type(lua, index) == LUA_TNUMBER) {
-        value.kind = MidiScriptValueKind::Number;
+        value.kind = ScriptValueKind::Number;
         value.numberValue = lua_tonumber(lua, index);
         if (!std::isfinite(value.numberValue)) luaL_error(lua, "expected finite utility number");
         value.numberIsInteger = lua_isinteger(lua, index);
         if (value.numberIsInteger) value.integerValue = lua_tointeger(lua, index);
     } else if (lua_type(lua, index) == LUA_TSTRING) {
-        value.kind = MidiScriptValueKind::String;
+        value.kind = ScriptValueKind::String;
         size_t length = 0;
         const char *source = lua_tolstring(lua, index, &length);
-        if (length > MIDI_SCRIPT_STATE_STRING_MAX || memchr(source, '\0', length))
+        if (length > SCRIPT_STATE_STRING_MAX || memchr(source, '\0', length))
             luaL_error(lua, "utility string exceeds 127 bytes or contains NUL");
         memcpy(value.stringValue, source, length);
     } else luaL_error(lua, "expected boolean, number or string utility value");
@@ -67,8 +67,8 @@ void number(lua_State *lua, const char *key, uint32_t value) {
 
 int settingsGet(lua_State *lua) {
     arity(lua, 0, 0);
-    midiScriptUtilityCheck(lua, false, true);
-    auto *config = midiScriptUtilityConfig(lua);
+    scriptUtilityCheck(lua, false, true);
+    auto *config = scriptUtilityConfig(lua);
     ConfigData data{};
     if (!config || config->readScriptSettings(&data) != RET_OK)
         return luaL_error(lua, "settings.get: active configuration unavailable");
@@ -86,13 +86,13 @@ int settingsGet(lua_State *lua) {
 
 int settingsSet(lua_State *lua) {
     arity(lua, 2, 2);
-    midiScriptUtilityCheck(lua, true, false);
+    scriptUtilityCheck(lua, true, false);
     const char *key = text(lua, 1, 31);
     const auto value = scalar(lua, 2);
     ConfigData trial{};
     if (!applyScriptSetting(trial, key, value))
         return luaL_error(lua, "settings.set: unknown setting, invalid type or range");
-    auto *action = midiScriptUtilityAppend(lua, MidiScriptKind::SettingsSet);
+    auto *action = scriptUtilityAppend(lua, ScriptKind::SettingsSet);
     snprintf(action->target, sizeof(action->target), "%s", key);
     action->setting = value;
     return 0;
@@ -100,14 +100,14 @@ int settingsSet(lua_State *lua) {
 
 int restart(lua_State *lua) {
     arity(lua, 0, 0);
-    midiScriptUtilityCheck(lua, true, false);
-    midiScriptUtilityAppend(lua, MidiScriptKind::SystemRestart);
+    scriptUtilityCheck(lua, true, false);
+    scriptUtilityAppend(lua, ScriptKind::SystemRestart);
     return 0;
 }
 
 int logs(lua_State *lua) {
     arity(lua, 0, 2);
-    midiScriptUtilityCheck(lua, false, true);
+    scriptUtilityCheck(lua, false, true);
     const char *source = lua_gettop(lua) ? text(lua, 1, 6) : "stdout";
     lua_Integer limit = 32;
     if (lua_gettop(lua) == 2) {
@@ -126,10 +126,10 @@ int logs(lua_State *lua) {
 
 int bluetoothDevices(lua_State *lua) {
     arity(lua, 0, 0);
-    midiScriptUtilityCheck(lua, false, true);
-    auto *config = midiScriptUtilityConfig(lua);
-    MidiScriptBluetoothSnapshot status{};
-    if (!midiScriptBluetoothSnapshot(config ? config->app : nullptr, status))
+    scriptUtilityCheck(lua, false, true);
+    auto *config = scriptUtilityConfig(lua);
+    ScriptBluetoothSnapshot status{};
+    if (!scriptBluetoothSnapshot(config ? config->app : nullptr, status))
         return luaL_error(lua, "bluetooth.devices: Bluetooth subsystem unavailable");
     lua_createtable(lua, 0, 5);
     boolean(lua, "ready", status.ready);
@@ -155,12 +155,12 @@ int bluetoothDevices(lua_State *lua) {
 }
 
 int bluetoothAction(lua_State *lua) {
-    const auto kind = static_cast<MidiScriptKind>(lua_tointeger(lua, lua_upvalueindex(1)));
-    const bool scan = kind == MidiScriptKind::BluetoothScan;
-    const bool disconnect = kind == MidiScriptKind::BluetoothDisconnect;
-    const bool automatic = kind == MidiScriptKind::BluetoothAutoConnect;
+    const auto kind = static_cast<ScriptKind>(lua_tointeger(lua, lua_upvalueindex(1)));
+    const bool scan = kind == ScriptKind::BluetoothScan;
+    const bool disconnect = kind == ScriptKind::BluetoothDisconnect;
+    const bool automatic = kind == ScriptKind::BluetoothAutoConnect;
     arity(lua, scan || disconnect ? 0 : automatic ? 2 : 1, scan ? 0 : automatic ? 2 : 1);
-    midiScriptUtilityCheck(lua, true, false);
+    scriptUtilityCheck(lua, true, false);
     const char *address = "";
     if (!scan && lua_gettop(lua)) {
         address = text(lua, 1, BT_ADDRESS_TEXT - 1);
@@ -170,7 +170,7 @@ int bluetoothAction(lua_State *lua) {
     }
     if (automatic && lua_type(lua, 2) != LUA_TBOOLEAN)
         return luaL_error(lua, "bluetooth.auto_connect: expected boolean");
-    auto *action = midiScriptUtilityAppend(lua, kind);
+    auto *action = scriptUtilityAppend(lua, kind);
     snprintf(action->target, sizeof(action->target), "%s", address);
     if (automatic) action->value = lua_toboolean(lua, 2);
     return 0;
@@ -183,7 +183,7 @@ void function(lua_State *lua, const char *name, lua_CFunction value) {
 
 } // namespace
 
-void midiScriptRegisterUtilities(lua_State *lua) {
+void scriptRegisterUtilities(lua_State *lua) {
     lua_newtable(lua);
     function(lua, "get", settingsGet);
     function(lua, "set", settingsSet);
@@ -195,9 +195,9 @@ void midiScriptRegisterUtilities(lua_State *lua) {
     lua_newtable(lua);
     function(lua, "devices", bluetoothDevices);
     const char *names[] = {"scan", "pair", "connect", "disconnect", "unpair", "auto_connect"};
-    const MidiScriptKind kinds[] = {MidiScriptKind::BluetoothScan, MidiScriptKind::BluetoothPair,
-        MidiScriptKind::BluetoothConnect, MidiScriptKind::BluetoothDisconnect,
-        MidiScriptKind::BluetoothUnpair, MidiScriptKind::BluetoothAutoConnect};
+    const ScriptKind kinds[] = {ScriptKind::BluetoothScan, ScriptKind::BluetoothPair,
+        ScriptKind::BluetoothConnect, ScriptKind::BluetoothDisconnect,
+        ScriptKind::BluetoothUnpair, ScriptKind::BluetoothAutoConnect};
     for (unsigned i = 0; i < 6; ++i) {
         lua_pushinteger(lua, static_cast<int>(kinds[i]));
         lua_pushcclosure(lua, bluetoothAction, 1);

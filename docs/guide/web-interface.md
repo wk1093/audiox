@@ -44,8 +44,9 @@ AudioX does not have a single global Save button.
 
 - Drawn connections need **Save Routing**. Moving nodes and changing zoom are
   not the same as changing the saved signal path.
-- **Config > Save Config** stages USB settings. **Reload Config** applies them
-  and reconnects USB functions.
+- **Config > Save Config** stages USB settings. Use **System > Restart Device**
+  to apply them (recommended). **Reload Config** attempts a live USB reconnect
+  but can cause instability or leave the system unresponsive until rebooted.
 - Soundboard assignments, playback-mode changes, ordering, and the individual
   MIDI/effect mapping controls save through their own actions.
 - A script's **Save Script** stores its definition. **Run** queues the saved

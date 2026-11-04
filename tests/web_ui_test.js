@@ -50,7 +50,7 @@ function dialogUI() {
     focus() { this.focused = true; }
     click() { this.dispatchEvent(new Event('click')); }
   }
-  const elements = new Map(['confirm-dialog', 'confirm-accept', 'confirm-cancel',
+  const elements = new Map(['confirm-dialog', 'confirm-accept', 'confirm-cancel', 'confirm-alternate',
     'confirm-title', 'confirm-message'].map((id) => [id, new Control()]));
   const dialog = elements.get('confirm-dialog');
   dialog.showModal = () => { dialog.open = true; };
@@ -88,6 +88,30 @@ test('custom confirmations default to cancel, restore focus and do not accumulat
   dialog.dispatchEvent(key);
   assert.equal(await result, false);
   assert.equal(key.defaultPrevented, true);
+});
+
+test('optional third confirmation action is distinct and hidden on subsequent dialogs', async () => {
+  const { elements, dialog } = dialogUI();
+  const alternate = elements.get('confirm-alternate');
+  let result = confirmAction('Reload or reboot?', { alternateLabel: 'Reboot Instead' });
+  assert.equal(alternate.hidden, false);
+  assert.equal(alternate.textContent, 'Reboot Instead');
+  alternate.click();
+  assert.equal(await result, 'alternate');
+  assert.equal(dialog.open, false);
+  assert.equal(alternate.hidden, true);
+
+  result = confirmAction('Delete?');
+  assert.equal(alternate.hidden, true);
+  alternate.click();
+  assert.equal(dialog.open, true);
+  elements.get('confirm-accept').click();
+  assert.equal(await result, true);
+
+  result = confirmAction('Reload?', { alternateLabel: 'Reboot Instead' });
+  elements.get('confirm-cancel').click();
+  assert.equal(await result, false);
+  assert.equal(alternate.hidden, true);
 });
 
 test('beforeunload warns only while tracked changes remain unsaved', () => {

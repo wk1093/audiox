@@ -4026,9 +4026,14 @@ document.getElementById('btn-save').addEventListener('click', () => runLoadingTa
 }));
 
 document.getElementById('btn-reload').addEventListener('click', async () => {
-  if (!await AudioxUI.confirm('Apply the saved USB configuration? USB audio, MIDI, keyboard, and networking will briefly disconnect. Save any pending changes first.', {
-    title: 'Reload USB configuration', confirmLabel: 'Apply and reconnect',
-  })) return;
+  const choice = await AudioxUI.confirm('Reload Config is unreliable and may cause instability or leave the system unresponsive until rebooted. USB audio, MIDI, keyboard, and networking will disconnect and may not recover. Save Config, then use System > Restart Device instead (recommended). Save any pending changes before continuing. Reboot Instead stops all audio while the device restarts and applies saved USB changes. Reload anyway?', {
+    title: 'Warning: USB reload may cause instability', label: 'Reload anyway', alternateLabel: 'Reboot Instead',
+  });
+  if (choice === 'alternate') {
+    await runSystemAction('/api/system/restart', 'restart');
+    return;
+  }
+  if (choice !== true) return;
   return runLoadingTask('Reloading configuration', async () => {
     const ok = await reloadConfig();
     if (ok) {

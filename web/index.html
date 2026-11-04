@@ -419,11 +419,12 @@ end)
               <option value="1">Enabled</option>
             </select>
           </div>
-          <p class="small">Save stages settings; Reload applies them and reconnects USB audio, MIDI, keyboard, and networking. MIDI passthrough sends controller input to the host only. Unmapped excludes messages assigned to AudioX controls.</p>
+          <p class="small">Save stages settings. To apply USB changes, Save Config, then use System &gt; Restart Device (recommended). MIDI passthrough sends controller input to the host only. Unmapped excludes messages assigned to AudioX controls.</p>
+          <p id="usb-reload-warning" class="small"><strong>Warning:</strong> Reload Config is unreliable and may cause instability or leave the system unresponsive until rebooted. It disconnects USB audio, MIDI, keyboard, and networking. Rebooting after saving USB changes is recommended instead.</p>
           <div class="actions-3">
             <button id="btn-load">Load Config</button>
             <button id="btn-save" class="primary">Save Config</button>
-            <button id="btn-reload">Reload Config</button>
+            <button id="btn-reload" class="warn" aria-describedby="usb-reload-warning">Reload Config</button>
           </div>
         </div>
         <section class="card stack">
@@ -590,6 +591,7 @@ end)
     <p id="confirm-message"></p>
     <div class="dialog-actions">
       <button id="confirm-cancel" class="flat" autofocus>Cancel</button>
+      <button id="confirm-alternate" class="primary" hidden></button>
       <button id="confirm-accept" class="warn">Continue</button>
     </div>
   </dialog>

@@ -122,27 +122,32 @@
     document.addEventListener('change', markEditorDirty);
   }
 
-  async function confirmAction(message, { title = 'Confirm action', label = 'Continue' } = {}) {
+  async function confirmAction(message, { title = 'Confirm action', label = 'Continue', alternateLabel = '' } = {}) {
     if (confirming || busy) return false;
     confirming = true;
     const dialog = document.getElementById('confirm-dialog');
     const accept = document.getElementById('confirm-accept');
     const cancel = document.getElementById('confirm-cancel');
+    const alternate = document.getElementById('confirm-alternate');
     const previousFocus = document.activeElement;
     document.getElementById('confirm-title').textContent = title;
     document.getElementById('confirm-message').textContent = message;
     accept.textContent = label;
+    alternate.textContent = alternateLabel;
+    alternate.hidden = !alternateLabel;
     try {
       return await new Promise((resolve) => {
         const finish = (accepted) => {
           accept.removeEventListener('click', onAccept);
           cancel.removeEventListener('click', onCancel);
+          alternate.removeEventListener('click', onAlternate);
           dialog.removeEventListener('cancel', onCancel);
           dialog.removeEventListener('keydown', onKeyDown);
           dialog.close();
           resolve(accepted);
         };
         const onAccept = () => finish(true);
+        const onAlternate = () => finish('alternate');
         const onCancel = (event) => {
           event.preventDefault();
           finish(false);
@@ -154,12 +159,14 @@
         };
         accept.addEventListener('click', onAccept);
         cancel.addEventListener('click', onCancel);
+        if (alternateLabel) alternate.addEventListener('click', onAlternate);
         dialog.addEventListener('cancel', onCancel);
         dialog.addEventListener('keydown', onKeyDown);
         dialog.showModal();
         cancel.focus();
       });
     } finally {
+      alternate.hidden = true;
       confirming = false;
       previousFocus?.focus();
     }

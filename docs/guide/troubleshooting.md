@@ -13,7 +13,9 @@ until that path works. Keep levels low while changing routes or gain.
    relying only on `audiox.local`.
 5. Check browser proxy/VPN settings and whether another network uses the same
    subnet.
-6. If it stopped during **Reload Config**, reconnect the USB interface and retry.
+6. If it stopped during **Reload Config**, the USB reload may have left the
+   system unresponsive; a reboot may be required. Save USB changes and use
+   **System > Restart Device** instead of Reload Config when possible.
    If it stopped during an update or restore, allow the reboot sequence to finish.
 
 A temporary connection warning does not prove that the Pi rebooted. Avoid
@@ -107,7 +109,8 @@ See [MIDI](./midi), [Scripts](./macros), and
 Check whether it was meant to persist:
 
 - Drawn routes need Save Routing.
-- USB form changes need Save Config, then Reload Config to apply.
+- USB form changes need Save Config, then a device restart (recommended).
+  Reload Config can cause instability requiring a reboot.
 - Lua state and script-driven effect/volume changes are runtime-only.
 - Dim lights and the active sampler selection are runtime state.
 - A graph's browser layout is not its device signal-path configuration.

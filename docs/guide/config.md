@@ -43,17 +43,25 @@ retune the entire engine; see [development](./development).
 2. Edit the fields.
 3. **Save Config** writes the staged configuration. It does not by itself
    recreate the USB device.
-4. **Reload Config** applies the staged configuration and reloads the gadget.
+4. **Recommended:** use **System > Restart Device** to apply the saved USB
+   changes with a full reboot. **Reload Config** attempts to apply them without
+   rebooting, but is unreliable.
 
-::: warning USB reconnect
-Reloading briefly disconnects USB **audio, MIDI, keyboard, and networking**.
+::: warning USB reload can cause instability
+Reload Config can cause unpredictable instability or leave the system
+unresponsive until rebooted. **Save Config, then restart the device instead.**
+The reload confirmation offers **Reboot Instead** to restart the device and
+apply saved USB changes without attempting a live reload. Unsaved edits are
+not saved automatically.
+Reloading disconnects USB **audio, MIDI, keyboard, and networking**, and they
+may not recover without a reboot.
 Stop playback/recording in host applications first, save work, and be prepared
 to reselect the device in your DAW or operating system. If you are connected
 over USB networking, the browser may lose contact while the link reconnects.
 :::
 
 If Reload rejects a format, read the reported error, return to a known-working
-configuration, save, and reload again. A USB reload is not a whole-device reboot.
+configuration, save, and restart the device. A USB reload is not a whole-device reboot.
 
 The keyboard setting is disabled by default. It is needed only for scripts that
 generate keyboard reports; volume/effect/logging scripts do not need it.

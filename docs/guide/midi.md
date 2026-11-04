@@ -131,8 +131,9 @@ In **Config**, set **USB MIDI Passthrough**:
 | Unmapped messages only | Forward controller messages that AudioX does not claim as local mappings |
 | All messages, including mapped | Forward local-control messages too; one press can affect both AudioX and the host |
 
-Choose **Save Config**, then **Reload Config**. All USB gadget functions briefly
-disconnect, including networking, so expect a short interruption.
+Choose **Save Config**, then **System > Restart Device** (recommended).
+**Reload Config** is unreliable: it disconnects all USB gadget functions,
+including networking, and can cause instability requiring a reboot.
 
 Forwarding is **one way: selected controller to USB host**. Host MIDI is not
 routed back into AudioX, to controller LEDs, or to local script triggers.

@@ -8,6 +8,7 @@
 
 #include "../context.hpp"
 #include "bluetooth/hci.hpp"
+#include "bluetooth/avrcp.hpp"
 #include "audio/bluetooth_stream.hpp"
 #include <sbc/sbc.h>
 
@@ -155,6 +156,20 @@ struct BluetoothRoutingDevice {
     bool connected;
 };
 
+struct BluetoothMediaSession {
+    int fd{-1};
+    bt::Address address{};
+    bool connecting{false};
+    uint64_t deadlineMs{0};
+    uint8_t response[bt::AVRCP_PACKET_MAX]{};
+    size_t responseLength{0};
+};
+
+struct BluetoothMediaEvent {
+    bt::Address address{};
+    bt::MediaKey key{};
+};
+
 // Owns the controller. All HCI traffic happens on the worker thread; the
 // public request/status calls only touch state under the mutex.
 struct BluetoothContext {
@@ -169,6 +184,13 @@ struct BluetoothContext {
     int agentFd;
     int sdpListenFd;
     int avdtpListenFd;
+    int avrcpListenFd{-1};
+    BluetoothMediaSession mediaSessions[BT_MAX_LINKS]{};
+    static constexpr unsigned MEDIA_EVENTS_MAX = 64;
+    BluetoothMediaEvent mediaEvents[MEDIA_EVENTS_MAX]{};
+    unsigned mediaEventHead{0};
+    unsigned mediaEventCount{0};
+    unsigned mediaEventsDropped{0};
     int sdpClientFds[4];
     bool adapterReady;
     bool scanning;
@@ -208,6 +230,30 @@ struct BluetoothContext {
     // Name of the connected Bluetooth output, else of a paired output device.
     bool getOutputDeviceName(char *out, size_t outSize, bool *connected = nullptr) const;
     size_t copyRoutingDevices(BluetoothRoutingDevice *out, size_t cap) const;
+    // Worker producer / control-loop consumer; Lua never runs on the Bluetooth worker.
+    void queueMediaEvent(const bt::Address &address, const bt::MediaKey &key) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (mediaEventCount == MEDIA_EVENTS_MAX) {
+            ++mediaEventsDropped;
+            return;
+        }
+        mediaEvents[(mediaEventHead + mediaEventCount) % MEDIA_EVENTS_MAX] = {address, key};
+        ++mediaEventCount;
+    }
+    bool popMediaEvent(BluetoothMediaEvent &event) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!mediaEventCount) return false;
+        event = mediaEvents[mediaEventHead];
+        mediaEventHead = (mediaEventHead + 1) % MEDIA_EVENTS_MAX;
+        --mediaEventCount;
+        return true;
+    }
+    unsigned takeMediaEventsDropped() {
+        std::lock_guard<std::mutex> lock(mutex);
+        const unsigned dropped = mediaEventsDropped;
+        mediaEventsDropped = 0;
+        return dropped;
+    }
 
     void threadMain();
 
@@ -218,6 +264,10 @@ private:
     void acceptSdpRequest();
     void acceptA2dpChannel();
     bool handleSdpRequest(int fd);
+    void acceptMediaChannel();
+    void connectMediaChannel(const bt::Address &address);
+    void pollMediaSession(unsigned index, short events);
+    void closeMediaSession(unsigned index);
     int findLink(const bt::Address &address) const;
     int allocateLink(const bt::Address &address);
     bool beginConnect(const bt::Address &target, bool automatic);

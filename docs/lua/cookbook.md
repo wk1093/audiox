@@ -210,6 +210,57 @@ end)
 Typing accepts only printable US-ASCII plus newline and tab. Confirm the
 focused host application is safe to receive this text before triggering.
 
+## Bluetooth media keys to computer keyboard
+
+Save this as a new script with **MIDI binding disabled**, enable **USB Keyboard**
+in Config, and connect AudioX's USB gadget port to the computer. Pair/connect your
+Classic Bluetooth headphones or remote. This example is opt-in; it is not
+automatically installed or enabled.
+
+Play/pause defaults to Space; next/previous default to Ctrl+Right/Ctrl+Left.
+These are ordinary application-specific keyboard shortcuts, **not USB consumer
+media-key reports**. Set them to your player's shortcuts in the script's controls.
+Blank mappings ignore that key. Other media keys are unmapped by default.
+The optional device address restricts the bridge to one paired device.
+
+```lua callbacks
+local mappings = {
+    {"play", "Play", "SPACE"},
+    {"pause", "Pause", "SPACE"},
+    {"next", "Next track", "CTRL+RIGHT"},
+    {"previous", "Previous track", "CTRL+LEFT"},
+    {"stop", "Stop", ""},
+    {"rewind", "Rewind", ""},
+    {"fast_forward", "Fast forward", ""},
+    {"volume_up", "Volume up", ""},
+    {"volume_down", "Volume down", ""},
+    {"mute", "Mute", ""},
+    {"record", "Record", ""},
+    {"eject", "Eject", ""}
+}
+
+ui.option("enabled", {label="Enabled", type="boolean", default=true})
+ui.option("device", {label="Device MAC (blank = any)", type="string", default=""})
+for _, mapping in ipairs(mappings) do
+    ui.option(mapping[1], {label=mapping[2] .. " shortcut",
+        type="string", default=mapping[3]})
+end
+
+hook("bluetooth_media_key", function(event)
+    if not event.pressed or not script_config.get("enabled") then return end
+    local device = script_config.get("device")
+    if device ~= "" and string.upper(device) ~= event.device then return end
+    local shortcut = script_config.get(event.key) or ""
+    if shortcut ~= "" then tap(shortcut) end
+end)
+```
+
+Only presses send a tap, so the corresponding Bluetooth release does not toggle
+playback a second time. A held button may send repeated presses, depending on the
+device. Taps include their own USB release, avoiding stuck keys if a Bluetooth
+release is lost. Keyboard input goes to the focused computer application; test
+in a safe window. Invalid chord names surface as script execution errors.
+
 ## Note with a timed release
 
 ```lua callbacks

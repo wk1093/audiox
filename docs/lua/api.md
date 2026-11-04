@@ -15,15 +15,15 @@ event callback, not at top level.
 
 | Name | Description |
 | --- | --- |
-| `event.type` | `note_on`, `note_off`, `cc`, `sound_start`, `sound_finish`, `device_connect`, `device_disconnect`, `run`, `boot`, `timer`, `config_change`, `ui`, or `bluetooth_change`. |
+| `event.type` | `note_on`, `note_off`, `cc`, `sound_start`, `sound_finish`, `device_connect`, `device_disconnect`, `run`, `boot`, `timer`, `config_change`, `ui`, `bluetooth_change`, or `bluetooth_media_key`. |
 | `event.source` | `"web"`, `"midi"`, `"audio"`, `"device"`, `"system"`, or `"bluetooth"`; all hooks use the same bounded queue. |
 | `event.channel` | Triggering MIDI channel, `0`–`15`. |
 | `event.note` | Triggering note, `0`–`127`. |
 | `event.velocity` | MIDI velocity/value, `0`–`127`; zero for audio/device hooks. |
-| `event.pressed` | True for press/start/connect and Web Run; false for release/CC/finish/disconnect. |
+| `event.pressed` | True for press/start/connect and Web Run; false for release/CC/finish/disconnect. Bluetooth media keys supply both press and release. |
 | `event.cc`, `event.value` | MIDI controller number and value; `value` mirrors velocity for notes. |
-| `event.sound`, `event.device` | Sound basename or selected controller device path; empty when inapplicable. |
-| `event.key` | Option/button key for `config_change` and `ui`; empty otherwise. |
+| `event.sound`, `event.device` | Sound basename or selected controller device path; `device` is the Bluetooth MAC address for `bluetooth_media_key`. Empty when inapplicable. |
+| `event.key` | Option/button key for `config_change` and `ui`, or media-key name for `bluetooth_media_key`; empty otherwise. |
 | `state` | Persistent flat table for this mapping; see [events and state](/lua/events-and-state). |
 
 ## Callback registration
@@ -58,6 +58,15 @@ See [callback examples and lifetime rules](/lua/events-and-state#register-callba
   control-loop timer, not an audio/sample-accurate clock.
 - `bluetooth_change`: Bluetooth adapter, discovery, pairing, device, or
   connection status changed. Read `bluetooth.devices()` for the latest snapshot.
+- `bluetooth_media_key`: a paired Classic Bluetooth device sent an AVRCP
+  pass-through media key. `event.key` is `play`, `pause`, `stop`, `next`,
+  `previous`, `rewind`, `fast_forward`, `volume_up`, `volume_down`, `mute`,
+  `record`, or `eject`. `event.device` is its uppercase colon-separated MAC
+  address; `event.pressed` distinguishes press from release. MIDI fields are
+  zero. Unlike boot/timer hooks, this is available before startup stabilizes.
+  A bounded 64-event Bluetooth queue feeds the normal script queue; overflow
+  drops events and is logged. These hooks do not automatically change playback
+  or volume. See the [keyboard bridge example](./cookbook#bluetooth-media-keys-to-computer-keyboard).
 - `config_change`: a WebUI option was persisted; `event.key` names it and
   `event.value` is its typed value. Script-side `script_config.set()` does not
   retrigger this hook, avoiding feedback loops.

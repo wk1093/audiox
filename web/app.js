@@ -979,22 +979,25 @@ function resizeRoutingCanvas() {
   state.graphCanvas.setDirty(true, true);
 }
 
-function bezierPoint(a, b, t) {
-  const c = Math.max(40, Math.min(220, Math.abs(b[0] - a[0]) * 0.45));
-  const p0x = a[0];
-  const p0y = a[1];
-  const p1x = a[0] + c;
-  const p1y = a[1];
-  const p2x = b[0] - c;
-  const p2y = b[1];
-  const p3x = b[0];
-  const p3y = b[1];
-  const it = 1 - t;
+let routingWireCacheKey = '';
+let routingWireCache = new Map();
 
-  return [
-    (it * it * it * p0x) + (3 * it * it * t * p1x) + (3 * it * t * t * p2x) + (t * t * t * p3x),
-    (it * it * it * p0y) + (3 * it * it * t * p1y) + (3 * it * t * t * p2y) + (t * t * t * p3y),
-  ];
+function routingWirePaths() {
+  const wires = state.edges.flatMap(edge => {
+    const src = state.nodeByThingId.get(edge.src), dst = state.nodeByThingId.get(edge.dst);
+    if (!src || !dst) return [];
+    const a = src.getConnectionPos(false, Number(edge.srcChannel));
+    const b = dst.getConnectionPos(true, Number(edge.dstChannel));
+    return a && b ? [{ edge, a: Array.from(a), b: Array.from(b) }] : [];
+  });
+  const key = JSON.stringify(wires);
+  if (key !== routingWireCacheKey) {
+    routingWireCache = new Map(wires.map(({ edge, a, b }) => [
+      edgeKey(edge), AudioxRouting.wirePath(a, b),
+    ]));
+    routingWireCacheKey = key;
+  }
+  return routingWireCache;
 }
 
 function distToSegment(px, py, ax, ay, bx, by) {
@@ -1023,23 +1026,12 @@ function distToSegment(px, py, ax, ay, bx, by) {
 }
 
 function linkDistance(link, x, y) {
-  const srcNode = state.nodeByThingId.get(link.src);
-  const dstNode = state.nodeByThingId.get(link.dst);
-  if (!srcNode || !dstNode) {
-    return Number.POSITIVE_INFINITY;
-  }
-
-  const a = srcNode.getConnectionPos(false, Number(link.srcChannel));
-  const b = dstNode.getConnectionPos(true, Number(link.dstChannel));
-  if (!a || !b) {
-    return Number.POSITIVE_INFINITY;
-  }
-
+  const path = routingWirePaths().get(edgeKey(link));
+  if (!path) return Number.POSITIVE_INFINITY;
   let best = Number.POSITIVE_INFINITY;
-  let prev = bezierPoint(a, b, 0);
-  for (let i = 1; i <= 24; i += 1) {
-    const t = i / 24;
-    const next = bezierPoint(a, b, t);
+  let prev = path[0];
+  for (let i = 1; i < path.length; i += 1) {
+    const next = path[i];
     const d = distToSegment(x, y, prev[0], prev[1], next[0], next[1]);
     if (d < best) {
       best = d;
@@ -1400,34 +1392,28 @@ function ensureRoutingGraph() {
   };
 
   state.graphCanvas.onDrawForeground = (ctx) => {
-    const selected = (state.selectedEdgeIdx >= 0 && state.selectedEdgeIdx < state.edges.length)
-      ? edgeKey(state.edges[state.selectedEdgeIdx])
-      : '';
+    const selected = new Set(Object.values(state.graphCanvas.selected_nodes || {})
+      .map(node => normalizeThingId(node.properties?.thingId)).filter(Boolean));
 
+    const paths = routingWirePaths();
+    ctx.save();
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
     for (const edge of state.edges) {
-      const srcNode = state.nodeByThingId.get(edge.src);
-      const dstNode = state.nodeByThingId.get(edge.dst);
-      if (!srcNode || !dstNode) {
-        continue;
-      }
+      const path = paths.get(edgeKey(edge));
+      if (!path) continue;
 
-      const a = srcNode.getConnectionPos(false, Number(edge.srcChannel));
-      const b = dstNode.getConnectionPos(true, Number(edge.dstChannel));
-      if (!a || !b) {
-        continue;
-      }
-
-      const isSelected = selected && edgeKey(edge) === selected;
-      const c = Math.max(40, Math.min(220, Math.abs(b[0] - a[0]) * 0.45));
+      const isSelected = selected.has(edge.src) || selected.has(edge.dst);
+      const [a, first, second, b] = AudioxRouting.wireCurve(path[0], path[path.length - 1]);
       ctx.beginPath();
       ctx.moveTo(a[0], a[1]);
-      ctx.bezierCurveTo(a[0] + c, a[1], b[0] - c, b[1], b[0], b[1]);
+      ctx.bezierCurveTo(first[0], first[1], second[0], second[1], b[0], b[1]);
       ctx.strokeStyle = isSelected ? '#ffcf66' : '#79c8ff';
       ctx.lineWidth = isSelected ? 4 : 3;
-      ctx.globalAlpha = isSelected ? 1 : 0.92;
+      ctx.globalAlpha = isSelected ? 0.85 : 0.45;
       ctx.stroke();
     }
-    ctx.globalAlpha = 1;
+    ctx.restore();
   };
 
   state.graphCanvas.onMouse = (ev) => {

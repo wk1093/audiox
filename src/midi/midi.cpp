@@ -522,7 +522,7 @@ bool MidiContext::queueMacroEvent(unsigned index, MidiScriptEvent event) {
 
 void MidiContext::dispatchMacroEvent(MidiScriptEvent event) {
     const unsigned kind = static_cast<unsigned>(event.kind);
-    if (kind >= 13) {
+    if (kind >= MIDI_SCRIPT_EVENT_COUNT) {
         printf("[MIDI] [WARN] Invalid macro event kind %u\n", kind);
         return;
     }
@@ -534,6 +534,27 @@ void MidiContext::dispatchMacroEvent(MidiScriptEvent event) {
         if (midi && (!macro.midiEnabled || macro.channel != event.channel || macro.note != event.note)) continue;
         if (!queueMacroEvent(i, event)) break;
     }
+}
+
+void MidiContext::pollBluetoothMediaEvents() {
+    auto *bluetooth = app ? app->bluetooth : nullptr;
+    if (!bluetooth) return;
+    BluetoothMediaEvent media{};
+    for (unsigned i = 0; i < BluetoothContext::MEDIA_EVENTS_MAX && bluetooth->popMediaEvent(media); ++i) {
+        const char *key = bt::mediaKeyName(media.key.operation);
+        if (!key) {
+            printf("[MIDI] [WARN] Invalid Bluetooth media key 0x%02x\n", media.key.operation);
+            continue;
+        }
+        MidiScriptEvent event{};
+        event.kind = MidiScriptEventKind::BluetoothMediaKey;
+        event.pressed = media.key.pressed;
+        bt::formatAddress(media.address, event.device, sizeof(event.device));
+        copyBounded(event.key, sizeof(event.key), key);
+        dispatchMacroEvent(event);
+    }
+    const unsigned dropped = bluetooth->takeMediaEventsDropped();
+    if (dropped) printf("[MIDI] [WARN] Dropped %u Bluetooth media Lua events: event queue full\n", dropped);
 }
 
 void MidiContext::pollScriptLifecycle(uint64_t now, bool startupStable) {
@@ -1110,6 +1131,7 @@ void MidiContext::poll() {
         syncMacros();
         refreshLightingFromState();
     }
+    pollBluetoothMediaEvents();
     pollMacros(now);
     usb.poll(now, passthroughMode, keyboardEnabled);
 

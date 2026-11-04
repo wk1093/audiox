@@ -1739,6 +1739,88 @@ int main() {
             testNowMs += 20;
             midi.pollMacros(testNowMs);
             assert(scriptBluetoothRequests == 2 && !midi.macroErrors[1][0]);
+            saveCallbacks("hook('bluetooth_media_key',function(e) "
+                          "assert(e.source=='bluetooth' and e.device=='AA:BB:CC:DD:EE:FF'); "
+                          "assert(e.key=='pause'); state.presses=(state.presses or 0)+(e.pressed and 1 or 0); "
+                          "state.releases=(state.releases or 0)+(e.pressed and 0 or 1) end)",
+                          "200 OK", true);
+            assert(config.readMidiMapFile().chords[1].eventMask == 8192);
+            bluetooth.queueMediaEvent(bluetooth.devices[0].address, {0x46, true});
+            bluetooth.queueMediaEvent(bluetooth.devices[0].address, {0x46, false});
+            midi.pollBluetoothMediaEvents();
+            assert(midi.macroQueueCount == 2 && !bluetooth.mediaEventCount);
+            testNowMs += 20;
+            midi.pollMacros(testNowMs);
+            testNowMs += 20;
+            midi.pollMacros(testNowMs);
+            assert(hookState("presses").integerValue == 1);
+            assert(hookState("releases").integerValue == 1 && !midi.macroErrors[1][0]);
+            // Wraparound and overflow reporting preserve FIFO order.
+            bluetooth.mediaEventHead = BluetoothContext::MEDIA_EVENTS_MAX - 1;
+            for (unsigned i = 0; i < BluetoothContext::MEDIA_EVENTS_MAX + 3; ++i)
+                bluetooth.queueMediaEvent(bluetooth.devices[0].address, {0x46, (i % 2) == 0});
+            assert(bluetooth.mediaEventCount == BluetoothContext::MEDIA_EVENTS_MAX);
+            assert(bluetooth.mediaEventsDropped == 3);
+            BluetoothMediaEvent queued{};
+            for (unsigned i = 0; i < BluetoothContext::MEDIA_EVENTS_MAX; ++i) {
+                assert(bluetooth.popMediaEvent(queued));
+                assert(queued.key.operation == 0x46 && queued.key.pressed == ((i % 2) == 0));
+            }
+            assert(!bluetooth.popMediaEvent(queued));
+            bluetooth.queueMediaEvent(bluetooth.devices[0].address, {0x46, true});
+            bluetooth.queueMediaEvent(bluetooth.devices[0].address, {0x46, false});
+            midi.pollBluetoothMediaEvents();
+            assert(midi.macroQueueCount == 2 && !bluetooth.mediaEventsDropped);
+            midi.stopMacros();
+            saveCallbacks("hook('bluetooth_media_key',function(e) "
+                          "if e.pressed and e.key=='pause' then tap('SPACE') end end)",
+                          "200 OK", true);
+            int mediaKeyboard[2];
+            assert(socketpair(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK, 0, mediaKeyboard) == 0);
+            const int previousKeyboardFd = midi.usb.keyboardFd;
+            const bool previousKeyboardEnabled = midi.usb.keyboardEnabled;
+            const auto previousUsbMode = midi.usb.mode;
+            const auto previousUsbProbeMs = midi.usb.nextProbeMs;
+            midi.usb.keyboardFd = mediaKeyboard[0];
+            midi.usb.mode = 1;
+            midi.usb.nextProbeMs = UINT64_MAX;
+            midi.usb.keyboardEnabled = midi.keyboardEnabled = true;
+            midi.macroUsbGeneration = midi.usb.sessionGeneration;
+            const uint8_t pause[] = {0x10, 0x11, 0x0e, 0x00, 0x48, 0x7c, 0x46, 0x00};
+            const uint8_t pauseRelease[] = {0x20, 0x11, 0x0e, 0x00, 0x48, 0x7c, 0xc6, 0x00};
+            for (const uint8_t *packet : {pause, pauseRelease}) {
+                uint8_t response[8]{};
+                bt::MediaKey key{};
+                bool hasKey = false;
+                assert(bt::avrcpResponse(packet, 8, response, sizeof(response), key, hasKey) == 8);
+                assert(hasKey && response[3] == 0x09);
+                bluetooth.queueMediaEvent(bluetooth.devices[0].address, key);
+            }
+            midi.pollBluetoothMediaEvents();
+            testNowMs += 20;
+            stepMacro(testNowMs);
+            uint8_t report[8]{};
+            assert(read(mediaKeyboard[1], report, sizeof(report)) == sizeof(report));
+            assert(report[0] == 0 && report[2] == 44); // Space press.
+            testNowMs += 30;
+            stepMacro(testNowMs);
+            assert(read(mediaKeyboard[1], report, sizeof(report)) == sizeof(report));
+            for (auto byte : report) assert(byte == 0); // Automatic USB release.
+            testNowMs += 20;
+            stepMacro(testNowMs);
+            assert(read(mediaKeyboard[1], report, sizeof(report)) < 0 && errno == EAGAIN);
+            testNowMs += 20;
+            stepMacro(testNowMs);
+            assert(read(mediaKeyboard[1], report, sizeof(report)) < 0 && errno == EAGAIN);
+            assert(!midi.macroErrors[1][0] && !midi.macroQueueCount);
+            midi.stopMacros();
+            close(mediaKeyboard[0]);
+            close(mediaKeyboard[1]);
+            midi.usb.keyboardFd = previousKeyboardFd;
+            midi.usb.keyboardEnabled = previousKeyboardEnabled;
+            midi.usb.mode = previousUsbMode;
+            midi.usb.nextProbeMs = previousUsbProbeMs;
+            midi.keyboardEnabled = false;
         }
         saveCallbacks(
             "ui.option('enabled',{label='Enabled',type='boolean',default=true}); "

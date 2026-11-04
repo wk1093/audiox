@@ -100,6 +100,7 @@ struct MidiContext {
     bool queueMacroEvent(unsigned index, MidiScriptEvent event);
     void dispatchMacroEvent(MidiScriptEvent event);
     void pollScriptLifecycle(uint64_t now, bool startupStable);
+    void pollBluetoothMediaEvents();
     void pollMacros(uint64_t now);
     bool queueControllerMidi(const uint8_t *bytes, size_t count);
     bool flushControllerMidi();

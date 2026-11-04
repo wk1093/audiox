@@ -275,6 +275,19 @@ int main() {
         callbackSuccess("hook('timer',function(e) assert(e.type=='timer' and e.source=='system') end)", event, 512);
         event.kind = MidiScriptEventKind::BluetoothChange;
         callbackSuccess("hook('bluetooth_change',function(e) assert(e.source=='bluetooth') end)", event, 4096);
+        event.kind = MidiScriptEventKind::BluetoothMediaKey;
+        strcpy(event.key, "pause");
+        strcpy(event.device, "AA:BB:CC:DD:EE:FF");
+        callbackSuccess("hook('bluetooth_media_key',function(e) "
+                        "assert(e.type=='bluetooth_media_key' and e.source=='bluetooth'); "
+                        "assert(e.key=='pause' and e.device=='AA:BB:CC:DD:EE:FF' and e.pressed); "
+                        "tap('SPACE') end)", event, 8192);
+        assert(plan.count == 1 && plan.actions[0].kind == MidiScriptKind::Tap);
+        event.pressed = false;
+        callbackSuccess("hook('bluetooth_media_key',function(e) assert(not e.pressed); "
+                        "if e.pressed then tap('SPACE') end end)", event, 8192);
+        assert(plan.count == 0);
+        event.pressed = true;
         event.kind = MidiScriptEventKind::Ui;
         strcpy(event.key, "title");
         event.value.kind = MidiScriptValueKind::String;

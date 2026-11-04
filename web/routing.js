@@ -108,6 +108,28 @@
         return rank[group];
       };
       groups.forEach((_, group) => rankGroup(group));
+      const flowRank = [...rank];
+      const folded = groups.map(() => false);
+      for (const group of groups.map((_, i) => i).sort((a, b) => flowRank[a] - flowRank[b])) {
+        const previous = [...predecessors[group]];
+        const predecessor = previous[0];
+        const canFold = previous.length === 1 && groups[group].length === 1 &&
+          groups[predecessor].length === 1 && !folded[predecessor] &&
+          byId.get(groups[group][0]).kind === 'effect' &&
+          byId.get(groups[predecessor][0]).kind === 'effect' &&
+          outgoing.get(groups[predecessor][0]).size === 1;
+        rank[group] = previous.length ?
+          Math.max(...previous.map(p => rank[p] + (canFold ? 0 : 1))) : 0;
+        folded[group] = canFold;
+      }
+      const earlyRank = [...rank];
+      for (const group of groups.map((_, i) => i).sort((a, b) => flowRank[b] - flowRank[a])) {
+        const successors = new Set(groups[group].flatMap(id => [...outgoing.get(id)])
+          .map(id => groupFor.get(id)).filter(next => next !== group));
+        if (successors.size)
+          rank[group] = Math.min(...[...successors].map(next =>
+            rank[next] - (earlyRank[next] === earlyRank[group] ? 0 : 1)));
+      }
       const layers = Array.from({ length: Math.max(...rank) + 1 }, () => []);
       const vertices = component.map(current => ({
         node: byId.get(current), rank: rank[groupFor.get(current)], before: [], after: [],
@@ -169,6 +191,24 @@
         if (bestCrossings === 0) break;
       }
       const realLayers = best.map(layer => layer.filter(vertex => vertex.node));
+      for (let level = 0; level < realLayers.length; level++) {
+        const layer = realLayers[level];
+        // Keep vertically folded serial pairs in signal order.
+        const pairs = [];
+        const assigned = new Set();
+        for (const vertex of layer) {
+          if (assigned.has(vertex)) continue;
+          const group = groupFor.get(vertex.node.id);
+          const next = folded[group] ? vertexFor.get(groups[[...predecessors[group]][0]][0]) :
+            [...outgoing.get(vertex.node.id)].map(id => vertexFor.get(id))
+              .find(candidate => folded[groupFor.get(candidate.node.id)] && candidate.rank === level);
+          const pair = next && !assigned.has(next) ? [vertex, next] : [vertex];
+          pair.sort((a, b) => flowRank[groupFor.get(a.node.id)] - flowRank[groupFor.get(b.node.id)]);
+          pair.forEach(member => assigned.add(member));
+          pairs.push(pair);
+        }
+        realLayers[level] = pairs.flat();
+      }
       const heights = realLayers.map(layer =>
         layer.reduce((sum, vertex) => sum + vertex.node.height, 0) +
         Math.max(0, layer.length - 1) * verticalGap);
@@ -188,6 +228,22 @@
     for (const [id, position] of Object.entries(isolated))
       positions[id] = { x: position.x, y: position.y + top - 60 };
     return positions;
+  }
+
+  function wireCurve(a, b) {
+    const c = Math.max(40, Math.min(220, Math.abs(b[0] - a[0]) * .45));
+    return [a, [a[0] + c, a[1]], [b[0] - c, b[1]], b];
+  }
+
+  function wirePath(a, b) {
+    const [start, first, second, end] = wireCurve(a, b);
+    return Array.from({ length: 49 }, (_, i) => {
+      const t = i / 48, u = 1 - t;
+      return [u * u * u * start[0] + 3 * u * u * t * first[0] +
+        3 * u * t * t * second[0] + t * t * t * end[0],
+      u * u * u * start[1] + 3 * u * u * t * first[1] +
+        3 * u * t * t * second[1] + t * t * t * end[1]];
+    });
   }
 
   function fitNodes(nodes, width, height) {
@@ -211,7 +267,7 @@
     return `Channel ${channel + 1}`;
   }
 
-  const exported = { columnForNode, layoutNodes, fitNodes, channelLabel };
+  const exported = { columnForNode, layoutNodes, wireCurve, wirePath, fitNodes, channelLabel };
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
   else root.AudioxRouting = exported;
 })(globalThis);

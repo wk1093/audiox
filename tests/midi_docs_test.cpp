@@ -2,12 +2,14 @@
 
 #include <cassert>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
 
 int main() {
+    assert(!std::filesystem::exists("tests/.midi-docs-test-storage"));
     unsigned blocks = 0, callbackExamples = 0;
     for (const auto &file : std::filesystem::recursive_directory_iterator("docs/lua")) {
         if (file.path().extension() != ".md") continue;
@@ -53,6 +55,32 @@ int main() {
                                                     nullptr, false, true, mask)) {
                                 std::cerr << file.path() << ':' << start << ": " << error << '\n';
                                 return 1;
+                            }
+                            if (source.find("hook(\"bluetooth_media_key\"") != std::string::npos) {
+                                const char *keys[] = {"play", "pause", "next", "previous", "stop", "rewind",
+                                    "fast_forward", "volume_up", "volume_down", "mute", "record", "eject"};
+                                const char *shortcuts[] = {"SPACE", "SPACE", "CTRL+RIGHT", "CTRL+LEFT",
+                                    "", "", "", "", "", "", "", ""};
+                                for (unsigned i = 0; i < 12; ++i) {
+                                    for (bool pressed : {true, false}) {
+                                        MidiScriptEvent event{};
+                                        event.kind = MidiScriptEventKind::BluetoothMediaKey;
+                                        event.pressed = pressed;
+                                        std::snprintf(event.key, sizeof(event.key), "%s", keys[i]);
+                                        std::snprintf(event.device, sizeof(event.device), "AA:BB:CC:DD:EE:FF");
+                                        if (!midiEvaluateScript(source.c_str(), event, state, plan, error, sizeof(error),
+                                            nullptr, false, true, mask, 1)) {
+                                            std::cerr << file.path() << ':' << start << ": " << error << '\n';
+                                            return 1;
+                                        }
+                                        const bool mapped = pressed && shortcuts[i][0];
+                                        assert(plan.count == (mapped ? 1U : 0U));
+                                        if (mapped) {
+                                            assert(plan.actions[0].kind == MidiScriptKind::Tap);
+                                            assert(!std::strcmp(plan.actions[0].keys, shortcuts[i]));
+                                        }
+                                    }
+                                }
                             }
                         }
                         ++callbackExamples;

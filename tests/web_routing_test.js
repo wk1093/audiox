@@ -98,6 +98,129 @@ const edge = (src, dst) => ({ src, dst, srcChannel: 0, dstChannel: 0 });
 const box = (id, width = 260, height = 100) =>
   ({ id, kind: 'effect', inputs: 2, outputs: 2, width, height });
 
+test('wire picking samples the same smooth cubic used for drawing, including vertical and reverse routes', () => {
+  for (const [a, b] of [[[300, 135], [840, 435]], [[300, 75], [40, 225]],
+    [[300, 375], [40, 75]], [[300, 75], [300, 75]]]) {
+    const path = routing.wirePath(a, b);
+    const curve = routing.wireCurve(a, b);
+    assert.equal(path.length, 49);
+    assert.deepEqual(path[0], a);
+    assert.deepEqual(path.at(-1), b);
+    assert.deepEqual(path[24], a.map((value, axis) =>
+      (value + 3 * curve[1][axis] + 3 * curve[2][axis] + b[axis]) / 8));
+    assert.ok(path.every(point => point.every(Number.isFinite)));
+  }
+});
+
+test('screenshot-style microphone chain keeps compact vertical effect pairs', () => {
+  const boxes = [
+    { ...box('mic', 200, 90), kind: 'device' }, box('mute', 280, 170),
+    box('noise', 280, 330), box('gate', 280, 260), box('pitch', 280, 330),
+    box('reverb', 280, 260), box('monitor', 280, 170), box('phoneMute', 280, 170),
+    { ...box('phone', 200, 90), kind: 'device' }, { ...box('computer', 200, 90), kind: 'device' },
+    { ...box('soundboard', 200, 90), kind: 'device' },
+    { ...box('mixer', 200, 90), kind: 'routing_helper' },
+    { ...box('usbOut', 200, 90), kind: 'device' }, { ...box('headphones', 200, 90), kind: 'device' },
+  ];
+  const routes = [edge('mic', 'mute'), edge('mute', 'noise'), edge('noise', 'gate'),
+    edge('gate', 'pitch'), edge('pitch', 'reverb'), edge('reverb', 'monitor'),
+    edge('reverb', 'usbOut'), edge('monitor', 'mixer'), edge('phone', 'phoneMute'),
+    edge('phoneMute', 'usbOut'), edge('phone', 'mixer'), edge('computer', 'mixer'),
+    edge('soundboard', 'usbOut'), edge('soundboard', 'mixer'), edge('mixer', 'headphones')];
+  const positions = routing.layoutNodes(boxes, routes);
+  assert.equal(positions.mute.x, positions.noise.x);
+  assert.equal(positions.gate.x, positions.pitch.x);
+  assert.ok(positions.noise.y > positions.mute.y);
+  assertNoOverlap(boxes, positions);
+  const placed = boxes.map(node => ({ ...node, ...positions[node.id] }));
+  const width = Math.max(...placed.map(node => node.x + node.width)) - 40;
+  assert.ok(width < 2400, `graph still too wide: ${width}`);
+  for (const route of routes) {
+    const src = placed.find(node => node.id === route.src);
+    const dst = placed.find(node => node.id === route.dst);
+    for (let channel = 0; channel < 2; channel++) {
+      const a = [src.x + src.width, src.y + 15 + channel * 20];
+      const b = [dst.x, dst.y + 15 + channel * 20];
+      const path = routing.wirePath(a, b);
+      assert.deepEqual(path[0], a);
+      assert.deepEqual(path.at(-1), b);
+    }
+  }
+});
+
+test('wire paths stay stable when unrelated panels move and refresh when sockets move', () => {
+  const source = fs.readFileSync(require.resolve('../web/app.js'), 'utf8');
+  const boxes = [{ ...box('src'), x: 40, y: 60 }, { ...box('dst'), x: 600, y: 60 }];
+  const destination = [600, 75];
+  const state = { edges: [edge('src', 'dst')], nodeByThingId: new Map([
+    ['src', { getConnectionPos: () => [300, 75] }],
+    ['dst', { getConnectionPos: () => destination }],
+  ]) };
+  let calls = 0;
+  const context = vm.createContext({ state, routingNodeBoxes: () => boxes,
+    edgeKey: edge => `${edge.src}:${edge.dst}`,
+    AudioxRouting: { wirePath: (...args) => { calls++; return routing.wirePath(...args); } } });
+  vm.runInContext(source.slice(source.indexOf("let routingWireCacheKey ="),
+    source.indexOf('function removeNearestLinkAt(')), context);
+  assert.equal(context.linkDistance(state.edges[0], 450, 75), 0);
+  assert.equal(context.linkDistance(state.edges[0], 450, 75), 0);
+  assert.equal(calls, 1);
+  boxes.push({ ...box('obstacle', 160), x: 340, y: 60 });
+  assert.equal(context.linkDistance(state.edges[0], 450, 75), 0);
+  assert.equal(calls, 1);
+  boxes[2].y = -100;
+  assert.equal(context.linkDistance(state.edges[0], 450, 75), 0);
+  assert.equal(calls, 1);
+  destination[1] = 275;
+  assert.ok(context.linkDistance(state.edges[0], 450, 75) > 20);
+  assert.equal(calls, 2);
+  assert.match(source, /const paths = routingWirePaths\(\)/);
+  assert.match(source, /ctx\.bezierCurveTo\(first\[0\], first\[1\], second\[0\], second\[1\], b\[0\], b\[1\]\)/);
+});
+
+test('curved routes highlight selected node connections and restore canvas state', () => {
+  const source = fs.readFileSync(require.resolve('../web/app.js'), 'utf8');
+  const routes = [edge('src', 'dst'), edge('src', 'other'), edge('other', 'src'),
+    { ...edge('src', 'dst'), srcChannel: 1, dstChannel: 1 }, edge('other', 'unrelated')];
+  const state = { edges: routes, selectedEdgeIdx: 4, graphCanvas: {} };
+  const key = edge => `${edge.src}:${edge.srcChannel}:${edge.dst}:${edge.dstChannel}`;
+  const paths = new Map(routes.map(route => [key(route), routing.wirePath([300, 75], [600, 275])]));
+  const context = vm.createContext({ state, edgeKey: key, AudioxRouting: routing,
+    normalizeThingId: value => String(value || '').trim(),
+    routingWirePaths: () => paths });
+  vm.runInContext(source.slice(source.indexOf('  state.graphCanvas.onDrawForeground ='),
+    source.indexOf('  state.graphCanvas.onMouse =')), context);
+  const strokes = [], curves = [];
+  let savedAlpha;
+  const ctx = { globalAlpha: 1, save() { savedAlpha = this.globalAlpha; },
+    restore() { this.globalAlpha = savedAlpha; }, beginPath() {}, moveTo() {},
+    bezierCurveTo(...points) { curves.push(points); },
+    stroke() { strokes.push({ alpha: this.globalAlpha, color: this.strokeStyle,
+      width: this.lineWidth }); } };
+  const normal = { alpha: 0.45, color: '#79c8ff', width: 3 };
+  const highlighted = { alpha: 0.85, color: '#ffcf66', width: 4 };
+  state.graphCanvas.onDrawForeground(ctx);
+  assert.deepEqual(strokes, routes.map(() => normal), 'legacy route selection does not highlight wires');
+  assert.equal(curves.length, routes.length);
+  assert.deepEqual(curves[0], routing.wireCurve([300, 75], [600, 275]).slice(1).flat());
+  assert.equal(ctx.globalAlpha, 1);
+  const drawWithSelection = selection => {
+    state.graphCanvas.selected_nodes = selection;
+    strokes.length = 0;
+    state.graphCanvas.onDrawForeground(ctx);
+    assert.equal(ctx.globalAlpha, 1);
+    return strokes;
+  };
+  assert.deepEqual(drawWithSelection({ 42: { properties: { thingId: 'src' } } }),
+    [highlighted, highlighted, highlighted, highlighted, normal]);
+  assert.deepEqual(drawWithSelection({ 99: { properties: { thingId: 'dst' } } }),
+    [highlighted, normal, normal, highlighted, normal]);
+  assert.deepEqual(drawWithSelection({ 42: { properties: { thingId: 'src' } },
+    77: { properties: { thingId: 'unrelated' } } }), routes.map(() => highlighted));
+  assert.deepEqual(drawWithSelection({}), routes.map(() => normal));
+  assert.deepEqual(drawWithSelection({ 10: { properties: {} } }), routes.map(() => normal));
+});
+
 function assertNoOverlap(boxes, positions) {
   for (const node of boxes) {
     assert.ok(Number.isFinite(positions[node.id].x) && Number.isFinite(positions[node.id].y));
@@ -143,13 +266,14 @@ test('branch ordering measurably removes avoidable wire crossings', () => {
   assert.equal(crossingCount(routes, naive), 1);
   const positions = routing.layoutNodes(boxes, routes);
   assert.equal(crossingCount(routes, positions), 0);
-  assert.equal(positions.b.y - positions.a.y, boxes[1].height + 50);
+  assert.equal(positions.d.y - positions.a.y, boxes[1].height + 50);
+  assert.equal(positions.a.x, positions.d.x);
   assertNoOverlap(boxes, positions);
   assert.deepEqual(routing.layoutNodes([...boxes].reverse(), [...routes].reverse()), positions);
 });
 
 test('unused nodes and separate routed patches use compact header-safe gaps', () => {
-  const boxes = ['a', 'b', 'c', 'd', 'unused'].map(id => box(id));
+  const boxes = ['a', 'b', 'c', 'd', 'unused'].map(id => ({ ...box(id), kind: 'device' }));
   const positions = routing.layoutNodes(boxes, [edge('a', 'b'), edge('c', 'd')]);
   assert.equal(positions.c.y - (positions.a.y + boxes[0].height), 70);
   assert.equal(positions.unused.y - (positions.c.y + boxes[2].height), 70);
@@ -164,7 +288,8 @@ test('long routes, fan-in/out and duplicate stereo wires retain stable placement
   const routes = [edge('start', 'a'), edge('start', 'b'), edge('a', 'c'), edge('b', 'd'),
     edge('c', 'finish'), edge('d', 'finish'), edge('start', 'finish'), edge('a', 'finish')];
   const positions = routing.layoutNodes(boxes, routes);
-  for (const route of routes) assert.ok(positions[route.src].x < positions[route.dst].x);
+  for (const route of routes) assert.ok(positions[route.src].x < positions[route.dst].x ||
+    positions[route.src].x === positions[route.dst].x && positions[route.src].y < positions[route.dst].y);
   assertNoOverlap(boxes, positions);
   const stereo = routes.flatMap(route => [route, { ...route, srcChannel: 1, dstChannel: 1 }]);
   assert.deepEqual(routing.layoutNodes(boxes, stereo), positions);
@@ -200,7 +325,8 @@ test('Arrange uses current unsaved routes without overwriting manually positione
   vm.runInContext(source.slice(source.indexOf('function arrangeRoutingGraph()'),
     source.indexOf('function rebuildRoutingGraph()')), context);
   context.arrangeRoutingGraph();
-  assert.ok(graphNodes.get('b').pos[0] < graphNodes.get('a').pos[0]);
+  assert.equal(graphNodes.get('b').pos[0], graphNodes.get('a').pos[0]);
+  assert.ok(graphNodes.get('b').pos[1] < graphNodes.get('a').pos[1]);
   assert.equal(fitted, 1);
   state.autoArrange = false;
   state.positions = { a: { x: 123, y: 456 }, b: { x: 789, y: 100 } };
@@ -218,8 +344,16 @@ test('maximum-size graphs with many long routes keep every node ordered and nono
   const positions = routing.layoutNodes(boxes, routes);
   assert.equal(Object.keys(positions).length, 64);
   assertNoOverlap(boxes, positions);
-  for (const route of routes) assert.ok(positions[route.src].x < positions[route.dst].x);
-  const view = routing.fitNodes(boxes.map(node => ({ ...node, ...positions[node.id] })), 800, 600);
+  for (const route of routes) assert.ok(positions[route.src].x < positions[route.dst].x ||
+    positions[route.src].x === positions[route.dst].x && positions[route.src].y < positions[route.dst].y);
+  const placed = boxes.map(node => ({ ...node, ...positions[node.id] }));
+  const byId = new Map(placed.map(node => [node.id, node]));
+  for (const route of routes) {
+    const src = byId.get(route.src), dst = byId.get(route.dst);
+    const path = routing.wirePath([src.x + src.width, src.y + 15], [dst.x, dst.y + 15]);
+    assert.ok(path.every(point => point.every(Number.isFinite)));
+  }
+  const view = routing.fitNodes(placed, 800, 600);
   assert.ok(Number.isFinite(view.scale) && view.scale > 0);
 });
 

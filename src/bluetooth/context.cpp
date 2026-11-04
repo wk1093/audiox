@@ -775,6 +775,8 @@ void BluetoothContext::threadMain() {
         if (next == BT_REQUEST_DISCONNECT) {
             const bool all = bt::isZeroAddress(target);
             for (int i = 0; i < BT_MAX_LINKS; ++i) {
+                if (mediaSessions[i].fd >= 0 && (all || bt::sameAddress(mediaSessions[i].address, target)))
+                    closeMediaSession(i);
                 if (links[i].used && (all || bt::sameAddress(links[i].address, target))) {
                     holdAutoConnect(links[i].address);
                     closeLink(i, BT_USER_DISCONNECT_REASON);
@@ -782,6 +784,9 @@ void BluetoothContext::threadMain() {
             }
         }
         if (next == BT_REQUEST_UNPAIR) {
+            for (unsigned i = 0; i < BT_MAX_LINKS; ++i)
+                if (mediaSessions[i].fd >= 0 && bt::sameAddress(mediaSessions[i].address, target))
+                    closeMediaSession(i);
             runUnpair(target);
         }
 
@@ -801,18 +806,28 @@ void BluetoothContext::threadMain() {
             POLL_AGENT,
             POLL_SDP_LISTEN,
             POLL_AVDTP_LISTEN,
+            POLL_AVRCP_LISTEN,
             POLL_SDP_CLIENTS,
         };
         constexpr size_t sdpClientCount = sizeof(sdpClientFds) / sizeof(sdpClientFds[0]);
-        constexpr size_t linkBase = POLL_SDP_CLIENTS + sdpClientCount;
+        constexpr size_t mediaBase = POLL_SDP_CLIENTS + sdpClientCount;
+        constexpr size_t linkBase = mediaBase + BT_MAX_LINKS;
         struct pollfd pollFds[linkBase + BT_MAX_LINKS * 3U] = {};
         pollFds[POLL_AGENT] = {agentFd, POLLIN, 0};
         pollFds[POLL_SDP_LISTEN] = {sdpListenFd, POLLIN, 0};
         pollFds[POLL_AVDTP_LISTEN] = {avdtpListenFd, POLLIN, 0};
+        pollFds[POLL_AVRCP_LISTEN] = {avrcpListenFd, POLLIN, 0};
         for (size_t i = 0; i < sdpClientCount; ++i) {
             pollFds[POLL_SDP_CLIENTS + i] = {sdpClientFds[i], POLLIN, 0};
         }
         for (int i = 0; i < BT_MAX_LINKS; ++i) {
+            auto &media = mediaSessions[i];
+            if (media.fd >= 0 && media.deadlineMs && bt::monotonicMs() >= media.deadlineMs) {
+                printf("[BT] [WARN] AVRCP connection/response timed out\n");
+                closeMediaSession(i);
+            }
+            pollFds[mediaBase + i] = {media.fd,
+                static_cast<short>(media.connecting || media.responseLength ? POLLOUT : POLLIN), 0};
             const BluetoothLink &link = links[i];
             struct pollfd *slot = &pollFds[linkBase + (size_t)i * 3U];
             slot[0] = {-1, 0, 0};
@@ -841,6 +856,13 @@ void BluetoothContext::threadMain() {
             if (sdpListenFd >= 0 && (pollFds[POLL_SDP_LISTEN].revents & POLLIN)) {
                 acceptSdpRequest();
             }
+            for (unsigned i = 0; i < BT_MAX_LINKS; ++i) {
+                const auto &slot = pollFds[mediaBase + i];
+                if (slot.fd >= 0 && slot.fd == mediaSessions[i].fd)
+                    pollMediaSession(i, slot.revents);
+            }
+            if (avrcpListenFd >= 0 && (pollFds[POLL_AVRCP_LISTEN].revents & POLLIN))
+                acceptMediaChannel();
             for (size_t i = 0; i < sdpClientCount; ++i) {
                 const struct pollfd &client = pollFds[POLL_SDP_CLIENTS + i];
                 if (client.fd >= 0 && client.fd == sdpClientFds[i] &&
@@ -976,11 +998,15 @@ bool BluetoothContext::openA2dpListeners() {
         L2capAddress local = {};
         local.family = BT_AF_BLUETOOTH;
         local.psm = htole16(psm);
-        if (psm == BT_PSM_AVDTP) {
+        if (psm == BT_PSM_AVDTP || psm == bt::AVRCP_PSM) {
             Security security = {BT_SECURITY_MEDIUM, 0};
             if (setsockopt(fd, BT_SOL_BLUETOOTH, BT_SECURITY_OPT,
                            &security, sizeof(security)) < 0) {
-                printf("[BT] [WARN] cannot require authenticated AVDTP links: %s\n", strerror(errno));
+                printf("[BT] [WARN] cannot require authenticated L2CAP PSM 0x%04x: %s\n", psm, strerror(errno));
+                if (psm == bt::AVRCP_PSM) {
+                    close(fd);
+                    return -1;
+                }
             }
         }
         if (bind(fd, (struct sockaddr *)&local, sizeof(local)) < 0 || listen(fd, 2) < 0) {
@@ -993,17 +1019,23 @@ bool BluetoothContext::openA2dpListeners() {
 
     sdpListenFd = createListener(BT_PSM_SDP);
     avdtpListenFd = createListener(BT_PSM_AVDTP);
-    if (sdpListenFd < 0 || avdtpListenFd < 0) {
+    avrcpListenFd = createListener(bt::AVRCP_PSM);
+    if (sdpListenFd < 0 || avdtpListenFd < 0 || avrcpListenFd < 0) {
         closeA2dpSockets();
         return false;
     }
-    printf("[BT] [INFO] A2DP SDP and AVDTP listeners ready\n");
+    printf("[BT] [INFO] A2DP SDP, AVDTP and AVRCP listeners ready\n");
     return true;
 }
 
 void BluetoothContext::closeA2dpSockets() {
     closeAllLinks(nullptr);
-    int *fds[] = {&sdpListenFd, &avdtpListenFd};
+    for (unsigned i = 0; i < BT_MAX_LINKS; ++i) closeMediaSession(i);
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        mediaEventHead = mediaEventCount = mediaEventsDropped = 0;
+    }
+    int *fds[] = {&sdpListenFd, &avdtpListenFd, &avrcpListenFd};
     for (int *fd : fds) {
         if (*fd >= 0) {
             close(*fd);
@@ -1036,6 +1068,156 @@ void BluetoothContext::acceptSdpRequest() {
         sdpClientFds[i - 1] = sdpClientFds[i];
     }
     sdpClientFds[sizeof(sdpClientFds) / sizeof(sdpClientFds[0]) - 1] = fd;
+}
+
+void BluetoothContext::closeMediaSession(unsigned index) {
+    closeFd(mediaSessions[index].fd);
+    mediaSessions[index] = {};
+}
+
+void BluetoothContext::acceptMediaChannel() {
+    L2capAddress peer{};
+    socklen_t peerLength = sizeof(peer);
+    const int fd = accept4(avrcpListenFd, reinterpret_cast<sockaddr *>(&peer), &peerLength,
+                           SOCK_NONBLOCK | SOCK_CLOEXEC);
+    if (fd < 0) {
+        if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+            printf("[BT] [WARN] AVRCP accept failed: %s\n", strerror(errno));
+        return;
+    }
+    bt::Address address{};
+    memcpy(address.b, peer.bdaddr, sizeof(address.b));
+    bool paired = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        const auto *device = findDevice(address);
+        paired = device && device->paired;
+    }
+    if (!paired) {
+        printf("[BT] [WARN] rejecting AVRCP channel from an unpaired device\n");
+        close(fd);
+        return;
+    }
+    int freeSlot = -1;
+    for (unsigned i = 0; i < BT_MAX_LINKS; ++i) {
+        auto &session = mediaSessions[i];
+        if (session.fd < 0) {
+            if (freeSlot < 0) freeSlot = static_cast<int>(i);
+        } else if (bt::sameAddress(session.address, address)) {
+            if (!session.connecting) {
+                close(fd);
+                return;
+            }
+            closeMediaSession(i);
+            freeSlot = static_cast<int>(i);
+            break;
+        }
+    }
+    if (freeSlot < 0) {
+        printf("[BT] [WARN] AVRCP session limit reached\n");
+        close(fd);
+        return;
+    }
+    auto &session = mediaSessions[freeSlot];
+    session.fd = fd;
+    session.address = address;
+}
+
+void BluetoothContext::connectMediaChannel(const bt::Address &address) {
+    int freeSlot = -1;
+    for (unsigned i = 0; i < BT_MAX_LINKS; ++i) {
+        const auto &session = mediaSessions[i];
+        if (session.fd >= 0 && bt::sameAddress(session.address, address)) return;
+        if (session.fd < 0 && freeSlot < 0) freeSlot = static_cast<int>(i);
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        const auto *device = findDevice(address);
+        if (!device || !device->paired) return;
+    }
+    if (freeSlot < 0) {
+        printf("[BT] [WARN] cannot connect AVRCP: session limit reached\n");
+        return;
+    }
+    const int fd = socket(BT_AF_BLUETOOTH, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, BT_PROTO_L2CAP);
+    if (fd < 0) {
+        printf("[BT] [WARN] AVRCP socket failed: %s\n", strerror(errno));
+        return;
+    }
+    Security security{BT_SECURITY_MEDIUM, 0};
+    if (setsockopt(fd, BT_SOL_BLUETOOTH, BT_SECURITY_OPT, &security, sizeof(security)) < 0) {
+        printf("[BT] [WARN] cannot authenticate AVRCP: %s\n", strerror(errno));
+        close(fd);
+        return;
+    }
+    L2capAddress remote{};
+    remote.family = BT_AF_BLUETOOTH;
+    remote.psm = htole16(bt::AVRCP_PSM);
+    memcpy(remote.bdaddr, address.b, sizeof(remote.bdaddr));
+    const int result = connect(fd, reinterpret_cast<sockaddr *>(&remote), sizeof(remote));
+    if (result < 0 && errno != EINPROGRESS) {
+        printf("[BT] [INFO] device did not accept AVRCP: %s\n", strerror(errno));
+        close(fd);
+        return;
+    }
+    auto &session = mediaSessions[freeSlot];
+    session.fd = fd;
+    session.address = address;
+    session.connecting = result < 0;
+    session.deadlineMs = session.connecting ? bt::monotonicMs() + 10000 : 0;
+}
+
+void BluetoothContext::pollMediaSession(unsigned index, short events) {
+    auto &session = mediaSessions[index];
+    if (events & (POLLERR | POLLHUP | POLLNVAL)) {
+        if (session.connecting) printf("[BT] [INFO] device did not accept AVRCP\n");
+        closeMediaSession(index);
+        return;
+    }
+    if (session.connecting && (events & POLLOUT)) {
+        const int error = socketError(session.fd);
+        if (error) {
+            printf("[BT] [INFO] AVRCP connect failed: %s\n", strerror(error));
+            closeMediaSession(index);
+            return;
+        }
+        session.connecting = false;
+        session.deadlineMs = 0;
+    }
+    if (!session.connecting && !session.responseLength && (events & POLLIN)) {
+        uint8_t packet[bt::AVRCP_PACKET_MAX]{};
+        const ssize_t length = recv(session.fd, packet, sizeof(packet), MSG_TRUNC);
+        if (length <= 0) {
+            if (length < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return;
+            if (length < 0) printf("[BT] [WARN] AVRCP read failed: %s\n", strerror(errno));
+            closeMediaSession(index);
+            return;
+        }
+        if (static_cast<size_t>(length) > sizeof(packet)) {
+            printf("[BT] [WARN] oversized AVRCP packet; closing channel\n");
+            closeMediaSession(index);
+            return;
+        }
+        bt::MediaKey key{};
+        bool hasKey = false;
+        session.responseLength = bt::avrcpResponse(packet, static_cast<size_t>(length),
+            session.response, sizeof(session.response), key, hasKey);
+        if (hasKey) queueMediaEvent(session.address, key);
+        if (session.responseLength) session.deadlineMs = bt::monotonicMs() + 2000;
+        else if (length < 3 || !(packet[0] & 0x02))
+            printf("[BT] [WARN] unsupported or malformed AVCTP packet\n");
+    }
+    if (session.responseLength) {
+        const ssize_t sent = send(session.fd, session.response, session.responseLength, MSG_NOSIGNAL);
+        if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return;
+        if (sent != static_cast<ssize_t>(session.responseLength)) {
+            printf("[BT] [WARN] AVRCP response failed: %s\n", sent < 0 ? strerror(errno) : "short write");
+            closeMediaSession(index);
+            return;
+        }
+        session.responseLength = 0;
+        session.deadlineMs = 0;
+    }
 }
 
 bool BluetoothContext::handleSdpRequest(int fd) {
@@ -1144,6 +1326,7 @@ void BluetoothContext::acceptA2dpChannel() {
         setMessage("%s connected as an audio input", name[0] ? name : addressText);
     }
     driveLink(index);
+    connectMediaChannel(address);
 }
 
 bool BluetoothContext::beginConnect(const bt::Address &target, bool automatic) {
@@ -1248,6 +1431,7 @@ void BluetoothContext::handleSignalingConnected(int index) {
         setMessage("%s connected as an audio input", label);
     }
     driveLink(index);
+    connectMediaChannel(address);
 }
 
 bool BluetoothContext::sendCommand(int index, uint8_t signal, const uint8_t *payload, size_t length, bool input) {
@@ -2397,6 +2581,9 @@ void BluetoothContext::closeLink(int index, const char *reason, bool hold) {
     }
     const bt::Address address = link.address;
     const bool wasOutput = link.outUp || link.wantOutput;
+    for (unsigned i = 0; i < BT_MAX_LINKS; ++i)
+        if (mediaSessions[i].fd >= 0 && bt::sameAddress(mediaSessions[i].address, address))
+            closeMediaSession(i);
     if (link.inStreaming) {
         logInputStats(index, bt::monotonicMs(), true);
     }

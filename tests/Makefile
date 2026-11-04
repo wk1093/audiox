@@ -143,7 +143,7 @@ $(OUT_DIR)/host/audiox-bluetooth-hci-test: tests/bluetooth_hci_test.cpp src/blue
 test-bluetooth-a2dp: $(OUT_DIR)/host/audiox-bluetooth-a2dp-test
 	@"$<"
 
-$(OUT_DIR)/host/audiox-bluetooth-a2dp-test: tests/bluetooth_a2dp_test.cpp src/bluetooth/a2dp.cpp include/bluetooth/a2dp.hpp
+$(OUT_DIR)/host/audiox-bluetooth-a2dp-test: tests/bluetooth_a2dp_test.cpp src/bluetooth/a2dp.cpp include/bluetooth/a2dp.hpp include/bluetooth/avrcp.hpp
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/bluetooth_a2dp_test.cpp src/bluetooth/a2dp.cpp
 
@@ -154,6 +154,7 @@ $(OUT_DIR)/host/audiox-midi-docs-test: tests/midi_docs_test.cpp src/midi/script.
 		$(wildcard include/midi/*.hpp include/bluetooth/*.hpp include/http/*.hpp) include/config/context.hpp include/defs.hpp $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -fno-exceptions -fno-rtti -Iinclude -I$(HOST_LUA_INCLUDE_DIR) \
+		-DROOT_MOUNT_POINT='"tests/.midi-docs-test-storage"' \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections \
 		-o "$@" tests/midi_docs_test.cpp src/midi/script.cpp src/midi/script_storage.cpp src/midi/script_utilities.cpp src/midi/usb.cpp src/config/basic.cpp src/http/logs.cpp src/bluetooth/hci.cpp $(HOST_LUA_STATIC_LIB) -lm
 

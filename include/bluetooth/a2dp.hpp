@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
-// Stateless A2DP sink helpers: the SDP server and SBC configuration rules.
+// Stateless SBC configuration helpers and the A2DP Sink / AVRCP Target SDP server.
 namespace bt {
 
 // SBC codec information element bits (A2DP 4.3.2).

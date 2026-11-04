@@ -1228,7 +1228,8 @@ void pushEvent(lua_State *lua, const MidiScriptEvent &event) {
     const bool device = event.kind == MidiScriptEventKind::DeviceConnect || event.kind == MidiScriptEventKind::DeviceDisconnect;
     const bool system = event.kind == MidiScriptEventKind::Boot || event.kind == MidiScriptEventKind::Timer;
     const bool web = event.fromWeb || event.kind == MidiScriptEventKind::Ui || event.kind == MidiScriptEventKind::ConfigChange;
-    lua_pushstring(lua, event.kind == MidiScriptEventKind::BluetoothChange ? "bluetooth" :
+    lua_pushstring(lua, (event.kind == MidiScriptEventKind::BluetoothChange ||
+                        event.kind == MidiScriptEventKind::BluetoothMediaKey) ? "bluetooth" :
                    system ? "system" : web ? "web" : audio ? "audio" : device ? "device" : "midi");
     lua_setfield(lua, -2, "source");
     lua_setglobal(lua, "event");
@@ -1290,11 +1291,11 @@ int registerHook(lua_State *lua) {
     size_t length = 0;
     const char *name = lua_tolstring(lua, 1, &length);
     unsigned kind = 0;
-    for (; kind < 13; ++kind) {
+    for (; kind < MIDI_SCRIPT_EVENT_COUNT; ++kind) {
         const char *candidate = midiScriptEventName(static_cast<MidiScriptEventKind>(kind));
         if (length == strlen(candidate) && !memcmp(name, candidate, length)) break;
     }
-    if (kind == 13) return luaL_error(lua, "unknown hook event name");
+    if (kind == MIDI_SCRIPT_EVENT_COUNT) return luaL_error(lua, "unknown hook event name");
     if (compiler->hookCount == MIDI_SCRIPT_HOOKS_MAX)
         return luaL_error(lua, "hook limit exceeded (32)");
     lua_rawgetp(lua, LUA_REGISTRYINDEX, &hooksRegistryKey);
@@ -1489,7 +1490,7 @@ bool midiEvaluateScript(const char *source, const MidiScriptEvent &event,
     MidiScriptStateEntry eventValue = event.value;
     memcpy(eventValue.key, event.key, sizeof(eventValue.key));
     if (event.channel > 15 || event.note > 127 || event.velocity > 127 ||
-        static_cast<unsigned>(event.kind) > 12 ||
+        static_cast<unsigned>(event.kind) >= MIDI_SCRIPT_EVENT_COUNT ||
         strnlen(event.sound, sizeof(event.sound)) == sizeof(event.sound) ||
         strnlen(event.device, sizeof(event.device)) == sizeof(event.device) ||
         strnlen(event.key, sizeof(event.key)) == sizeof(event.key) ||
@@ -1530,6 +1531,7 @@ const char *midiScriptEventName(MidiScriptEventKind kind) {
     case MidiScriptEventKind::ConfigChange: return "config_change";
     case MidiScriptEventKind::Ui: return "ui";
     case MidiScriptEventKind::BluetoothChange: return "bluetooth_change";
+    case MidiScriptEventKind::BluetoothMediaKey: return "bluetooth_media_key";
     }
     return "unknown";
 }

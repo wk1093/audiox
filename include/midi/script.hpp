@@ -20,9 +20,10 @@ inline constexpr size_t MIDI_SCRIPT_CONFIG_PLAN_MAX = 8192;
 struct ConfigStore;
 enum class MidiScriptEventKind : uint8_t {
     NoteOn, NoteOff, ControlChange, SoundStart, SoundFinish, DeviceConnect, DeviceDisconnect, Run,
-    Boot, Timer, ConfigChange, Ui, BluetoothChange
+    Boot, Timer, ConfigChange, Ui, BluetoothChange, BluetoothMediaKey
 };
-inline constexpr uint16_t MIDI_SCRIPT_EVENTS_MASK = 8191;
+inline constexpr unsigned MIDI_SCRIPT_EVENT_COUNT = 14;
+inline constexpr uint16_t MIDI_SCRIPT_EVENTS_MASK = (1U << MIDI_SCRIPT_EVENT_COUNT) - 1;
 inline constexpr uint16_t MIDI_SCRIPT_LEGACY_EVENTS_MASK = 127;
 const char *midiScriptEventName(MidiScriptEventKind kind);
 

@@ -40,13 +40,42 @@ test('nightly lookup resolves the rolling tag to version-specific release metada
   const paths = [];
   const result = await updates.latestRelease('nightly', async (url) => {
     paths.push(url);
-    return response(paths.length === 1
+    if (url.endsWith('/releases/latest')) return response(release);
+    return response(url.endsWith('/releases/tags/nightly')
       ? { body: '<!-- audiox-release-tag: v1.10.0-beta.3.nightly+42 -->' }
       : { ...release, tag_name: 'v1.10.0-beta.3.nightly+42', prerelease: true });
   });
   assert.equal(result.tag_name, 'v1.10.0-beta.3.nightly+42');
-  assert.ok(paths[1].endsWith('/releases/tags/v1.10.0-beta.3.nightly%2B42'));
-  await assert.rejects(updates.latestRelease('nightly', async () => response({})), /No versioned nightly/);
+  assert.ok(paths[2].endsWith('/releases/tags/v1.10.0-beta.3.nightly%2B42'));
+  await assert.rejects(updates.latestRelease('nightly', async (url) =>
+    response(url.endsWith('/releases/latest') ? release : {})), /No versioned nightly/);
+});
+
+test('nightly lookup uses stable unless a higher SemVer nightly is published', async () => {
+  for (const tag of ['v1.8.9-beta.1.nightly+42', 'v1.9.2-beta.1.nightly+42', 'v1.9.3-beta.1.nightly+42']) {
+    const result = await updates.latestRelease('nightly', async (url) => {
+      if (url.endsWith('/releases/latest')) return response(release);
+      if (url.endsWith('/releases/tags/nightly')) return response({ body: `<!-- audiox-release-tag: ${tag} -->` });
+      return response({ ...release, tag_name: tag, prerelease: true });
+    });
+    assert.equal(result.tag_name, tag.startsWith('v1.9.3') ? tag : release.tag_name);
+  }
+});
+
+test('nightly lookup handles absent channels without hiding API failures', async () => {
+  assert.equal((await updates.latestRelease('nightly', async (url) =>
+    url.endsWith('/releases/latest') ? response(release) : response({}, 404))).tag_name, release.tag_name);
+  const nightly = { ...release, tag_name: 'v1.10.0-nightly+42', prerelease: true };
+  assert.equal((await updates.latestRelease('nightly', async (url) => {
+    if (url.endsWith('/releases/latest')) return response({}, 404);
+    return response(url.endsWith('/releases/tags/nightly')
+      ? { body: '<!-- audiox-release-tag: v1.10.0-nightly+42 -->' } : nightly);
+  })).tag_name, nightly.tag_name);
+  await assert.rejects(updates.latestRelease('nightly', async () => response({}, 404)), /No published stable or nightly/);
+  for (const failingPath of ['/releases/latest', '/releases/tags/nightly']) {
+    await assert.rejects(updates.latestRelease('nightly', async (url) =>
+      url.endsWith(failingPath) ? response({}, 403) : response(release)), /rate limit/);
+  }
 });
 
 test('release version is read from the published release notes when present', () => {
@@ -62,6 +91,7 @@ test('mirror lookup requires the exact GitHub version, board, size and path', as
     pi4: { size: asset.size, url: 'updates/v1.9.2/audiox-update-pi4.axu' },
   } } };
   assert.equal(await updates.mirrorArchive('stable', release, 'pi4', asset, async () => response(data)), mirrorUrl);
+  assert.equal(await updates.mirrorArchive('nightly', release, 'pi4', asset, async () => response(data)), mirrorUrl);
   await assert.rejects(updates.mirrorArchive('stable', { ...release, tag_name: 'v1.9.3' }, 'pi4', asset, async () => response(data)), /not deployed/);
   await assert.rejects(updates.mirrorArchive('stable', release, 'pi5', asset, async () => response(data)), /not deployed/);
   await assert.rejects(updates.mirrorArchive('stable', release, 'pi4', asset, async () => response({}, 404)), /mirror unavailable/);
@@ -142,6 +172,50 @@ test('controller checks, confirms, downloads and uploads without Pi internet; ca
   assert.deepEqual(Buffer.from(await uploads[0].arrayBuffer()), bytes);
   assert.equal(elements.get('btn-update-upload').disabled, true);
   assert.ok(urls.includes(mirrorUrl));
+});
+
+test('nightly controller downloads and installs the stable archive when nightly is older', async () => {
+  const { elements, uploads, click } = controller();
+  elements.get('update-channel').value = 'nightly';
+  const urls = [];
+  global.fetch = async (url) => {
+    urls.push(url);
+    if (url === '/api/system/info') return response({ board: 'pi4', version: '1.9.1' });
+    if (url.endsWith('/releases/latest')) return response(release);
+    if (url.endsWith('/releases/tags/nightly')) {
+      return response({ body: '<!-- audiox-release-tag: v1.8.0-nightly+42 -->' });
+    }
+    if (url.endsWith('/releases/tags/v1.8.0-nightly%2B42')) {
+      return response({ ...release, tag_name: 'v1.8.0-nightly+42', prerelease: true });
+    }
+    if (url.endsWith('/updates.json')) return response({ stable: { tag: release.tag_name, assets: {
+      pi4: { size: asset.size, url: 'updates/v1.9.2/audiox-update-pi4.axu' },
+    } } });
+    assert.equal(url, mirrorUrl);
+    return new Response(bytes);
+  };
+  await click('btn-update-check');
+  assert.equal(elements.get('btn-update-online').disabled, false);
+  assert.match(elements.get('update-release').textContent, /v1.9.2/);
+  assert.match(elements.get('update-release').textContent, /Using stable/);
+  await click('btn-update-online');
+  assert.equal(uploads.length, 1);
+  assert.ok(urls.includes(mirrorUrl));
+});
+
+test('nightly fallback recognizes an already installed stable release', async () => {
+  const { elements, uploads, click } = controller();
+  elements.get('update-channel').value = 'nightly';
+  global.fetch = async (url) => {
+    if (url === '/api/system/info') return response({ board: 'pi4', version: '1.9.2' });
+    if (url.endsWith('/releases/latest')) return response(release);
+    assert.ok(url.endsWith('/releases/tags/nightly'));
+    return response({}, 404);
+  };
+  await click('btn-update-check');
+  assert.match(elements.get('update-release').textContent, /Already installed/);
+  assert.equal(elements.get('btn-update-online').disabled, true);
+  assert.equal(uploads.length, 0);
 });
 
 test('controller rejects changed hardware, resets channel selection and retains manual upload', async () => {

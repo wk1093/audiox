@@ -210,7 +210,7 @@ Older v1 archives lack the v2 board metadata and use `kernel8.img`; do not rely 
 
 Only the **browser/computer needs internet**. It queries GitHub without a token, identifies the board from System info (or a supported older model string), and chooses `audiox-update-pi4.axu` or `audiox-update-pi5.axu`. Already-installed releases disable the online install button.
 
-Nightly lookup resolves the rolling release to a versioned nightly. The browser uses the project's CORS-enabled download mirror for archive bytes and requires its tag/path/size to match GitHub metadata. It checks download size and AXU magic, then the device checks archive entries. **The browser does not independently verify the SHA-256 sidecar.** For a manual SHA-256 check, use the local-file workflow above.
+Nightly lookup resolves the rolling release to a versioned nightly and compares it with the latest stable release using SemVer precedence. If the nightly is missing or is not newer, it selects stable instead, including the stable download mirror entry. A final stable version takes precedence over a prerelease of the same version; build metadata does not affect precedence. The browser uses the project's CORS-enabled download mirror for archive bytes and requires its tag/path/size to match GitHub metadata. It checks download size and AXU magic, then the device checks archive entries. **The browser does not independently verify the SHA-256 sidecar.** For a manual SHA-256 check, use the local-file workflow above.
 
 If the mirror is unavailable, GitHub is rate-limited, or the browser is offline,
 the status explains the failure. **Download matching AXU manually** remains an

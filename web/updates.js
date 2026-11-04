@@ -5,6 +5,8 @@
   const api = `https://api.github.com/repos/${repository}`;
   const mirror = 'https://wklab.net/audiox/';
   const maxArchiveSize = 256 * 1024 * 1024;
+  const releases = typeof module !== 'undefined' && module.exports
+    ? require('./releases.js') : root.AudioxReleases;
 
   function deviceBoard(info) {
     if (info.board === 'pi4' || info.board === 'pi5') return info.board;
@@ -28,12 +30,13 @@
     return asset;
   }
 
-  async function githubJson(path, request = fetch) {
+  async function githubJson(path, request = fetch, allowMissing = false) {
     const response = await request(`${api}${path}`, {
       headers: { Accept: 'application/vnd.github+json' },
       credentials: 'omit',
       cache: 'no-store',
     });
+    if (response.status === 404 && allowMissing) return null;
     if (!response.ok) {
       throw new Error(`GitHub ${response.status}: ${response.status === 403 || response.status === 429
         ? 'API rate limit or access restriction; retry later'
@@ -43,24 +46,33 @@
   }
 
   async function latestRelease(channel, request = fetch) {
-    if (channel === 'stable') {
-      const release = await githubJson('/releases/latest', request);
-      if (release.prerelease || !/^v\d+\.\d+\.\d+$/.test(release.tag_name)) {
+    function validateStable(release) {
+      if (release && (release.draft || release.prerelease || !/^v\d+\.\d+\.\d+$/.test(release.tag_name))) {
         throw new Error('The latest GitHub release is not an AudioX stable version.');
       }
       return release;
     }
+    if (channel === 'stable') {
+      return validateStable(await githubJson('/releases/latest', request));
+    }
     if (channel !== 'nightly') throw new Error('Unknown update channel.');
     // Use the rolling release only as an index, then resolve immutable assets.
-    const rolling = await githubJson('/releases/tags/nightly', request);
+    const [stable, rolling] = await Promise.all([
+      githubJson('/releases/latest', request, true).then(validateStable),
+      githubJson('/releases/tags/nightly', request, true),
+    ]);
+    if (!rolling) {
+      if (stable) return stable;
+      throw new Error('No published stable or nightly release found.');
+    }
     const body = rolling.body || '';
     const tagMatch = /audiox-release-tag:\s*([^\s]+)/.exec(body);
     const runMatch = /audiox-run-number:\s*(\d+)/.exec(body);
     const tag = tagMatch ? tagMatch[1] : runMatch ? `nightly-${runMatch[1]}` : '';
     if (!tag) throw new Error('No versioned nightly is published yet.');
     const release = await githubJson(`/releases/tags/${encodeURIComponent(tag)}`, request);
-    if (!release.prerelease) throw new Error('The selected nightly is not a prerelease.');
-    return release;
+    if (release.draft || !release.prerelease) throw new Error('The selected nightly is not a published prerelease.');
+    return releases.newestRelease(stable, release);
   }
 
   function releaseVersion(release) {
@@ -74,7 +86,7 @@
       cache: 'no-store',
     });
     if (!response.ok) throw new Error(`Update mirror unavailable (${response.status}); enable GitHub Pages and wait for deployment.`);
-    const entry = (await response.json())[channel];
+    const entry = (await response.json())[release.prerelease ? channel : 'stable'];
     const archive = entry?.assets?.[board];
     if (entry?.tag !== release.tag_name || !archive || archive.size !== asset.size ||
         archive.url !== `updates/${release.tag_name}/${asset.name}`) {
@@ -208,12 +220,14 @@
           const info = await deviceInfo();
           const release = await latestRelease(channel.value);
           const asset = selectAsset(release, info.board);
-          const installed = channel.value === 'stable'
+          const installed = !release.prerelease
             ? info.version === release.tag_name.slice(1)
             : /^[a-f0-9]{40}$/i.test(release.target_commitish || '') &&
               info.version.endsWith(`+${release.target_commitish.slice(0, 12)}`);
           selected = { release, asset, board: info.board, installed };
-          summary.textContent = `Current: ${info.version} (${info.board}). Selected: ${release.tag_name}${releaseVersion(release) ? ` (${releaseVersion(release)})` : ''}, ${(asset.size / 1048576).toFixed(1)} MiB.${installed ? ' Already installed.' : ''}`;
+          const fallback = channel.value === 'nightly' && !release.prerelease
+            ? ' Using stable; no newer nightly is available.' : '';
+          summary.textContent = `Current: ${info.version} (${info.board}). Selected: ${release.tag_name}${releaseVersion(release) ? ` (${releaseVersion(release)})` : ''}, ${(asset.size / 1048576).toFixed(1)} MiB.${fallback}${installed ? ' Already installed.' : ''}`;
           link.href = `https://github.com/${repository}/releases/download/${encodeURIComponent(release.tag_name)}/${asset.name}`;
           link.hidden = false;
           if (!installed) selected.mirrorUrl = await mirrorArchive(channel.value, release, info.board, asset);

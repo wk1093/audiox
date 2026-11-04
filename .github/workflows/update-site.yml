@@ -10,6 +10,7 @@ on:
       - 'docs/**'
       - 'scripts/mirror-updates.sh'
       - 'web/styles.css'
+      - 'web/releases.js'
       - 'logo.svg'
       - 'logo_small.png'
       - '.github/workflows/update-site.yml'

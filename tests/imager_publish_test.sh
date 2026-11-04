@@ -268,6 +268,7 @@ for file in index.html downloads.css downloads.js; do
     cmp "$ROOT/site/$file" "$WORK/pages/$file"
 done
 cmp "$ROOT/web/styles.css" "$WORK/pages/styles.css"
+cmp "$ROOT/web/releases.js" "$WORK/pages/releases.js"
 cmp "$ROOT/logo.svg" "$WORK/pages/logo.svg"
 cmp "$ROOT/logo_small.png" "$WORK/pages/logo_small.png"
 [[ -f "$WORK/pages/.nojekyll" ]]

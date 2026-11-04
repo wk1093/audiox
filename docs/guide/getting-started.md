@@ -27,7 +27,7 @@ An AXU is not something to flash with an imaging tool. Conversely, do not upload
 
 ### Stable or Nightly?
 
-The [download page](https://wklab.net/audiox/#download) separates Stable and Nightly releases and offers Pi 4 and Pi 5 files. Stable is the release channel; Nightly tracks development and may be unstable. A Stable label does not override the project's overall development status or the remaining Pi 5 framebuffer testing limitation.
+The [download page](https://wklab.net/audiox/#download) separates Stable and Nightly releases and offers Pi 4 and Pi 5 files. Stable is the release channel; Nightly tracks development and may be unstable. The website's Nightly tab and the device's online updater use the latest stable release when no newer nightly version is available. Versions are compared using SemVer precedence, not publication dates. A Stable label does not override the project's overall development status or the remaining Pi 5 framebuffer testing limitation.
 
 Use the board-matched image, AXU, and checksum from the **same release**. For a
 reproducible installation, record the release version alongside the checksum.

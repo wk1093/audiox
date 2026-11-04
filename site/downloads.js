@@ -5,7 +5,10 @@ let downloadChannel = 'stable';
 
 function renderDownloads() {
   const channel = downloadChannel;
-  const release = downloadCatalog?.[channel];
+  const release = channel === 'nightly'
+    ? AudioxReleases.newestRelease(downloadCatalog?.stable, downloadCatalog?.nightly)
+    : downloadCatalog?.stable;
+  const stableFallback = channel === 'nightly' && release && release === downloadCatalog?.stable;
   const error = document.getElementById('download-error');
   const cards = document.getElementById('download-cards');
   const releaseLink = document.getElementById('release-link');
@@ -18,10 +21,13 @@ function renderDownloads() {
     button.classList.toggle('active', active);
     button.setAttribute('aria-pressed', String(active));
   }
-  document.getElementById('release-heading').textContent = `Latest ${channel} release`;
+  document.getElementById('release-heading').textContent = stableFallback
+    ? 'Latest stable release (no newer nightly)' : `Latest ${channel} release`;
   document.getElementById('channel-description').textContent = channel === 'stable'
     ? 'Manually published releases. Recommended for most users.'
-    : 'Recent builds from main. These are experimental and may have bugs.';
+    : stableFallback
+      ? 'No newer nightly is available. These downloads are the latest stable release.'
+      : 'Recent builds from main. These are experimental and may have bugs. Uses stable when no newer nightly is available.';
   if (!release) {
     document.getElementById('release-meta').textContent = 'No downloads have been published for this channel yet.';
     error.textContent = 'This channel will appear when an AXU-enabled release is published. Older releases are listed on GitHub.';

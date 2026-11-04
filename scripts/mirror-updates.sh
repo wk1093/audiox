@@ -6,7 +6,7 @@ OUTPUT="${1:?usage: mirror-updates.sh <output_directory>}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$OUTPUT/updates"
 cp "$ROOT/site/index.html" "$ROOT/site/downloads.js" "$ROOT/site/downloads.css" \
-    "$ROOT/web/styles.css" "$ROOT/logo.svg" "$ROOT/logo_small.png" "$OUTPUT/"
+    "$ROOT/web/styles.css" "$ROOT/web/releases.js" "$ROOT/logo.svg" "$ROOT/logo_small.png" "$OUTPUT/"
 WORK="$(mktemp -d)"
 trap 'rm -r "$WORK"' EXIT
 

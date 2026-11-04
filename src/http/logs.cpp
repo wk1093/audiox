@@ -18,6 +18,7 @@ constexpr size_t kResponseBytes = 512 * 1024;
 constexpr size_t kLineBytes = 2048;
 struct Query {
     size_t limit = 600;
+    size_t scanBytes = kScanBytes;
     std::string source = "both", level = "all", text;
 };
 struct Row {
@@ -161,8 +162,8 @@ int readTail(const char *source, const Query &query, Tail &tail) {
         reversed.clear();
     };
     char buffer[8192];
-    while (result == 0 && position > 0 && tail.bytes < kScanBytes && tail.rows.size() < query.limit) {
-        const size_t length = std::min({sizeof(buffer), static_cast<size_t>(position), kScanBytes - tail.bytes});
+    while (result == 0 && position > 0 && tail.bytes < query.scanBytes && tail.rows.size() < query.limit) {
+        const size_t length = std::min({sizeof(buffer), static_cast<size_t>(position), query.scanBytes - tail.bytes});
         position -= static_cast<off_t>(length);
         size_t got = 0;
         while (got < length) {
@@ -181,13 +182,42 @@ int readTail(const char *source, const Query &query, Tail &tail) {
         }
     }
     if (result == 0 && position == 0 && tail.rows.size() < query.limit) emit(0);
-    tail.scanLimited = position > 0 && tail.bytes >= kScanBytes && tail.rows.size() < query.limit;
+    tail.scanLimited = position > 0 && tail.bytes >= query.scanBytes && tail.rows.size() < query.limit;
     tail.more = tail.more || tail.scanLimited;
     if (close(fd) < 0 && result == 0) result = -errno;
     return result;
 }
 
 } // namespace
+
+int readSystemLogText(const char *source, unsigned limit, char *out, size_t capacity, size_t *length) {
+    if (!source || (strcmp(source, "stdout") && strcmp(source, "stderr")) ||
+        limit < 1 || limit > 128 || !out || capacity < 2) return -EINVAL;
+    Query query;
+    query.limit = limit;
+    query.scanBytes = 65536;
+    Tail tail;
+    int result = readTail(source, query, tail);
+    if (result != 0) return result;
+    if (tail.missing) return -ENOENT;
+    size_t count = 0, bytes = 0;
+    while (count < tail.rows.size()) {
+        size_t length = tail.rows[count].text.size() + 1;
+        if (length >= capacity - bytes) break;
+        bytes += length;
+        ++count;
+    }
+    size_t offset = 0;
+    for (size_t i = count; i > 0; --i) {
+        const auto &text = tail.rows[i - 1].text;
+        memcpy(out + offset, text.data(), text.size());
+        offset += text.size();
+        out[offset++] = '\n';
+    }
+    out[offset] = '\0';
+    if (length) *length = offset;
+    return 0;
+}
 
 int handleSystemLogs(HttpServer *server, int cfd, const char *method, const char *rawQuery) {
     auto error = [&](const char *status, const char *text) {

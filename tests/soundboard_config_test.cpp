@@ -2,6 +2,7 @@
 #include "config/context.hpp"
 #include "midi/context.hpp"
 #include "touch/context.hpp"
+#include "script_device_stubs.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -18,8 +19,12 @@
 #include <string>
 #include <time.h>
 #include <unistd.h>
+#include <thread>
+#include <chrono>
+#include <limits>
 
 static bool testClockEnabled = false;
+size_t BluetoothContext::copyRoutingDevices(BluetoothRoutingDevice *, size_t) const { return 0; }
 static uint64_t testNowMs = 0;
 static unsigned midiPathChecks = 0;
 static bool midiPathPresent = true;
@@ -228,6 +233,7 @@ int main() {
         assert(audio.getEffectParams("fx_7", &cut) == RET_OK);
         assert(cut.type == audiox::effects::EFFECT_CUT && cut.enabled == 1 && cut.values[0] == 6);
         auto midiStorage = std::make_unique<MidiContext>(&app);
+        assert(app.scripts == &midiStorage->scripts);
         auto &midi = *midiStorage;
         assert(midi.cachedMidiMap.mappingCount == 3);
         assert(midi.cachedMidiMap.soundLightCount == 2);
@@ -633,6 +639,205 @@ int main() {
         close(leds[0]);
         midi.disconnect();
 
+        auto pluginRequest = [&](const char *method, const char *path, const std::string &body) {
+            int sockets[2];
+            assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+            int result;
+            if (!strncmp(path, "/api/plugins", 12))
+                result = handlePlugins(&http, sockets[0], method, path, body.data(), body.size());
+            else if (!strcmp(path, "/api/effect/create"))
+                result = handleEffectCreate(&http, sockets[0], method, path, body.data(), body.size());
+            else if (!strcmp(path, "/api/effect/set"))
+                result = handleEffectSet(&http, sockets[0], method, path, body.data(), body.size());
+            else if (!strcmp(path, "/api/effect/delete"))
+                result = handleEffectDelete(&http, sockets[0], method, path, body.data(), body.size());
+            else result = handleEffects(&http, sockets[0], method, path);
+            assert(result == 0);
+            assert(shutdown(sockets[0], SHUT_WR) == 0);
+            std::string response;
+            char chunk[4096];
+            ssize_t got;
+            while ((got = read(sockets[1], chunk, sizeof(chunk))) > 0) response.append(chunk, got);
+            assert(got == 0);
+            close(sockets[0]);
+            close(sockets[1]);
+            return response;
+        };
+        const auto savedBeforeBuiltinCount = config.readMidiMapFile().effectStateCount;
+        for (const char *type : {"compressor", "limiter", "eq", "multiband", "noise_reduction"}) {
+            const auto created = pluginRequest("POST", "/api/effect/create", std::string("type=") + type);
+            assert(created.find("200 OK") != std::string::npos);
+            saved = config.readMidiMapFile();
+            assert(saved.effectStateCount == savedBeforeBuiltinCount + 1);
+            const auto &definition = saved.effectStates[saved.effectStateCount - 1];
+            assert(!strcmp(definition.type, type));
+            const std::string effectId = definition.effectId;
+            const auto *spec = audiox::effects::effectTypeSpecFor(audiox::effects::effectTypeFromString(type));
+            for (uint8_t index = 0; index < spec->paramCount; ++index) {
+                const auto &param = spec->params[index];
+                const float value = param.minValue + (param.maxValue - param.minValue) * .25f;
+                assert(pluginRequest("POST", "/api/effect/set", "id=" + effectId +
+                    "&param=" + param.name + "&value=" + std::to_string(value)).find("200 OK") != std::string::npos);
+            }
+            audio.loadEffectsFromConfig();
+            audiox::effects::SlotParams restored{};
+            assert(audio.getEffectParams(effectId.c_str(), &restored) == RET_OK);
+            assert(restored.type == spec->type && restored.enabled);
+            const auto metadata = pluginRequest("GET", "/api/effects", "");
+            assert(metadata.find(std::string("\"type\":\"") + type + "\"") != std::string::npos);
+            const char *label = !strcmp(type, "compressor") ? "Compressor" :
+                !strcmp(type, "limiter") ? "Limiter" : !strcmp(type, "eq") ? "Parametric EQ" :
+                !strcmp(type, "multiband") ? "Multiband Compressor" : "Noise Reduction";
+            assert(metadata.find(std::string("\"name\":\"") + label + " " + effectId.substr(3) +
+                                  "\"") != std::string::npos);
+            for (uint8_t index = 0; index < spec->paramCount; ++index) {
+                const auto &param = spec->params[index];
+                const float value = param.minValue + (param.maxValue - param.minValue) * .25f;
+                assert(fabsf(restored.values[index] - value) < 1e-4f);
+                assert(metadata.find(std::string("\"name\":\"") + param.name + "\"") != std::string::npos);
+                assert(audio.setEffectParamNormalized(effectId.c_str(), param.name, 1) == RET_OK);
+                audiox::effects::SlotParams midiControlled{};
+                assert(audio.getEffectParams(effectId.c_str(), &midiControlled) == RET_OK);
+                assert(midiControlled.values[index] == param.maxValue);
+            }
+            assert(pluginRequest("POST", "/api/effect/delete", "id=" + effectId).find("200 OK") != std::string::npos);
+            assert(config.readMidiMapFile().effectStateCount == savedBeforeBuiltinCount);
+        }
+        puts("New builtin HTTP creation, parameter metadata, full parameter persistence/reload and deletion tests passed");
+        const auto emptyCatalog = pluginRequest("GET", "/api/plugins", "");
+        if (emptyCatalog.find("\"plugins\":[]") == std::string::npos) fprintf(stderr, "%s\n", emptyCatalog.c_str());
+        assert(emptyCatalog.find("\"plugins\":[]") != std::string::npos);
+        assert(pluginRequest("PUT", "/api/plugins/install", "invalid").find("400 Bad Request") != std::string::npos);
+        assert(pluginRequest("POST", "/api/plugins/remove", "id=../../config").find("400 Bad Request") != std::string::npos);
+        assert(pluginRequest("GET", "/api/plugins/plugin_gain/assets/../midi_map.txt", "").find("404 Not Found") != std::string::npos);
+        assert(pluginRequest("POST", "/api/effect/create", "type=plugin_missing").find("400 Bad Request") != std::string::npos);
+        if (const char *fixture = getenv("AUDIOX_TEST_PLUGIN_PACKAGE")) {
+            assert(chmod(".", 0755) == 0);
+            std::ifstream input(fixture, std::ios::binary);
+            assert(input);
+            std::string packageBytes(std::istreambuf_iterator<char>(input), {});
+            audiox::plugin::Package package;
+            std::string error;
+            assert(audiox::plugin::parsePackage(reinterpret_cast<const uint8_t *>(packageBytes.data()),
+                packageBytes.size(), package, error));
+            const std::string id = package.metadata.id;
+            auto savedBefore = config.readMidiMapFile();
+            auto withMissing = savedBefore;
+            auto &missing = withMissing.effectStates[withMissing.effectStateCount++];
+            missing = {};
+            strcpy(missing.effectId, "fx_1234");
+            strcpy(missing.type, id.c_str());
+            missing.enabled = 1;
+            auto &stored = withMissing.effectParams[withMissing.effectParamCount++];
+            stored = {};
+            strcpy(stored.effectId, missing.effectId);
+            strcpy(stored.param, package.metadata.params[0].name);
+            stored.value = 1.6f;
+            audiox::effects::SlotParams unavailable{};
+            unavailable.enabled = 1;
+            unavailable.type = audiox::plugin::reserveType(id.c_str());
+            upsertEffectStateFromRuntime(&withMissing, missing.effectId, unavailable);
+            assert(withMissing.effectParamCount == savedBefore.effectParamCount + 1);
+            assert(config.writeMidiMapFile(&withMissing) == RET_OK);
+            audio.effectStates[missing.effectId] = unavailable;
+            assert(pluginRequest("PUT", "/api/plugins/install", packageBytes).find("200 OK") != std::string::npos);
+            assert(audiox::plugin::available(audiox::plugin::findType(id.c_str())));
+            assert(pluginRequest("PUT", "/api/plugins/install", packageBytes).find("409 Conflict") != std::string::npos);
+            assert(audiox::plugin::available(audiox::plugin::findType(id.c_str())));
+            assert(pluginRequest("GET", "/api/plugins", "").find(id) != std::string::npos);
+            assert(pluginRequest("POST", "/api/plugins/reload", "id=" + id).find("200 OK") != std::string::npos);
+            audiox::effects::SlotParams restored{};
+            assert(audio.getEffectParams("fx_1234", &restored) == RET_OK);
+            assert(restored.pluginHost && restored.values[0] == 1.6f);
+            assert(pluginRequest("POST", "/api/effect/delete", "id=fx_1234").find("200 OK") != std::string::npos);
+            const std::string ui = pluginRequest("GET", ("/api/plugins/" + id + "/assets/index.html").c_str(), "");
+            assert(ui.find("sandbox allow-scripts") != std::string::npos);
+            assert(ui.find("connect-src 'none'") != std::string::npos);
+            const std::string created = pluginRequest("POST", "/api/effect/create", "type=" + id);
+            assert(created.find("200 OK") != std::string::npos);
+            const auto persisted = config.readMidiMapFile();
+            const auto &effect = persisted.effectStates[persisted.effectStateCount - 1];
+            assert(!strcmp(effect.type, id.c_str()));
+            const std::string effectId = effect.effectId;
+            assert(pluginRequest("GET", "/api/effects", "").find("\"plugin_status\":\"ready\"") != std::string::npos);
+            assert(pluginRequest("POST", "/api/plugins/remove", "id=" + id).find("409 Conflict") != std::string::npos);
+            if (package.metadata.paramCount) {
+                const auto &parameter = package.metadata.params[0];
+                assert(pluginRequest("POST", "/api/effect/set",
+                    "id=" + effectId + "&param=" + parameter.name + "&value=" +
+                    std::to_string(parameter.max)).find("200 OK") != std::string::npos);
+                audiox::effects::SlotParams params{};
+                assert(audio.getEffectParams(effectId.c_str(), &params) == RET_OK);
+                float value = 0;
+                assert(audiox::effects::getSlotParamValue(params, parameter.name, &value) == RET_OK);
+                assert(value == parameter.max);
+            }
+            assert(pluginRequest("POST", "/api/plugins/reload", "id=" + id).find("200 OK") != std::string::npos);
+            assert(pluginRequest("POST", "/api/effect/delete", "id=" + effectId).find("200 OK") != std::string::npos);
+            audio.pollPlugins();
+            assert(pluginRequest("POST", "/api/plugins/remove", "id=" + id).find("200 OK") != std::string::npos);
+            assert(!audiox::plugin::available(audiox::plugin::findType(id.c_str())));
+            audiox::plugin::PackageMetadata wide{};
+            strcpy(wide.id, "plugin_wide");
+            strcpy(wide.name, "Wide metadata");
+            strcpy(wide.version, "1");
+            wide.paramCount = 8;
+            for (unsigned i = 0; i < wide.paramCount; ++i) {
+                auto &parameter = wide.params[i];
+                snprintf(parameter.name, sizeof(parameter.name), "p%u", i);
+                memset(parameter.label, '"', sizeof(parameter.label) - 1);
+                parameter.min = -std::numeric_limits<float>::max();
+                parameter.max = parameter.defaultValue = std::numeric_limits<float>::max();
+            }
+            assert(audiox::plugin::registerPackage(wide, error));
+            for (unsigned i = 0; i < 24; ++i) {
+                auto &effect = audio.effectStates["fx_" + std::to_string(2000 + i)];
+                effect.enabled = 1;
+                effect.type = audiox::plugin::findType(wide.id);
+                audiox::effects::setSlotDefaultsForType(&effect, effect.type);
+            }
+            const auto fullResponse = pluginRequest("GET", "/api/effects", "");
+            assert(fullResponse.find("200 OK") != std::string::npos);
+            assert(fullResponse.size() > 49152);
+            assert(fullResponse.find("\"id\":\"fx_2023\"") != std::string::npos);
+            assert(fullResponse.substr(fullResponse.size() - 3) == "]}\n");
+            for (unsigned i = 0; i < 24; ++i)
+                audio.effectStates.erase("fx_" + std::to_string(2000 + i));
+            if (const char *hangModule = getenv("AUDIOX_TEST_PLUGIN_HANG_MODULE")) {
+                std::ifstream library(hangModule, std::ios::binary);
+                assert(library);
+                const std::vector<uint8_t> module(std::istreambuf_iterator<char>(library), {});
+                for (auto &entry : package.entries)
+                    if (entry.kind == audiox::plugin::Module) entry.data = module;
+                std::vector<uint8_t> hanging;
+                assert(audiox::plugin::buildPackage(package.entries, hanging, error));
+                assert(pluginRequest("PUT", "/api/plugins/install",
+                    std::string(hanging.begin(), hanging.end())).find("200 OK") != std::string::npos);
+                std::atomic<bool> finished{false};
+                std::thread creation([&]() {
+                    char createdId[64]{};
+                    assert(audio.createEffect(id.c_str(), createdId, sizeof(createdId)) == RET_ERR);
+                    finished.store(true);
+                });
+                unsigned reads = 0;
+                while (!finished.load()) {
+                    const auto start = std::chrono::steady_clock::now();
+                    audiox::effects::SlotParams ignored{};
+                    (void)audio.getEffectParams("missing", &ignored);
+                    assert(std::chrono::steady_clock::now() - start < std::chrono::milliseconds(50));
+                    ++reads;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                creation.join();
+                assert(reads > 10);
+                assert(pluginRequest("POST", "/api/plugins/remove", "id=" + id).find("200 OK") != std::string::npos);
+            }
+            assert(config.writeMidiMapFile(&savedBefore) == RET_OK);
+            assert(unlink("plugins/.lock") == 0);
+            assert(rmdir("plugins") == 0);
+            assert(chmod(".", 0700) == 0);
+        }
+
         auto chordRequest = [&](const char *method, const char *body, const char *expected) {
             int sockets[2];
             assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
@@ -665,7 +870,7 @@ int main() {
         assert(legacyMacro.chords[0].eventMask == 129);
         {
             std::ofstream malformed("midi_map.txt", std::ios::app);
-            malformed << "key_macro=1,61,1,2,BAD\"KEY," << midiHexEncode("tap(\"A\")") << "\n";
+            malformed << "key_macro=1,61,1,2,BAD\"KEY," << scriptHexEncode("tap(\"A\")") << "\n";
             malformed.close();
             assert(malformed);
         }
@@ -673,9 +878,9 @@ int main() {
         assert(config.writeMidiMapFile(&noMacros) == RET_OK);
         {
             std::ofstream legacy("midi_map.txt", std::ios::app);
-            legacy << "key_macro=1,61,3,7,-," << midiHexEncode("return -- trailing comment") << "\n";
-            legacy << "automation=900,1,2,63,4,8," << midiHexEncode("Imported") << ",-,"
-                   << midiHexEncode("state.value=event.type") << "\n";
+            legacy << "key_macro=1,61,3,7,-," << scriptHexEncode("return -- trailing comment") << "\n";
+            legacy << "automation=900,1,2,63,4,8," << scriptHexEncode("Imported") << ",-,"
+                   << scriptHexEncode("state.value=event.type") << "\n";
             legacy << "automation_events=900,126\nautomation_config_write=900,1\n";
             legacy.close();
             const auto originalText = readMidiConfig();
@@ -689,8 +894,8 @@ int main() {
             assert(readMidiConfig() == originalText);
             assert(config.writeMidiMapFile(imported.get()) == RET_OK);
             auto reread = std::make_unique<MidiMapData>(config.readMidiMapFile());
-            assert(midiMacroEqual(imported->chords[0], reread->chords[0]));
-            assert(midiMacroEqual(imported->chords[1], reread->chords[1]));
+            assert(scriptMacroEqual(imported->chords[0], reread->chords[0]));
+            assert(scriptMacroEqual(imported->chords[1], reread->chords[1]));
         }
         assert(config.writeMidiMapFile(&noMacros) == RET_OK);
         chordRequest("POST", "channel=0&note=62&keys=CTRL+SHIFT+F13", "200 OK");
@@ -701,16 +906,16 @@ int main() {
         assert(config.readMidiMapFile().chordCount == 1);
         const std::string scriptTail = "\ntap(\"A\")";
         const std::string maxScript = "--" +
-            std::string(MIDI_SCRIPT_MAX - 1 - 2 - scriptTail.size(), 'x') + scriptTail;
-        std::string longRequest = "channel=0&note=62&keys=&script_hex=" + midiHexEncode(maxScript.c_str());
+            std::string(SCRIPT_MAX - 1 - 2 - scriptTail.size(), 'x') + scriptTail;
+        std::string longRequest = "channel=0&note=62&keys=&script_hex=" + scriptHexEncode(maxScript.c_str());
         chordRequest("POST", longRequest.c_str(), "200 OK");
         assert(strstr(config.readMidiMapFile().chords[0].script, maxScript.c_str()));
         std::string tooLong = maxScript + "\n";
-        longRequest = "channel=0&note=62&keys=&script_hex=" + midiHexEncode(tooLong.c_str());
+        longRequest = "channel=0&note=62&keys=&script_hex=" + scriptHexEncode(tooLong.c_str());
         chordRequest("POST", longRequest.c_str(), "400 Bad Request");
         assert(strstr(config.readMidiMapFile().chords[0].script, maxScript.c_str()));
         chordRequest("POST", "channel=0&note=62&keys=CTRL+F14", "200 OK");
-        chordRequest("GET", "", midiHexEncode("tap(\"CTRL+F14\")").c_str());
+        chordRequest("GET", "", scriptHexEncode("tap(\"CTRL+F14\")").c_str());
         chordRequest("PUT", "", "405 Method Not Allowed");
         ConfigData usbConfig = config.readConfigFile();
         assert(!usbConfig.midiPassthrough && !usbConfig.keyboardMacros);
@@ -740,9 +945,9 @@ int main() {
         int usbMidi[2], usbKeyboard[2];
         assert(socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, usbMidi) == 0);
         assert(socketpair(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK, 0, usbKeyboard) == 0);
-        midi.usb.midiFd = usbMidi[0];
-        midi.usb.keyboardFd = usbKeyboard[0];
-        midi.usb.nextProbeMs = UINT64_MAX;
+        midi.scripts.usb.midiFd = usbMidi[0];
+        midi.scripts.usb.keyboardFd = usbKeyboard[0];
+        midi.scripts.usb.nextProbeMs = UINT64_MAX;
         const uint8_t incoming[] = {
             0x80,38,0, 0x90,61,100, 0x80,61,0, // Mapped release suppressed, unmapped note pair forwarded.
             0x90,62,100, 0x80,62,0, // Macro trigger is consumed in unmapped mode.
@@ -753,6 +958,15 @@ int main() {
         midi.poll();
         testNowMs = 1002;
         midi.poll();
+        auto readKeyboardReport = [](int fd, uint8_t *payload, size_t size) -> ssize_t {
+            assert(size == 8);
+            uint8_t report[SCRIPT_HID_REPORT_LENGTH]{};
+            const ssize_t n = read(fd, report, sizeof(report));
+            if (n < 0) return n;
+            assert(n == sizeof(report) && report[0] == SCRIPT_KEYBOARD_REPORT_ID);
+            memcpy(payload, report + 1, size);
+            return size;
+        };
         uint8_t forwarded[32]{}, keyReport[8]{};
         const uint8_t expectedMidi[] = {0x90,61,100,0x80,61,0,0xf8,0xc0,7,0xf2,1,2};
         ssize_t forwardedCount = read(usbMidi[1], forwarded, sizeof(forwarded));
@@ -763,22 +977,22 @@ int main() {
         }
         assert(forwardedCount == (ssize_t)sizeof(expectedMidi));
         assert(memcmp(forwarded, expectedMidi, sizeof(expectedMidi)) == 0);
-        assert(read(usbKeyboard[1], keyReport, sizeof(keyReport)) == 8);
+        assert(readKeyboardReport(usbKeyboard[1], keyReport, sizeof(keyReport)) == 8);
         assert(keyReport[0] == 1 && keyReport[2] == 105);
         testNowMs = 1032;
         midi.poll();
-        assert(read(usbKeyboard[1], keyReport, sizeof(keyReport)) == 8);
+        assert(readKeyboardReport(usbKeyboard[1], keyReport, sizeof(keyReport)) == 8);
         for (auto byte : keyReport) assert(byte == 0);
 
         chordRequest("POST", "channel=0&note=62&keys=CTRL+A&idle_velocity=128", "400 Bad Request");
         chordRequest("POST", "channel=0&note=62&keys=&script_hex=00", "400 Bad Request");
-        std::string badScript = "channel=0&note=62&keys=&script_hex=" + midiHexEncode("if then");
+        std::string badScript = "channel=0&note=62&keys=&script_hex=" + scriptHexEncode("if then");
         chordRequest("POST", badScript.c_str(), "400 Bad Request");
         assert(strstr(config.readMidiMapFile().chords[0].script, "tap(\"CTRL+F14\")"));
 
         const char *script = "light(9)\ntap(\"CTRL+C\")\nwait(40)\nlight(4)\ntap(\"CTRL+V\")";
         std::string macroBody = "channel=0&note=62&keys=&idle_velocity=2&pressed_velocity=7&script_hex=" +
-            midiHexEncode(script);
+            scriptHexEncode(script);
         chordRequest("POST", macroBody.c_str(), "200 OK");
         auto savedMacro = config.readMidiMapFile();
         assert(savedMacro.chords[0].idleVelocity == 2 && savedMacro.chords[0].pressedVelocity == 7);
@@ -795,28 +1009,28 @@ int main() {
         assert(write(midiInput[1], macroOn, sizeof(macroOn)) == (ssize_t)sizeof(macroOn));
         testNowMs = 1040;
         midi.poll();
-        assert(midi.macroPressed[0] && midi.ledStateByNote[62] == 9);
-        assert(read(usbKeyboard[1], keyReport, sizeof(keyReport)) == 8);
+        assert(midi.scripts.macroPressed[0] && midi.ledStateByNote[62] == 9);
+        assert(readKeyboardReport(usbKeyboard[1], keyReport, sizeof(keyReport)) == 8);
         assert(keyReport[0] == 1 && keyReport[2] == 6); // CTRL+C
         testNowMs = 1069;
         midi.poll();
-        assert(read(usbKeyboard[1], keyReport, sizeof(keyReport)) < 0 && errno == EAGAIN);
+        assert(readKeyboardReport(usbKeyboard[1], keyReport, sizeof(keyReport)) < 0 && errno == EAGAIN);
         testNowMs = 1070;
         midi.poll();
-        assert(read(usbKeyboard[1], keyReport, sizeof(keyReport)) == 8);
+        assert(readKeyboardReport(usbKeyboard[1], keyReport, sizeof(keyReport)) == 8);
         for (auto byte : keyReport) assert(byte == 0);
         const uint8_t macroOff[] = {0x90, 62, 0};
         assert(write(midiInput[1], macroOff, sizeof(macroOff)) == (ssize_t)sizeof(macroOff));
         testNowMs = 1071;
         midi.poll();
-        assert(!midi.macroPressed[0] && midi.ledStateByNote[62] == 9);
+        assert(!midi.scripts.macroPressed[0] && midi.ledStateByNote[62] == 9);
         testNowMs = 1109;
         midi.poll();
-        assert(read(usbKeyboard[1], keyReport, sizeof(keyReport)) < 0 && errno == EAGAIN);
+        assert(readKeyboardReport(usbKeyboard[1], keyReport, sizeof(keyReport)) < 0 && errno == EAGAIN);
         testNowMs = 1110;
         midi.poll();
         assert(midi.ledStateByNote[62] == 4);
-        assert(read(usbKeyboard[1], keyReport, sizeof(keyReport)) == 8);
+        assert(readKeyboardReport(usbKeyboard[1], keyReport, sizeof(keyReport)) == 8);
         assert(keyReport[0] == 1 && keyReport[2] == 25); // CTRL+V
         midi.setLightsDimmed(true);
         assert(midi.ledStateByNote[62] == 0);
@@ -824,19 +1038,19 @@ int main() {
         assert(midi.ledStateByNote[62] == 4);
         testNowMs = 1140;
         midi.poll();
-        assert(read(usbKeyboard[1], keyReport, sizeof(keyReport)) == 8);
+        assert(readKeyboardReport(usbKeyboard[1], keyReport, sizeof(keyReport)) == 8);
         for (auto byte : keyReport) assert(byte == 0);
-        assert(midi.activeMacro == -1 && midi.ledStateByNote[62] == 2);
-        for (unsigned i = 0; i < MIDI_CHORDS_MAX + 1; ++i) midi.triggerMacro(0);
-        assert(midi.macroQueueCount == MIDI_CHORDS_MAX);
-        midi.pollMacros(testNowMs);
-        midi.macroDeadlineMs = testNowMs;
-        midi.pollMacros(testNowMs);
-        assert(midi.activeMacro == -1 && !midi.macroQueueCount && !midi.usb.chordCount);
-        midi.triggerMacro(0);
+        assert(midi.scripts.activeMacro == -1 && midi.ledStateByNote[62] == 2);
+        for (unsigned i = 0; i < SCRIPTS_MAX + 1; ++i) midi.scripts.triggerMacro(0);
+        assert(midi.scripts.macroQueueCount == SCRIPTS_MAX);
+        midi.scripts.pollMacros(testNowMs);
+        midi.scripts.macroDeadlineMs = testNowMs;
+        midi.scripts.pollMacros(testNowMs);
+        assert(midi.scripts.activeMacro == -1 && !midi.scripts.macroQueueCount && !midi.scripts.usb.chordCount);
+        midi.scripts.triggerMacro(0);
         midi.connected = 0;
-        midi.pollMacros(testNowMs + 10);
-        assert(!midi.macroQueueCount && midi.activeMacro == -1);
+        midi.scripts.pollMacros(testNowMs + 10);
+        assert(!midi.scripts.macroQueueCount && midi.scripts.activeMacro == -1);
         midi.connected = 1;
 
         // LED press/release and MIDI learn retain the source channel even when HID is idle.
@@ -858,13 +1072,13 @@ int main() {
         assert(write(midiInput[1], macroOn, sizeof(macroOn)) == (ssize_t)sizeof(macroOn));
         testNowMs = 1162;
         midi.poll();
-        assert(read(usbKeyboard[1], keyReport, sizeof(keyReport)) == 8);
+        assert(readKeyboardReport(usbKeyboard[1], keyReport, sizeof(keyReport)) == 8);
         chordRequest("DELETE", "channel=0&note=62", "200 OK");
         testNowMs = 1163;
         midi.poll();
-        assert(read(usbKeyboard[1], keyReport, sizeof(keyReport)) == 8);
+        assert(readKeyboardReport(usbKeyboard[1], keyReport, sizeof(keyReport)) == 8);
         for (auto byte : keyReport) assert(byte == 0);
-        assert(midi.activeMacro == -1 && midi.macroQueueCount == 0 && midi.ledStateByNote[62] == 0);
+        assert(midi.scripts.activeMacro == -1 && midi.scripts.macroQueueCount == 0 && midi.ledStateByNote[62] == 0);
         assert(config.readMidiMapFile().chordCount == 0);
         chordRequest("DELETE", "channel=0&note=62", "200 OK");
         for (testNowMs = 1164; testNowMs < 1499; ++testNowMs) midi.poll();
@@ -895,33 +1109,33 @@ int main() {
         midi.connected = 1;
         midi.nextProbeMs = UINT64_MAX;
         midi.nextMidiMapReloadMs = UINT64_MAX;
-        midi.usb.keyboardFd = usbKeyboard[0];
-        midi.usb.nextProbeMs = UINT64_MAX;
-        midi.macroUsbGeneration = midi.usb.sessionGeneration;
+        midi.scripts.usb.keyboardFd = usbKeyboard[0];
+        midi.scripts.usb.nextProbeMs = UINT64_MAX;
+        midi.scripts.macroUsbGeneration = midi.scripts.usb.sessionGeneration;
 
         auto saveScript = [&](const char *source) {
             std::string body = "channel=0&note=62&keys=&idle_velocity=2&pressed_velocity=7&script_hex=" +
-                midiHexEncode(source);
+                scriptHexEncode(source);
             chordRequest("POST", body.c_str(), "200 OK");
             drainLights();
         };
         auto stepMacro = [&](uint64_t time) {
             testNowMs = time;
-            midi.pollMacros(time);
-            midi.usb.poll(time, 1, true);
+            midi.scripts.pollMacros(time);
+            midi.scripts.usb.poll(time, 1, true);
         };
         auto expectReport = [&](uint8_t modifier, uint8_t usage) {
             uint8_t report[8]{};
-            ssize_t count = read(usbKeyboard[1], report, sizeof(report));
+            ssize_t count = readKeyboardReport(usbKeyboard[1], report, sizeof(report));
             if (count != 8) fprintf(stderr, "Expected HID report modifier=%u usage=%u at %llu ms, got %zd; macro error: %s\n",
-                                    modifier, usage, static_cast<unsigned long long>(testNowMs), count, midi.macroErrors[0]);
+                                    modifier, usage, static_cast<unsigned long long>(testNowMs), count, midi.scripts.macroErrors[0]);
             assert(count == 8);
             assert(report[0] == modifier && report[2] == usage);
             for (unsigned i : {1U,3U,4U,5U,6U,7U}) assert(!report[i]);
         };
         auto noReport = [&]() {
             uint8_t report[8];
-            assert(read(usbKeyboard[1], report, sizeof(report)) == -1 && errno == EAGAIN);
+            assert(readKeyboardReport(usbKeyboard[1], report, sizeof(report)) == -1 && errno == EAGAIN);
         };
         saveScript("state.count = (state.count or 0) + 1\n"
                    "light(event.velocity)\n"
@@ -932,12 +1146,12 @@ int main() {
         testNowMs = 2000;
         midi.poll();
         expectReport(1, 4);
-        assert(midi.usb.keyHeld && midi.ledStateByNote[62] == 100);
-        midi.triggerMacro(0, 50); // Capture the second event now; evaluate it after the first sequence.
+        assert(midi.scripts.usb.keyHeld && midi.ledStateByNote[62] == 100);
+        midi.scripts.triggerMacro(0, 50); // Capture the second event now; evaluate it after the first sequence.
         stepMacro(2001); // The hold wait starts after the press has reached HID.
         stepMacro(2100);
         noReport();
-        assert(midi.usb.keyHeld);
+        assert(midi.scripts.usb.keyHeld);
         stepMacro(2101);
         expectReport(0, 0);
         stepMacro(2102);
@@ -967,27 +1181,27 @@ int main() {
         stepMacro(2452);
         expectReport(0, 0);
         stepMacro(2453);
-        assert(midi.activeMacro == -1 && midi.macroQueueCount == 1);
+        assert(midi.scripts.activeMacro == -1 && midi.scripts.macroQueueCount == 1);
         stepMacro(2454);
         expectReport(2, 5);
         assert(midi.ledStateByNote[62] == 50);
         stepMacro(2484);
         expectReport(0, 0);
         stepMacro(2485);
-        assert(midi.activeMacro == -1);
+        assert(midi.scripts.activeMacro == -1);
 
         // A press without an explicit release cannot leak into the next macro.
         saveScript("press('ALT')");
-        midi.triggerMacro(0);
+        midi.scripts.triggerMacro(0);
         stepMacro(2500);
         expectReport(4, 0);
         stepMacro(2501);
         expectReport(0, 0);
         stepMacro(2502);
-        assert(midi.activeMacro == -1 && !midi.usb.keyDown);
+        assert(midi.scripts.activeMacro == -1 && !midi.scripts.usb.keyDown);
         // tap/type replace, rather than accidentally inherit, a previous held chord.
         saveScript("press('CTRL'); tap('A')");
-        midi.triggerMacro(0);
+        midi.scripts.triggerMacro(0);
         stepMacro(2520);
         expectReport(1, 0);
         stepMacro(2521);
@@ -997,29 +1211,29 @@ int main() {
         stepMacro(2552);
         expectReport(0, 0);
         stepMacro(2553);
-        assert(midi.activeMacro == -1);
+        assert(midi.scripts.activeMacro == -1);
 
         // State is transactional: a failing event queues no partial actions or state mutation.
         saveScript("state.count=(state.count or 0)+1\n"
                    "if event.velocity == 100 then state.count=99; press('CTRL'); unknown() end\n"
                    "if state.count==1 then type('x') else type('y') end");
-        midi.triggerMacro(0, 100);
+        midi.scripts.triggerMacro(0, 100);
         stepMacro(2570);
         noReport();
-        assert(midi.activeMacro == -1 && midi.macroErrors[0][0]);
-        const std::string errorField = "\"runtime_error_hex\":\"" + midiHexEncode(midi.macroErrors[0]);
+        assert(midi.scripts.activeMacro == -1 && midi.scripts.macroErrors[0][0]);
+        const std::string errorField = "\"runtime_error_hex\":\"" + scriptHexEncode(midi.scripts.macroErrors[0]);
         chordRequest("GET", "", errorField.c_str());
-        midi.triggerMacro(0, 50);
+        midi.scripts.triggerMacro(0, 50);
         stepMacro(2580);
         expectReport(0, 27);
-        assert(!midi.macroErrors[0][0]);
+        assert(!midi.scripts.macroErrors[0][0]);
         stepMacro(2610);
         expectReport(0, 0);
         stepMacro(2611);
         // USB session loss resets persistent state even while no macro is running.
-        ++midi.usb.sessionGeneration;
+        ++midi.scripts.usb.sessionGeneration;
         stepMacro(2620);
-        midi.triggerMacro(0, 50);
+        midi.scripts.triggerMacro(0, 50);
         stepMacro(2630);
         expectReport(0, 27);
         stepMacro(2660);
@@ -1027,75 +1241,75 @@ int main() {
         stepMacro(2661);
 
         saveScript("while true do end");
-        midi.triggerMacro(0);
+        midi.scripts.triggerMacro(0);
         stepMacro(2680);
-        assert(strstr(midi.macroErrors[0], "instruction limit"));
+        assert(strstr(midi.scripts.macroErrors[0], "instruction limit"));
         noReport();
-        assert(midi.activeMacro == -1 && !midi.usb.keyDown);
+        assert(midi.scripts.activeMacro == -1 && !midi.scripts.usb.keyDown);
         saveScript("state.count=(state.count or 0)+1\n"
                    "log(string.format('You have pressed this %d times',state.count))\n"
                    "if state.last then log('It has been '..((millis()-state.last)//1000)..' seconds') end\n"
                    "state.last=millis()\n"
                    "log(tostring(epoch()))");
         testNowMs = 3000;
-        midi.triggerMacro(0);
+        midi.scripts.triggerMacro(0);
         stepMacro(3100);
-        assert(!strcmp(midi.macroPlan.actions[0].text, "You have pressed this 1 times"));
-        assert(!strcmp(midi.macroPlan.actions[1].text, "1700000003"));
+        assert(!strcmp(midi.scripts.macroPlan.actions[0].text, "You have pressed this 1 times"));
+        assert(!strcmp(midi.scripts.macroPlan.actions[1].text, "1700000003"));
         testNowMs = 6500;
-        midi.triggerMacro(0);
+        midi.scripts.triggerMacro(0);
         stepMacro(6900);
-        assert(!strcmp(midi.macroPlan.actions[0].text, "You have pressed this 2 times"));
-        assert(!strcmp(midi.macroPlan.actions[1].text, "It has been 3 seconds"));
-        assert(!strcmp(midi.macroPlan.actions[2].text, "1700000006"));
+        assert(!strcmp(midi.scripts.macroPlan.actions[0].text, "You have pressed this 2 times"));
+        assert(!strcmp(midi.scripts.macroPlan.actions[1].text, "It has been 3 seconds"));
+        assert(!strcmp(midi.scripts.macroPlan.actions[2].text, "1700000006"));
 
         assert(audio.reloadSfxBank() == RET_OK);
         auto triggered = audio.sfxTriggerSeq.load();
         saveScript("sound.play('keep.wav',1.5)");
-        midi.triggerMacro(0);
+        midi.scripts.triggerMacro(0);
         stepMacro(7000);
         assert(audio.sfxTriggerSeq.load() == triggered + 1);
         assert(!strcmp(audio.sfxLastTriggeredBasename, "keep.wav"));
         assert(audio.sfxQueue[(audio.sfxQueueWrite.load() - 1) % AUDIO_SFX_QUEUE_CAP].pitchRatio == 1.5f);
         auto stopAllBefore = audio.pendingSfxStopAll.load();
         saveScript("sound.stop_all()");
-        midi.triggerMacro(0);
+        midi.scripts.triggerMacro(0);
         stepMacro(7020);
         assert(audio.pendingSfxStopAll.load() == stopAllBefore + 1);
         saveScript("sound.play('missing.wav')");
-        midi.triggerMacro(0);
+        midi.scripts.triggerMacro(0);
         stepMacro(7040);
-        assert(strstr(midi.macroErrors[0], "sound.play failed") && midi.activeMacro == -1);
+        assert(strstr(midi.scripts.macroErrors[0], "sound.play failed") && midi.scripts.activeMacro == -1);
 
         drainLights();
         saveScript("midi.program(1,5); midi.note_on(1,60,90); wait(50); midi.note_off(1,60)");
         drainLights();
-        midi.triggerMacro(0);
+        midi.scripts.triggerMacro(0);
         stepMacro(7100);
         uint8_t controllerBytes[32]{};
         assert(read(midiInput[1], controllerBytes, sizeof(controllerBytes)) == 5);
         const uint8_t startMidi[] = {0xc1,5,0x91,60,90};
         assert(!memcmp(controllerBytes, startMidi, sizeof(startMidi)));
-        assert(midi.macroMidiNotes[1][60]);
+        assert(midi.scripts.macroMidiNotes[1][60]);
         stepMacro(7149);
         assert(read(midiInput[1], controllerBytes, sizeof(controllerBytes)) < 0 && errno == EAGAIN);
         stepMacro(7150);
         assert(read(midiInput[1], controllerBytes, sizeof(controllerBytes)) == 3);
         assert(controllerBytes[0] == 0x81 && controllerBytes[1] == 60 && controllerBytes[2] == 0);
-        assert(!midi.macroMidiNotes[1][60]);
+        assert(!midi.scripts.macroMidiNotes[1][60]);
         saveScript("midi.cc(2,64,127); midi.note_on(2,61,80)");
         drainLights();
-        midi.triggerMacro(0);
+        midi.scripts.triggerMacro(0);
         stepMacro(7200);
         const uint8_t cleanupMidi[] = {0xb2,64,127,0x92,61,80,0xb2,64,0,0x82,61,0};
         assert(read(midiInput[1], controllerBytes, sizeof(controllerBytes)) == (ssize_t)sizeof(cleanupMidi));
         assert(!memcmp(controllerBytes, cleanupMidi, sizeof(cleanupMidi)));
         saveScript("midi.note_on(2,61,80); wait(500)");
         drainLights();
-        midi.triggerMacro(0);
+        midi.scripts.triggerMacro(0);
         stepMacro(7250);
         assert(read(midiInput[1], controllerBytes, sizeof(controllerBytes)) == 3);
-        midi.stopMacros();
+        midi.scripts.stopMacros();
         assert(read(midiInput[1], controllerBytes, sizeof(controllerBytes)) == 3);
         assert(controllerBytes[0] == 0x82 && controllerBytes[1] == 61 && !controllerBytes[2]);
 
@@ -1105,22 +1319,22 @@ int main() {
         uint8_t fill[1024]{};
         while (write(midi.fd, fill, sizeof(fill)) > 0) {}
         assert(errno == EAGAIN);
-        midi.triggerMacro(0);
+        midi.scripts.triggerMacro(0);
         stepMacro(7300);
-        assert(midi.controllerPendingSize == 1 && midi.controllerPending[0] == 248);
+        assert(midi.scripts.controllerPendingSize == 1 && midi.scripts.controllerPending[0] == 248);
         drainLights();
         stepMacro(7301);
         assert(read(midiInput[1], controllerBytes, sizeof(controllerBytes)) == 1 && controllerBytes[0] == 248);
-        assert(!midi.controllerPendingSize && midi.activeMacro == -1);
+        assert(!midi.scripts.controllerPendingSize && midi.scripts.activeMacro == -1);
 
         saveScript("midi.note_on(0,60,90); wait(50); midi.note_off(0,60)");
         drainLights();
         limitedWriteFd = midi.fd;
         limitedWriteSize = 1;
-        midi.triggerMacro(0);
+        midi.scripts.triggerMacro(0);
         stepMacro(7350);
         assert(read(midiInput[1], controllerBytes, sizeof(controllerBytes)) == 1 && controllerBytes[0] == 0x90);
-        assert(midi.controllerPendingSize == 2);
+        assert(midi.scripts.controllerPendingSize == 2);
         stepMacro(7351);
         assert(read(midiInput[1], controllerBytes, sizeof(controllerBytes)) == 1 && controllerBytes[0] == 60);
         stepMacro(7352);
@@ -1131,33 +1345,33 @@ int main() {
         assert(read(midiInput[1], controllerBytes, sizeof(controllerBytes)) < 0 && errno == EAGAIN);
         stepMacro(7402);
         assert(read(midiInput[1], controllerBytes, sizeof(controllerBytes)) == 3 && controllerBytes[0] == 0x80);
-        assert(midi.activeMacro == -1);
+        assert(midi.scripts.activeMacro == -1);
 
         // LED backpressure must not stall keyboard-only macros.
         saveScript("press('CTRL'); wait(5)");
         while (write(midi.fd, fill, sizeof(fill)) > 0) {}
         assert(errno == EAGAIN);
         midi.sendRawMidi(0x90, 62, 2);
-        assert(midi.controllerPendingSize == 3);
-        midi.triggerMacro(0);
+        assert(midi.scripts.controllerPendingSize == 3);
+        midi.scripts.triggerMacro(0);
         stepMacro(7415);
         expectReport(1, 0);
         stepMacro(7420);
         stepMacro(7425);
         expectReport(0, 0);
         stepMacro(7426);
-        assert(midi.activeMacro == -1);
+        assert(midi.scripts.activeMacro == -1);
         drainLights();
         stepMacro(7427);
         drainLights();
 
         saveScript("press('GUI'); wait(500)");
-        midi.triggerMacro(0);
+        midi.scripts.triggerMacro(0);
         stepMacro(7450);
         expectReport(8, 0);
         midi.disconnect();
         expectReport(0, 0);
-        assert(!midi.usb.keyHeld && midi.activeMacro == -1);
+        assert(!midi.scripts.usb.keyHeld && midi.scripts.activeMacro == -1);
 
         // Named web automations do not need either USB Keyboard or a controller.
         midi.keyboardEnabled = false;
@@ -1179,9 +1393,9 @@ int main() {
             close(sockets[1]);
         };
         auto saveNamed = [&](const char *name, const char *source, uint32_t id = 0, bool binding = false) {
-            std::string body = "name_hex=" + midiHexEncode(name) +
+            std::string body = "name_hex=" + scriptHexEncode(name) +
                 "&midi_enabled=" + (binding ? "1" : "0") + "&channel=0&note=62&keys=&script_hex=" +
-                midiHexEncode(source);
+                scriptHexEncode(source);
             if (id) body += "&id=" + std::to_string(id);
             macroRequest("POST", body, "200 OK");
             auto saved = config.readMidiMapFile();
@@ -1201,7 +1415,7 @@ int main() {
         assert(access(volumes.c_str(), F_OK) != 0 && errno == ENOENT);
         macroRequest("POST", "id=" + std::to_string(webId), "200 OK", true);
         stepMacro(8000);
-        assert(midi.activeMacro == -1 && !midi.macroErrors[midi.compiledMacroCount - 1][0]);
+        assert(midi.scripts.activeMacro == -1 && !midi.scripts.macroErrors[midi.scripts.compiledMacroCount - 1][0]);
         audiox::effects::SlotParams scriptedParams{};
         assert(audio.getEffectParams("fx_7", &scriptedParams) == RET_OK);
         assert(!scriptedParams.enabled && scriptedParams.values[0] == 3);
@@ -1209,10 +1423,10 @@ int main() {
         assert(readMidiConfig() == persisted);
         assert(access(volumes.c_str(), F_OK) != 0 && errno == ENOENT);
         // USB session churn must not reset or stall a keyboard-free script's state.
-        ++midi.usb.sessionGeneration;
+        ++midi.scripts.usb.sessionGeneration;
         macroRequest("POST", "id=" + std::to_string(webId), "200 OK", true);
         stepMacro(8020);
-        assert(midi.macroStates[midi.compiledMacroCount - 1].entries[0].integerValue == 2);
+        assert(midi.scripts.macroStates[midi.scripts.compiledMacroCount - 1].entries[0].integerValue == 2);
         uint32_t secondId = saveNamed("Web only", "effects.toggle('fx_7'); volume.adjust('sfx',100)");
         assert(secondId != webId);
         macroRequest("POST", "id=" + std::to_string(secondId), "200 OK", true);
@@ -1222,30 +1436,51 @@ int main() {
         saveNamed("Renamed", "effects.set('fx_7','channels',99)", webId);
         macroRequest("POST", "id=" + std::to_string(webId), "200 OK", true);
         stepMacro(8060);
-        assert(strstr(midi.macroErrors[1], "effect action failed"));
+        assert(strstr(midi.scripts.macroErrors[1], "effect action failed"));
         assert(audio.getEffectParams("fx_7", &scriptedParams) == RET_OK && scriptedParams.values[0] == 3);
         saveNamed("Renamed", "volume.set('missing',50)", webId);
         macroRequest("POST", "id=" + std::to_string(webId), "200 OK", true);
         stepMacro(8080);
-        assert(strstr(midi.macroErrors[1], "unknown audio thing ID"));
+        assert(strstr(midi.scripts.macroErrors[1], "unknown audio thing ID"));
         saveNamed("Renamed", "state.count=1; tap('A')", webId);
         macroRequest("POST", "id=" + std::to_string(webId), "200 OK", true);
         stepMacro(8100);
-        assert(strstr(midi.macroErrors[1], "keyboard actions require"));
-        assert(!midi.macroStates[1].count);
+        assert(strstr(midi.scripts.macroErrors[1], "keyboard actions require"));
+        assert(!midi.scripts.macroStates[1].count);
         saveNamed("Renamed", "midi.send(248)", webId);
         macroRequest("POST", "id=" + std::to_string(webId), "200 OK", true);
         stepMacro(8120);
-        assert(strstr(midi.macroErrors[1], "connected controller"));
+        assert(strstr(midi.scripts.macroErrors[1], "connected controller"));
+        const auto beforeBuiltinScripts = scriptedParams;
+        unsigned builtinScriptIndex = 0;
+        for (const char *type : {"compressor", "limiter", "eq", "multiband", "noise_reduction"}) {
+            const uint8_t effectType = audiox::effects::effectTypeFromString(type);
+            const auto &param = audiox::effects::effectTypeSpecFor(effectType)->params[0];
+            const float value = param.minValue + (param.maxValue - param.minValue) * .25f;
+            assert(audio.setEffectType("fx_7", effectType) == RET_OK);
+            const std::string source = std::string("effects.set('fx_7','") + param.name + "'," +
+                std::to_string(value) + "); effects.enable('fx_7',false); effects.toggle('fx_7')";
+            saveNamed("Renamed", source.c_str(), webId);
+            const auto persistedSource = readMidiConfig();
+            macroRequest("POST", "id=" + std::to_string(webId), "200 OK", true);
+            stepMacro(8130 + 10 * builtinScriptIndex++);
+            assert(!midi.scripts.macroErrors[1][0]);
+            assert(audio.getEffectParams("fx_7", &scriptedParams) == RET_OK);
+            assert(scriptedParams.type == effectType && scriptedParams.enabled);
+            assert(fabsf(scriptedParams.values[0] - value) < 1e-4f);
+            assert(readMidiConfig() == persistedSource);
+        }
+        assert(audio.setEffectType("fx_7", beforeBuiltinScripts.type) == RET_OK);
+        assert(audio.setEffectParam("fx_7", "channels", beforeBuiltinScripts.values[0]) == RET_OK);
         macroRequest("POST", "id=4294967296", "400 Bad Request", true);
         macroRequest("POST", "id=999", "404 Not Found", true);
         macroRequest("GET", "", "405 Method Not Allowed", true);
         macroRequest("DELETE", "id=" + std::to_string(webId), "200 OK");
         assert(config.readMidiMapFile().chords[1].id == secondId);
         macroRequest("DELETE", "id=" + std::to_string(secondId), "200 OK");
-        std::string midiBody = "name_hex=" + midiHexEncode("MIDI effect toggle") +
+        std::string midiBody = "name_hex=" + scriptHexEncode("MIDI effect toggle") +
             "&midi_enabled=1&channel=5&note=66&keys=&script_hex=" +
-            midiHexEncode("assert(event.source=='midi' and event.channel==5 and event.velocity==80); "
+            scriptHexEncode("assert(event.source=='midi' and event.channel==5 and event.velocity==80); "
                           "state.count=(state.count or 0)+1; effects.toggle('fx_7')");
         macroRequest("POST", midiBody, "200 OK");
         uint32_t midiId = config.readMidiMapFile().chords[1].id;
@@ -1264,15 +1499,15 @@ int main() {
         assert(write(automationInput[1], automationNote, sizeof(automationNote)) == 3);
         testNowMs = 8200;
         midi.poll();
-        assert(!midi.keyboardEnabled && midi.activeMacro == -1);
-        assert(midi.macroStates[1].count == 1 && midi.macroStates[1].entries[0].integerValue == 1);
-        assert(!midi.macroErrors[1][0]);
+        assert(!midi.keyboardEnabled && midi.scripts.activeMacro == -1);
+        assert(midi.scripts.macroStates[1].count == 1 && midi.scripts.macroStates[1].entries[0].integerValue == 1);
+        assert(!midi.scripts.macroErrors[1][0]);
         assert(config.readMidiMapFile().chords[1].eventMask == 129);
         auto hookScript = [&](uint8_t mask, const char *source, bool binding = false) {
             std::string body = "id=" + std::to_string(midiId) + "&name_hex=" +
-                midiHexEncode("Event hook") + "&midi_enabled=" + (binding ? "1" : "0") +
+                scriptHexEncode("Event hook") + "&midi_enabled=" + (binding ? "1" : "0") +
                 "&channel=5&note=66&keys=&event_mask=" + std::to_string(mask) +
-                "&script_hex=" + midiHexEncode(source);
+                "&script_hex=" + scriptHexEncode(source);
             macroRequest("POST", body, "200 OK");
             assert(config.readMidiMapFile().chords[1].eventMask == (mask | 128));
         };
@@ -1287,14 +1522,14 @@ int main() {
             testNowMs += 20;
             midi.poll();
         };
-        auto hookState = [&](const char *key) -> const MidiScriptStateEntry & {
-            for (unsigned i = 0; i < midi.macroStates[1].count; ++i)
-                if (!strcmp(midi.macroStates[1].entries[i].key, key)) return midi.macroStates[1].entries[i];
+        auto hookState = [&](const char *key) -> const ScriptStateEntry & {
+            for (unsigned i = 0; i < midi.scripts.macroStates[1].count; ++i)
+                if (!strcmp(midi.scripts.macroStates[1].entries[i].key, key)) return midi.scripts.macroStates[1].entries[i];
             assert(false);
-            return midi.macroStates[1].entries[0];
+            return midi.scripts.macroStates[1].entries[0];
         };
         receiveMidi({0x95, 66, 100});
-        assert(!midi.macroStates[1].count);
+        assert(!midi.scripts.macroStates[1].count);
         receiveMidi({0x85, 66, 9});
         assert(hookState("count").integerValue == 1);
         receiveMidi({0x95, 66, 0});
@@ -1303,7 +1538,7 @@ int main() {
         assert(hookState("count").integerValue == 2);
         receiveMidi({0xb5, 66, 42});
         assert(hookState("count").integerValue == 3 && hookState("value").integerValue == 42);
-        assert(!midi.macroErrors[1][0]);
+        assert(!midi.scripts.macroErrors[1][0]);
 
         hookScript(24, "assert(event.source=='audio' and event.sound=='keep.wav'); "
                        "state.count=(state.count or 0)+1; state.pressed=event.pressed");
@@ -1318,31 +1553,33 @@ int main() {
 
         hookScript(96, "assert(event.source=='device' and "
                        "event.pressed==(event.type=='device_connect')); state.kind=event.type; state.device=event.device");
-        MidiScriptEvent connection{};
-        connection.kind = MidiScriptEventKind::DeviceConnect;
+        ScriptEvent connection{};
+        connection.kind = ScriptEventKind::DeviceConnect;
         strcpy(connection.device, testMidiPath);
-        midi.dispatchMacroEvent(connection);
+        midi.scripts.dispatchMacroEvent(connection);
         testNowMs += 20;
         midi.poll();
         assert(!strcmp(hookState("kind").stringValue, "device_connect"));
         midi.disconnect();
         testNowMs += 20;
-        midi.pollMacros(testNowMs);
+        midi.scripts.pollMacros(testNowMs);
         assert(!strcmp(hookState("kind").stringValue, "device_disconnect"));
-        assert(!midi.macroErrors[1][0]);
+        assert(!midi.scripts.macroErrors[1][0]);
         close(automationInput[1]);
 
-        auto saveCallbacks = [&](const std::string &source, const char *status = "200 OK") {
+        auto saveCallbacks = [&](const std::string &source, const char *status = "200 OK",
+                                 bool allowManagement = false) {
             std::string body = "id=" + std::to_string(midiId) +
-                "&name_hex=" + midiHexEncode("Multi-hook addon") +
+                "&name_hex=" + scriptHexEncode("Multi-hook addon") +
                 "&midi_enabled=1&channel=5&note=66&script_hex=" +
-                midiHexEncode(source.c_str());
+                scriptHexEncode(source.c_str());
+            if (allowManagement) body += "&config_write_ack=1";
             macroRequest("POST", body, status, false, true);
         };
         std::string strictScript = "id=" + std::to_string(midiId) +
-            "&name_hex=" + midiHexEncode("Strict callbacks") +
+            "&name_hex=" + scriptHexEncode("Strict callbacks") +
             "&midi_enabled=0&channel=5&note=66&script_hex=" +
-            midiHexEncode("hook('run',function() end)");
+            scriptHexEncode("hook('run',function() end)");
         macroRequest("POST", strictScript + "&hook_mode=0", "400 Bad Request", false, true);
         macroRequest("POST", strictScript + "&keys=CTRL+A", "400 Bad Request", false, true);
         saveCallbacks("log('top-level sequence')", "400 Bad Request");
@@ -1353,7 +1590,7 @@ int main() {
         macroRequest("GET", "", "\"hook_mode\":true");
         macroRequest("GET", "", "{\"scripts\":[", false, true);
         macroRequest("POST", "id=" + std::to_string(midiId), "callback script has no run hook", true);
-        assert(!midi.macroQueueCount);
+        assert(!midi.scripts.macroQueueCount);
         saveCallbacks("hook('bogus',function() end)", "400 Bad Request");
         saveCallbacks("log('must not execute'); hook('run',function() end)", "400 Bad Request");
         assert(config.readMidiMapFile().chords[1].eventMask == 16);
@@ -1363,51 +1600,51 @@ int main() {
             "state.count=(state.count or 0)+1; state.kind=e.type end; "
             "hook('run',count); hook('note_off',count); hook('cc',count); "
             "hook('sound_finish',count); hook('device_connect',count)";
-        addon += "\n--" + std::string(MIDI_SCRIPT_STORAGE_MAX - 1 - addon.size() - 3, 'x');
-        assert(addon.size() == MIDI_SCRIPT_STORAGE_MAX - 1);
+        addon += "\n--" + std::string(SCRIPT_STORAGE_MAX - 1 - addon.size() - 3, 'x');
+        assert(addon.size() == SCRIPT_STORAGE_MAX - 1);
         saveCallbacks(addon);
         callbacksSaved = config.readMidiMapFile();
         assert(callbacksSaved.chords[1].eventMask == 182);
         assert(!strcmp(callbacksSaved.chords[1].script, addon.c_str()));
-        assert(midi.macroEventMasks[1] == 182);
-        macroRequest("GET", "", midiHexEncode(addon.c_str()).c_str());
+        assert(midi.scripts.macroEventMasks[1] == 182);
+        macroRequest("GET", "", scriptHexEncode(addon.c_str()).c_str());
         saveCallbacks(addon + "x", "400 Bad Request");
         assert(!strcmp(config.readMidiMapFile().chords[1].script, addon.c_str()));
         for (unsigned i = 1; i <= 2; ++i) {
             macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true, true);
             testNowMs += 20;
-            midi.pollMacros(testNowMs);
+            midi.scripts.pollMacros(testNowMs);
             assert(hookState("count").integerValue == i);
-            assert(!strcmp(hookState("kind").stringValue, "run") && !midi.macroErrors[1][0]);
+            assert(!strcmp(hookState("kind").stringValue, "run") && !midi.scripts.macroErrors[1][0]);
         }
-        MidiScriptEvent addonRelease{5, 66, 0, false};
-        addonRelease.kind = MidiScriptEventKind::NoteOff;
-        midi.dispatchMacroEvent(addonRelease);
+        ScriptEvent addonRelease{5, 66, 0, false};
+        addonRelease.kind = ScriptEventKind::NoteOff;
+        midi.scripts.dispatchMacroEvent(addonRelease);
         testNowMs += 20;
-        midi.pollMacros(testNowMs);
+        midi.scripts.pollMacros(testNowMs);
         assert(hookState("count").integerValue == 3 && !strcmp(hookState("kind").stringValue, "note_off"));
-        addonRelease.kind = MidiScriptEventKind::ControlChange;
-        midi.dispatchMacroEvent(addonRelease);
+        addonRelease.kind = ScriptEventKind::ControlChange;
+        midi.scripts.dispatchMacroEvent(addonRelease);
         testNowMs += 20;
-        midi.pollMacros(testNowMs);
+        midi.scripts.pollMacros(testNowMs);
         assert(hookState("count").integerValue == 4 && !strcmp(hookState("kind").stringValue, "cc"));
-        MidiScriptEvent addonFinish{};
-        addonFinish.kind = MidiScriptEventKind::SoundFinish;
+        ScriptEvent addonFinish{};
+        addonFinish.kind = ScriptEventKind::SoundFinish;
         addonFinish.pressed = false;
-        midi.dispatchMacroEvent(addonFinish);
+        midi.scripts.dispatchMacroEvent(addonFinish);
         testNowMs += 20;
-        midi.pollMacros(testNowMs);
+        midi.scripts.pollMacros(testNowMs);
         assert(hookState("count").integerValue == 5 && !strcmp(hookState("kind").stringValue, "sound_finish"));
-        midi.dispatchMacroEvent(connection);
+        midi.scripts.dispatchMacroEvent(connection);
         testNowMs += 20;
-        midi.pollMacros(testNowMs);
+        midi.scripts.pollMacros(testNowMs);
         assert(hookState("count").integerValue == 6 && !strcmp(hookState("kind").stringValue, "device_connect"));
-        assert(!midi.macroErrors[1][0]);
+        assert(!midi.scripts.macroErrors[1][0]);
 
         std::string configScript = "id=" + std::to_string(midiId) +
-            "&name_hex=" + midiHexEncode("Config hook") +
+            "&name_hex=" + scriptHexEncode("Config hook") +
             "&midi_enabled=0&channel=0&note=0&keys=&script_hex=" +
-            midiHexEncode("config.write('volumes.txt','sfx=0.5\\n')");
+            scriptHexEncode("config.write('volumes.txt','sfx=0.5\\n')");
         macroRequest("POST", configScript, "409 Conflict");
         macroRequest("POST", configScript + "&config_write_ack=2", "400 Bad Request");
         macroRequest("POST", configScript + "&config_write_ack=1", "200 OK");
@@ -1416,15 +1653,309 @@ int main() {
         assert(access("volumes.txt", F_OK) != 0);
         macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
         testNowMs += 20;
-        midi.pollMacros(testNowMs);
+        midi.scripts.pollMacros(testNowMs);
         char configText[128]{};
         size_t configLength = 0;
         assert(config.readScriptConfig("volumes.txt", configText, sizeof(configText), &configLength) == RET_OK);
         assert(!strcmp(configText, "sfx=0.5\n"));
-        assert(!midi.macroErrors[1][0]);
+        assert(!midi.scripts.macroErrors[1][0]);
         assert(unlink("volumes.txt") == 0);
+        saveCallbacks("hook('boot',function(e) assert(e.source=='system'); "
+                      "state.boots=(state.boots or 0)+1 end); "
+                      "hook('timer',function(e) assert(e.source=='system'); "
+                      "state.ticks=(state.ticks or 0)+1 end)", "200 OK", true);
+        assert(config.readMidiMapFile().chords[1].eventMask == 768);
+        initBootRecovery();
+        pollBootRecovery();
+        const uint64_t startupAt = testNowMs;
+        midi.scripts.pollScriptLifecycle(testNowMs, bootStartupStable());
+        assert(!midi.scripts.macroQueueCount && !midi.scripts.bootHooksDispatched);
+        testNowMs = startupAt + (BOOT_RECOVERY_CONFIRM_SECONDS - 1) * 1000;
+        pollBootRecovery();
+        midi.scripts.pollScriptLifecycle(testNowMs, bootStartupStable());
+        assert(!midi.scripts.macroQueueCount && !bootStartupStable());
+        testNowMs = startupAt + BOOT_RECOVERY_CONFIRM_SECONDS * 1000;
+        pollBootRecovery();
+        assert(bootStartupStable());
+        midi.scripts.pollScriptLifecycle(testNowMs, bootStartupStable());
+        assert(midi.scripts.macroQueueCount == 1);
+        midi.scripts.pollMacros(testNowMs);
+        assert(hookState("boots").integerValue == 1);
+        midi.scripts.pollScriptLifecycle(testNowMs + 999, true);
+        assert(!midi.scripts.macroQueueCount);
+        testNowMs += 1000;
+        midi.scripts.pollScriptLifecycle(testNowMs, true);
+        assert(midi.scripts.macroQueueCount == 1);
+        midi.scripts.pollScriptLifecycle(testNowMs + 1000, true);
+        assert(midi.scripts.macroQueueCount == 1);
+        midi.scripts.pollMacros(testNowMs);
+        assert(hookState("ticks").integerValue == 1 && hookState("boots").integerValue == 1);
+        midi.scripts.pollScriptLifecycle(testNowMs + 5000, true);
+        assert(midi.scripts.macroQueueCount == 1);
+        testNowMs += 5000;
+        midi.scripts.pollMacros(testNowMs);
+        assert(hookState("ticks").integerValue == 2 && hookState("boots").integerValue == 1);
+        saveCallbacks("hook('boot',function() state.late=true end)");
+        midi.scripts.pollScriptLifecycle(testNowMs + 1000, true);
+        assert(!midi.scripts.macroQueueCount && midi.scripts.bootHooksDispatched);
+        saveCallbacks("hook('run',function() system.restart() end)", "409 Conflict");
+        saveCallbacks("hook('run',function() system.restart(); error('abort') end)", "200 OK", true);
+        macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+        testNowMs += 20;
+        midi.scripts.pollMacros(testNowMs);
+        assert(scriptRestartRequests == 0 && strstr(midi.scripts.macroErrors[1], "abort"));
+        saveCallbacks("hook('run',function() system.restart() end)", "200 OK", true);
+        macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+        testNowMs += 20;
+        midi.scripts.pollMacros(testNowMs);
+        assert(scriptRestartRequests == 1 && strstr(midi.scripts.macroErrors[1], "system.restart failed"));
+        saveCallbacks("hook('run',function() settings.set('midi_passthrough','unmapped') end)",
+                      "200 OK", true);
+        macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+        testNowMs += 20;
+        midi.scripts.pollMacros(testNowMs);
+        assert(config.readConfigFile().midiPassthrough == 1 && !midi.scripts.macroErrors[1][0]);
+        {
+            BluetoothContext bluetooth(&app);
+            bluetooth.deviceCount = 1;
+            bluetooth.devices[0] = {};
+            assert(bt::parseAddress("AA:BB:CC:DD:EE:FF", &bluetooth.devices[0].address));
+            strcpy(bluetooth.devices[0].name, "Test phone");
+            bluetooth.devices[0].paired = true;
+            memset(bluetooth.devices[0].linkKey, 0xA5, sizeof(bluetooth.devices[0].linkKey));
+            saveCallbacks("hook('bluetooth_change',function(e) assert(e.source=='bluetooth'); "
+                          "local b=bluetooth.devices(); assert(b.ready and #b.devices==1); "
+                          "assert(b.devices[1].address=='AA:BB:CC:DD:EE:FF'); "
+                          "assert(b.devices[1].linkKey==nil and b.devices[1].link_key==nil); "
+                          "state.changes=(state.changes or 0)+1 end); "
+                          "hook('run',function() bluetooth.connect('AA:BB:CC:DD:EE:FF') end)",
+                          "200 OK", true);
+            midi.scripts.pollScriptLifecycle(testNowMs, true);
+            assert(!midi.scripts.macroQueueCount);
+            bluetooth.scanning = true;
+            midi.scripts.pollScriptLifecycle(testNowMs + 1, true);
+            assert(midi.scripts.macroQueueCount == 1);
+            testNowMs += 20;
+            midi.scripts.pollMacros(testNowMs);
+            assert(hookState("changes").integerValue == 1 && !midi.scripts.macroErrors[1][0]);
+            midi.scripts.pollScriptLifecycle(testNowMs + 1, true);
+            assert(!midi.scripts.macroQueueCount);
+            macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+            testNowMs += 20;
+            midi.scripts.pollMacros(testNowMs);
+            assert(scriptBluetoothRequests == 1 && strstr(midi.scripts.macroErrors[1], "Bluetooth request rejected"));
+            scriptBluetoothResult = RET_OK;
+            macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+            testNowMs += 20;
+            midi.scripts.pollMacros(testNowMs);
+            assert(scriptBluetoothRequests == 2 && !midi.scripts.macroErrors[1][0]);
+            saveCallbacks("hook('bluetooth_media_key',function(e) "
+                          "assert(e.source=='bluetooth' and e.device=='AA:BB:CC:DD:EE:FF'); "
+                          "assert(e.key=='pause'); state.presses=(state.presses or 0)+(e.pressed and 1 or 0); "
+                          "state.releases=(state.releases or 0)+(e.pressed and 0 or 1) end)",
+                          "200 OK", true);
+            assert(config.readMidiMapFile().chords[1].eventMask == 8192);
+            bluetooth.queueMediaEvent(bluetooth.devices[0].address, {0x46, true});
+            bluetooth.queueMediaEvent(bluetooth.devices[0].address, {0x46, false});
+            midi.scripts.pollBluetoothMediaEvents();
+            assert(midi.scripts.macroQueueCount == 2 && !bluetooth.mediaEventCount);
+            testNowMs += 20;
+            midi.scripts.pollMacros(testNowMs);
+            testNowMs += 20;
+            midi.scripts.pollMacros(testNowMs);
+            assert(hookState("presses").integerValue == 1);
+            assert(hookState("releases").integerValue == 1 && !midi.scripts.macroErrors[1][0]);
+            // Wraparound and overflow reporting preserve FIFO order.
+            bluetooth.mediaEventHead = BluetoothContext::MEDIA_EVENTS_MAX - 1;
+            for (unsigned i = 0; i < BluetoothContext::MEDIA_EVENTS_MAX + 3; ++i)
+                bluetooth.queueMediaEvent(bluetooth.devices[0].address, {0x46, (i % 2) == 0});
+            assert(bluetooth.mediaEventCount == BluetoothContext::MEDIA_EVENTS_MAX);
+            assert(bluetooth.mediaEventsDropped == 3);
+            BluetoothMediaEvent queued{};
+            for (unsigned i = 0; i < BluetoothContext::MEDIA_EVENTS_MAX; ++i) {
+                assert(bluetooth.popMediaEvent(queued));
+                assert(queued.key.operation == 0x46 && queued.key.pressed == ((i % 2) == 0));
+            }
+            assert(!bluetooth.popMediaEvent(queued));
+            bluetooth.queueMediaEvent(bluetooth.devices[0].address, {0x46, true});
+            bluetooth.queueMediaEvent(bluetooth.devices[0].address, {0x46, false});
+            midi.scripts.pollBluetoothMediaEvents();
+            assert(midi.scripts.macroQueueCount == 2 && !bluetooth.mediaEventsDropped);
+            midi.scripts.stopMacros();
+            saveCallbacks("hook('bluetooth_media_key',function(e) "
+                          "if e.pressed and e.key=='pause' then tap('MEDIA_PAUSE') end end)",
+                          "200 OK", true);
+            int mediaKeyboard[2];
+            assert(socketpair(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK, 0, mediaKeyboard) == 0);
+            const int previousMediaFd = midi.scripts.usb.mediaFd;
+            const bool previousKeyboardEnabled = midi.scripts.usb.keyboardEnabled;
+            const auto previousUsbMode = midi.scripts.usb.mode;
+            const auto previousUsbProbeMs = midi.scripts.usb.nextProbeMs;
+            midi.scripts.usb.mediaFd = mediaKeyboard[0];
+            midi.scripts.usb.mode = 1;
+            midi.scripts.usb.nextProbeMs = UINT64_MAX;
+            midi.scripts.usb.keyboardEnabled = midi.keyboardEnabled = true;
+            midi.scripts.macroUsbGeneration = midi.scripts.usb.sessionGeneration;
+            const uint8_t pause[] = {0x10, 0x11, 0x0e, 0x00, 0x48, 0x7c, 0x46, 0x00};
+            const uint8_t pauseRelease[] = {0x20, 0x11, 0x0e, 0x00, 0x48, 0x7c, 0xc6, 0x00};
+            for (const uint8_t *packet : {pause, pauseRelease}) {
+                uint8_t response[8]{};
+                bt::MediaKey key{};
+                bool hasKey = false;
+                assert(bt::avrcpResponse(packet, 8, response, sizeof(response), key, hasKey) == 8);
+                assert(hasKey && response[3] == 0x09);
+                bluetooth.queueMediaEvent(bluetooth.devices[0].address, key);
+            }
+            midi.scripts.pollBluetoothMediaEvents();
+            testNowMs += 20;
+            stepMacro(testNowMs);
+            uint8_t report[3]{};
+            assert(read(mediaKeyboard[1], report, sizeof(report)) == sizeof(report));
+            assert(report[0] == SCRIPT_MEDIA_REPORT_ID && report[1] == 0xb1 && report[2] == 0);
+            testNowMs += 30;
+            stepMacro(testNowMs);
+            assert(read(mediaKeyboard[1], report, sizeof(report)) == sizeof(report));
+            assert(report[0] == SCRIPT_MEDIA_REPORT_ID && !report[1] && !report[2]);
+            testNowMs += 20;
+            stepMacro(testNowMs);
+            assert(read(mediaKeyboard[1], report, sizeof(report)) < 0 && errno == EAGAIN);
+            testNowMs += 20;
+            stepMacro(testNowMs);
+            assert(read(mediaKeyboard[1], report, sizeof(report)) < 0 && errno == EAGAIN);
+            assert(!midi.scripts.macroErrors[1][0] && !midi.scripts.macroQueueCount);
+            midi.scripts.stopMacros();
+            close(mediaKeyboard[0]);
+            close(mediaKeyboard[1]);
+            midi.scripts.usb.mediaFd = previousMediaFd;
+            midi.scripts.usb.keyboardEnabled = previousKeyboardEnabled;
+            midi.scripts.usb.mode = previousUsbMode;
+            midi.scripts.usb.nextProbeMs = previousUsbProbeMs;
+            midi.keyboardEnabled = false;
+        }
+        saveCallbacks(
+            "ui.option('enabled',{label='Enabled',type='boolean',default=true}); "
+            "ui.option('level',{label='Level',type='number',default=50,min=0,max=100}); "
+            "ui.option('name',{label='Name',type='string',default='default'}); "
+            "ui.button('apply','<Apply>'); "
+            "hook('config_change',function(e) state.key=e.key; state.value=e.value; "
+            "assert(script_config.get(e.key)==e.value) end); "
+            "hook('ui',function(e) assert(e.key=='apply' and e.value==nil); state.applied=true end); "
+            "hook('run',function() storage.write('private.bin','A\\0B'); "
+            "script_config.set('starts',script_config.get('starts',0)+1) end)");
+        macroRequest("GET", "", "\"type\":\"number\",\"value\":50", false, true);
+        auto controlRequest = [&](const std::string &body, const char *expected) {
+            int sockets[2];
+            assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+            assert(handleScriptControl(&http, sockets[0], "POST", body.data(), body.size()) == 0);
+            assert(shutdown(sockets[0], SHUT_WR) == 0);
+            std::string response;
+            char buffer[2048];
+            ssize_t got;
+            while ((got = read(sockets[1], buffer, sizeof(buffer))) > 0)
+                response.append(buffer, static_cast<size_t>(got));
+            if (response.find(expected) == std::string::npos)
+                fprintf(stderr, "Expected %s, got %s\n", expected, response.c_str());
+            assert(response.find(expected) != std::string::npos);
+            close(sockets[0]);
+            close(sockets[1]);
+        };
+        const std::string controlId = "id=" + std::to_string(midiId);
+        auto option = [&](const char *key, const char *value, const char *status = "200 OK") {
+            controlRequest(controlId + "&key_hex=" + scriptHexEncode(key) +
+                           "&value_hex=" + scriptHexEncode(value), status);
+        };
+        option("level", "70");
+        testNowMs += 20;
+        midi.scripts.pollMacros(testNowMs);
+        assert(hookState("value").numberValue == 70 && !midi.scripts.macroErrors[1][0]);
+        option("enabled", "false");
+        testNowMs += 20;
+        midi.scripts.pollMacros(testNowMs);
+        assert(!hookState("value").booleanValue);
+        option("name", "<unsafe>&text");
+        testNowMs += 20;
+        midi.scripts.pollMacros(testNowMs);
+        assert(!strcmp(hookState("value").stringValue, "<unsafe>&text"));
+        macroRequest("GET", "", "\"type\":\"number\",\"value\":70", false, true);
+        option("level", "101", "400 Bad Request");
+        option("level", "nan", "400 Bad Request");
+        option("enabled", "1", "400 Bad Request");
+        option("unknown", "x", "404 Not Found");
+        controlRequest(controlId + "&key_hex=" + scriptHexEncode("apply"), "button queued");
+        testNowMs += 20;
+        midi.scripts.pollMacros(testNowMs);
+        assert(hookState("applied").booleanValue && !midi.scripts.macroErrors[1][0]);
+        controlRequest(controlId + "&key_hex=" + scriptHexEncode("apply") + "&value_hex=31",
+                       "400 Bad Request");
+        controlRequest(controlId + "&id=1&key_hex=31", "400 Bad Request");
+        const std::string dataDirectory = "scripts/" + std::to_string(midiId);
+        ScriptStorage privateStorage(midiId);
+        ScriptState savedOptions{};
+        assert(privateStorage.readSettings(savedOptions) == RET_OK && savedOptions.count == 3);
+        assert(access((dataDirectory + "/private.bin").c_str(), F_OK) != 0);
+        macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+        testNowMs += 20;
+        midi.scripts.pollMacros(testNowMs);
+        std::string binary;
+        assert(privateStorage.readFile("private.bin", binary) == RET_OK && binary == std::string("A\0B", 3));
+        assert(privateStorage.readSettings(savedOptions) == RET_OK && savedOptions.count == 4);
+        const uint32_t orphanId = saveNamed("Temporary storage owner", "log('temporary')");
+        ScriptStorage orphan(orphanId);
+        assert(orphan.writeFile("owned.txt", "private", 7) == RET_OK);
+        macroRequest("DELETE", "id=" + std::to_string(orphanId), "200 OK");
+        const uint32_t replacementId = saveNamed("New isolated script", "log('replacement')");
+        assert(replacementId > orphanId);
+        ScriptStorage replacement(replacementId);
+        std::string isolated;
+        assert(replacement.readFile("owned.txt", isolated) == RET_ERR && errno == ENOENT);
+        macroRequest("DELETE", "id=" + std::to_string(replacementId), "200 OK");
+        assert(orphan.removeFile("owned.txt") == RET_OK);
+        assert(rmdir(("scripts/" + std::to_string(orphanId)).c_str()) == 0);
+        for (unsigned i = 0; i < SCRIPTS_MAX; ++i)
+            controlRequest(controlId + "&key_hex=" + scriptHexEncode("apply"), "200 OK");
+        option("level", "80", "409 Conflict");
+        assert(privateStorage.readSettings(savedOptions) == RET_OK);
+        for (unsigned i = 0; i < savedOptions.count; ++i)
+            if (!strcmp(savedOptions.entries[i].key, "level")) assert(savedOptions.entries[i].numberValue == 70);
+        midi.scripts.stopMacros();
+        const std::string settingsPath = dataDirectory + "/.settings";
+        assert(unlink(settingsPath.c_str()) == 0);
+        assert(mkdir(settingsPath.c_str(), 0700) == 0);
+        option("level", "80", "500 Internal Server Error");
+        assert(!midi.scripts.macroQueueCount);
+        macroRequest("GET", "", "\"ui_error_hex\":", false, true);
+        assert(rmdir(settingsPath.c_str()) == 0);
+        ScriptStateEntry restored{};
+        strcpy(restored.key, "level");
+        restored.kind = ScriptValueKind::Number;
+        restored.numberValue = 70;
+        assert(privateStorage.setSetting(restored) == RET_OK);
+        saveCallbacks("hook('run',function() assert(script_config.get('level')==70); "
+                      "assert(storage.read('private.bin')=='A\\0B') end)");
+        macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+        testNowMs += 20;
+        midi.scripts.pollMacros(testNowMs);
+        assert(!midi.scripts.macroErrors[1][0]);
+        saveCallbacks("hook('run',function() storage.write('abort.bin','bad'); "
+                      "script_config.set('level',80); error('abort storage') end)");
+        macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+        testNowMs += 20;
+        midi.scripts.pollMacros(testNowMs);
+        assert(strstr(midi.scripts.macroErrors[1], "abort storage"));
+        assert(privateStorage.readFile("abort.bin", binary) == RET_ERR && errno == ENOENT);
+        assert(privateStorage.readSettings(savedOptions) == RET_OK);
+        for (unsigned i = 0; i < savedOptions.count; ++i)
+            if (!strcmp(savedOptions.entries[i].key, "level")) assert(savedOptions.entries[i].numberValue == 70);
+        saveCallbacks("hook('run',function() storage.remove('private.bin') end)");
+        macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+        testNowMs += 20;
+        midi.scripts.pollMacros(testNowMs);
+        assert(!midi.scripts.macroErrors[1][0] && privateStorage.readFile("private.bin", binary) == RET_ERR);
+        assert(unlink((dataDirectory + "/.settings").c_str()) == 0);
+        assert(rmdir(dataDirectory.c_str()) == 0);
+        assert(rmdir("scripts") == 0);
         hookScript(1, "state.count=(state.count or 0)+1");
-        for (unsigned i = 0; i < MIDI_CHORDS_MAX; ++i)
+        for (unsigned i = 0; i < SCRIPTS_MAX; ++i)
             macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
         macroRequest("POST", "id=" + std::to_string(midiId), "409 Conflict", true);
         midi.disconnect();
@@ -1434,7 +1965,7 @@ int main() {
     }
 
     {
-        char configText[MIDI_SCRIPT_CONFIG_READ_MAX + 1]{};
+        char configText[SCRIPT_CONFIG_READ_MAX + 1]{};
         size_t configLength = 0;
         assert(config.readScriptConfig("bluetooth.txt", configText, sizeof(configText), &configLength) == RET_ERR);
         assert(config.readScriptConfig("../config.txt", configText, sizeof(configText), &configLength) == RET_ERR);
@@ -1446,17 +1977,46 @@ int main() {
         assert(config.writeScriptConfig("volumes.txt", "sfx=1\n", 6) == RET_ERR);
         assert(rmdir("volumes.txt") == 0);
         assert(config.writeScriptConfig("volumes.txt", "sfx=1\n", 6) == RET_OK);
-        MidiScriptState state{};
-        MidiScriptPlan plan{};
+        ScriptState state{};
+        ScriptPlan plan{};
         char error[256]{};
-        MidiScriptEvent event{};
-        assert(midiEvaluateScript("assert(config.read('volumes.txt')=='sfx=1\\n'); "
-                                  "assert(config.lines('volumes.txt')[1]=='sfx=1')",
+        ScriptEvent event{};
+        assert(scriptEvaluate("local s=settings.get(); assert(s.midi_passthrough=='unmapped'); "
+                                  "assert(value_type(s.keyboard_macros)=='boolean')",
                                   event, state, plan, error, sizeof(error), &config));
-        assert(!midiEvaluateScript("for i=1,5 do config.read('volumes.txt') end",
+        assert(scriptEvaluate("settings.set('usb_capture_channels',16)",
+                                  event, state, plan, error, sizeof(error), &config, true));
+        assert(plan.count == 1 && plan.actions[0].kind == ScriptKind::SettingsSet &&
+               plan.actions[0].setting.numberValue == 16);
+        for (const char *invalid : {
+                "settings.set('usb_capture_channels',17)", "settings.set('usb_sample_size',0)",
+                "settings.set('keyboard_macros',1)", "settings.set('midi_passthrough','invalid')",
+                "settings.set('unknown',true)", "bluetooth.connect('../config.txt')",
+                "bluetooth.auto_connect('AA:BB:CC:DD:EE:FF',1)",
+                "bluetooth.connect('00:00:00:00:00:00')", "system.logs('config.txt')",
+                "system.logs('stdout',129)", "system.restart(1)"}) {
+            assert(!scriptEvaluate(invalid, event, state, plan, error, sizeof(error), &config, true));
+            assert(error[0] && plan.count == 0);
+        }
+        assert(!scriptEvaluate("settings.set('keyboard_macros',true)",
+                                   event, state, plan, error, sizeof(error), &config));
+        FILE *log = fopen("stdout.log", "w");
+        assert(log && fputs("first\nsecond\nlast\n", log) >= 0 && fclose(log) == 0);
+        assert(scriptEvaluate("assert(system.logs('stdout',2)=='second\\nlast\\n')",
+                                  event, state, plan, error, sizeof(error), &config));
+        assert(!scriptEvaluate("for i=1,5 do system.logs() end",
                                    event, state, plan, error, sizeof(error), &config));
         assert(strstr(error, "read limit"));
-        assert(!midiEvaluateScript("config.write('volumes.txt','sfx=0\\n'); error('abort')",
+        assert(!scriptEvaluate("system.logs('stderr')",
+                                   event, state, plan, error, sizeof(error), &config));
+        assert(unlink("stdout.log") == 0);
+        assert(scriptEvaluate("assert(config.read('volumes.txt')=='sfx=1\\n'); "
+                                  "assert(config.lines('volumes.txt')[1]=='sfx=1')",
+                                  event, state, plan, error, sizeof(error), &config));
+        assert(!scriptEvaluate("for i=1,5 do config.read('volumes.txt') end",
+                                   event, state, plan, error, sizeof(error), &config));
+        assert(strstr(error, "read limit"));
+        assert(!scriptEvaluate("config.write('volumes.txt','sfx=0\\n'); error('abort')",
                                    event, state, plan, error, sizeof(error), &config, true));
         assert(config.readScriptConfig("volumes.txt", configText, sizeof(configText), &configLength) == RET_OK);
         assert(!strcmp(configText, "sfx=1\n"));
@@ -1467,14 +2027,14 @@ int main() {
             assert(fwrite(line.data(), 1, line.size(), fp) == line.size());
         assert(fclose(fp) == 0);
         assert(config.readScriptConfig("volumes.txt", configText, sizeof(configText), &configLength) == RET_OK);
-        assert(configLength == MIDI_SCRIPT_CONFIG_READ_MAX);
-        assert(midiEvaluateScript("assert(#config.read('volumes.txt')==65536)",
+        assert(configLength == SCRIPT_CONFIG_READ_MAX);
+        assert(scriptEvaluate("assert(#config.read('volumes.txt')==65536)",
                                   event, state, plan, error, sizeof(error), &config));
-        assert(midiEvaluateScript("local lines=config.lines('volumes.txt'); assert(#lines==128 and #lines[1]==511)",
+        assert(scriptEvaluate("local lines=config.lines('volumes.txt'); assert(#lines==128 and #lines[1]==511)",
                                   event, state, plan, error, sizeof(error), &config));
         fp = fopen("volumes.txt", "w");
         assert(fp);
-        std::string oversized(MIDI_SCRIPT_CONFIG_READ_MAX + 1, 'x');
+        std::string oversized(SCRIPT_CONFIG_READ_MAX + 1, 'x');
         assert(fwrite(oversized.data(), 1, oversized.size(), fp) == oversized.size());
         assert(fclose(fp) == 0);
         assert(config.readScriptConfig("volumes.txt", configText, sizeof(configText), &configLength) == RET_ERR);

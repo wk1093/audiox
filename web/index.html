@@ -105,6 +105,18 @@
           </div>
         </section>
         <div id="effects-map-grid" class="effects-map-grid"></div>
+        <section class="card plugin-manager">
+          <h2>Plugins</h2>
+          <p class="small plugin-warning">Plugins are native code that runs inside the audio engine. A malicious or faulty plugin can disrupt audio, read or damage device data, and its custom UI can show misleading controls. Install only .axm packages from authors you trust.</p>
+          <div class="plugin-install">
+            <label for="plugin-file">Plugin package (.axm, up to 12 MiB)</label>
+            <input id="plugin-file" type="file" accept=".axm">
+            <button id="btn-plugin-install" class="primary">Install plugin</button>
+          </div>
+          <div id="plugin-status" class="small" role="status" aria-live="polite"></div>
+          <div id="plugin-list" class="plugin-list"></div>
+          <p class="small">Add installed plugins as effects from the Routing menu. Reload restarts a faulted plugin from its installed package.</p>
+        </section>
       </div>
     </section>
 
@@ -249,16 +261,20 @@ hook("sound_finish", function(event)
 end)</code></pre>
               <p class="small">Register hooks unconditionally at top level; place actions, configuration I/O, and event/state access inside handlers. Setup reruns for every event. Only scalar state fields persist between events, not across restart. Up to 32 handlers run in registration order. Run requires a run hook. MIDI hooks require a binding; for CC, Note specifies the controller number.</p>
             </details>
-            <label><input id="macro-config-write" type="checkbox" data-unsaved-key="macro-editor"> Allow configuration writes (requires confirmation on save)</label>
+            <label><input id="macro-config-write" type="checkbox" data-unsaved-key="macro-editor"> Allow official configuration writes, system restart and Bluetooth management (requires confirmation on save)</label>
             <label for="chord-script">Lua Script</label>
-            <textarea id="chord-script" rows="14" maxlength="17408" spellcheck="false" data-unsaved-key="macro-editor">hook("run", function(event)
+            <div class="lua-editor">
+            <pre id="lua-preview" aria-hidden="true"></pre>
+            <textarea id="chord-script" rows="14" maxlength="17408" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off" data-unsaved-key="macro-editor">hook("run", function(event)
   log("Script triggered")
 end)
 </textarea>
+            </div>
             <details class="reference-panel">
               <summary>Lua API quick reference and execution limits</summary>
-            <p class="small">Keyboard: tap("CTRL+A"), press("SHIFT+A"), release(), type("Text", 80). press replaces held keys; tap and type release them first. Completion or cancellation releases all keys. type uses US-layout ASCII; match the host layout and Caps Lock state. Typing interval: 50 ms default, 30 ms minimum. wait(ms) schedules a delay; light(velocity) sets the bound pad LED.</p>
-            <p class="small">Events: note_on, note_off, cc, sound_start, sound_finish, device_connect, device_disconnect, run. event.source identifies web, midi, audio, or device. Use event.sound or event.device for audio/controller events. Run supplies velocity 127. state holds 32 scalar fields; edits, cancellation, and restart may reset it. millis() and epoch() are trigger-time snapshots.</p>
+            <p class="small">Keyboard: tap("CTRL+A"), press("SHIFT+A"), release(), type("Text", 80). Media: tap("MEDIA_PLAY_PAUSE"), tap("MEDIA_NEXT"), tap("MEDIA_VOLUME_UP") send real USB Consumer Control keys. Use one media key per call, without modifiers. press replaces held keys; tap and type release them first. Completion or cancellation releases all keys. type uses US-layout ASCII; match the host layout and Caps Lock state. Typing interval: 50 ms default, 30 ms minimum. wait(ms) schedules a delay; light(velocity) sets the bound pad LED.</p>
+            <p class="small">Events: note_on, note_off, cc, sound_start, sound_finish, device_connect, device_disconnect, run, boot, timer, config_change, ui, bluetooth_change, bluetooth_media_key. event.source identifies web, midi, audio, device, system, or bluetooth. Media keys supply event.key, event.pressed, and the device MAC in event.device. Use event.sound or event.device for audio/controller events. Run supplies velocity 127. state holds 32 scalar fields; edits, cancellation, and restart may reset it. millis() and epoch() are trigger-time snapshots.</p>
+            <p class="small">Saved scripts can expose native settings and buttons below. Settings save on change and queue config_change; buttons queue ui. Queued is not confirmation of execution. Text settings allow up to 127 UTF-8 bytes. Custom script_config settings, ui controls and storage do not require official configuration or system-management permission.</p>
             <p class="small">Output: sound.play("clip.wav", 1.0), sound.stop_all(), midi.note_on(0,60,100), midi.note_off(0,60), midi.cc(0,1,64), midi.program(0,5), midi.send(status,...). Clips must be preloaded. MIDI output targets the controller, not the USB host. log("message") writes to device logs. Shell, network, arbitrary file access, and module loading are unavailable. <a href="https://wklab.net/audiox/docs/lua/" target="_blank" rel="noopener noreferrer">Lua API and examples</a> (internet required).</p>
             <p class="small">Configuration: config.list(), config.read(name), config.write(name, text). Reads: 64 KiB/file. Writes replace the whole file: 4 KiB/write, 8 KiB total payload. Saving requires confirmation. Back up first: file contents are not format-validated and may require reload/restart. Pairing credentials are inaccessible. Avoid repeated writes and recursive sound triggers.</p>
             <p class="small">Processing: effects.enable(id, true), effects.toggle(id), effects.set(id, parameter, value). Use valid effect IDs and parameter ranges. volume.set(id, 0..100) and volume.adjust(id, -100..100) use IDs from GET /api/audio/volumes, not names. 100% is unity; adjustments are percentage points clamped to 0..100. These changes are runtime-only.</p>
@@ -567,9 +583,11 @@ end)
   <script src="/soundboard-grid.js"></script>
   <script src="/soundboard-order.js"></script>
   <script src="/logs.js"></script>
+  <script src="/plugins.js"></script>
   <script src="/effects.js"></script>
   <script src="/updates.js"></script>
   <script src="/backup.js"></script>
+  <script src="/lua-editor.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

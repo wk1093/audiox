@@ -11,7 +11,7 @@ grep -Fxq 'include $(CURDIR)/tests/Makefile' Makefile
 grep -Fxq '.DEFAULT_GOAL := all' Makefile
 ! grep -Eq '^test-[[:alnum:]_-]+:' Makefile
 targets=(
-    test-audio-engine test-midi-usb test-midi-script test-midi-docs
+    test-midi-usb test-script test-script-docs
     test-display-hotplug test-soundboard-config test-boot-recovery test-config-backup
     test-audio-pcm-recover test-system-logs test-system test-gadget-setup test-mdns
     test-gadget-volume test-audio-runtime test-diagnostics test-watchdog
@@ -22,13 +22,18 @@ for target in "${targets[@]}"; do
     grep -q "^${target}:" tests/Makefile
 done
 make --no-print-directory -n -B -o "$ROOT/.config" -o "$ROOT/out/host/audiox-menuconfig" \
-    "${targets[@]}" audio-bench run-audio-bench BENCH_INPUT=fixture.wav \
-    BENCH_ALSA_DEVICE=null BENCH_PORT=8766 > "$WORK/targets"
-grep -Fq 'audiox-audio-bench" "fixture.wav" "null" "8766"' "$WORK/targets"
+    "${targets[@]}" > "$WORK/targets"
+grep -Fq 'tests/audio_runtime_test.cpp' "$WORK/targets"
+! grep -Eq 'graph_processor|audio-bench|audio/engine.cpp|AUDIOX_USE_SHARED_GRAPH_PROCESSOR' "$WORK/targets"
 grep -Fq 'watchdog_service_test.sh' "$WORK/targets"
 grep -Fq 'resolve_modules_test.sh' "$WORK/targets"
 grep -Fq -- '--test -C' "$WORK/targets"
-echo "PASS: test and benchmark rules stay available through the root Makefile"
+echo "PASS: host tests use the direct audio runtime through the root Makefile"
+
+for test in audio_meters display_hotplug gadget_volume; do
+    grep -E "tests/${test}_test.cpp.*src/audio/plugin_host.cpp" "$WORK/targets" >/dev/null
+done
+echo "PASS: AudioContext host fixtures link the real plugin-host lifecycle"
 
 touch "$WORK/config" "$WORK/menuconfig"
 for source in init/init init/watchdog audio/setup; do

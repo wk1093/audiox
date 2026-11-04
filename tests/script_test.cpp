@@ -1,19 +1,23 @@
-#include "midi/script.hpp"
+#include "scripting/script.hpp"
 #include "midi/usb.hpp"
+#include "scripting/storage.hpp"
 
 #include <cassert>
 #include <cmath>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <filesystem>
+#include <unistd.h>
 
 namespace {
-MidiScriptPlan plan{};
-MidiScriptState state{};
+ScriptPlan plan{};
+ScriptState state{};
 char error[256];
-const MidiScriptEvent defaultEvent{0, 0, 127, true};
+const ScriptEvent defaultEvent{0, 0, 127, true};
 
-const MidiScriptStateEntry *findState(const MidiScriptState &value, const char *key) {
+const ScriptStateEntry *findState(const ScriptState &value, const char *key) {
     for (unsigned i = 0; i < value.count; ++i)
         if (std::strcmp(value.entries[i].key, key) == 0) return &value.entries[i];
     return nullptr;
@@ -21,16 +25,16 @@ const MidiScriptStateEntry *findState(const MidiScriptState &value, const char *
 
 void success(const char *source) {
     std::memset(error, '!', sizeof(error));
-    if (!midiCompileScript(source, plan, error, sizeof(error))) {
+    if (!scriptCompile(source, plan, error, sizeof(error))) {
         std::fprintf(stderr, "Unexpected failure: %s\nSource: %s\n", error, source);
         assert(false);
     }
     assert(!error[0]);
 }
 
-void evaluationSuccess(const char *source, const MidiScriptEvent &event = defaultEvent) {
+void evaluationSuccess(const char *source, const ScriptEvent &event = defaultEvent) {
     std::memset(error, '!', sizeof(error));
-    if (!midiEvaluateScript(source, event, state, plan, error, sizeof(error))) {
+    if (!scriptEvaluate(source, event, state, plan, error, sizeof(error))) {
         std::fprintf(stderr, "Unexpected evaluation failure: %s\nSource: %s\n", error, source);
         assert(false);
     }
@@ -40,15 +44,15 @@ void evaluationSuccess(const char *source, const MidiScriptEvent &event = defaul
 void failure(const char *source, const char *expected) {
     std::memset(&plan, 0x7f, sizeof(plan));
     std::memset(error, '!', sizeof(error));
-    bool result = midiCompileScript(source, plan, error, sizeof(error));
+    bool result = scriptCompile(source, plan, error, sizeof(error));
     if (result || !std::strstr(error, expected)) {
         std::fprintf(stderr, "Expected failure containing '%s', got %s: %s\n",
                      expected, result ? "success" : "failure", error);
         assert(false);
     }
     assert(plan.count == 0);
-    for (const MidiScriptAction &action : plan.actions) {
-        assert(action.kind == MidiScriptKind::Tap && action.value == 0);
+    for (const ScriptAction &action : plan.actions) {
+        assert(action.kind == ScriptKind::Tap && action.value == 0);
         for (char key : action.keys) assert(!key);
         for (char character : action.text) assert(!character);
         for (uint8_t byte : action.midiBytes) assert(!byte);
@@ -57,10 +61,10 @@ void failure(const char *source, const char *expected) {
 }
 
 void evaluationFailure(const char *source, const char *expected) {
-    MidiScriptState before = state;
+    ScriptState before = state;
     std::memset(&plan, 0x7f, sizeof(plan));
     std::memset(error, '!', sizeof(error));
-    bool result = midiEvaluateScript(source, defaultEvent, state, plan, error, sizeof(error));
+    bool result = scriptEvaluate(source, defaultEvent, state, plan, error, sizeof(error));
     if (result || !std::strstr(error, expected)) {
         std::fprintf(stderr, "Expected eval failure containing '%s', got %s: %s\n",
                      expected, result ? "success" : "failure", error);
@@ -73,7 +77,7 @@ void evaluationFailure(const char *source, const char *expected) {
 
 int main() {
     {
-        MidiChord migrated{};
+        ScriptDefinition migrated{};
         migrated.id = 42;
         strcpy(migrated.name, "Existing sequence");
         migrated.channel = 9;
@@ -86,74 +90,74 @@ int main() {
             "assert(select('#', ...) == 0 and legacy == nil); "
             "state.kind=event.type; state.count=(state.count or 0)+1; return -- trailing comment";
         strcpy(migrated.script, legacy);
-        assert(midiMigrateScript(migrated, error, sizeof(error)));
+        assert(scriptMigrate(migrated, error, sizeof(error)));
         assert(migrated.hookMode && migrated.eventMask == 255);
         assert(strstr(migrated.script, legacy));
         assert(migrated.id == 42 && !strcmp(migrated.name, "Existing sequence"));
         assert(migrated.channel == 9 && migrated.note == 62 && migrated.midiEnabled);
         assert(migrated.idleVelocity == 12 && migrated.pressedVelocity == 96);
         assert(migrated.configWriteAllowed && !migrated.keys[0]);
-        MidiScriptState remembered{};
+        ScriptState remembered{};
         for (unsigned kind = 0; kind < 8; ++kind) {
-            MidiScriptEvent event{};
-            event.kind = static_cast<MidiScriptEventKind>(kind);
-            assert(midiEvaluateScript(migrated.script, event, remembered, plan, error, sizeof(error),
+            ScriptEvent event{};
+            event.kind = static_cast<ScriptEventKind>(kind);
+            assert(scriptEvaluate(migrated.script, event, remembered, plan, error, sizeof(error),
                                       nullptr, true, true, 255));
-            const char *expected = kind == 7 ? "note_on" : midiScriptEventName(event.kind);
+            const char *expected = kind == 7 ? "note_on" : scriptEventName(event.kind);
             const auto *kindState = findState(remembered, "kind");
             const auto *countState = findState(remembered, "count");
             assert(kindState && countState);
             assert(!strcmp(kindState->stringValue, expected));
             assert(countState->integerValue == kind + 1);
         }
-        MidiChord before = migrated;
-        assert(midiMigrateScript(migrated, error, sizeof(error)));
-        assert(midiMacroEqual(before, migrated) && !error[0]);
+        ScriptDefinition before = migrated;
+        assert(scriptMigrate(migrated, error, sizeof(error)));
+        assert(scriptMacroEqual(before, migrated) && !error[0]);
 
-        MidiChord shortcut{};
+        ScriptDefinition shortcut{};
         strcpy(shortcut.keys, "CTRL+SHIFT+F13");
-        assert(midiMigrateScript(shortcut, error, sizeof(error)));
+        assert(scriptMigrate(shortcut, error, sizeof(error)));
         assert(shortcut.eventMask == 129 && !shortcut.configWriteAllowed);
         assert(strstr(shortcut.script, "tap(\"CTRL+SHIFT+F13\")"));
-        MidiScriptEvent run{};
-        run.kind = MidiScriptEventKind::Run;
-        assert(midiEvaluateScript(shortcut.script, run, remembered, plan, error, sizeof(error),
+        ScriptEvent run{};
+        run.kind = ScriptEventKind::Run;
+        assert(scriptEvaluate(shortcut.script, run, remembered, plan, error, sizeof(error),
                                   nullptr, false, true, 129));
-        assert(plan.count == 1 && plan.actions[0].kind == MidiScriptKind::Tap);
+        assert(plan.count == 1 && plan.actions[0].kind == ScriptKind::Tap);
         assert(!strcmp(plan.actions[0].keys, "CTRL+SHIFT+F13"));
 
-        MidiChord maximum{};
+        ScriptDefinition maximum{};
         maximum.eventMask = 127;
-        std::string original = "--" + std::string(MIDI_SCRIPT_MAX - 3, 'x');
-        assert(original.size() == MIDI_SCRIPT_MAX - 1);
+        std::string original = "--" + std::string(SCRIPT_MAX - 3, 'x');
+        assert(original.size() == SCRIPT_MAX - 1);
         strcpy(maximum.script, original.c_str());
-        assert(midiMigrateScript(maximum, error, sizeof(error)));
+        assert(scriptMigrate(maximum, error, sizeof(error)));
         assert(strlen(maximum.script) > original.size() && strstr(maximum.script, original.c_str()));
-        assert(midiEvaluateScript(maximum.script, run, remembered, plan, error, sizeof(error),
+        assert(scriptEvaluate(maximum.script, run, remembered, plan, error, sizeof(error),
                                   nullptr, false, true, maximum.eventMask));
         assert(plan.count == 0);
 
-        MidiChord manyLocals{};
+        ScriptDefinition manyLocals{};
         std::string locals = "local ";
         for (unsigned i = 0; i < 200; ++i)
             locals += (i ? ",v" : "v") + std::to_string(i);
         locals += "; assert(v199==nil)";
         strcpy(manyLocals.script, locals.c_str());
-        assert(midiMigrateScript(manyLocals, error, sizeof(error)));
-        assert(midiEvaluateScript(manyLocals.script, run, remembered, plan, error, sizeof(error),
+        assert(scriptMigrate(manyLocals, error, sizeof(error)));
+        assert(scriptEvaluate(manyLocals.script, run, remembered, plan, error, sizeof(error),
                                   nullptr, false, true, manyLocals.eventMask));
 
         for (unsigned invalid = 0; invalid < 5; ++invalid) {
-            MidiChord bad{};
+            ScriptDefinition bad{};
             strcpy(bad.script, "log('never executed during migration')");
             if (invalid == 0) strcpy(bad.script, "if then");
             if (invalid == 1) bad.eventMask = 128;
             if (invalid == 2) memset(bad.script, 'x', sizeof(bad.script));
             if (invalid == 3) memset(bad.keys, 'x', sizeof(bad.keys));
             if (invalid == 4) { bad.script[0] = '\0'; strcpy(bad.keys, "INVALID"); }
-            MidiChord originalBad = bad;
-            assert(!midiMigrateScript(bad, error, sizeof(error)));
-            assert(error[0] && midiMacroEqual(bad, originalBad));
+            ScriptDefinition originalBad = bad;
+            assert(!scriptMigrate(bad, error, sizeof(error)));
+            assert(error[0] && scriptMacroEqual(bad, originalBad));
         }
     }
     std::string source;
@@ -163,31 +167,31 @@ int main() {
         "assert(count==1); state.runs=(state.runs or 0)+1; log('run') end); "
         "hook('note_off',function(e) assert(not e.pressed); log('released') end); "
         "hook('run',function(e) assert(count==1); log('second') end)";
-    uint8_t hookMask = 0;
-    assert(midiInspectHooks(callbacks, hookMask, error, sizeof(error)));
+    uint16_t hookMask = 0;
+    assert(scriptInspectHooks(callbacks, hookMask, error, sizeof(error)));
     assert(hookMask == 130);
-    auto callbackSuccess = [&](const char *text, MidiScriptEvent event, uint8_t expectedMask = 0) {
-        if (!midiEvaluateScript(text, event, state, plan, error, sizeof(error),
+    auto callbackSuccess = [&](const char *text, ScriptEvent event, uint16_t expectedMask = 0) {
+        if (!scriptEvaluate(text, event, state, plan, error, sizeof(error),
                                 nullptr, false, true, expectedMask)) {
             fprintf(stderr, "Callback failed: %s\n", error);
             assert(false);
         }
     };
     auto callbackFailure = [&](const char *text, const char *message) {
-        MidiScriptState before = state;
-        bool result = midiEvaluateScript(text, defaultEvent, state, plan, error, sizeof(error),
+        ScriptState before = state;
+        bool result = scriptEvaluate(text, defaultEvent, state, plan, error, sizeof(error),
                                           nullptr, false, true);
         assert(!result && strstr(error, message));
         assert(plan.count == 0 && plan.configBytes == 0);
         assert(!memcmp(&before, &state, sizeof(state)));
     };
     auto inspectFailure = [&](const char *text, const char *message) {
-        uint8_t mask = 255;
-        assert(!midiInspectHooks(text, mask, error, sizeof(error)));
+        uint16_t mask = 255;
+        assert(!scriptInspectHooks(text, mask, error, sizeof(error)));
         assert(mask == 0 && strstr(error, message));
     };
-    MidiScriptEvent runEvent{};
-    runEvent.kind = MidiScriptEventKind::Run;
+    ScriptEvent runEvent{};
+    runEvent.kind = ScriptEventKind::Run;
     runEvent.fromWeb = true;
     for (unsigned i = 1; i <= 2; ++i) {
         callbackSuccess(callbacks, runEvent, hookMask);
@@ -214,32 +218,158 @@ int main() {
     inspectFailure("state.x=1; hook('run',function() end)", "nil value");
     inspectFailure("if event.pressed then hook('run',function() end) end", "nil value");
     inspectFailure("for i=1,33 do hook('run',function() end) end", "hook limit");
-    assert(midiInspectHooks("for i=1,32 do hook('run',function() log('x') end) end",
+    assert(scriptInspectHooks("for i=1,32 do hook('run',function() log('x') end) end",
                             hookMask, error, sizeof(error)));
     callbackSuccess("for i=1,32 do hook('run',function() log('x') end) end", runEvent);
-    assert(plan.count == MIDI_SCRIPT_HOOKS_MAX);
+    assert(plan.count == SCRIPT_HOOKS_MAX);
     callbackFailure("hook('note_on',function() state.x=1; log('discard'); error('abort') end)", "abort");
     callbackFailure("hook('note_on',function() state.x=1; log('discard') end); "
                     "hook('note_on',function() error('later callback') end)", "later callback");
     callbackFailure("hook('note_on',function() hook('run',function() end) end)", "top level");
     callbackFailure("hook('note_on',function() while true do end end)", "instruction limit");
     callbackFailure("hook('note_on',function() for i=1,129 do log('x') end end)", "action limit");
-    assert(!midiEvaluateScript(callbacks, runEvent, state, plan, error, sizeof(error),
+    assert(!scriptEvaluate(callbacks, runEvent, state, plan, error, sizeof(error),
                                nullptr, false, true, 1));
     assert(strstr(error, "subscriptions changed") && plan.count == 0);
     failure("hook('run',function() end)", "Lua callbacks mode");
+    {
+        ScriptUi ui{};
+        const char *declarations =
+            "ui.option('enabled',{label='Enabled',type='boolean',default=true}); "
+            "ui.option('gain',{label='Gain',type='number',default=0.5,min=0,max=1}); "
+            "ui.option('title',{label='Title',type='string',default='hello'}); "
+            "ui.button('fire','Fire'); hook('ui',function() error('inspection must not execute') end)";
+        assert(scriptInspectUi(declarations, ui, error, sizeof(error)));
+        assert(ui.count == 4 && ui.controls[0].kind == ScriptUiKind::Boolean);
+        assert(ui.controls[1].hasMin && ui.controls[1].hasMax && ui.controls[1].max == 1);
+        assert(ui.controls[2].kind == ScriptUiKind::String && ui.controls[3].kind == ScriptUiKind::Button);
+        ScriptStateEntry value = ui.controls[1].defaultValue;
+        assert(scriptUiValueValid(ui.controls[1], value));
+        value.numberValue = 2;
+        assert(!scriptUiValueValid(ui.controls[1], value));
+        auto uiFailure = [&](const char *text) {
+            assert(!scriptInspectUi(text, ui, error, sizeof(error)));
+            assert(ui.count == 0 && error[0]);
+        };
+        uiFailure("ui.option('a',{label='A',type='integer',default=1})");
+        uiFailure("ui.option('a',{label='A',type='number',default=0,min=1,max=2})");
+        uiFailure("ui.option('a',{label='A',type='number',default=1,min=2,max=1})");
+        uiFailure("ui.option('a',{label='A',type='number',default=0/0})");
+        uiFailure("ui.option('a',{label='A',type='number',default=1,max=1/0})");
+        uiFailure("ui.option('a',{label='A',type='boolean',default=true,min=0})");
+        uiFailure("ui.option('a',{label='A',type='string',default=false})");
+        uiFailure("ui.option('a',{label='A',type='string',default='a',secret=1})");
+        uiFailure("ui.button('a','A'); ui.button('a','Again')");
+        uiFailure("for i=1,17 do ui.button('a'..i,'A') end");
+        uiFailure("ui.button('a',string.rep('x',64))");
+        uiFailure("storage.write('a','x')");
+        uiFailure("script_config.get('a')");
+        assert(scriptInspectUi("ui.button('a','A')", ui, error, sizeof(error)) && ui.count == 1);
+        assert(scriptInspectHooks("hook('boot',function() end); hook('timer',function() end); "
+                                "hook('config_change',function() end); hook('ui',function() end)",
+                                hookMask, error, sizeof(error)) && hookMask == 3840);
+        ScriptEvent event{};
+        event.kind = ScriptEventKind::Boot;
+        callbackSuccess("hook('boot',function(e) assert(e.type=='boot' and e.source=='system') end)", event, 256);
+        event.kind = ScriptEventKind::Timer;
+        callbackSuccess("hook('timer',function(e) assert(e.type=='timer' and e.source=='system') end)", event, 512);
+        event.kind = ScriptEventKind::BluetoothChange;
+        callbackSuccess("hook('bluetooth_change',function(e) assert(e.source=='bluetooth') end)", event, 4096);
+        event.kind = ScriptEventKind::BluetoothMediaKey;
+        strcpy(event.key, "pause");
+        strcpy(event.device, "AA:BB:CC:DD:EE:FF");
+        callbackSuccess("hook('bluetooth_media_key',function(e) "
+                        "assert(e.type=='bluetooth_media_key' and e.source=='bluetooth'); "
+                        "assert(e.key=='pause' and e.device=='AA:BB:CC:DD:EE:FF' and e.pressed); "
+                        "tap('SPACE') end)", event, 8192);
+        assert(plan.count == 1 && plan.actions[0].kind == ScriptKind::Tap);
+        event.pressed = false;
+        callbackSuccess("hook('bluetooth_media_key',function(e) assert(not e.pressed); "
+                        "if e.pressed then tap('SPACE') end end)", event, 8192);
+        assert(plan.count == 0);
+        event.pressed = true;
+        event.kind = ScriptEventKind::Ui;
+        strcpy(event.key, "title");
+        event.value.kind = ScriptValueKind::String;
+        strcpy(event.value.stringValue, "hello");
+        callbackSuccess("hook('ui',function(e) assert(e.key=='title' and e.value=='hello' and e.source=='web') end)", event, 2048);
+        event.kind = ScriptEventKind::ConfigChange;
+        event.value.kind = ScriptValueKind::Number; event.value.numberValue = 0.5;
+        callbackSuccess("hook('config_change',function(e) assert(e.value==0.5 and e.source=='web') end)", event, 1024);
+        event.value.numberValue = INFINITY;
+        assert(!scriptEvaluate("hook('config_change',function() end)", event, state, plan,
+                                  error, sizeof(error), nullptr, false, true));
+        event.kind = ScriptEventKind::Ui;
+        event.hasValue = false;
+        callbackSuccess("hook('ui',function(e) assert(e.value==nil and e.key=='title') end)", event, 2048);
+
+        const std::string storageRoot = std::string(ROOT_MOUNT_POINT) + "/scripts";
+        std::error_code ec;
+        assert(!std::filesystem::exists(storageRoot, ec));
+        ScriptStorage persistent(91);
+        assert(persistent.writeFile("old.txt", "before", 6) == RET_OK);
+        ScriptStateEntry setting{};
+        strcpy(setting.key, "gain"); setting.kind = ScriptValueKind::Number; setting.numberValue = 0.25;
+        assert(persistent.setSetting(setting) == RET_OK);
+        auto persistentEval = [&](const char *text, bool expected) {
+            ScriptState before = state;
+            bool result = scriptEvaluate(text, runEvent, state, plan, error, sizeof(error),
+                                              nullptr, false, true, 128, 91);
+            if (result != expected) fprintf(stderr, "Persistent eval: %s\n", error);
+            assert(result == expected);
+            if (!expected) assert(!plan.count && !plan.configBytes && !memcmp(&before, &state, sizeof(state)));
+        };
+        persistentEval("hook('run',function() "
+                       "assert(storage.read('old.txt')=='before'); storage.write('new.txt','after'); "
+                       "assert(storage.read('new.txt')=='after'); storage.remove('old.txt'); "
+                       "assert(storage.read('old.txt')==nil and #storage.list()==1); "
+                       "assert(script_config.get('gain')==0.25); script_config.set('gain',0.5); "
+                       "assert(script_config.get('gain')==0.5); script_config.set('title','text'); "
+                       "script_config.set('title',nil); assert(script_config.get('title','fallback')=='fallback') end)", true);
+        assert(plan.count == 5 && plan.actions[0].kind == ScriptKind::StorageWrite);
+        assert(plan.actions[0].value == 0 && plan.actions[0].number == 5 && !strcmp(plan.configText, "after"));
+        assert(plan.actions[2].kind == ScriptKind::ScriptConfigSet && plan.actions[2].value == 1);
+        assert(plan.actions[2].setting.numberValue == 0.5 && plan.actions[4].value == 0);
+        std::string persisted;
+        assert(persistent.readFile("new.txt", persisted) == RET_ERR && errno == ENOENT);
+        assert(persistent.readFile("old.txt", persisted) == RET_OK && persisted == "before");
+        ScriptState settings{};
+        assert(persistent.readSettings(settings) == RET_OK && settings.entries[0].numberValue == 0.25);
+        persistentEval("hook('run',function() storage.write('old.txt','discard'); "
+                       "script_config.set('gain',0.9); state.discard=true; error('rollback') end)", false);
+        assert(persistent.readFile("old.txt", persisted) == RET_OK && persisted == "before");
+        persistentEval("hook('run',function() storage.read('../config.txt') end)", false);
+        persistentEval("hook('run',function() storage.read('.settings') end)", false);
+        persistentEval("hook('run',function() storage.write('x',string.rep('a',4096)..'a') end)", false);
+        persistentEval("hook('run',function() storage.write('x','a\\0b\\1'); "
+                       "assert(storage.read('x')=='a\\0b\\1') end)", true);
+        assert(plan.actions[0].number == 4 && !memcmp(plan.configText, "a\0b\1", 4));
+        persistentEval("hook('run',function() for i=1,33 do storage.read('missing') end end)", false);
+        persistentEval("ui.option('gain',{label='Gain',type='number',default=0,min=0,max=1}); "
+                       "hook('run',function() script_config.set('gain',2) end)", false);
+        persistentEval("ui.option('title',{label='Title',type='string',default='default'}); "
+                       "hook('run',function() assert(script_config.get('title')=='default'); "
+                       "assert(script_config.get('title','explicit')=='explicit'); "
+                       "script_config.set('title','new'); assert(script_config.get('title')=='new'); "
+                       "script_config.set('title',nil); assert(script_config.get('title')=='default') end)", true);
+        persistentEval("hook('run',function() for i=1,33 do script_config.set('k'..i,true) end end)", false);
+        failure("storage.read('x')", "stable script ID");
+        failure("script_config.set('x',true)", "stable script ID");
+        std::filesystem::remove_all(ROOT_MOUNT_POINT, ec);
+        assert(!ec);
+    }
     success("local n=0; for i=1,5000 do n=n+1 end; assert(n==5000)");
     state = {};
-    MidiScriptEvent hooked{2, 7, 42, false};
-    hooked.kind = MidiScriptEventKind::ControlChange;
+    ScriptEvent hooked{2, 7, 42, false};
+    hooked.kind = ScriptEventKind::ControlChange;
     evaluationSuccess("assert(event.type=='cc' and event.source=='midi' and "
                       "event.cc==7 and event.value==42 and not event.pressed)", hooked);
-    hooked.kind = MidiScriptEventKind::NoteOff;
+    hooked.kind = ScriptEventKind::NoteOff;
     evaluationSuccess("assert(event.type=='note_off' and not event.pressed)", hooked);
-    hooked.kind = MidiScriptEventKind::SoundFinish;
+    hooked.kind = ScriptEventKind::SoundFinish;
     strcpy(hooked.sound, "test.wav");
     evaluationSuccess("assert(event.source=='audio' and event.type=='sound_finish' and event.sound=='test.wav')", hooked);
-    hooked.kind = MidiScriptEventKind::DeviceDisconnect;
+    hooked.kind = ScriptEventKind::DeviceDisconnect;
     strcpy(hooked.device, "/dev/midi1");
     evaluationSuccess("assert(event.source=='device' and event.type=='device_disconnect' and event.device=='/dev/midi1')", hooked);
     success("assert(#config.list()==6 and config.list()[1]=='config.txt')");
@@ -248,20 +378,20 @@ int main() {
     failure("config.write('config.txt','x=1\\n')", "acknowledgment");
     failure("_ENV[string.char(99,111,110,102,105,103)].write('config.txt','x=1\\n')", "acknowledgment");
     auto writePlan = [&](const char *text, bool expected, const char *message = "") {
-        bool result = midiEvaluateScript(text, defaultEvent, state, plan, error, sizeof(error), nullptr, true);
+        bool result = scriptEvaluate(text, defaultEvent, state, plan, error, sizeof(error), nullptr, true);
         assert(result == expected);
         if (!expected) {
             assert(strstr(error, message) && plan.count == 0 && plan.configBytes == 0);
         }
     };
     writePlan("config.write('config.txt','x=1\\n'); wait(1)", true);
-    assert(plan.count == 2 && plan.actions[0].kind == MidiScriptKind::ConfigWrite);
+    assert(plan.count == 2 && plan.actions[0].kind == ScriptKind::ConfigWrite);
     assert(plan.actions[0].number == 4 && !strcmp(plan.configText, "x=1\n"));
     writePlan("config.write('config.txt',string.rep('x',4096))", true);
     assert(plan.configBytes == 4097);
     writePlan("config.write('config.txt',string.rep('x',4096)); "
               "config.write('volumes.txt',string.rep('x',4094))", true);
-    assert(plan.configBytes == MIDI_SCRIPT_CONFIG_PLAN_MAX);
+    assert(plan.configBytes == SCRIPT_CONFIG_PLAN_MAX);
     writePlan("config.write('config.txt',string.rep('x',4096)); "
               "config.write('volumes.txt',string.rep('x',4094)); "
               "config.write('routing.txt','')", false, "payload limit");
@@ -275,15 +405,15 @@ int main() {
     assert(plan.count == 0);
     success("tap('CTRL+A'); wait(100); light(127)");
     assert(plan.count == 3);
-    assert(plan.actions[0].kind == MidiScriptKind::Tap);
+    assert(plan.actions[0].kind == ScriptKind::Tap);
     assert(std::strcmp(plan.actions[0].keys, "CTRL+A") == 0);
     assert(plan.actions[0].value == 0);
-    assert(plan.actions[1].kind == MidiScriptKind::Wait && plan.actions[1].value == 100);
-    assert(plan.actions[2].kind == MidiScriptKind::Light && plan.actions[2].value == 127);
+    assert(plan.actions[1].kind == ScriptKind::Wait && plan.actions[1].value == 100);
+    assert(plan.actions[2].kind == ScriptKind::Light && plan.actions[2].value == 127);
     success("local n = 0; for i=1,3 do if i%2 == 1 then tap('SHIFT+F13') "
             "else light(i) end; wait(i*10); n=n+1 end; if n==3 then light(0) end");
     assert(plan.count == 7);
-    assert(plan.actions[2].kind == MidiScriptKind::Light && plan.actions[2].value == 2);
+    assert(plan.actions[2].kind == ScriptKind::Light && plan.actions[2].value == 2);
     assert(plan.actions[5].value == 30 && plan.actions[6].value == 0);
     success("local function chord(k) tap(k) end; local a={'A','B'}; "
             "local i=1; while i<=2 do chord(a[i]); i=i+1 end");
@@ -291,23 +421,23 @@ int main() {
     success("wait(0); wait(60000); light(0); light(127)");
     assert(plan.count == 4 && plan.actions[1].value == 60000);
     success("for i=1,128 do tap('A') end");
-    assert(plan.count == MIDI_SCRIPT_ACTIONS_MAX);
+    assert(plan.count == SCRIPT_ACTIONS_MAX);
     success("for i=1,60 do wait(1000) end");
     assert(plan.count == 60);
     success("return 1, 'ignored', {}");
     assert(plan.count == 0);
     success("press('CTRL'); press('SHIFT+ALT'); release()");
     assert(plan.count == 3);
-    assert(plan.actions[0].kind == MidiScriptKind::Press &&
+    assert(plan.actions[0].kind == ScriptKind::Press &&
            std::strcmp(plan.actions[0].keys, "CTRL") == 0);
-    assert(plan.actions[1].kind == MidiScriptKind::Press);
-    assert(plan.actions[2].kind == MidiScriptKind::Release);
+    assert(plan.actions[1].kind == ScriptKind::Press);
+    assert(plan.actions[2].kind == ScriptKind::Release);
 
     success("type('A\\tB\\n~', 30); type('Z')");
     assert(plan.count == 2);
-    assert(plan.actions[0].kind == MidiScriptKind::Type && plan.actions[0].value == 30);
+    assert(plan.actions[0].kind == ScriptKind::Type && plan.actions[0].value == 30);
     assert(std::strcmp(plan.actions[0].text, "A\tB\n~") == 0);
-    assert(plan.actions[1].kind == MidiScriptKind::Type && plan.actions[1].value == 50);
+    assert(plan.actions[1].kind == ScriptKind::Type && plan.actions[1].value == 50);
     success("type('')");
     assert(plan.count == 1 && !plan.actions[0].text[0]);
     std::string fullAscii;
@@ -330,6 +460,12 @@ int main() {
     assert(plan.actions[0].value == 60000);
 
     failure(nullptr, "null");
+    success("tap('MEDIA_PLAY_PAUSE'); press('media_volume_up'); release()");
+    assert(plan.count == 3 && !strcmp(plan.actions[0].keys, "MEDIA_PLAY_PAUSE"));
+    assert(plan.actions[1].kind == ScriptKind::Press);
+    failure("tap('CTRL+MEDIA_PLAY_PAUSE')", "invalid keyboard chord");
+    failure("press('MEDIA_NEXT+MEDIA_PREVIOUS')", "invalid keyboard chord");
+    failure("tap('MEDIA_UNKNOWN')", "invalid keyboard chord");
     failure("tap('A'); tap('NO_SUCH_KEY')", "invalid keyboard chord");
     failure("tap('CTRL')", "invalid keyboard chord");
     failure("tap('CTRL+')", "invalid keyboard chord");
@@ -398,11 +534,11 @@ int main() {
     failure("local s='xxxxxxxx'; for i=1,20 do s=s..s end", "memory limit");
     failure("\x1bLua", "bytecode");
 
-    source.assign(MIDI_SCRIPT_MAX - 1, ' ');
+    source.assign(SCRIPT_MAX - 1, ' ');
     success(source.c_str());
     source += ' ';
     failure(source.c_str(), "at most 16384");
-    char unterminated[MIDI_SCRIPT_MAX];
+    char unterminated[SCRIPT_MAX];
     std::memset(unterminated, ' ', sizeof(unterminated));
     failure(unterminated, "at most 16384");
 
@@ -420,12 +556,12 @@ int main() {
         failure(source.c_str(), "nil value");
     }
     success("if event ~= nil or state ~= nil or type ~= nil then light(1) end");
-    assert(plan.count == 1 && plan.actions[0].kind == MidiScriptKind::Light);
+    assert(plan.count == 1 && plan.actions[0].kind == ScriptKind::Light);
     success("tap=nil; leaked=123");
     success("if leaked ~= nil then light(1) end; tap('A')");
-    assert(plan.count == 1 && plan.actions[0].kind == MidiScriptKind::Tap);
-    assert(midiValidateScript("while true do end", error, sizeof(error)));
-    assert(midiValidateScript("tap('A'); local x = {", error, sizeof(error)) == false);
+    assert(plan.count == 1 && plan.actions[0].kind == ScriptKind::Tap);
+    assert(scriptValidate("while true do end", error, sizeof(error)));
+    assert(scriptValidate("tap('A'); local x = {", error, sizeof(error)) == false);
     assert(std::strstr(error, "script"));
 
     success("assert(value_type(type)=='function'); assert(value_type(1)=='number'); "
@@ -496,12 +632,12 @@ int main() {
     failure("choose({[1000000]=1})", "dense array");
     success("log(string.format('hit %d',1)); sound.play('kick.wav'); "
             "sound.play('snare.wav',0.25); sound.play('hat.wav',4); sound.stop_all()");
-    assert(plan.count == 5 && plan.actions[0].kind == MidiScriptKind::Log);
+    assert(plan.count == 5 && plan.actions[0].kind == ScriptKind::Log);
     assert(std::strcmp(plan.actions[0].text, "hit 1") == 0);
-    assert(plan.actions[1].kind == MidiScriptKind::SoundPlay && plan.actions[1].pitchRatio == 1);
+    assert(plan.actions[1].kind == ScriptKind::SoundPlay && plan.actions[1].pitchRatio == 1);
     assert(std::strcmp(plan.actions[1].text, "kick.wav") == 0);
     assert(plan.actions[2].pitchRatio == 0.25 && plan.actions[3].pitchRatio == 4);
-    assert(plan.actions[4].kind == MidiScriptKind::SoundStopAll);
+    assert(plan.actions[4].kind == ScriptKind::SoundStopAll);
     success("log(''); log(string.rep('x',255)); sound.play(string.rep('x',159))");
     failure("log(1)", "string");
     failure("log('x',1)", "argument count");
@@ -525,7 +661,7 @@ int main() {
     const uint8_t expectedMidi[][4] = {{0x9f,127,99,3},{0x82,64,0,3},{0x81,63,12,3},
         {0xb3,7,100,3},{0xc4,8,0,2},{0xf8,0,0,1},{0xf1,3,0,2},{0xf2,1,2,3}};
     for (unsigned i = 0; i < plan.count; ++i) {
-        assert(plan.actions[i].kind == MidiScriptKind::Midi);
+        assert(plan.actions[i].kind == ScriptKind::Midi);
         assert(std::memcmp(plan.actions[i].midiBytes, expectedMidi[i], 3) == 0);
         assert(plan.actions[i].midiSize == expectedMidi[i][3]);
     }
@@ -566,13 +702,13 @@ int main() {
     success("effects.enable('fx_7',false); effects.toggle('fx_7'); "
             "effects.set('fx_7','channels',3); volume.set('sfx',75); volume.adjust('sfx',-5)");
     assert(plan.count == 5);
-    assert(plan.actions[0].kind == MidiScriptKind::EffectEnable && plan.actions[0].value == 0);
-    assert(plan.actions[1].kind == MidiScriptKind::EffectToggle);
-    assert(plan.actions[2].kind == MidiScriptKind::EffectSet &&
+    assert(plan.actions[0].kind == ScriptKind::EffectEnable && plan.actions[0].value == 0);
+    assert(plan.actions[1].kind == ScriptKind::EffectToggle);
+    assert(plan.actions[2].kind == ScriptKind::EffectSet &&
            !strcmp(plan.actions[2].target, "fx_7") && !strcmp(plan.actions[2].parameter, "channels") &&
            plan.actions[2].number == 3);
-    assert(plan.actions[3].kind == MidiScriptKind::VolumeSet && plan.actions[3].number == 75);
-    assert(plan.actions[4].kind == MidiScriptKind::VolumeAdjust && plan.actions[4].number == -5);
+    assert(plan.actions[3].kind == ScriptKind::VolumeSet && plan.actions[3].number == 75);
+    assert(plan.actions[4].kind == ScriptKind::VolumeAdjust && plan.actions[4].number == -5);
     failure("effects.enable('fx_7',1)", "boolean");
     failure("effects.toggle('fx_7',true)", "argument count");
     failure("effects.set('fx_7','gain',math.huge)", "finite");
@@ -586,7 +722,7 @@ int main() {
     failure("effects.set('fx_7','ga\\0in',1)", "IDs");
     failure("for i=1,129 do effects.toggle('fx_7') end", "action limit");
     evaluationSuccess("assert(event.source=='midi')");
-    MidiScriptEvent webEvent = defaultEvent;
+    ScriptEvent webEvent = defaultEvent;
     webEvent.fromWeb = true;
     evaluationSuccess("assert(event.source=='web')", webEvent);
 
@@ -619,7 +755,7 @@ int main() {
             "assert(string.rep('x',-1)==''); assert(string.byte('abc',3,2)==nil)");
 
     state = {};
-    const MidiScriptEvent clockEvent{3,64,99,true,1234567890123ULL,1793329123};
+    const ScriptEvent clockEvent{3,64,99,true,1234567890123ULL,1793329123};
     evaluationSuccess("state.ms=millis(); state.epoch=epoch(); wait(1000); "
                       "assert(millis()==state.ms and epoch()==state.epoch); "
                       "assert(math.type(millis())=='integer' and math.type(epoch())=='integer'); "
@@ -636,7 +772,7 @@ int main() {
         evaluationSuccess("state.count=(state.count or 0)+1; type('Pressed '..state.count)");
         source = "Pressed " + std::to_string(count);
         assert(std::strcmp(plan.actions[0].text, source.c_str()) == 0);
-        const MidiScriptStateEntry *entry = findState(state, "count");
+        const ScriptStateEntry *entry = findState(state, "count");
         assert(entry->numberIsInteger && entry->integerValue == count && entry->numberValue == count);
     }
     evaluationSuccess("state.big=9223372036854775807; state.small=-9223372036854775807-1; "
@@ -653,8 +789,8 @@ int main() {
     evaluationFailure("log('rollback'); state.bad={}", "state values");
     failure("millis(1)", "argument count");
     failure("epoch(1)", "argument count");
-    evaluationSuccess("assert(millis()==0 and epoch()==-1)", MidiScriptEvent{0,0,0,true,0,-1});
-    evaluationSuccess("assert(millis()==math.maxinteger)", MidiScriptEvent{0,0,0,true,UINT64_MAX,0});
+    evaluationSuccess("assert(millis()==0 and epoch()==-1)", ScriptEvent{0,0,0,true,0,-1});
+    evaluationSuccess("assert(millis()==math.maxinteger)", ScriptEvent{0,0,0,true,UINT64_MAX,0});
     success("assert(millis()==0 and epoch()==0)");
 
     state = {};
@@ -662,20 +798,20 @@ int main() {
                       "state.flag = event.pressed; state.kind = 'note'; "
                       "state.channel = event.channel; if event.pressed and event.note == 64 "
                       "then press('SHIFT') else release() end",
-                      MidiScriptEvent{3, 64, 99, true});
+                      ScriptEvent{3, 64, 99, true});
     assert(state.count == 4);
-    assert(findState(state, "hits")->kind == MidiScriptValueKind::Number &&
+    assert(findState(state, "hits")->kind == ScriptValueKind::Number &&
            findState(state, "hits")->numberValue == 1);
     assert(findState(state, "flag")->booleanValue);
     assert(std::strcmp(findState(state, "kind")->stringValue, "note") == 0);
     assert(findState(state, "channel")->numberValue == 3);
-    assert(plan.count == 1 && plan.actions[0].kind == MidiScriptKind::Press);
+    assert(plan.count == 1 && plan.actions[0].kind == ScriptKind::Press);
     evaluationSuccess("state.hits = state.hits + 1; "
                       "if event.channel == 3 and event.note == 64 and event.velocity == 99 "
                       "and not event.pressed then tap('A') end",
-                      MidiScriptEvent{3, 64, 99, false});
+                      ScriptEvent{3, 64, 99, false});
     assert(findState(state, "hits")->numberValue == 2);
-    assert(plan.count == 1 && plan.actions[0].kind == MidiScriptKind::Tap);
+    assert(plan.count == 1 && plan.actions[0].kind == ScriptKind::Tap);
     evaluationFailure("state.hits = 100; tap('A'); state = nil", "state must remain a table");
     assert(findState(state, "hits")->numberValue == 2);
     evaluationFailure("state.bad = {}; tap('A')", "state values");
@@ -690,33 +826,33 @@ int main() {
     assert(state.count == 4 && findState(state, "flag")->booleanValue);
     evaluationFailure("state = false", "state must remain a table");
 
-    MidiScriptEvent invalidEvent{16, 0, 0, true};
-    MidiScriptState stateBefore = state;
-    assert(!midiEvaluateScript("tap('A')", invalidEvent, state, plan, error, sizeof(error)));
+    ScriptEvent invalidEvent{16, 0, 0, true};
+    ScriptState stateBefore = state;
+    assert(!scriptEvaluate("tap('A')", invalidEvent, state, plan, error, sizeof(error)));
     assert(std::strstr(error, "event values") && plan.count == 0);
     assert(std::memcmp(&stateBefore, &state, sizeof(state)) == 0);
-    MidiScriptState invalidState{};
-    invalidState.count = MIDI_SCRIPT_STATE_ENTRIES_MAX + 1;
-    assert(!midiEvaluateScript("", defaultEvent, invalidState, plan, error, sizeof(error)));
+    ScriptState invalidState{};
+    invalidState.count = SCRIPT_STATE_ENTRIES_MAX + 1;
+    assert(!scriptEvaluate("", defaultEvent, invalidState, plan, error, sizeof(error)));
     assert(std::strstr(error, "state is invalid") && plan.count == 0);
     invalidState = {};
     invalidState.count = 1;
     std::strcpy(invalidState.entries[0].key, "number");
-    invalidState.entries[0].kind = MidiScriptValueKind::Number;
+    invalidState.entries[0].kind = ScriptValueKind::Number;
     invalidState.entries[0].numberValue = 7;
-    assert(midiEvaluateScript("assert(state.number==7 and math.type(state.number)=='float')",
+    assert(scriptEvaluate("assert(state.number==7 and math.type(state.number)=='float')",
                               defaultEvent, invalidState, plan, error, sizeof(error)));
     invalidState.entries[0].numberIsInteger = true;
     invalidState.entries[0].integerValue = 8;
-    assert(!midiEvaluateScript("", defaultEvent, invalidState, plan, error, sizeof(error)));
+    assert(!scriptEvaluate("", defaultEvent, invalidState, plan, error, sizeof(error)));
     assert(std::strstr(error, "state is invalid") && plan.count == 0);
 
-    assert(!midiCompileScript("while true do end", plan, nullptr, 100));
+    assert(!scriptCompile("while true do end", plan, nullptr, 100));
     char tiny[2] = {'!', '!'};
-    assert(!midiCompileScript("wait(-1)", plan, tiny, sizeof(tiny)));
+    assert(!scriptCompile("wait(-1)", plan, tiny, sizeof(tiny)));
     assert(tiny[0] && tiny[1] == '\0');
     char untouched = '!';
-    assert(!midiCompileScript("wait(-1)", plan, &untouched, 0));
+    assert(!scriptCompile("wait(-1)", plan, &untouched, 0));
     assert(untouched == '!');
     for (unsigned i = 0; i < 30; ++i) {
         failure("local s='x'; for i=1,20 do s=s..s end", "memory limit");
@@ -724,5 +860,5 @@ int main() {
         success("tap('CTRL+A')");
         assert(plan.count == 1);
     }
-    std::puts("MIDI script compiler tests passed");
+    std::puts("Script compiler tests passed");
 }

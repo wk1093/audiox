@@ -123,10 +123,13 @@ Each paired Bluetooth device has its own volume entry, identified by its
 ## What is in the list?
 
 Volume rows are generated from the active Routing graph. They can include
-source, processing, helper, and destination nodes, and can change when devices
+source, processing, and destination nodes, and can change when devices
 appear or disappear or when an effect's routing shape changes. For an ALSA
 device, expand **Advanced** to find its ID and distinguish it from another
 device with a similar name.
+
+The routing helper/Audio Mixer is hidden because it is compiled into direct
+routes rather than processed as an audio node.
 
 Because gain scales outgoing routes, source and intermediate nodes are the
 useful points for adjusting a path. To change only the level of one signal

@@ -106,6 +106,8 @@ struct ConfigData {
     uint8_t keyboardMacros;
 };
 
+bool applyScriptSetting(ConfigData &config, const char *key, const ScriptStateEntry &value);
+
 enum SoundboardMode : uint8_t {
     SOUNDBOARD_MODE_PLAY = 0,
     SOUNDBOARD_MODE_HOLD = 1,
@@ -178,7 +180,7 @@ struct MidiActionMapping {
 // Contents of midi_map.txt: note→sfx mappings plus lighting config.
 struct MidiMapData {
     uint32_t chordCount;
-    MidiChord chords[MIDI_CHORDS_MAX];
+    ScriptDefinition chords[SCRIPTS_MAX];
     uint32_t mappingCount;
     struct MidiMapping {
         uint8_t note;
@@ -230,6 +232,8 @@ struct ConfigStore {
 
     ConfigStore(Audiox *context);
     ConfigData readConfigFile() const;
+    int readScriptSettings(ConfigData *out) const;
+    int writeScriptSetting(const char *key, const ScriptStateEntry &value);
     int readStagingConfigFile(ConfigData *out) const;
     int writeConfigFile(ConfigData *cfg);
     int readScriptConfig(const char *name, char *out, size_t capacity, size_t *length) const;

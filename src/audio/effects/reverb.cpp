@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cmath>
 
 namespace audiox::effects {
 
@@ -60,14 +61,14 @@ void processReverb(const float *in,
     }
 
     for (uint32_t frame = 0; frame < frames; ++frame) {
-        float x = in[frame] * inputGain;
+        float x = std::isfinite(in[frame]) ? in[frame] * inputGain : 0.0f;
 
         float sum = 0.0f;
         for (uint32_t c = 0; c < kCombCount; ++c) {
             uint32_t idx = state->combIndex[c];
             float y = state->comb[c][idx];
             float filtered = (state->combFilter[c] * damping) + (y * (1.0f - damping));
-            state->combFilter[c] = filtered;
+            state->combFilter[c] = fabsf(filtered) < 1e-20f ? 0.0f : filtered;
             state->comb[c][idx] = x + (filtered * feedback);
 
             ++idx;

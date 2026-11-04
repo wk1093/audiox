@@ -100,7 +100,7 @@
         label: String(raw?.label || name),
         min: Number.isFinite(Number(raw?.min)) ? Number(raw.min) : 0,
         max: Number.isFinite(Number(raw?.max)) ? Number(raw.max) : 1,
-        ...parameterHelp(name),
+        ...parameterHelp(name, fx?.type),
         defaultValue: Number(raw.default),
         value: toNumber(params[name], Number(raw?.default) || 0),
       });
@@ -129,13 +129,31 @@
   const effectTypes = {
     gain: 'Gain', distortion: 'Distortion', pitch: 'Pitch Shift',
     reverb: 'Reverb', gate: 'Noise Gate', cut: 'Mute',
+    compressor: 'Compressor', limiter: 'Limiter', eq: 'Parametric EQ',
+    multiband: 'Multiband Compressor', noise_reduction: 'Noise Reduction',
   };
+
+  const pluginStatusText = {
+    ready: 'Plugin running.',
+    fault: 'Plugin fault: processing stopped. Reload the plugin from Plugins after fixing the cause.',
+    unavailable: 'Plugin unavailable: it is not installed or failed to load. Install or reload it from Plugins.',
+  };
+
+  function normalizePluginId(value) {
+    const id = String(value ?? '').trim();
+    return /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id) && !effectTypes[id] ? id : '';
+  }
+
+  function pluginAssetUrl(id) {
+    const safe = normalizePluginId(id);
+    return safe ? `/api/plugins/${encodeURIComponent(safe)}/assets/index.html` : '';
+  }
 
   function effectName(fx) {
     return fx?.name || `${effectTypes[fx?.type] || 'Effect'} ${String(fx?.id || '').replace(/^fx_/, '')}`.trim();
   }
 
-  function parameterHelp(name) {
+  function parameterHelp(name, type) {
     const help = {
       level: ['Level', 'x', 'Multiplies the signal level. 1 is unchanged; 0 silences it.'],
       input_gain: ['Input gain', 'x', 'Level entering the effect. 1 leaves the input unchanged.'],
@@ -143,7 +161,7 @@
       drive: ['Drive', 'x', 'Pushes the distortion harder for a more saturated sound.'],
       clip: ['Clip threshold', '', 'Lower values clip the waveform sooner, adding more distortion.'],
       semitones: ['Pitch shift', 'st', 'Moves pitch down or up. 12 semitones is one octave.'],
-      mix: ['Effect mix', '', '0 is the original sound; 1 is entirely pitch-shifted sound.'],
+      mix: ['Effect mix', '', 'Blends dry and processed sound. 0 is dry; 1 is fully processed. Delayed effects align their dry signal internally.'],
       noise_floor: ['Noise floor', '', 'Suppresses very quiet input in the pitch shifter. Increase to reduce low-level artifacts.'],
       wet_lpf_hz: ['Wet tone cutoff', 'Hz', 'Low-pass filter on the shifted signal. Lower values make it darker.'],
       feedback: ['Reverb length', '', 'Higher feedback makes the reverb tail last longer.'],
@@ -154,9 +172,31 @@
       release_ms: ['Release', 'ms', 'How gradually the gate closes when input becomes quiet.'],
       range_db: ['Attenuation', 'dB', 'How much the gate reduces quiet input. Higher values silence more noise.'],
       channels: ['Channels', '', 'Number of audio channels. Changing this can remove routing sockets; check your connections.'],
+      ratio: ['Ratio', ':1', 'Compression ratio above the threshold. 1 leaves dynamics unchanged.'],
+      knee_db: ['Knee', 'dB', 'Width of the gradual transition into compression. 0 uses a hard knee.'],
+      makeup_db: ['Makeup gain', 'dB', 'Gain after compression. Positive values can overload downstream effects or outputs.'],
+      ceiling_db: ['Ceiling', 'dBFS', 'Maximum output sample peak; this is not a true-peak or intersample limiter.'],
+      lookahead_ms: ['Lookahead', 'ms', 'Delays the signal so the limiter can react before peaks reach the output. Changing this clears its delay history.'],
+      q: ['Q', '', 'Width of all three peaking EQ bands. Higher Q makes a narrower band.'],
+      reduction_db: ['Noise reduction', 'dB', 'Maximum suppression of estimated stationary noise. High values can make speech sound watery.'],
+      noise_floor_db: ['Noise floor', 'dBFS', 'Starting noise estimate. Set below the quietest speech you want to preserve.'],
+      adaptation: ['Adaptation', '', 'How quickly the estimated noise floor tracks quiet background noise. 0 freezes the estimate.'],
+      smoothing: ['Smoothing', '', 'Smooths spectral suppression across time to reduce musical noise.'],
     }[name];
+    const dynamics = type === 'compressor' || type === 'limiter' || type === 'multiband';
+    if (dynamics && name === 'threshold_db') help[2] = 'Signals above this dBFS level are compressed.';
+    if (dynamics && name === 'attack_ms') help[2] = 'How quickly gain reduction responds to a rising signal.';
+    if (dynamics && name === 'release_ms') help[2] = 'How gradually gain recovers after a peak.';
+    const band = name.match(/^(low|mid|high)_(hz|gain_db|threshold_db)$/);
+    const bandHelp = band ? {
+      unit: band[2] === 'hz' ? 'Hz' : 'dB',
+      description: band[2] === 'hz' ? (type === 'multiband' ?
+        'Crossover dividing the independently compressed bands.' : 'Center frequency of this peaking EQ band.') :
+        band[2] === 'gain_db' ? 'Boost or cut around this band center.' : 'Signals above this level are compressed in this band.',
+    } : {};
     return {
       ...(help ? { label: help[0], unit: help[1], description: help[2] } : { unit: '', description: '' }),
+      ...bandHelp,
       step: name === 'channels' || name.endsWith('_hz') ? 1 :
         name === 'noise_floor' ? 0.0001 : name.endsWith('_ms') || name.endsWith('_db') ? 0.1 : 0.01,
       precision: name === 'channels' || name.endsWith('_hz') ? 0 :
@@ -184,6 +224,210 @@
       this.effectsSignature = '';
       this.nameDrafts = new Map();
       this.openSections = new Set();
+      this.pluginCatalog = new Map();
+      this.paramViews = new Map();
+      this.customUiOpen = new Set();
+      this.customUiViews = new Map();
+      this.frames = new Map();
+      this.messageListener = null;
+    }
+
+    setPluginCatalog(plugins) {
+      const next = new Map();
+      for (const plugin of Array.isArray(plugins) ? plugins : []) {
+        const id = normalizePluginId(plugin?.id);
+        if (id) next.set(id, plugin);
+      }
+      const signature = JSON.stringify([...next.entries()]);
+      if (signature === this.catalogSignature) return;
+      this.catalogSignature = signature;
+      this.pluginCatalog = next;
+      if (this.panelEl?.contains(document.activeElement) &&
+          ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) {
+        this.effectsSignature = '';
+        return;
+      }
+      this.refreshAllNodes();
+      this.renderPanel();
+    }
+
+    isPluginEffect(fx) {
+      if (!fx || effectTypes[fx.type]) return false;
+      return fx.plugin_status !== undefined || fx.plugin_ui !== undefined ||
+        this.pluginCatalog.has(normalizePluginId(fx.type));
+    }
+
+    typeLabel(fx) {
+      if (!this.isPluginEffect(fx)) return effectTypes[fx.type] || 'Effect';
+      const plugin = this.pluginCatalog.get(normalizePluginId(fx.type));
+      if (!plugin) return `Plugin: ${String(fx.type || 'unknown')}`;
+      return `Plugin: ${plugin.name || plugin.id}${plugin.version ? ` ${plugin.version}` : ''}`;
+    }
+
+    appendPluginSection(card, fx) {
+      const effectId = normalizeEffectId(fx.id);
+      const status = typeof fx.plugin_status === 'string' ? fx.plugin_status : '';
+      const statusEl = document.createElement('p');
+      statusEl.className = `small fx-plugin-status ${pluginStatusText[status] ? status : 'unknown'}`;
+      statusEl.setAttribute('role', 'status');
+      statusEl.textContent = pluginStatusText[status] || 'Plugin status unknown. Reload the plugin from Plugins.';
+      card.appendChild(statusEl);
+      if (typeof fx.plugin_error === 'string' && fx.plugin_error.trim()) {
+        const error = document.createElement('p');
+        error.className = 'small fx-plugin-error';
+        error.textContent = `Plugin error: ${fx.plugin_error}`;
+        card.appendChild(error);
+      }
+      if (fx.plugin_ui !== true) return;
+
+      const section = document.createElement('div');
+      section.className = 'fx-plugin-ui';
+      const warning = document.createElement('p');
+      warning.className = 'small fx-plugin-warning';
+      warning.textContent = 'The custom UI runs scripts from the plugin package in a sandbox. A malicious package can show ' +
+        'misleading controls; it can only change this effect\'s listed parameters. Open it only for plugins you trust.';
+      const toggle = document.createElement('button');
+      const host = document.createElement('div');
+      host.className = 'fx-plugin-frame-host';
+      const ready = status === 'ready' && !!pluginAssetUrl(fx.type);
+      const view = {
+        setOpen: (open) => {
+          if (open && ready) {
+            this.customUiOpen.add(effectId);
+            this.openFrame(effectId, host);
+          } else {
+            if (!open) this.customUiOpen.delete(effectId);
+            this.destroyFrame(effectId);
+          }
+          const isOpen = this.frames.has(effectId);
+          toggle.textContent = isOpen ? 'Close custom UI' : 'Open custom UI';
+          toggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+          toggle.disabled = !ready && !isOpen;
+          toggle.title = ready ? '' : 'The custom UI is available only while the plugin is running.';
+        },
+      };
+      toggle.setAttribute('aria-label', `Custom UI for ${effectName(fx)}`);
+      toggle.addEventListener('click', () => view.setOpen(!this.frames.has(effectId)));
+      this.customUiViews.set(effectId, view);
+      section.append(warning, toggle, host);
+      card.appendChild(section);
+      view.setOpen(ready && this.customUiOpen.has(effectId));
+    }
+
+    openFrame(effectId, host) {
+      this.destroyFrame(effectId);
+      const fx = this.effectsById.get(effectId);
+      const pluginId = normalizePluginId(fx?.type);
+      const src = pluginAssetUrl(pluginId);
+      if (!fx || !src) return;
+      const iframe = document.createElement('iframe');
+      iframe.setAttribute('sandbox', 'allow-scripts');
+      iframe.setAttribute('referrerpolicy', 'no-referrer');
+      iframe.referrerPolicy = 'no-referrer';
+      iframe.className = 'fx-plugin-frame';
+      iframe.title = `Custom UI for ${effectName(fx)}`;
+      const onLoad = () => this.postParameters(effectId);
+      iframe.addEventListener('load', onLoad);
+      iframe.src = src;
+      host.appendChild(iframe);
+      this.frames.set(effectId, { iframe, host, onLoad, pluginId });
+      this.ensureMessageListener();
+    }
+
+    destroyFrame(effectId) {
+      const entry = this.frames.get(effectId);
+      if (!entry) return;
+      this.frames.delete(effectId);
+      entry.iframe.removeEventListener?.('load', entry.onLoad);
+      if (typeof entry.iframe.remove === 'function') entry.iframe.remove();
+      else entry.iframe.parentNode?.removeChild(entry.iframe);
+      if (!this.frames.size) this.removeMessageListener();
+    }
+
+    destroyFrames() {
+      for (const id of [...this.frames.keys()]) this.destroyFrame(id);
+      this.customUiViews.clear();
+    }
+
+    closeCustomUis() {
+      for (const [id, view] of this.customUiViews) {
+        if (this.frames.has(id) || this.customUiOpen.has(id)) view.setOpen(false);
+      }
+      for (const id of [...this.frames.keys()]) this.destroyFrame(id);
+      this.customUiOpen.clear();
+    }
+
+    ensureMessageListener() {
+      if (this.messageListener || typeof window.addEventListener !== 'function') return;
+      this.messageListener = event => this.handleFrameMessage(event);
+      window.addEventListener('message', this.messageListener);
+    }
+
+    removeMessageListener() {
+      if (!this.messageListener) return;
+      window.removeEventListener?.('message', this.messageListener);
+      this.messageListener = null;
+    }
+
+    frameParameters(fx) {
+      const meta = [];
+      const params = {};
+      for (const raw of Array.isArray(fx?.param_meta) ? fx.param_meta : []) {
+        const name = typeof raw?.name === 'string' ? raw.name : '';
+        if (!name) continue;
+        const row = { name, label: String(raw.label || name), min: toNumber(raw.min, 0), max: toNumber(raw.max, 1),
+          default: toNumber(raw.default, toNumber(raw.min, 0)) };
+        meta.push(row);
+        params[name] = toNumber(fx.params?.[name], row.default);
+      }
+      return { params, param_meta: meta };
+    }
+
+    postParameters(effectId) {
+      const entry = this.frames.get(effectId);
+      const target = entry?.iframe.contentWindow;
+      const fx = this.effectsById.get(effectId);
+      if (!target || !fx || typeof target.postMessage !== 'function') return;
+      // Sandboxed frames have an opaque origin, so no narrower target origin can match.
+      target.postMessage({ type: 'audiox:parameters', id: effectId, ...this.frameParameters(fx) }, '*');
+    }
+
+    handleFrameMessage(event) {
+      if (!event || !event.source || event.origin !== 'null') return;
+      let effectId = '';
+      let entry = null;
+      for (const [id, candidate] of this.frames) {
+        if (candidate.iframe.contentWindow === event.source) {
+          effectId = id;
+          entry = candidate;
+          break;
+        }
+      }
+      if (!entry) return;
+      const data = event.data;
+      if (!data || typeof data !== 'object' || Array.isArray(data) || data.type !== 'audiox:set-param') return;
+      const fx = this.effectsById.get(effectId);
+      if (!fx || normalizePluginId(fx.type) !== entry.pluginId || fx.plugin_status !== 'ready') return;
+      const param = data.param;
+      const value = data.value;
+      const meta = typeof param === 'string' && Array.isArray(fx.param_meta)
+        ? fx.param_meta.find(row => row && row.name === param) : null;
+      const min = Number(meta?.min);
+      const max = Number(meta?.max);
+      if (!meta || typeof value !== 'number' || !Number.isFinite(value) || !Number.isFinite(min) ||
+          !Number.isFinite(max) || value < min || value > max) {
+        this.setPanelStatus(`${effectName(fx)} custom UI sent an invalid parameter change; it was ignored.`, 'warn');
+        return;
+      }
+      this.queueParamUpdate(effectId, param, value);
+    }
+
+    syncParamView(effectId, param, value) {
+      const view = this.paramViews.get(`${effectId}\n${param}`);
+      if (!view) return;
+      if (document.activeElement !== view.number) view.number.value = String(value);
+      if (document.activeElement !== view.slider) view.slider.value = String(value);
+      if (view.meta) view.meta.textContent = `${view.row.label}: ${toNumber(value, 0).toFixed(view.row.precision)}`;
     }
 
     mountPanel(panelEl, statusEl) {
@@ -280,6 +524,7 @@
       inputs.append(slider, number, reset);
       control.appendChild(inputs);
       parent.appendChild(control);
+      this.paramViews.set(`${fx.id}\n${row.name}`, { slider, number, row, meta: null });
     }
 
     rememberSection(section, key) {
@@ -295,6 +540,8 @@
         return;
       }
 
+      this.destroyFrames();
+      this.paramViews.clear();
       this.panelEl.innerHTML = '';
       const effects = [...this.effectsById.values()]
         .filter((fx) => normalizeEffectId(fx?.id))
@@ -327,8 +574,9 @@
         card.appendChild(header);
         const typeLabel = document.createElement('p');
         typeLabel.className = 'small';
-        typeLabel.textContent = effectTypes[fx.type] || 'Effect';
+        typeLabel.textContent = this.typeLabel(fx);
         card.appendChild(typeLabel);
+        if (this.isPluginEffect(fx)) this.appendPluginSection(card, fx);
 
         const renameRow = document.createElement('div');
         renameRow.className = 'fx-name-row';
@@ -396,6 +644,8 @@
           const left = document.createElement('div');
           left.className = 'fx-map-meta';
           left.textContent = `${row.label}: ${toNumber(row.value, 0).toFixed(row.precision)}`;
+          const view = this.paramViews.get(`${fx.id}\n${row.name}`);
+          if (view) view.meta = left;
 
           const badge = document.createElement('span');
           const rowCc = toNumber(cc[row.name], -1);
@@ -722,8 +972,13 @@
       this.mutationInFlight++;
       try {
         await this.postSet({ id: effectId, param, value: numeric.toFixed(4) });
+        const rendered = this.effectsSignature === this.buildEffectsSignature();
         if (fx && fx.params) fx.params[param] = numeric;
+        // Keep the open panel (and any custom UI frame) instead of re-rendering for our own save.
+        if (rendered) this.effectsSignature = this.buildEffectsSignature();
+        this.syncParamView(effectId, param, numeric);
         this.refreshAllNodes();
+        this.postParameters(effectId);
       } finally {
         this.mutationInFlight--;
       }
@@ -743,7 +998,7 @@
         const midi = fx?.midi || {};
         const cc = midi?.cc || {};
         const light = midi?.light || {};
-        const paramSig = paramList.map((p) => `${p.name}:${toNumber(params[p.name], p.value).toFixed(4)}`).join(';');
+        const paramSig = paramList.map((p) => `${p.name}:${p.min}:${p.max}:${toNumber(params[p.name], p.value).toFixed(4)}`).join(';');
         const ccSig = paramList.map((p) => `${p.name}:${toNumber(cc[p.name], -1)}`).join(';');
         rows.push([
           id,
@@ -755,6 +1010,7 @@
           toNumber(midi.toggle_note, -1),
           `l:${toNumber(light.enabled_vel, -1)}:${toNumber(light.bypassed_vel, -1)}`,
           ccSig,
+          `p:${fx.plugin_ui === true ? 1 : 0}:${String(fx.plugin_status ?? '')}:${String(fx.plugin_error ?? '')}`,
         ].join('|'));
       }
       rows.sort((a, b) => a.localeCompare(b));
@@ -1034,7 +1290,7 @@
   }
 
   window.AudioxEffects = {
-    effectName, dynamicParamList,
+    effectName, dynamicParamList, normalizePluginId, pluginAssetUrl,
     createManager(setStatus, onLayoutChange) {
       return new EffectsManager(setStatus, onLayoutChange);
     },

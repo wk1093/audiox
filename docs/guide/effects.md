@@ -54,7 +54,21 @@ Deleting an effect from the Effects page removes its saved effect state and its
 node from Routing. Check the graph and save the route changes you intend to
 keep.
 
-## Effect controls and defaults
+## Custom native plugins
+
+The **Plugins** card installs `.axm` packages, lists their metadata, reloads
+faulted workers, and removes unused packages. Installed plugins appear in the
+Routing Add menu and use normal parameter sliders, MIDI mappings, and Lua calls.
+Optional **Open custom UI** controls run in an isolated iframe.
+
+Native DSP runs in a sandboxed worker, adding one block (about 2.67 ms at
+48 kHz/128 frames) per enabled plugin instance. A late block uses delayed dry
+audio; a repeatedly late or crashed worker stays bypassed until reloaded.
+Remove all live/saved effect instances before removing a package.
+See [Plugin development and package format](../plugins) for examples, limits,
+kernel requirements, and storage/backup caveats.
+
+## Built-in effect controls and defaults
 
 The controls below are the available parameter ranges and factory defaults.
 Values are not decibels unless the label says `dB`. WebUI controls are bounded
@@ -83,10 +97,103 @@ increments; the backend accepts the listed ranges.
 |  | Release ms | 5–600 ms | 160 ms |
 |  | Range dB | 0–80 dB | 30 dB |
 | **Cut** | Channels | 1–16, whole numbers | 2 |
+| **Compressor** | Threshold | −60–0 dBFS | −18 |
+| | Ratio | 1–20:1 | 4 |
+| | Attack | 0.1–100 ms | 10 |
+| | Release | 5–1,000 ms | 120 |
+| | Knee | 0–24 dB | 6 |
+| | Makeup | −12–24 dB | 0 |
+| | Mix | 0–1 | 1 |
+| **Limiter** | Ceiling | −24–0 dBFS | −1 |
+| | Release | 5–1,000 ms | 80 |
+| | Lookahead | 0–10 ms | 3 |
+| | Input Gain | 0–4 | 1 |
+| **Parametric EQ** | Low Hz / Gain | 40–1,000 Hz / −18–18 dB | 150 Hz / 0 dB |
+| | Mid Hz / Gain | 200–8,000 Hz / −18–18 dB | 1,000 Hz / 0 dB |
+| | High Hz / Gain | 1,000–18,000 Hz / −18–18 dB | 6,000 Hz / 0 dB |
+| | Shared Q | 0.2–10 | 1 |
+| | Output Gain | 0–4 | 1 |
+| **Multiband Compressor** | Low Crossover | 80–1,000 Hz | 200 |
+| | High Crossover | 1,000–10,000 Hz | 2,500 |
+| | Low / Mid / High Threshold | −60–0 dBFS each | −18 |
+| | Shared Ratio | 1–20:1 | 4 |
+| | Release | 5–1,000 ms | 120 |
+| | Makeup | −12–24 dB | 0 |
+| **Noise Reduction** | Reduction | 0–30 dB | 12 |
+| | Starting Noise Floor | −90–−20 dBFS | −55 |
+| | Adaptation | 0–1 | 0.1 |
+| | Smoothing | 0–1 | 0.7 |
+| | Mix | 0–1 | 1 |
+| | Output Gain | 0–4 | 1 |
 
 Cut's **Channels** setting changes how many input and output sockets the node
 has. If the count changes, reconnect routes that refer to channels that no
 longer exist. A newly created Cut is in its passing (not muted) state.
+
+### Algorithms, headroom and latency
+
+- **Compressor** uses a sample-peak detector with soft knee, gain-reduction
+  attack/release, makeup and parallel dry/wet mixing. **Limiter** caps sample
+  peaks, not intersample/true peaks. It adds its selected lookahead delay;
+  changing lookahead clears history, so a brief gap is possible.
+- **Parametric EQ** has three peaking bands and a shared Q, with a short
+  coefficient-change crossfade. **Multiband Compressor** uses three
+  Linkwitz-Riley bands, fixed 10 ms attack and 6 dB knee. Ratio 1 and makeup 0
+  have unity magnitude but allpass phase, not sample-identical bypass.
+  Frequencies are bounded below Nyquist; the high crossover stays above the low.
+- Dynamics detectors are independent per channel, not stereo-linked. Compression,
+  makeup and EQ boosts can overload the next node or final output; reduce gain
+  or add a final limiter. These three effects add no explicit block delay.
+- **Noise Reduction** suppresses estimated stationary background noise, such as
+  hiss or fans. It is not acoustic echo cancellation or an ML voice separator.
+  Set the starting floor below quiet speech; excessive reduction can introduce
+  watery/musical artifacts. Adaptation 0 freezes the estimate. Its phase-preserving
+  spectral processor adds **256 frames** (5.33 ms at 48 kHz), including dry mix.
+- **Pitch** uses a 1024-sample phase vocoder with a 128-sample hop. Shifted audio
+  and its internal dry mix have **1024 frames** of delay (21.33 ms at 48 kHz).
+  Zero semitones or Mix 0 are immediate, transparent apart from input/output
+  gain and peak clamping. Switching between these and shifted processing clears
+  history and changes latency. Pitch remains non-formant-preserving and can
+  sound phasey, soften transients, or lose level on upward shifts. Overlap-add
+  normalization is corrected so downshifts no longer receive the old unintended
+  level boost.
+
+Delays affect only routes through the corresponding enabled effect, never
+unrelated routes. Bypass is immediate and clears effect history. There is no
+automatic latency compensation between parallel graph routes; mixing an external
+dry route with a delayed effect can comb-filter. Bypass is a direct graph
+connection, without a per-effect copy or clamp; final device output still clamps
+to its PCM range. An enabled Cut is a disconnection, not a DSP zero-fill pass.
+Built-in silent branches skip DSP once their tails and control release settle;
+see [Runtime optimizations](./routing.md#runtime-optimizations).
+Re-enabling or changing type
+does not replay old tails.
+
+## Audio idle sleep
+
+After **5 seconds** without signal above **-60 dBFS** (peak amplitude `0.001`)
+on a path to an output, the audio engine enters idle sleep and skips graph
+mixing and effects. This short timeout is
+for testing. Capture, playback of silence, Bluetooth buffer servicing,
+soundboard timing, and input meters continue; this is not board suspend.
+
+A live microphone behind an enabled Cut, a zero-level Gain effect, or a
+zero-volume source does not prevent sleep unless another route carries its
+signal to an output. A noise gate is not treated as a hard mute. Live sources
+and outputs at or below the noise floor count as quiet, so analog background
+noise need not prevent sleep. This intentionally suppresses very quiet real
+audio while asleep; input must exceed the floor to wake processing.
+
+Reverb, pitch, EQ, multiband, limiter and noise-reduction audio memory must settle before an audible path can sleep;
+residuals at or below the same `0.001` noise floor are treated as silent.
+Muted/disconnected tails are cleared on sleep entry rather than frozen and
+replayed later. New signal on
+a live route, soundboard triggers, routing changes, or effect/volume changes
+resume processing without waiting for another timeout. Sleep and wake
+transitions do not produce log messages.
+
+This mode reduces DSP work, not audio I/O wakeups. Power savings and glitch-free
+operation still require testing with the connected hardware.
 
 ## MIDI controls and effect LEDs
 

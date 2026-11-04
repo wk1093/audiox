@@ -1,4 +1,5 @@
 #include "bluetooth/a2dp.hpp"
+#include "bluetooth/avrcp.hpp"
 
 #include <string.h>
 
@@ -70,6 +71,38 @@ const Attribute kRecord[] = {
 
 // AudioSink, AdvancedAudioDistribution, L2CAP, AVDTP, PublicBrowseRoot.
 const uint32_t kRecordUuids[] = {0x110B, 0x110D, 0x0100, 0x0019, 0x1002};
+const uint8_t kAvrcpHandle[] = {0x0a, 0x00, 0x01, 0x00, 0x01};
+const uint8_t kAvrcpClasses[] = {0x35, 0x03, 0x19, 0x11, 0x0c};
+const uint8_t kAvrcpProtocols[] = {
+    0x35, 0x10,
+    0x35, 0x06, 0x19, 0x01, 0x00, 0x09, 0x00, 0x17,
+    0x35, 0x06, 0x19, 0x00, 0x17, 0x09, 0x01, 0x00,
+};
+const uint8_t kAvrcpProfiles[] = {0x35, 0x08, 0x35, 0x06, 0x19, 0x11, 0x0e, 0x09, 0x01, 0x00};
+const uint8_t kAvrcpFeatures[] = {0x09, 0x00, 0x03}; // Player/recorder and monitor/amplifier.
+const Attribute kAvrcpRecord[] = {
+    {0x0000, kAvrcpHandle, sizeof(kAvrcpHandle)},
+    {0x0001, kAvrcpClasses, sizeof(kAvrcpClasses)},
+    {0x0004, kAvrcpProtocols, sizeof(kAvrcpProtocols)},
+    {0x0005, kBrowseGroups, sizeof(kBrowseGroups)},
+    {0x0009, kAvrcpProfiles, sizeof(kAvrcpProfiles)},
+    {0x0100, kServiceName, sizeof(kServiceName)},
+    {0x0311, kAvrcpFeatures, sizeof(kAvrcpFeatures)},
+};
+const uint32_t kAvrcpUuids[] = {0x110c, 0x110e, 0x0100, 0x0017, 0x1002};
+struct Record {
+    uint32_t handle;
+    const Attribute *attributes;
+    size_t attributeCount;
+    const uint32_t *uuids;
+    size_t uuidCount;
+};
+const Record kRecords[] = {
+    {A2DP_SDP_RECORD_HANDLE, kRecord, sizeof(kRecord) / sizeof(kRecord[0]),
+     kRecordUuids, sizeof(kRecordUuids) / sizeof(kRecordUuids[0])},
+    {AVRCP_SDP_RECORD_HANDLE, kAvrcpRecord, sizeof(kAvrcpRecord) / sizeof(kAvrcpRecord[0]),
+     kAvrcpUuids, sizeof(kAvrcpUuids) / sizeof(kAvrcpUuids[0])},
+};
 
 struct Element {
     uint8_t type;
@@ -113,7 +146,7 @@ bool readElement(const uint8_t *p, size_t available, Element *element) {
 
 // Returns false for malformed patterns; *matches says whether the record has
 // every UUID in the pattern.
-bool matchPattern(const Element &pattern, bool *matches) {
+bool matchPattern(const Element &pattern, const Record &record, bool *matches) {
     if (pattern.type != 6) {
         return false;
     }
@@ -145,8 +178,8 @@ bool matchPattern(const Element &pattern, bool *matches) {
             return false;
         }
         bool found = false;
-        for (uint32_t known : kRecordUuids) {
-            found = found || known == value;
+        for (size_t i = 0; i < record.uuidCount; ++i) {
+            found = found || record.uuids[i] == value;
         }
         all = all && found;
     }
@@ -207,11 +240,12 @@ bool appendSequenceHeader(uint8_t *out, size_t capacity, size_t *length, size_t 
 
 // Writes the record's attribute list (a sequence of ID/value pairs) filtered
 // by the requested ranges.
-bool appendAttributeList(const Range *ranges, size_t rangeCount,
+bool appendAttributeList(const Record &record, const Range *ranges, size_t rangeCount,
                          uint8_t *out, size_t capacity, size_t *length) {
     uint8_t body[256] = {};
     size_t bodyLength = 0;
-    for (const Attribute &attribute : kRecord) {
+    for (size_t index = 0; index < record.attributeCount; ++index) {
+        const Attribute &attribute = record.attributes[index];
         bool wanted = false;
         for (size_t i = 0; i < rangeCount; ++i) {
             wanted = wanted || (attribute.id >= ranges[i].low && attribute.id <= ranges[i].high);
@@ -342,12 +376,16 @@ size_t buildSdpResponse(const uint8_t *request, size_t length, uint8_t *out, siz
     const uint8_t *params = request + 5;
     size_t offset = 0;
 
-    bool matches = true;
+    bool matches[2] = {};
+    const Record *requestedRecord = nullptr;
     if (pdu == SDP_SEARCH_REQUEST || pdu == SDP_SEARCH_ATTRIBUTE_REQUEST) {
         Element pattern = {};
-        if (!readElement(params, parameterLength, &pattern) || !matchPattern(pattern, &matches)) {
+        if (!readElement(params, parameterLength, &pattern)) {
             return errorPdu(out, capacity, transaction, SDP_INVALID_SYNTAX);
         }
+        for (size_t i = 0; i < 2; ++i)
+            if (!matchPattern(pattern, kRecords[i], &matches[i]))
+                return errorPdu(out, capacity, transaction, SDP_INVALID_SYNTAX);
         offset += pattern.total;
     } else if (pdu == SDP_ATTRIBUTE_REQUEST) {
         if (parameterLength < 4) {
@@ -355,7 +393,9 @@ size_t buildSdpResponse(const uint8_t *request, size_t length, uint8_t *out, siz
         }
         const uint32_t handle = ((uint32_t)params[0] << 24) | ((uint32_t)params[1] << 16) |
                                 ((uint32_t)params[2] << 8) | params[3];
-        if (handle != A2DP_SDP_RECORD_HANDLE) {
+        for (const auto &record : kRecords)
+            if (handle == record.handle) requestedRecord = &record;
+        if (!requestedRecord) {
             return errorPdu(out, capacity, transaction, SDP_INVALID_HANDLE);
         }
         offset += 4;
@@ -373,7 +413,7 @@ size_t buildSdpResponse(const uint8_t *request, size_t length, uint8_t *out, siz
         if (parameterLength - offset < 1 || params[offset] != 0) {
             return errorPdu(out, capacity, transaction, SDP_INVALID_CONTINUATION);
         }
-        const uint16_t total = matches ? 1 : 0;
+        const uint16_t total = static_cast<uint16_t>(matches[0] + matches[1]);
         const uint16_t current = total < maximum ? total : maximum;
         if (capacity < 5U + 5U + 4U * current) {
             return 0;
@@ -382,12 +422,16 @@ size_t buildSdpResponse(const uint8_t *request, size_t length, uint8_t *out, siz
         writeBe16(response, total);
         writeBe16(response + 2, current);
         size_t responseLength = 4;
-        if (current) {
-            response[4] = (uint8_t)(A2DP_SDP_RECORD_HANDLE >> 24);
-            response[5] = (uint8_t)(A2DP_SDP_RECORD_HANDLE >> 16);
-            response[6] = (uint8_t)(A2DP_SDP_RECORD_HANDLE >> 8);
-            response[7] = (uint8_t)A2DP_SDP_RECORD_HANDLE;
+        unsigned written = 0;
+        for (size_t i = 0; i < 2 && written < current; ++i) {
+            if (!matches[i]) continue;
+            const uint32_t handle = kRecords[i].handle;
+            response[responseLength] = (uint8_t)(handle >> 24);
+            response[responseLength + 1] = (uint8_t)(handle >> 16);
+            response[responseLength + 2] = (uint8_t)(handle >> 8);
+            response[responseLength + 3] = (uint8_t)handle;
             responseLength += 4;
+            ++written;
         }
         response[responseLength++] = 0;
         return finishPdu(out, (uint8_t)(pdu + 1), transaction, responseLength);
@@ -413,18 +457,18 @@ size_t buildSdpResponse(const uint8_t *request, size_t length, uint8_t *out, siz
         return errorPdu(out, capacity, transaction, SDP_INVALID_CONTINUATION);
     }
 
-    uint8_t full[320] = {};
+    uint8_t full[640] = {};
     size_t fullLength = 0;
     if (pdu == SDP_ATTRIBUTE_REQUEST) {
-        if (!appendAttributeList(ranges, rangeCount, full, sizeof(full), &fullLength)) {
+        if (!appendAttributeList(*requestedRecord, ranges, rangeCount, full, sizeof(full), &fullLength)) {
             return 0;
         }
     } else {
-        uint8_t lists[300] = {};
+        uint8_t lists[600] = {};
         size_t listsLength = 0;
-        if (matches && !appendAttributeList(ranges, rangeCount, lists, sizeof(lists), &listsLength)) {
-            return 0;
-        }
+        for (size_t i = 0; i < 2; ++i)
+            if (matches[i] && !appendAttributeList(kRecords[i], ranges, rangeCount,
+                                                   lists, sizeof(lists), &listsLength)) return 0;
         if (!appendSequenceHeader(full, sizeof(full), &fullLength, listsLength) ||
             !appendRaw(full, sizeof(full), &fullLength, lists, listsLength)) {
             return 0;

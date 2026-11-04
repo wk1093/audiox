@@ -15,8 +15,10 @@
 #include <mutex>
 
 #include "audio/effects/slot.hpp"
+#include "audio/plugin_host.hpp"
 #include "audio/gadget_volume.hpp"
 #include "audio/bluetooth_stream.hpp"
+#include <vector>
 
 #define AUDIO_GRAPH_MAX_THINGS 64
 #define AUDIO_GRAPH_MAX_EDGES 128
@@ -261,6 +263,14 @@ struct AudioContext {
     std::atomic<uint32_t> effectStatesSeq;
     uint32_t nextEffectId;
     mutable std::mutex effectsMutex;
+    std::unordered_map<std::string, std::unique_ptr<audiox::plugin::PluginHost>> pluginHosts;
+    std::unordered_map<std::string, bool> pluginFaultReported;
+    struct RetiredPlugin {
+        uint32_t sequence;
+        std::unique_ptr<audiox::plugin::PluginHost> host;
+    };
+    std::vector<RetiredPlugin> retiredPlugins;
+    std::atomic<uint32_t> pluginObservedSeq{0};
 
     AudioContext(Audiox *context);
     ~AudioContext();
@@ -299,6 +309,14 @@ struct AudioContext {
     void loadVolumesFromConfig();
 
     void loadEffectsFromConfig();
+    // Worker startup must not hold the mutex read by the audio thread.
+    std::unique_ptr<audiox::plugin::PluginHost> preparePlugin(const char *id, uint8_t type);
+    void attachPlugin(const char *id, audiox::effects::SlotParams &params,
+                      std::unique_ptr<audiox::plugin::PluginHost> host);
+    void retirePlugin(const char *id);
+    void pollPlugins();
+    bool pluginInUse(const char *type) const;
+    int reloadPlugins(const char *type);
     int listEffects(AudioEffectSlotState *out, size_t cap) const;
     int getEffectParams(const char *thingId, audiox::effects::SlotParams *out) const;
     int setEffectType(const char *thingId, uint8_t type);

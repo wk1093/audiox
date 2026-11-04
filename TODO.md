@@ -74,10 +74,10 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Fix versioning system (use 1.8.0-beta and whatnot instead of putting 1.8 dev stuff under 1.7.x), implement an extra version field everywhere (makefile, C++ source, JS source, etc)
 - [x] Make a config TUI like the linux kernel makefile has to allow configuring for different systems, environments, and be able to change the currently #define static settings like the buffer size and sample rate.
 - [x] Split up code better so that we can partially compile the audio subsystem (the audio graph should be a bit more abstract, and shouldn't know about how devices actually work) so that we can test effects and stuff on my desktop instead of re-uploading to the Pi.
-  - [x] Add replaceable source/sink callbacks for desktop/shared-graph builds; keep the default Pi realtime loop on a direct compile-time path after callbacks caused device-side underruns.
+  - [x] Keep one direct realtime processing path after source/sink callbacks caused device-side underruns; exercise that same runtime code in host tests.
   - [x] Extract the fixed-capacity PCM capture ring and SRC cursor state from the ALSA stream object; keep ALSA acquisition in the Pi adapter.
   - [x] Move ALSA capture stream ownership, device attachment/remapping, source gadget identity, and fixed PCM/SRC state out of RuntimeGraph into an explicit capture backend; keep ALSA I/O on the direct Pi path.
-  - [x] Extract backend-neutral route mixing, node processing, and effect execution; use the same graph block processor in the Pi runtime and host tests.
+  - [x] Cover route mixing, node processing, and effect execution in direct-runtime host tests without a separate desktop engine.
 - [x] "Cut" effect/feature to mute or unmute a route, with configurable matching input/output channel counts and MIDI/Web UI toggling.
 - [x] Run the application as a child of a small PID 1 watchdog; restart it after exit or a stale main-loop heartbeat.
 
@@ -166,25 +166,31 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Replace native disclosure triangles throughout the WebUI with consistent custom chevrons and focus states; polish Soundboard setup/Add panels without changing Play.
 
 ## Plugin System and more built-in effects - v1.14
-- [ ] Implement custom plugin system for effects, allowing users to create and load their own effect modules into the audio engine.
-  - [ ] Create API
-  - [ ] Define plugin metadata format (axm)
-  - [ ] Implement plugin loader in the audio engine
-  - [ ] Provide example plugin for users to reference
-  - [ ] Document plugin development process for users
-  - [ ] Test plugin system with multiple plugins loaded simultaneously
-  - [ ] Handle plugin unloading and cleanup properly
-  - [ ] Ensure plugin system is compatible with existing effect system and routing logic
-  - [ ] Implement versioning for plugin API to allow for future updates without breaking existing plugins
-  - [ ] Implement plugin sandboxing to prevent faulty plugins from crashing the audio engine
-  - [ ] Provide a way for plugins to give a custom UI for their parameters:
+- [x] Implement route-aware DSP idle sleep after 5 seconds for testing, ignoring inputs blocked by Cut/zero gain while keeping audio I/O running; preserve audible tails, clear muted tails on sleep entry, and wake on signal or control changes.
+- [x] Implement custom plugin system for effects, allowing users to create and load their own effect modules into the audio engine.
+  - [x] Create API
+  - [x] Define plugin metadata format (axm)
+  - [x] Implement plugin loader in the audio engine
+  - [x] Provide example plugin for users to reference
+  - [x] Document plugin development process for users
+  - [x] Test plugin system with multiple plugins loaded simultaneously
+  - [x] Handle plugin unloading and cleanup properly
+  - [x] Ensure plugin system is compatible with existing effect system and routing logic
+  - [x] Implement versioning for plugin API to allow for future updates without breaking existing plugins
+  - [x] Implement plugin sandboxing to prevent faulty plugins from crashing the audio engine
+  - [x] Provide a way for plugins to give a custom UI for their parameters:
     - We should be able to dynamically serve custom JS or CSS for the plugin UI, since the HTTP server is custom. We could just add an api endpoint for the webui to grab a plugin's assets, and the plugin custom format can also contain multiple asset files (yet another custom archive format like axu and axb)
-- [ ] More advanced effects
-  - [ ] Voice noise cancellation/reduction
-  - [ ] Compressor
-  - [ ] Limiter
-  - [ ] Parametric EQ
-  - [ ] Multi-band compressor
+  - Native and browser regressions pass and AArch64 binaries/packages build; physical-device kernel sandbox support and performance still need validation.
+- [x] More advanced effects
+  - [x] Voice noise cancellation/reduction: stationary spectral noise reduction, not echo cancellation or ML speech separation.
+  - [x] Compressor
+  - [x] Limiter
+  - [x] Parametric EQ
+  - [x] Multi-band compressor
+  - [x] Correct pitch normalization, transparent zero shift and internal dry/wet delay alignment; bound per-effect DSP state without audio-callback allocation.
+  - [x] Fix plugin-host lifecycle linking in meter, display-hotplug and gadget-volume host tests; cover their build rules and verify the full CI test suite, including graph ThreadSanitizer.
+  - [x] Make Cut and bypass routing-only operations; skip silent built-in chains while preserving tails and control release, retain direct buffer aliases and avoid clearing unused DSP buffers.
+  - DSP/sanitizer, routing, HTTP persistence, MIDI/Lua and WebUI regressions pass; physical Pi listening and realtime performance still need validation.
 
 ## Release - v2.0+
 

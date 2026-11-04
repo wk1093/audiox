@@ -50,6 +50,7 @@ and development. Markdown sources are in [`docs/`](docs/).
 | Signal flow and levels | [Routing](docs/guide/routing.md), [Effects](docs/guide/effects.md), [Volume](docs/guide/volume.md) |
 | Clips, MIDI, and Bluetooth | [Soundboard](docs/guide/soundboard.md), [MIDI](docs/guide/midi.md), [Bluetooth](docs/guide/bluetooth.md) |
 | Automation | [Scripts](docs/guide/macros.md), [Lua API](docs/lua/api.md), [Cookbook](docs/lua/cookbook.md) |
+| Native effect development | [Plugins and AXM format](docs/plugins.md) |
 | Backups, updates, and diagnostics | [Config](docs/guide/config.md), [System](docs/guide/system.md), [Troubleshooting](docs/guide/troubleshooting.md) |
 | Builds and releases | [Development](docs/guide/development.md), [Publishing](docs/guide/publishing.md) |
 | Persistent files and HTTP API | [Reference](docs/guide/reference.md) |
@@ -70,7 +71,7 @@ The build produces `out/initramfs.cpio.gz` and `out/program.cpio.gz`.
 archive. Build targets create host-side files. `make dev`, `make upload_update`,
 and export targets modify a device or card; review their instructions first.
 
-Tests and audio-benchmark targets are defined in `tests/Makefile` and included
+Test targets are defined in `tests/Makefile` and included
 from the root Makefile. Run the relevant targets from the repository root.
 QEMU and desktop audio tests do not replace physical hardware validation.
 

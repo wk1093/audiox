@@ -175,7 +175,7 @@ int ConfigStore::readScriptConfig(const char *name, char *out, size_t capacity, 
     int fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
     struct stat st{};
     if (fd < 0 || fstat(fd, &st) < 0 || !S_ISREG(st.st_mode) ||
-        st.st_size > static_cast<off_t>(MIDI_SCRIPT_CONFIG_READ_MAX)) {
+        st.st_size > static_cast<off_t>(SCRIPT_CONFIG_READ_MAX)) {
         printf("[CONFIG] [WARN] Lua cannot read %s: %s\n", path,
                fd < 0 ? strerror(errno) : "not a readable regular file within 64 KiB");
         if (fd >= 0) close(fd);
@@ -203,7 +203,7 @@ int ConfigStore::readScriptConfig(const char *name, char *out, size_t capacity, 
 
 int ConfigStore::writeScriptConfig(const char *name, const char *text, size_t length) {
     char path[256]{};
-    if (!midiScriptConfigTextValid(text, length) ||
+    if (!scriptConfigTextValid(text, length) ||
         !scriptConfigPath(name, path, sizeof(path))) {
         printf("[CONFIG] [WARN] Invalid Lua configuration write\n");
         return RET_ERR;
@@ -248,6 +248,65 @@ ConfigData ConfigStore::readConfigFile() const {
     ConfigData cfg = {};
     (void)readConfigPath(CONFIG_REAL_FILE_PATH, &cfg, 0);
     return cfg;
+}
+
+int ConfigStore::readScriptSettings(ConfigData *out) const {
+    int result = readConfigPath(CONFIG_REAL_FILE_PATH, out, 1);
+    if (result != RET_OK)
+        printf("[CONFIG] [WARN] Cannot read structured Lua settings\n");
+    return result;
+}
+
+bool applyScriptSetting(ConfigData &cfg, const char *key, const ScriptStateEntry &value) {
+    if (!key) return false;
+    auto numeric = [&](uint32_t min, uint32_t max, uint32_t &target) {
+        if (value.kind != ScriptValueKind::Number || !std::isfinite(value.numberValue) ||
+            value.numberValue < min || value.numberValue > max ||
+            std::floor(value.numberValue) != value.numberValue) return false;
+        target = static_cast<uint32_t>(value.numberValue);
+        return true;
+    };
+    auto boolean = [&](uint8_t &target) {
+        if (value.kind != ScriptValueKind::Boolean) return false;
+        target = value.booleanValue;
+        return true;
+    };
+    auto choice = [&](const char *a, const char *b, const char *c, uint8_t &target) {
+        if (value.kind != ScriptValueKind::String) return false;
+        if (!strcmp(value.stringValue, a)) target = 0;
+        else if (!strcmp(value.stringValue, b)) target = 1;
+        else if (c && !strcmp(value.stringValue, c)) target = 2;
+        else return false;
+        return true;
+    };
+    if (!strcmp(key, "usb_sample_rate")) return numeric(8000, 192000, cfg.sampleRate);
+    if (!strcmp(key, "usb_playback_channels")) return numeric(1, 16, cfg.playbackChannels);
+    if (!strcmp(key, "usb_capture_channels")) return numeric(1, 16, cfg.captureChannels);
+    if (!strcmp(key, "usb_sample_size")) return numeric(1, 4, cfg.sampleSize);
+    if (!strcmp(key, "keyboard_macros")) return boolean(cfg.keyboardMacros);
+    if (!strcmp(key, "soundboard_mode")) return choice("play", "hold", nullptr, cfg.soundboardMode);
+    if (!strcmp(key, "framebuffer_view")) return choice("meters", "soundboard", nullptr, cfg.framebufferSoundboard);
+    if (!strcmp(key, "midi_passthrough")) return choice("off", "unmapped", "all", cfg.midiPassthrough);
+    return false;
+}
+
+int ConfigStore::writeScriptSetting(const char *key, const ScriptStateEntry &value) {
+    ConfigData cfg{};
+    if (readScriptSettings(&cfg) != RET_OK || !applyScriptSetting(cfg, key, value)) {
+        printf("[CONFIG] [WARN] Invalid structured Lua setting\n");
+        return RET_ERR;
+    }
+    if (writeConfigFile(&cfg) != RET_OK) return RET_ERR;
+    const int directory = open(ROOT_MOUNT_POINT, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    bool ok = directory >= 0;
+    int error = errno;
+    if (ok && fsync(directory) < 0) { ok = false; error = errno; }
+    if (directory >= 0 && close(directory) < 0 && ok) { ok = false; error = errno; }
+    if (!ok) {
+        printf("[CONFIG] [WARN] Cannot flush structured Lua settings: %s\n", strerror(error));
+        return RET_ERR;
+    }
+    return RET_OK;
 }
 
 int ConfigStore::readStagingConfigFile(ConfigData *out) const {

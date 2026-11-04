@@ -36,6 +36,11 @@ int main() {
     assert(responseBody.find("\"missing_sources\":[\"stdout\",\"stderr\"]") != std::string::npos);
     writeLog("stdout.log", "ordinary\n[DEBUG] details\n[WARN] USB \"one\"\n[ERR] USB failed\r\nlast partial");
     writeLog("stderr.log", "[WARN] stderr warning\n");
+    char scriptLogs[4097]{};
+    assert(readSystemLogText("stdout", 2, scriptLogs, sizeof(scriptLogs)) == 0);
+    assert(!strcmp(scriptLogs, "[ERR] USB failed\nlast partial\n"));
+    assert(readSystemLogText("../config", 2, scriptLogs, sizeof(scriptLogs)) == -EINVAL);
+    assert(readSystemLogText("stdout", 129, scriptLogs, sizeof(scriptLogs)) == -EINVAL);
     Query query;
     assert(parseQuery("source=stdout&level=warn&text=uSb&limit=2", query));
     Tail tail;

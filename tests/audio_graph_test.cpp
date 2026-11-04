@@ -71,6 +71,7 @@ extern "C" int __wrap_close(int fd) {
     return result;
 }
 
+#include "script_device_stubs.hpp"
 size_t BluetoothContext::copyRoutingDevices(BluetoothRoutingDevice *, size_t) const { return 0; }
 
 int main() {
@@ -202,7 +203,7 @@ int main() {
         }
         assert(audio->setEffectType(effect, audiox::effects::EFFECT_GAIN) == RET_OK);
         auto renameEffect = [&](const std::string &name, const char *id = nullptr) {
-            std::string body = std::string("id=") + (id ? id : effect) + "&name_hex=" + midiHexEncode(name.c_str());
+            std::string body = std::string("id=") + (id ? id : effect) + "&name_hex=" + scriptHexEncode(name.c_str());
             return request([&](int fd) { return handleEffectName(&http, fd, "POST", body.data(), body.size()); });
         };
         const std::string customName = "Mic \"Space\", caf\xc3\xa9 & +";

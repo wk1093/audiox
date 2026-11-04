@@ -17,12 +17,15 @@ test('USB keyboard settings remain backwards compatible', () => {
 
 function fixture() {
   const elements = new Map(), confirmations = [], calls = [], reads = [], notices = [];
-  let confirmResult = true, fail = false, learnFailure = false, scripts = [];
+  let confirmResult = true, fail = false, learnFailure = false, scripts = [], unsaved = false;
+  let waitForControl = null, releaseControl;
   let note = { connected: true, last_seq: 10, last_note: 60, last_channel: 0 };
-  function element() {
+  function element(tagName = 'div') {
     return {
-      value: '', disabled: false, children: [],
+      tagName, value: '', disabled: false, children: [],
+      set innerHTML(value) { throw new Error(`Unsafe HTML: ${value}`); },
       addEventListener(name, callback) { this[name] = callback; },
+      dispatchEvent(event) { this[event.type]?.(event); },
       append(...children) { this.children.push(...children); },
       appendChild(child) { this.children.push(child); },
       replaceChildren() { this.children = []; },
@@ -39,9 +42,10 @@ function fixture() {
     addEventListener(name, callback) { this[name] = callback; }, querySelectorAll: () => [] };
   const context = vm.createContext({
     document, window: {}, state, TextEncoder, TextDecoder,
+    AudioxLuaEditor: require('../web/lua-editor.js'),
     AudioxUI: {
       confirm: async (...args) => { confirmations.push(args); return confirmResult; },
-      setUnsaved() {}, hasUnsavedChanges: () => false,
+      setUnsaved: (key, value) => { unsaved = value; }, hasUnsavedChanges: () => unsaved,
     },
     setInterval: () => 1, clearInterval() {},
     renderSoundboardGrid() {}, startMeterPolling() {}, stopMeterPolling() {},
@@ -49,10 +53,21 @@ function fixture() {
     fetch: async (url, options) => {
       if (url === '/api/midi/last_note') return { ok: !learnFailure, status: 503,
         json: async () => note, text: async () => learnFailure ? 'MIDI unavailable' : JSON.stringify(note) };
-      assert.ok(url === '/api/scripts' || url === '/api/scripts/run');
+      assert.ok(url === '/api/scripts' || url === '/api/scripts/run' || url === '/api/scripts/control');
       if (options.method) calls.push({ ...options, url });
       else reads.push(options);
+      if (url === '/api/scripts/control' && waitForControl) await waitForControl;
       if (fail) return { ok: false, status: 500, text: async () => 'save failed' };
+      if (url === '/api/scripts/control') {
+        const fields = new URLSearchParams(options.body);
+        const control = scripts.find(script => script.id === Number(fields.get('id')))?.ui
+          ?.find(control => control.key === context.chordHexDecode(fields.get('key_hex')));
+        if (control && fields.has('value_hex')) {
+          const value = context.chordHexDecode(fields.get('value_hex'));
+          control.value = control.type === 'boolean' ? value === 'true' :
+            control.type === 'number' ? Number(value) : value;
+        }
+      }
       if (options.method === 'POST' && url === '/api/scripts') {
         const fields = Object.fromEntries(new URLSearchParams(options.body));
         scripts = [{ id: Number(fields.id || 17), name: context.chordHexDecode(fields.name_hex),
@@ -62,7 +77,8 @@ function fixture() {
           idle_velocity: Number(fields.idle_velocity), pressed_velocity: Number(fields.pressed_velocity) }];
       }
       if (options.method === 'DELETE') scripts = [];
-      return { ok: true, json: async () => ({ scripts }) };
+      return { ok: true, json: async () => ({ scripts }), text: async () =>
+        url === '/api/scripts/control' ? 'setting saved and config_change queued' : '' };
     },
   });
   vm.runInContext(source.slice(source.indexOf('let editingMacroId ='),
@@ -74,6 +90,13 @@ function fixture() {
   return { context, get, calls, reads, notices, document, state, confirmations,
     note: value => { note = value; }, fail: () => { fail = true; },
     failLearn: () => { learnFailure = true; },
+    setUnsaved: value => { unsaved = value; },
+    setScripts: value => {
+      scripts = JSON.parse(JSON.stringify(value));
+      context.renderMidiChords(value);
+    },
+    holdControls: () => { waitForControl = new Promise(resolve => { releaseControl = resolve; }); },
+    releaseControls: () => { releaseControl(); waitForControl = null; },
     setConfirmResult: value => { confirmResult = value; } };
 }
 
@@ -146,6 +169,186 @@ test('configuration permissions require consent and cancellation sends no reques
     script_hex: f.context.chordHexEncode('hook("run",function() log("dynamic") end)') }, f.get('btn-chord-save'));
   assert.equal(f.confirmations.length, 3);
   assert.equal(f.calls.length, 1);
+});
+
+function scriptWithControls(f, ui) {
+  return { id: 23, name: 'Custom script', midi_enabled: false, channel: 0, note: 60,
+    event_mask: 128, script_hex: f.context.chordHexEncode('hook("run",function() end)'), ui };
+}
+
+function scriptControls(f) {
+  return f.get('chord-list').children[0].children[2].children.map(field => field.children.at(-1));
+}
+
+test('per-script UI errors render as safe text without preventing editing', async () => {
+  const f = fixture(), message = 'Invalid settings: <img src=x onerror=alert(1)> & "雪"';
+  f.setScripts([{ ...scriptWithControls(f),
+    ui_error_hex: f.context.chordHexEncode(message) }]);
+  const row = f.get('chord-list').children[0];
+  assert.ok(row.children[0].textContent.includes(`Script controls/settings load failed: ${message}`));
+  await row.children[1].children[0].click();
+  assert.equal(f.get('macro-name').value, 'Custom script');
+  assert.equal(f.get('btn-chord-save').textContent, 'Save Changes');
+  f.setScripts([scriptWithControls(f)]);
+  assert.doesNotMatch(f.get('chord-list').children[0].children[0].textContent,
+    /controls\/settings load failed/);
+});
+
+test('script UI renders only labeled native controls with text-safe labels and finite bounds', () => {
+  const f = fixture(), label = '<img src=x onerror=alert(1)> & "雪"';
+  f.setScripts([scriptWithControls(f, [
+    { key: 'enabled', label, type: 'boolean', value: true },
+    { key: 'level', label: 'Level', type: 'number', value: 1.5, min: -2, max: 10 },
+    { key: 'title', label: 'Title', type: 'string', value: 'café 雪' },
+    { key: 'go', label: 'Go', type: 'button' },
+    { key: 'unbounded', label: 'Unbounded', type: 'number', value: 2, min: -Infinity, max: '99' },
+    { key: 'evil', label, type: 'html', value: '<script>alert(1)</script>' },
+  ])]);
+  const fields = f.get('chord-list').children[0].children[2].children;
+  const controls = scriptControls(f);
+  assert.equal(fields.length, 5);
+  assert.equal(fields[0].tagName, 'label');
+  assert.equal(fields[0].children[0].textContent, label);
+  assert.deepEqual(controls.map(input => input.tagName), ['input', 'input', 'input', 'button', 'input']);
+  assert.deepEqual(controls.map(input => input.type), ['checkbox', 'number', 'text', 'button', 'number']);
+  assert.equal(controls[0].checked, true);
+  assert.equal(controls[1].value, '1.5');
+  assert.equal(controls[1].step, 'any');
+  assert.equal(controls[1].min, '-2');
+  assert.equal(controls[1].max, '10');
+  assert.equal(controls[2].value, 'café 雪');
+  assert.equal(controls[2].maxLength, 127);
+  assert.equal(controls[3].textContent, 'Go');
+  assert.equal(controls[4].min, undefined);
+  assert.equal(controls[4].max, undefined);
+  f.context.renderMidiChords([scriptWithControls(f, undefined)]);
+  assert.equal(f.get('chord-list').children[0].children.length, 2);
+});
+
+test('all script controls send hex-encoded typed values, keep saved values and preserve unsaved source', async () => {
+  for (const [type, savedValue, value] of [
+    ['boolean', false, true], ['number', 1, -2.5], ['string', 'Old', 'café &=+ 雪'], ['button', undefined, undefined],
+  ]) {
+    const f = fixture(), key = 'key &=+ 雪';
+    f.setScripts([scriptWithControls(f, [{ key, label: 'Setting', type, value: savedValue }])]);
+    await f.get('chord-list').children[0].children[1].children[0].click();
+    f.get('chord-script').value = 'hook("run",function() log("unsaved source") end)';
+    f.get('macro-name').value = 'Unsaved name';
+    f.setUnsaved(true);
+    const control = scriptControls(f)[0];
+    if (type === 'boolean') control.checked = value;
+    else if (type !== 'button') control.value = value;
+    await control[type === 'button' ? 'click' : 'change']();
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.calls[0].url, '/api/scripts/control');
+    assert.equal(f.calls[0].method, 'POST');
+    assert.equal(f.calls[0].headers['Content-Type'], 'text/plain');
+    const fields = new URLSearchParams(f.calls[0].body);
+    assert.equal(fields.get('id'), '23');
+    assert.equal(f.context.chordHexDecode(fields.get('key_hex')), key);
+    assert.equal(fields.has('value_hex'), type !== 'button');
+    if (type !== 'button') assert.equal(f.context.chordHexDecode(fields.get('value_hex')), String(value));
+    assert.equal(control.disabled, false);
+    assert.equal(f.reads.length, 0);
+    assert.equal(f.confirmations.length, 0);
+    assert.match(f.notices.at(-1)[0], type === 'button' ? /button queued/ : /setting saved; config_change queued/);
+    assert.match(f.notices.at(-1)[0], /not confirmation of completion/);
+    assert.equal(f.get('macro-name').value, 'Unsaved name');
+    assert.match(f.get('chord-script').value, /unsaved source/);
+    if (type === 'boolean') assert.equal(control.checked, value);
+    else if (type !== 'button') assert.equal(control.value, value);
+    await f.get('btn-chord-save').click();
+    assert.match(f.calls[1].body, /^id=23&/);
+  }
+});
+
+test('failed script control saves restore saved values and buttons report queue failures', async () => {
+  for (const type of ['boolean', 'number', 'string', 'button']) {
+    const f = fixture(), value = { boolean: true, number: 1.5, string: 'saved 雪' }[type];
+    f.setScripts([scriptWithControls(f, [{ key: 'setting', label: 'Setting', type, value }])]);
+    const control = scriptControls(f)[0];
+    control.checked = false;
+    control.value = type === 'number' ? '2' : 'changed';
+    f.fail();
+    await control[type === 'button' ? 'click' : 'change']();
+    if (type === 'boolean') assert.equal(control.checked, true);
+    else if (type !== 'button') assert.equal(control.value, String(value));
+    assert.equal(control.disabled, false);
+    assert.equal(f.reads.length, 0);
+    assert.match(f.notices.at(-1)[0], /Script control failed.*500.*save failed/);
+    assert.equal(f.notices.at(-1)[1], 'warn');
+  }
+});
+
+test('script controls reject nonfinite/out-of-bounds numbers and text above 127 UTF-8 bytes', async () => {
+  const f = fixture();
+  f.setScripts([scriptWithControls(f, [
+    { key: 'number', label: 'Number', type: 'number', value: 5, min: 0, max: 10 },
+    { key: 'text', label: 'Text', type: 'string', value: 'Saved' },
+  ])]);
+  const [number, text] = scriptControls(f);
+  for (const value of ['', ' ', 'Infinity', 'NaN', '-1', '11']) {
+    number.value = value;
+    await number.change();
+    assert.equal(number.value, '5');
+    assert.match(f.notices.at(-1)[0], /finite number/);
+  }
+  text.value = '雪'.repeat(43);
+  await text.change();
+  assert.equal(text.value, 'Saved');
+  assert.match(f.notices.at(-1)[0], /127 UTF-8 bytes/);
+  assert.equal(f.calls.length, 0);
+  text.value = '雪'.repeat(42) + 'x';
+  await text.change();
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.reads.length, 1);
+  assert.equal(scriptControls(f)[1].value, '雪'.repeat(42) + 'x');
+});
+
+test('pending controls prevent duplicates and reloads; other unfinished controls are preserved', async () => {
+  const f = fixture();
+  f.setScripts([scriptWithControls(f, [
+    { key: 'enabled', label: 'Enabled', type: 'boolean', value: false },
+    { key: 'text', label: 'Text', type: 'string', value: 'Saved' },
+  ])]);
+  const [checkbox, text] = scriptControls(f);
+  text.value = 'Unfinished';
+  text.input();
+  checkbox.checked = true;
+  f.holdControls();
+  const first = checkbox.change();
+  assert.equal(checkbox.disabled, true);
+  await checkbox.change();
+  await f.context.loadMidiChords();
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.reads.length, 0);
+  f.releaseControls();
+  await first;
+  assert.equal(checkbox.disabled, false);
+  assert.equal(checkbox.checked, true);
+  assert.equal(text.value, 'Unfinished');
+  assert.equal(f.reads.length, 0);
+  await text.change();
+  assert.equal(f.reads.length, 1);
+  assert.equal(scriptControls(f)[0].checked, true);
+  assert.equal(scriptControls(f)[1].value, 'Unfinished');
+});
+
+test('custom script_config, storage and ui do not request official write permissions', async () => {
+  const f = fixture();
+  const script = scriptWithControls(f);
+  script.script_hex = f.context.chordHexEncode(
+    'script_config.get("custom"); storage.read("private"); ui.boolean("enabled", "Enabled", true)');
+  await f.context.saveMidiChord('POST', script, f.get('btn-chord-save'));
+  assert.equal(f.confirmations.length, 0);
+  assert.match(f.calls[0].body, /config_write_ack=0/);
+  for (const name of ['config', 'settings', 'system', 'bluetooth']) {
+    await f.context.saveMidiChord('POST', { ...script,
+      script_hex: f.context.chordHexEncode(`-- ${name} access`) }, f.get('btn-chord-save'));
+  }
+  assert.equal(f.confirmations.length, 4);
+  assert.match(f.confirmations[0][0], /official configuration.*restart.*Bluetooth/);
+  for (const call of f.calls.slice(1)) assert.match(call.body, /config_write_ack=1/);
 });
 
 test('UTF-8 source, names, NUL and LED bounds are checked before saving', async () => {
@@ -237,7 +440,7 @@ test('MIDI learning matches the next event and unbinding cancels learning', asyn
 
 test('leaving Scripts cancels MIDI learning; returning loads Scripts API', async () => {
   const f = fixture();
-  Object.assign(f.context, { stopSystemPolling() {}, loadLightDim() {},
+  Object.assign(f.context, { stopSystemPolling() {}, loadLightDim() {}, effectsManager: null,
     renderStopAllMidiStatus() {}, renderSamplerToggleMidiStatus() {} });
   vm.runInContext(source.slice(source.indexOf('function setActiveTab('),
     source.indexOf('\nfunction ', source.indexOf('function setActiveTab(') + 1)), f.context);

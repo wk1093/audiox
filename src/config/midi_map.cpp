@@ -1,4 +1,5 @@
 #include "config/context.hpp"
+#include "audio/plugin_registry.hpp"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -361,7 +362,12 @@ static int parseEffectStateLine(const char *value,
         strcmp(parts[1], "pitch") != 0 &&
         strcmp(parts[1], "reverb") != 0 &&
         strcmp(parts[1], "gate") != 0 &&
-        strcmp(parts[1], "cut") != 0) {
+        strcmp(parts[1], "cut") != 0 &&
+        strcmp(parts[1], "compressor") != 0 &&
+        strcmp(parts[1], "limiter") != 0 &&
+        strcmp(parts[1], "eq") != 0 &&
+        strcmp(parts[1], "multiband") != 0 &&
+        strcmp(parts[1], "noise_reduction") != 0 && !audiox::plugin::validTypeName(parts[1])) {
         return RET_ERR;
     }
 
@@ -664,7 +670,7 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
         return (errno == ENOENT) ? RET_WARN : RET_ERR;
     }
 
-    char line[MIDI_SCRIPT_STORAGE_MAX * 2 + 384];
+    char line[SCRIPT_STORAGE_MAX * 2 + 384];
     while (fgets(line, sizeof(line), fp)) {
         char *eq = strchr(line, '=');
         if (!eq) {
@@ -742,14 +748,14 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             unsigned id, enabled, channel, note, idle, pressed;
             char nameHex[128]{}, keys[64]{};
             int offset = 0;
-            MidiChord chord{};
-            if (data.chordCount < MIDI_CHORDS_MAX &&
+            ScriptDefinition chord{};
+            if (data.chordCount < SCRIPTS_MAX &&
                 sscanf(value, "%u,%u,%u,%u,%u,%u,%127[^,],%63[^,],%n",
                        &id, &enabled, &channel, &note, &idle, &pressed, nameHex, keys, &offset) == 8 &&
                 offset > 0 && id > 0 && enabled <= 1 && channel <= 15 && note <= 127 &&
                 idle <= 127 && pressed <= 127 &&
-                midiHexDecode(nameHex, chord.name, sizeof(chord.name)) && chord.name[0] &&
-                midiHexDecode(value + offset, chord.script, sizeof(chord.script))) {
+                scriptHexDecode(nameHex, chord.name, sizeof(chord.name)) && chord.name[0] &&
+                scriptHexDecode(value + offset, chord.script, sizeof(chord.script))) {
                 chord.id = id;
                 chord.midiEnabled = enabled != 0;
                 chord.channel = channel;
@@ -759,7 +765,7 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
                 if (strcmp(keys, "-")) strcpy(chord.keys, keys);
                 uint8_t report[8];
                 bool valid = (chord.script[0] || chord.keys[0]) &&
-                    (!chord.keys[0] || midiChordReport(chord.keys, report));
+                    (!chord.keys[0] || scriptChordReport(chord.keys, report));
                 for (uint32_t j = 0; j < data.chordCount; ++j)
                     if (data.chords[j].id == chord.id) valid = false;
                 if (valid) {
@@ -777,12 +783,12 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             bool writePermission = strcmp(key, "automation_config_write") == 0;
             bool hookMode = strcmp(key, "automation_hooks") == 0;
             if (sscanf(value, "%u,%u%c", &id, &mask, &extra) == 2 &&
-                mask <= (writePermission || hookMode ? 1 : MIDI_SCRIPT_EVENTS_MASK)) {
+                mask <= (writePermission || hookMode ? 1 : SCRIPT_EVENTS_MASK)) {
                 for (uint32_t j = 0; j < data.chordCount; ++j) {
                     if (data.chords[j].id == id) {
                         if (writePermission) data.chords[j].configWriteAllowed = mask != 0;
                         else if (hookMode) data.chords[j].hookMode = mask != 0;
-                        else data.chords[j].eventMask = static_cast<uint8_t>(mask);
+                        else data.chords[j].eventMask = static_cast<uint16_t>(mask);
                         found = true;
                     }
                 }
@@ -792,19 +798,19 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             unsigned channel, note, idle, pressed;
             char keys[64]{};
             int offset = 0;
-            if (data.chordCount < MIDI_CHORDS_MAX &&
+            if (data.chordCount < SCRIPTS_MAX &&
                 sscanf(value, "%u,%u,%u,%u,%63[^,],%n", &channel, &note, &idle, &pressed, keys, &offset) == 5 &&
                 offset > 0 && channel <= 15 && note <= 127 && idle <= 127 && pressed <= 127 &&
-                strlen(value + offset) < MIDI_SCRIPT_MAX * 2) {
-                MidiChord chord{};
+                strlen(value + offset) < SCRIPT_MAX * 2) {
+                ScriptDefinition chord{};
                 chord.channel = channel;
                 chord.note = note;
                 chord.idleVelocity = idle;
                 chord.pressedVelocity = pressed;
                 if (strcmp(keys, "-")) strcpy(chord.keys, keys);
                 uint8_t report[8];
-                if (midiHexDecode(value + offset, chord.script, sizeof(chord.script)) &&
-                    (!chord.keys[0] || midiChordReport(chord.keys, report)) &&
+                if (scriptHexDecode(value + offset, chord.script, sizeof(chord.script)) &&
+                    (!chord.keys[0] || scriptChordReport(chord.keys, report)) &&
                     (chord.script[0] || chord.keys[0])) {
                     data.chords[data.chordCount++] = chord;
                     continue;
@@ -815,10 +821,10 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             unsigned channel, note;
             char keys[64]{}, extra;
             uint8_t report[8];
-            if (data.chordCount < MIDI_CHORDS_MAX &&
+            if (data.chordCount < SCRIPTS_MAX &&
                 sscanf(value, "%u,%u,%63[^,\r\n]%c", &channel, &note, keys, &extra) == 3 &&
-                channel <= 15 && note <= 127 && midiChordReport(keys, report)) {
-                MidiChord &chord = data.chords[data.chordCount++];
+                channel <= 15 && note <= 127 && scriptChordReport(keys, report)) {
+                ScriptDefinition &chord = data.chords[data.chordCount++];
                 chord.channel = channel;
                 chord.note = note;
                 strcpy(chord.keys, keys);
@@ -852,7 +858,7 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
             if (comma) {
                 *comma = '\0';
                 char name[64]{};
-                if (midiHexDecode(comma + 1, name, sizeof(name)) && midiEffectNameValid(name)) {
+                if (scriptHexDecode(comma + 1, name, sizeof(name)) && midiEffectNameValid(name)) {
                     for (uint32_t i = 0; i < data.effectStateCount; ++i) {
                         if (!strcmp(data.effectStates[i].effectId, value)) {
                             copyBounded(data.effectStates[i].name, sizeof(data.effectStates[i].name), name);
@@ -886,7 +892,7 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
     assignMacroIdentities(data);
     for (uint32_t i = 0; i < data.chordCount; ++i) {
         char error[192]{};
-        if (!midiMigrateScript(data.chords[i], error, sizeof(error)))
+        if (!scriptMigrate(data.chords[i], error, sizeof(error)))
             printf("[CONFIG] [WARN] Cannot convert script %u: %s\n", data.chords[i].id, error);
     }
     if (data.soundboardLayout == SOUNDBOARD_LAYOUT_GRID || data.gridCellCount > 0)
@@ -946,12 +952,12 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
     }
 
     dprintf(fd, "# audiox midi map v1\n");
-    for (uint32_t i = 0; i < data->chordCount && i < MIDI_CHORDS_MAX; ++i) {
+    for (uint32_t i = 0; i < data->chordCount && i < SCRIPTS_MAX; ++i) {
         const auto &chord = data->chords[i];
-        std::string hex = midiHexEncode(chord.script);
+        std::string hex = scriptHexEncode(chord.script);
         if (dprintf(fd, "automation=%u,%u,%u,%u,%u,%u,%s,%s,%s\n",
                     chord.id, chord.midiEnabled ? 1 : 0, chord.channel, chord.note,
-                    chord.idleVelocity, chord.pressedVelocity, midiHexEncode(chord.name).c_str(),
+                    chord.idleVelocity, chord.pressedVelocity, scriptHexEncode(chord.name).c_str(),
                     chord.keys[0] ? chord.keys : "-", hex.c_str()) < 0 ||
             dprintf(fd, "automation_events=%u,%u\n", chord.id, chord.eventMask) < 0 ||
             dprintf(fd, "automation_config_write=%u,%u\n", chord.id, chord.configWriteAllowed ? 1 : 0) < 0 ||
@@ -1114,7 +1120,7 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
                     (double)data->effectStates[i].output);
             if (data->effectStates[i].name[0]) {
                 dprintf(fd, "fx_name=%s,%s\n", data->effectStates[i].effectId,
-                        midiHexEncode(data->effectStates[i].name).c_str());
+                        scriptHexEncode(data->effectStates[i].name).c_str());
             }
         }
     }
@@ -1279,6 +1285,11 @@ void midiEffectDisplayName(const MidiMapData &map, const char *id, const char *t
                         !strcmp(type, "cut") ? "Mute" :
                         !strcmp(type, "distortion") ? "Distortion" :
                         !strcmp(type, "pitch") ? "Pitch Shift" :
+                        !strcmp(type, "compressor") ? "Compressor" :
+                        !strcmp(type, "limiter") ? "Limiter" :
+                        !strcmp(type, "eq") ? "Parametric EQ" :
+                        !strcmp(type, "multiband") ? "Multiband Compressor" :
+                        !strcmp(type, "noise_reduction") ? "Noise Reduction" :
                         !strcmp(type, "reverb") ? "Reverb" : "Gain";
     snprintf(out, capacity, "%s %s", label, !strncmp(id, "fx_", 3) ? id + 3 : id);
 }
@@ -1327,7 +1338,7 @@ int ConfigStore::writeMidiMapFile(MidiMapData *data) {
             return RET_ERR;
         }
     }
-    if (data->chordCount > MIDI_CHORDS_MAX) {
+    if (data->chordCount > SCRIPTS_MAX) {
         printf("[CONFIG] [WARN] Too many key chord mappings\n");
         return RET_ERR;
     }
@@ -1336,30 +1347,30 @@ int ConfigStore::writeMidiMapFile(MidiMapData *data) {
         uint8_t report[8];
         auto &chord = data->chords[i];
         char error[192]{};
-        if (!midiMigrateScript(chord, error, sizeof(error))) {
+        if (!scriptMigrate(chord, error, sizeof(error))) {
             printf("[CONFIG] [WARN] Cannot convert script %u: %s\n", chord.id, error);
             return RET_ERR;
         }
         if (chord.channel > 15 || chord.note > 127 ||
-            (!chord.hookMode && chord.eventMask > MIDI_SCRIPT_LEGACY_EVENTS_MASK) ||
+            (!chord.hookMode && chord.eventMask > SCRIPT_LEGACY_EVENTS_MASK) ||
             (chord.hookMode && !chord.script[0]) ||
             chord.idleVelocity > 127 || chord.pressedVelocity > 127 ||
             strnlen(chord.keys, sizeof(chord.keys)) == sizeof(chord.keys) ||
             strnlen(chord.script, sizeof(chord.script)) == sizeof(chord.script) ||
             strnlen(chord.name, sizeof(chord.name)) == sizeof(chord.name) ||
-            (chord.keys[0] && !midiChordReport(chord.keys, report)) ||
-            (!chord.script[0] && !midiChordReport(chord.keys, report)) ||
-            (chord.script[0] && !midiValidateScript(chord.script, error, sizeof(error)))) {
+            (chord.keys[0] && !scriptChordReport(chord.keys, report)) ||
+            (!chord.script[0] && !scriptChordReport(chord.keys, report)) ||
+            (chord.script[0] && !scriptValidate(chord.script, error, sizeof(error)))) {
             printf("[CONFIG] [WARN] Invalid macro mapping: %s\n", error);
             return RET_ERR;
         }
-        if (chord.hookMode && !midiInspectHooks(chord.script, chord.eventMask, error, sizeof(error))) {
+        if (chord.hookMode && !scriptInspectHooks(chord.script, chord.eventMask, error, sizeof(error))) {
             printf("[CONFIG] [WARN] Invalid callback mapping: %s\n", error);
             return RET_ERR;
         }
         for (uint32_t j = 0; j < i; ++j) {
             if (chord.id == data->chords[j].id ||
-                midiMacroTriggersOverlap(chord, data->chords[j])) {
+                scriptMacroTriggersOverlap(chord, data->chords[j])) {
                 printf("[CONFIG] [WARN] Duplicate macro trigger\n");
                 return RET_ERR;
             }

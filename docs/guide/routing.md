@@ -125,8 +125,19 @@ removes the node; review and save any remaining routes that you want to keep.
 
 ## Arrange and navigate the graph
 
-- **Arrange** places source/device nodes, the helper, effects, and destinations
-  in columns. Drag node headers to position them manually.
+- **Arrange** follows the current routes, folding serial effect pairs vertically
+  instead of stretching every effect into another column. Short branches sit
+  near their destinations, and branches are reordered to reduce wire crossings.
+  Separate routed groups occupy separate rows. Cycles stay together in a layer;
+  unused nodes are grouped below the routed graph. With no routes, nodes are
+  grouped by source/helper/effect/destination. Crossing reduction is a heuristic,
+  not a guarantee of a crossing-free graph. Spacing is compact, with room for
+  headers and wires. Drag node headers to place them manually.
+- Wires use smooth, direct curves at 45% opacity, so controls remain visible where
+  routes cross panels. Selecting a node highlights all of its incoming and outgoing
+  routes at 85% opacity; selecting multiple nodes highlights routes connected to
+  any of them. Curves follow their sockets without jumping around other panels
+  as you move nodes.
 - **Fit** scales and centers all nodes in the current graph area. The `+`,
   `−`, and percentage buttons zoom; scrolling over the canvas also zooms.
 - **Fullscreen** expands the graph area.
@@ -136,7 +147,7 @@ connections and helper presence; it does not save node positions.
 
 ## Effects, limits, and rejected connections
 
-Add Gain, Distortion, Pitch, Reverb, Noise Gate, or Cut from the graph Add menu.
+Add built-in effects or installed plugins from the graph Add menu.
 The effect is created as an `fx_N` node; connect it like any other
 channel-preserving processing node. Effect parameters and bypass are managed
 on its node and on **Effects**. See [Effects](./effects.md).
@@ -162,6 +173,31 @@ Keep signal flow one-way from inputs through processing to outputs. AudioX
 orders processing nodes for chained effects, but it does not provide a
 feedback-loop design or a cycle-warning workflow. Avoid connecting a path back
 into an earlier node.
+
+## Runtime optimizations
+
+- An enabled **Mute (Cut)** is a graph disconnection: AudioX does not mix audio
+  into it or run its DSP to fill an output buffer with zeroes. Unmute is a
+  direct channel connection.
+- **Bypass** forwards the same input buffer through the graph, including for
+  native plugins. No effect processing, copy, clipping or extra block delay is
+  added. The node's Volume gain still applies to outgoing routes; a buffer is
+  needed only when applying non-unity gain or summing multiple inputs.
+- Built-in channels with exactly silent input and no pending audio or control
+  release are skipped immediately, independently of the five-second idle timer.
+  For example, a Cut ahead of five fresh built-ins prevents all five from
+  running, even while another branch is playing. Other inputs to the chain
+  still work. Exact cancellation and zero source volume also avoid silent DSP.
+- Existing reverb/delay/filter tails continue after an upstream mute until they
+  settle. Detector release and coefficient transitions are not frozen. A mute
+  placed **after** an effect blocks its tail from reaching that output.
+  Silent built-in paths share a zero buffer; unused effect buffers are not
+  cleared or written every block.
+
+This is not a gate: very quiet nonzero audio still runs DSP while the graph is
+awake. Source I/O and meters keep running. Enabled native plugins remain
+conservative because their DSP may generate sound even from zero input; their
+bypass still uses the direct path.
 
 ## Troubleshooting
 

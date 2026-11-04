@@ -162,11 +162,11 @@ int main() {
             renderSourceNode(context.get(), &graph, &backend, 0);
             assert(std::fabs(data[0][0] - 0.25f * gain) < 0.000001f);
             context->gadgetVolume.playbackGain.store(1.0f);
-            servicePlaybackIoImpl<false>(context.get(), &graph, 0);
+            servicePlaybackIo(context.get(), &graph);
             assert(outputSample == audiox::pcm::toS16(0.25f * gain));
             context->gadgetVolume.playbackGain.store(gain);
             data[0][0] = 0.25f;
-            servicePlaybackIoImpl<false>(context.get(), &graph, 0);
+            servicePlaybackIo(context.get(), &graph);
             assert(outputSample == audiox::pcm::toS16(0.25f * gain));
         }
     }

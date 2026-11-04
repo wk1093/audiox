@@ -3,6 +3,8 @@
 The **Scripts** page stores up to **16 named Lua scripts**. A script registers
 event callbacks with `hook()`. Triggers include Web Run, MIDI note/CC events,
 sound voice start/finish, and selected controller connect/disconnect events.
+Startup, one-second timers, Bluetooth changes, custom options, and custom WebUI
+buttons are also supported.
 See [Lua scripting](/lua/) for callback behavior and the complete API.
 
 ## Create and run a script
@@ -15,6 +17,10 @@ Run queues the saved source; it does not execute unsaved editor text or confirm
 completion. It is unavailable unless the script registers a `run` callback.
 Choose **Reload Scripts** to refresh runtime errors. Editing preserves the
 script's stable ID; **Remove** deletes its definition.
+
+The source editor highlights Lua keywords, strings, comments, numbers, and API
+names locally, without an internet connection. Highlighting is visual only;
+**Save Script** still validates the source on the device.
 
 Scripts register up to 32 callbacks. Setup code runs in a fresh environment for
 each trigger; ordinary variables reset. Only supported scalar values assigned
@@ -74,9 +80,17 @@ Per event, limits include **17,408 UTF-8 source bytes**, 100,000 instructions,
 duration, and 16 pending triggers. `wait()` delays playback, not evaluation.
 Lua does not run on the audio thread.
 
-Effects and volume actions are runtime-only. Configuration APIs can read or
-replace allowlisted text files. Writes require explicit **Allow configuration
-writes** permission and confirmation when saving the script. Writes are raw
+Use `script_config` for typed, persistent per-script options and `ui.option` /
+`ui.button` for native controls beside a saved script. `storage` provides
+isolated custom files on the persistent partition; it cannot access official
+configuration or another script's files. `settings` updates validated device
+fields without manual text parsing; `system` and `bluetooth` provide logs,
+restart, discovery, pairing, connection, and auto-connect APIs.
+
+Effects and volume actions are runtime-only. Legacy configuration APIs can read or
+replace allowlisted text files. Writes require explicit **Allow device
+management/configuration writes** permission and confirmation when saving the script. This permission
+also covers device restart and Bluetooth mutations. Legacy writes are raw
 replacements, not format-validated updates; back up first and reload or restart
 the relevant subsystem as needed. See [Config](/guide/config) and the
 [configuration API](/lua/api#persistent-configuration).

@@ -1,4 +1,5 @@
 #include "bluetooth/a2dp.hpp"
+#include "bluetooth/avrcp.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -35,6 +36,14 @@ static void checkSdp() {
     assert(response[0] == 0x03);
     assert(response[5] == 0 && response[6] == 1 && response[7] == 0 && response[8] == 1);
     assert(contains(response, {0x00, 0x01, 0x00, 0x00}));
+    response = sdp(0x02, {0x35, 0x03, 0x19, 0x11, 0x0c, 0x00, 0x10, 0x00});
+    assert(response[6] == 1 && response[8] == 1);
+    assert(contains(response, {0x00, 0x01, 0x00, 0x01}));
+    response = sdp(0x02, {0x35, 0x03, 0x19, 0x10, 0x02, 0x00, 0x10, 0x00});
+    assert(response[6] == 2 && response[8] == 2);
+    assert(contains(response, {0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01}));
+    response = sdp(0x02, {0x35, 0x06, 0x19, 0x11, 0x0c, 0x19, 0x00, 0x19, 0x00, 0x10, 0x00});
+    assert(response[6] == 0); // UUIDs must all belong to one record.
     response = sdp(0x02, {0x35, 0x03, 0x19, 0x11, 0x0A, 0x00, 0x10, 0x00});
     assert(response[0] == 0x03 && response[6] == 0 && response[8] == 0);
 
@@ -70,49 +79,112 @@ static void checkSdp() {
     assert(response[0] == 0x05);
     assert(contains(response, {0x09, 0x00, 0x09, 0x35, 0x08}));
     assert(!contains(response, {0x09, 0x00, 0x01, 0x35}));
+    response = sdp(0x04, {0x00, 0x01, 0x00, 0x01, 0x01, 0x00,
+        0x35, 0x05, 0x0a, 0x00, 0x00, 0xff, 0xff, 0x00});
+    assert(response[0] == 0x05);
+    assert(contains(response, {0x19, 0x11, 0x0c}));
+    assert(contains(response, {0x19, 0x01, 0x00, 0x09, 0x00, 0x17}));
+    assert(contains(response, {0x19, 0x11, 0x0e, 0x09, 0x01, 0x00}));
+    assert(contains(response, {0x09, 0x03, 0x11, 0x09, 0x00, 0x03}));
 
     // Unknown handle is an error.
     response = sdp(0x04, {0x00, 0x02, 0x00, 0x00, 0x01, 0x00, 0x35, 0x03, 0x09, 0x00, 0x09, 0x00});
     assert(response[0] == 0x01 && response[6] == 0x02);
 
     // Small byte budgets are served with continuation state.
-    std::vector<uint8_t> collected;
-    uint16_t resume = 0;
-    for (int round = 0; round < 64; ++round) {
-        params = audioSinkUuid;
+    for (const auto &pattern :
+         {audioSinkUuid, std::vector<uint8_t>{0x35, 0x03, 0x19, 0x11, 0x0c},
+          std::vector<uint8_t>{0x35, 0x03, 0x19, 0x10, 0x02}}) {
+      std::vector<uint8_t> collected;
+      uint16_t resume = 0;
+      for (int round = 0; round < 64; ++round) {
+        params = pattern;
         params.insert(params.end(), {0x00, 0x10});
         params.insert(params.end(), allAttributes.begin(), allAttributes.end());
         if (resume) {
-            params.insert(params.end(), {0x02, (uint8_t)(resume >> 8), (uint8_t)resume});
+          params.insert(params.end(),
+                        {0x02, (uint8_t)(resume >> 8), (uint8_t)resume});
         } else {
-            params.push_back(0x00);
+          params.push_back(0x00);
         }
         response = sdp(0x06, params);
         assert(response[0] == 0x07);
         const size_t chunk = (size_t)((response[5] << 8) | response[6]);
         assert(chunk <= 0x10);
-        collected.insert(collected.end(), response.begin() + 7, response.begin() + 7 + (long)chunk);
+        collected.insert(collected.end(), response.begin() + 7,
+                         response.begin() + 7 + (long)chunk);
         const uint8_t continuation = response[7 + chunk];
         if (continuation == 0) {
-            break;
+          break;
         }
         assert(continuation == 2);
         resume = (uint16_t)((response[8 + chunk] << 8) | response[9 + chunk]);
+      }
+      params = pattern;
+      params.insert(params.end(), {0x01, 0x00});
+      params.insert(params.end(), allAttributes.begin(), allAttributes.end());
+      params.push_back(0x00);
+      response = sdp(0x06, params);
+      const size_t whole = (size_t)((response[5] << 8) | response[6]);
+      assert(collected.size() == whole);
+      assert(memcmp(collected.data(), response.data() + 7, whole) == 0);
     }
-    params = audioSinkUuid;
-    params.insert(params.end(), {0x01, 0x00});
-    params.insert(params.end(), allAttributes.begin(), allAttributes.end());
-    params.push_back(0x00);
-    response = sdp(0x06, params);
-    const size_t whole = (size_t)((response[5] << 8) | response[6]);
-    assert(collected.size() == whole);
-    assert(memcmp(collected.data(), response.data() + 7, whole) == 0);
 
     // Malformed input gets an SDP error, not silence.
     response = sdp(0x06, {0x35, 0x00, 0x01, 0x00});
     assert(response[0] == 0x01 && response[6] == 0x03);
     response = sdp(0x08, {});
     assert(response[0] == 0x01);
+}
+
+static void checkAvrcp() {
+    uint8_t out[bt::AVRCP_PACKET_MAX]{};
+    bt::MediaKey key{};
+    bool hasKey = false;
+    for (uint8_t operation = 0x41; operation <= 0x4c; ++operation) {
+        assert(bt::mediaKeyName(operation));
+        for (const bool pressed : {true, false}) {
+            const uint8_t packet[] = {0xa0, 0x11, 0x0e, 0x00, 0x48, 0x7c,
+                static_cast<uint8_t>(operation | (pressed ? 0 : 0x80)), 0x00};
+            assert(bt::avrcpResponse(packet, sizeof(packet), out, sizeof(out), key, hasKey) == sizeof(packet));
+            assert(hasKey && key.operation == operation && key.pressed == pressed);
+            assert(out[0] == 0xa2 && out[3] == 0x09 && out[6] == packet[6]);
+            assert(!bt::avrcpResponse(out, sizeof(packet), out, sizeof(out), key, hasKey));
+            assert(!hasKey); // Never echo a response as an event.
+        }
+    }
+    assert(!strcmp(bt::mediaKeyName(0x46), "pause"));
+    assert(!strcmp(bt::mediaKeyName(0x4b), "next"));
+    uint8_t packet[] = {0x10, 0x11, 0x0e, 0x00, 0x48, 0x7c, 0x46, 0x00};
+    for (size_t length = 0; length < sizeof(packet); ++length) {
+        const auto size = bt::avrcpResponse(packet, length, out, sizeof(out), key, hasKey);
+        assert(!hasKey);
+        if (size) assert(out[3] != 0x09);
+    }
+    packet[7] = 1;
+    assert(bt::avrcpResponse(packet, sizeof(packet), out, sizeof(out), key, hasKey) == sizeof(packet));
+    assert(!hasKey && out[3] == 0x0a);
+    packet[7] = 0;
+    packet[6] = 0x7e; // Unsupported vendor-unique operation.
+    assert(bt::avrcpResponse(packet, sizeof(packet), out, sizeof(out), key, hasKey));
+    assert(!hasKey && out[3] == 0x08);
+    packet[1] = 0x12;
+    assert(bt::avrcpResponse(packet, sizeof(packet), out, sizeof(out), key, hasKey) == 3);
+    assert(out[0] == 0x13 && !hasKey);
+    packet[1] = 0x11;
+    packet[0] = 0x14;
+    assert(!bt::avrcpResponse(packet, sizeof(packet), out, sizeof(out), key, hasKey));
+    packet[0] = 0x10;
+    assert(!bt::avrcpResponse(packet, sizeof(packet), out, 7, key, hasKey));
+    uint8_t info[] = {0x20, 0x11, 0x0e, 0x01, 0xff, 0x30, 0xff, 0xff, 0xff, 0xff, 0xff};
+    assert(bt::avrcpResponse(info, sizeof(info), out, sizeof(out), key, hasKey) == sizeof(info));
+    assert(!hasKey && out[3] == 0x0c && out[6] == 0x07 && out[7] == 0x48);
+    info[5] = 0x31;
+    info[6] = 0x07;
+    assert(bt::avrcpResponse(info, sizeof(info), out, sizeof(out), key, hasKey) == sizeof(info));
+    assert(!hasKey && out[3] == 0x0c && out[7] == 0x48);
+    std::vector<uint8_t> oversized(bt::AVRCP_PACKET_MAX + 1, 0);
+    assert(!bt::avrcpResponse(oversized.data(), oversized.size(), out, sizeof(out), key, hasKey));
 }
 
 static void checkSbc() {
@@ -155,6 +227,7 @@ static void checkSbc() {
 
 int main() {
     checkSdp();
+    checkAvrcp();
     checkSbc();
     printf("bluetooth a2dp tests passed\n");
     return 0;

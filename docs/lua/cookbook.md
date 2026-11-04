@@ -34,6 +34,77 @@ invoked. Sound/controller hooks need no pad binding; add MIDI hooks only after
 binding the script to the desired channel/note. A `wait()` queues action delays,
 not a pause in Lua execution.
 
+## Startup options and a custom button
+
+These controls appear beside the saved script. The boot callback waits for the
+healthy-startup interval; it does not run immediately during registration.
+Replace the routing ID below with your actual source or processing node.
+
+```lua callbacks
+ui.option("enabled", {
+    label = "Apply startup volume", type = "boolean", default = true
+})
+ui.option("level", {
+    label = "Startup level (%)", type = "number", default = 50,
+    min = 0, max = 100
+})
+ui.button("apply", "Apply volume now")
+
+local function apply()
+    if script_config.get("enabled", true) then
+        volume.set("usb_gadget_in", script_config.get("level", 50))
+    end
+end
+
+hook("boot", apply)
+hook("ui", function(event)
+    if event.key == "apply" then apply() end
+end)
+hook("config_change", function(event)
+    log("Saved option: " .. event.key)
+end)
+```
+
+Changing a control saves the option without editing source or parsing raw
+configuration. `config_change` fires after that save. The Apply button queues
+`ui`; it is independent of Web Run. No official-device write permission is
+needed for these options or runtime volume changes.
+
+## Keep a private startup record
+
+```lua callbacks
+hook("boot", function()
+    local count = script_config.get("starts", 0) + 1
+    script_config.set("starts", count)
+    storage.write("startup.txt", "Startup " .. count .. "\n")
+    log("Startup " .. count)
+end)
+```
+
+The counter and file live in this script's isolated persistent directory,
+not the official device configuration. Writes occur after successful
+evaluation; they are separate actions, not a multi-file transaction. Write
+occasionally rather than on every timer tick.
+
+## React to Bluetooth changes
+
+```lua callbacks
+hook("bluetooth_change", function()
+    local status = bluetooth.devices()
+    for _, device in ipairs(status.devices) do
+        if device.connected then log("Connected: " .. device.name) end
+    end
+end)
+```
+
+Device management scripts require confirmation on save, even for this
+read-only example. To connect a saved device, use
+`bluetooth.connect("AA:BB:CC:DD:EE:FF")` inside a callback, then wait for
+`bluetooth_change`; do not edit pairing files or issue several requests at once.
+To inspect diagnostics, use `system.logs("stderr", 20)` inside a callback.
+`system.restart()` requests a whole-device reboot: avoid unconditional boot
+reboots, which would create a restart loop.
+
 ## Count triggers
 
 ```lua callbacks
@@ -138,6 +209,59 @@ end)
 
 Typing accepts only printable US-ASCII plus newline and tab. Confirm the
 focused host application is safe to receive this text before triggering.
+
+## Bluetooth media keys to computer keyboard
+
+Save this as a new script with **MIDI binding disabled**, enable **USB Keyboard**
+in Config, and connect AudioX's USB gadget port to the computer. Pair/connect your
+Classic Bluetooth headphones or remote. This example is opt-in; it is not
+automatically installed or enabled.
+
+Defaults send actual USB consumer media keys, including play/pause, track skip,
+and volume, so they are not tied to a focused player's keyboard shortcuts.
+You can still set ordinary chords such as `SPACE` or `CTRL+RIGHT` in the script's
+controls for application-specific behavior. Blank mappings ignore that key.
+The optional device address restricts the bridge to one paired device.
+
+```lua callbacks
+local mappings = {
+    {"play", "Play", "MEDIA_PLAY"},
+    {"pause", "Pause", "MEDIA_PAUSE"},
+    {"next", "Next track", "MEDIA_NEXT"},
+    {"previous", "Previous track", "MEDIA_PREVIOUS"},
+    {"stop", "Stop", "MEDIA_STOP"},
+    {"rewind", "Rewind", "MEDIA_REWIND"},
+    {"fast_forward", "Fast forward", "MEDIA_FAST_FORWARD"},
+    {"volume_up", "Volume up", "MEDIA_VOLUME_UP"},
+    {"volume_down", "Volume down", "MEDIA_VOLUME_DOWN"},
+    {"mute", "Mute", "MEDIA_MUTE"},
+    {"record", "Record", "MEDIA_RECORD"},
+    {"eject", "Eject", "MEDIA_EJECT"}
+}
+
+ui.option("enabled", {label="Enabled", type="boolean", default=true})
+ui.option("device", {label="Device MAC (blank = any)", type="string", default=""})
+for _, mapping in ipairs(mappings) do
+    ui.option(mapping[1], {label=mapping[2] .. " shortcut",
+        type="string", default=mapping[3]})
+end
+
+hook("bluetooth_media_key", function(event)
+    if not event.pressed or not script_config.get("enabled") then return end
+    local device = script_config.get("device")
+    if device ~= "" and string.upper(device) ~= event.device then return end
+    local shortcut = script_config.get(event.key) or ""
+    if shortcut ~= "" then tap(shortcut) end
+end)
+```
+
+Only presses send a tap, so the corresponding Bluetooth release does not toggle
+playback a second time. A held button may send repeated presses, depending on the
+device. Taps include their own USB release, avoiding stuck keys if a Bluetooth
+release is lost. Ordinary keyboard input goes to the focused computer application; media keys
+are dispatched by the host OS/player. Not every player supports separate
+Play/Pause, Record, or Eject; use `MEDIA_PLAY_PAUSE` for players that only support
+toggle. Test safely. Invalid key names surface as script execution errors.
 
 ## Note with a timed release
 

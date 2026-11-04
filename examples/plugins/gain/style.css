@@ -1,0 +1,3 @@
+body { font: 14px system-ui, sans-serif; background: #181c24; color: #eee; padding: 12px; }
+label { display: flex; justify-content: space-between; }
+input { width: 100%; accent-color: #79b8ff; }

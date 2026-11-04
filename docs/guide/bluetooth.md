@@ -80,6 +80,22 @@ the stream only while something is playing.
 
 ## What AudioX saves and supports
 
+### Media buttons and Lua
+
+AudioX accepts AVRCP 1.0 pass-through media buttons from paired Classic devices
+(for example headphone play/pause and next/previous buttons). The media-control
+channel opens alongside A2DP, or the paired device can open it itself. Events
+are exposed through [`bluetooth_media_key`](/lua/api#startup-and-utility-hooks);
+they do not alter AudioX playback or volume unless a script handles them.
+The [keyboard bridge example](/lua/cookbook#bluetooth-media-keys-to-computer-keyboard)
+maps them to configurable USB keyboard shortcuts on the computer.
+
+This is not BLE HID remote support, outgoing phone-player control, track metadata,
+AVRCP browsing, or absolute-volume synchronization. Some devices handle volume
+locally or use newer vendor commands instead of pass-through keys; those do not
+produce this hook. Multipoint devices may send buttons to another connected host.
+Reconnect an already-connected device after updating AudioX to open the new channel.
+
 Pairing keys, device names, and Auto-connect settings are saved on the AudioX
 device and loaded at startup. Configuration backups include Bluetooth pairing
 data and Auto-connect settings; the archive contains pairing keys, so keep it

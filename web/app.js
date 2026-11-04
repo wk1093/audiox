@@ -165,6 +165,91 @@ if (effectsManager) {
   effectsManager.mountPanel(effectsMapGridEl, effectsMapStatusEl);
 }
 
+const builtinEffectTypes = ['gain', 'distortion', 'pitch', 'reverb', 'gate', 'cut',
+  'compressor', 'limiter', 'eq', 'multiband', 'noise_reduction'];
+const pluginTemplateIds = new Set();
+
+function pluginTemplateNodeType(id) {
+  return `audiox/plugin_${id}`;
+}
+
+function registerPluginTemplates(plugins) {
+  const lite = window.LiteGraph;
+  const next = new Map();
+  for (const plugin of plugins) {
+    const id = window.AudioxPlugins?.normalizePluginId(plugin?.id);
+    if (id) next.set(id, plugin);
+  }
+  for (const id of [...pluginTemplateIds]) {
+    if (next.has(id)) continue;
+    pluginTemplateIds.delete(id);
+    const ctor = lite?.registered_node_types?.[pluginTemplateNodeType(id)];
+    if (ctor) ctor.filter = 'audiox-internal';
+  }
+  for (const [id, plugin] of next) {
+    pluginTemplateIds.add(id);
+    if (!lite?.registered_node_types) continue;
+    const type = pluginTemplateNodeType(id);
+    const label = `${plugin.name || id} (plugin)`;
+    const existing = lite.registered_node_types[type];
+    if (existing) {
+      existing.title = label;
+      existing.filter = 'audiox';
+      continue;
+    }
+    function AudioxPluginEffectNode() {
+      this.size = [220, 80];
+      this.properties = { effectTypeTemplate: id, nodeKind: 'template', pluginTemplate: true };
+      this.title = `Add ${label}`;
+      this.addInput('in 1', 'audio');
+      this.addInput('in 2', 'audio');
+      this.addOutput('out 1', 'audio');
+      this.addOutput('out 2', 'audio');
+    }
+    AudioxPluginEffectNode.title = label;
+    AudioxPluginEffectNode.filter = 'audiox';
+    lite.registerNodeType(type, AudioxPluginEffectNode);
+  }
+}
+
+function isCreatableEffectType(type) {
+  return builtinEffectTypes.includes(type) || pluginTemplateIds.has(type);
+}
+
+async function refreshAfterPluginChange() {
+  if (effectsManager) await effectsManager.loadEffects();
+  await loadRoutingThingsWithOptions({ silent: true });
+}
+
+const pluginManager = (window.AudioxPlugins && typeof window.AudioxPlugins.createManager === 'function')
+  ? window.AudioxPlugins.createManager({
+    setStatus,
+    onCatalog: (plugins) => {
+      effectsManager?.setPluginCatalog(plugins);
+      registerPluginTemplates(plugins);
+    },
+    onChanged: refreshAfterPluginChange,
+  })
+  : null;
+
+if (pluginManager) {
+  pluginManager.mount({
+    listEl: document.getElementById('plugin-list'),
+    statusEl: document.getElementById('plugin-status'),
+    fileInput: document.getElementById('plugin-file'),
+    installButton: document.getElementById('btn-plugin-install'),
+  });
+}
+
+async function loadPluginCatalog() {
+  if (!pluginManager) return;
+  try {
+    await pluginManager.load();
+  } catch (err) {
+    pluginManager.setPanelStatus(String(err?.message || err), 'warn');
+  }
+}
+
 function setActiveTab(tab) {
   if (tab !== 'scripts') {
     cancelChordLearn();
@@ -208,6 +293,11 @@ function setActiveTab(tab) {
     loadLightDim();
     renderStopAllMidiStatus();
     renderSamplerToggleMidiStatus();
+  }
+  if (tab === 'effects') {
+    loadPluginCatalog();
+  } else {
+    effectsManager?.closeCustomUis();
   }
   if (tab === 'effects' && effectsManager) {
     effectsManager.loadEffects().catch((err) => {
@@ -661,8 +751,11 @@ async function deleteRoutingHelper() {
 }
 
 async function createEffectFromTemplate(type) {
-  const allowed = new Set(['gain', 'distortion', 'pitch', 'reverb', 'gate', 'cut']);
-  const safeType = allowed.has(String(type || '').trim()) ? String(type).trim() : 'gain';
+  const requested = String(type || '').trim();
+  if (requested && !isCreatableEffectType(requested)) {
+    throw new Error(`effect create failed: plugin ${requested} is not installed`);
+  }
+  const safeType = requested || 'gain';
   const res = await fetch('/api/effect/create', {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain' },
@@ -886,22 +979,25 @@ function resizeRoutingCanvas() {
   state.graphCanvas.setDirty(true, true);
 }
 
-function bezierPoint(a, b, t) {
-  const c = Math.max(40, Math.min(220, Math.abs(b[0] - a[0]) * 0.45));
-  const p0x = a[0];
-  const p0y = a[1];
-  const p1x = a[0] + c;
-  const p1y = a[1];
-  const p2x = b[0] - c;
-  const p2y = b[1];
-  const p3x = b[0];
-  const p3y = b[1];
-  const it = 1 - t;
+let routingWireCacheKey = '';
+let routingWireCache = new Map();
 
-  return [
-    (it * it * it * p0x) + (3 * it * it * t * p1x) + (3 * it * t * t * p2x) + (t * t * t * p3x),
-    (it * it * it * p0y) + (3 * it * it * t * p1y) + (3 * it * t * t * p2y) + (t * t * t * p3y),
-  ];
+function routingWirePaths() {
+  const wires = state.edges.flatMap(edge => {
+    const src = state.nodeByThingId.get(edge.src), dst = state.nodeByThingId.get(edge.dst);
+    if (!src || !dst) return [];
+    const a = src.getConnectionPos(false, Number(edge.srcChannel));
+    const b = dst.getConnectionPos(true, Number(edge.dstChannel));
+    return a && b ? [{ edge, a: Array.from(a), b: Array.from(b) }] : [];
+  });
+  const key = JSON.stringify(wires);
+  if (key !== routingWireCacheKey) {
+    routingWireCache = new Map(wires.map(({ edge, a, b }) => [
+      edgeKey(edge), AudioxRouting.wirePath(a, b),
+    ]));
+    routingWireCacheKey = key;
+  }
+  return routingWireCache;
 }
 
 function distToSegment(px, py, ax, ay, bx, by) {
@@ -930,23 +1026,12 @@ function distToSegment(px, py, ax, ay, bx, by) {
 }
 
 function linkDistance(link, x, y) {
-  const srcNode = state.nodeByThingId.get(link.src);
-  const dstNode = state.nodeByThingId.get(link.dst);
-  if (!srcNode || !dstNode) {
-    return Number.POSITIVE_INFINITY;
-  }
-
-  const a = srcNode.getConnectionPos(false, Number(link.srcChannel));
-  const b = dstNode.getConnectionPos(true, Number(link.dstChannel));
-  if (!a || !b) {
-    return Number.POSITIVE_INFINITY;
-  }
-
+  const path = routingWirePaths().get(edgeKey(link));
+  if (!path) return Number.POSITIVE_INFINITY;
   let best = Number.POSITIVE_INFINITY;
-  let prev = bezierPoint(a, b, 0);
-  for (let i = 1; i <= 24; i += 1) {
-    const t = i / 24;
-    const next = bezierPoint(a, b, t);
+  let prev = path[0];
+  for (let i = 1; i < path.length; i += 1) {
+    const next = path[i];
     const d = distToSegment(x, y, prev[0], prev[1], next[0], next[1]);
     if (d < best) {
       best = d;
@@ -1155,6 +1240,25 @@ function ensureRoutingGraph() {
     AudioxEffectCutNode.filter = 'audiox';
     window.LiteGraph.registerNodeType('audiox/effect_cut', AudioxEffectCutNode);
   }
+  const advancedEffects = {
+    compressor: 'Compressor', limiter: 'Limiter', eq: 'Parametric EQ',
+    multiband: 'Multiband Compressor', noise_reduction: 'Noise Reduction',
+  };
+  for (const [type, label] of Object.entries(advancedEffects)) {
+    if (window.LiteGraph.registered_node_types[`audiox/effect_${type}`]) continue;
+    function AdvancedEffectNode() {
+      this.size = [220, 80];
+      this.properties = { effectTypeTemplate: type, nodeKind: 'template' };
+      this.title = `Add ${label} Effect`;
+      for (let channel = 0; channel < 2; channel++) {
+        this.addInput(`in ${channel + 1}`, 'audio');
+        this.addOutput(`out ${channel + 1}`, 'audio');
+      }
+    }
+    AdvancedEffectNode.title = `${label} Effect`;
+    AdvancedEffectNode.filter = 'audiox';
+    window.LiteGraph.registerNodeType(`audiox/effect_${type}`, AdvancedEffectNode);
+  }
   state.graphCanvas.background_image = null;
   window.LiteGraph.NODE_DEFAULT_COLOR = '#1f4a62';
   window.LiteGraph.NODE_DEFAULT_BGCOLOR = '#102635';
@@ -1253,12 +1357,7 @@ function ensureRoutingGraph() {
         .catch((err) => setStatus(String(err), 'warn'));
       return;
     }
-    if (templateType === 'gain' ||
-      templateType === 'distortion' ||
-      templateType === 'pitch' ||
-      templateType === 'reverb' ||
-      templateType === 'gate' ||
-      templateType === 'cut') {
+    if (templateType && (isCreatableEffectType(templateType) || node.properties?.pluginTemplate)) {
       const pos = Array.isArray(node.pos) ? { x: node.pos[0], y: node.pos[1] } : null;
       state.internalGraphMutation = true;
       state.graph.remove(node);
@@ -1293,34 +1392,28 @@ function ensureRoutingGraph() {
   };
 
   state.graphCanvas.onDrawForeground = (ctx) => {
-    const selected = (state.selectedEdgeIdx >= 0 && state.selectedEdgeIdx < state.edges.length)
-      ? edgeKey(state.edges[state.selectedEdgeIdx])
-      : '';
+    const selected = new Set(Object.values(state.graphCanvas.selected_nodes || {})
+      .map(node => normalizeThingId(node.properties?.thingId)).filter(Boolean));
 
+    const paths = routingWirePaths();
+    ctx.save();
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
     for (const edge of state.edges) {
-      const srcNode = state.nodeByThingId.get(edge.src);
-      const dstNode = state.nodeByThingId.get(edge.dst);
-      if (!srcNode || !dstNode) {
-        continue;
-      }
+      const path = paths.get(edgeKey(edge));
+      if (!path) continue;
 
-      const a = srcNode.getConnectionPos(false, Number(edge.srcChannel));
-      const b = dstNode.getConnectionPos(true, Number(edge.dstChannel));
-      if (!a || !b) {
-        continue;
-      }
-
-      const isSelected = selected && edgeKey(edge) === selected;
-      const c = Math.max(40, Math.min(220, Math.abs(b[0] - a[0]) * 0.45));
+      const isSelected = selected.has(edge.src) || selected.has(edge.dst);
+      const [a, first, second, b] = AudioxRouting.wireCurve(path[0], path[path.length - 1]);
       ctx.beginPath();
       ctx.moveTo(a[0], a[1]);
-      ctx.bezierCurveTo(a[0] + c, a[1], b[0] - c, b[1], b[0], b[1]);
+      ctx.bezierCurveTo(first[0], first[1], second[0], second[1], b[0], b[1]);
       ctx.strokeStyle = isSelected ? '#ffcf66' : '#79c8ff';
       ctx.lineWidth = isSelected ? 4 : 3;
-      ctx.globalAlpha = isSelected ? 1 : 0.92;
+      ctx.globalAlpha = isSelected ? 0.85 : 0.45;
       ctx.stroke();
     }
-    ctx.globalAlpha = 1;
+    ctx.restore();
   };
 
   state.graphCanvas.onMouse = (ev) => {
@@ -1371,7 +1464,7 @@ function fitRoutingGraph() {
 
 function arrangeRoutingGraph() {
   const boxes = routingNodeBoxes();
-  const positions = AudioxRouting.layoutNodes(boxes);
+  const positions = AudioxRouting.layoutNodes(boxes, state.edges);
   let newNodeY = Math.max(60, ...boxes.filter((node) => state.positions[node.id])
     .map((node) => state.positions[node.id].y + node.height + 80));
   for (const [id, node] of state.nodeByThingId) {
@@ -1839,12 +1932,20 @@ async function saveConfig() {
 let editingMacroId = null;
 const defaultScriptSource = 'hook("run", function(event)\n  log("Hello from AudioX")\nend)\n';
 let macroCount = 0;
+const scriptControlEdits = new Set();
 
-async function loadMidiChords() {
+function scriptListReloadSafe(preserveEditor) {
+  return !(preserveEditor && AudioxUI.hasUnsavedChanges('macro-editor')) &&
+    !Array.from(scriptControlEdits).some(control => control.pending || control.dirty);
+}
+
+async function loadMidiChords({ preserveEditor = false } = {}) {
+  if (!scriptListReloadSafe(preserveEditor)) return;
   try {
     const res = await fetch('/api/scripts', { cache: 'no-store' });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
-    renderMidiChords((await res.json()).scripts);
+    const data = await res.json();
+    if (scriptListReloadSafe(preserveEditor)) renderMidiChords(data.scripts);
   } catch (err) {
     setStatus(`Script load failed: ${err}`, 'warn', 'midi-chords');
   }
@@ -1854,6 +1955,7 @@ function renderMidiChords(chords) {
   macroCount = chords.length;
   const list = document.getElementById('chord-list');
   list.replaceChildren();
+  scriptControlEdits.clear();
   for (const chord of chords) {
     const row = document.createElement('div');
     const label = document.createElement('span');
@@ -1861,6 +1963,9 @@ function renderMidiChords(chords) {
       `(LED idle ${chord.idle_velocity ?? 0}, pressed ${chord.pressed_velocity ?? 0})`;
     if (chord.runtime_error_hex) {
       label.textContent += ` — Last execution failed: ${chordHexDecode(chord.runtime_error_hex)}`;
+    }
+    if (chord.ui_error_hex) {
+      label.textContent += ` — Script controls/settings load failed: ${chordHexDecode(chord.ui_error_hex)}`;
     }
     const edit = document.createElement('button');
     edit.textContent = 'Edit';
@@ -1875,7 +1980,7 @@ function renderMidiChords(chords) {
       document.getElementById('macro-midi-enabled').checked = chord.midi_enabled;
       document.getElementById('chord-channel').value = chord.channel;
       document.getElementById('chord-note').value = chord.note;
-      document.getElementById('chord-script').value = chordHexDecode(chord.script_hex || '');
+      AudioxLuaEditor.setValue(document.getElementById('chord-script'), chordHexDecode(chord.script_hex || ''));
       document.getElementById('macro-config-write').checked = Boolean(chord.config_write_allowed);
       document.getElementById('chord-idle-velocity').value = chord.idle_velocity ?? 0;
       document.getElementById('chord-pressed-velocity').value = chord.pressed_velocity ?? 0;
@@ -1902,8 +2007,103 @@ function renderMidiChords(chords) {
     actions.className = 'macro-actions';
     actions.append(edit, remove, run);
     row.append(label, actions);
+    if (Array.isArray(chord.ui) && chord.ui.length) {
+      const controls = document.createElement('div');
+      controls.className = 'script-controls';
+      for (const descriptor of chord.ui) {
+        if (!descriptor || typeof descriptor.key !== 'string' ||
+            !['boolean', 'number', 'string', 'button'].includes(descriptor.type)) continue;
+        const field = document.createElement('label');
+        field.className = 'script-control';
+        const input = document.createElement(descriptor.type === 'button' ? 'button' : 'input');
+        const caption = String(descriptor.label ?? descriptor.key);
+        if (descriptor.type === 'button') {
+          input.type = 'button';
+          input.textContent = caption;
+        } else {
+          const text = document.createElement('span');
+          text.textContent = caption;
+          field.append(text);
+          input.type = { boolean: 'checkbox', number: 'number', string: 'text' }[descriptor.type];
+          if (descriptor.type === 'number') {
+            input.step = 'any';
+            for (const bound of ['min', 'max']) {
+              if (typeof descriptor[bound] === 'number' && Number.isFinite(descriptor[bound])) {
+                input[bound] = String(descriptor[bound]);
+              }
+            }
+          } else if (descriptor.type === 'string') {
+            input.maxLength = 127;
+            input.title = 'Up to 127 UTF-8 bytes';
+          }
+        }
+        const control = { input, descriptor, savedValue: descriptor.value, pending: false, dirty: false };
+        scriptControlEdits.add(control);
+        restoreScriptControl(control);
+        input.addEventListener('input', () => { control.dirty = true; });
+        input.addEventListener(descriptor.type === 'button' ? 'click' : 'change',
+          () => saveScriptControl(chord.id, control));
+        field.append(input);
+        controls.append(field);
+      }
+      row.append(controls);
+    }
     list.appendChild(row);
   }
+}
+
+function restoreScriptControl(control) {
+  if (control.descriptor.type === 'boolean') control.input.checked = Boolean(control.savedValue);
+  else if (control.descriptor.type !== 'button') control.input.value = String(control.savedValue);
+  control.dirty = false;
+}
+
+async function saveScriptControl(id, control) {
+  if (control.pending || control.input.disabled) return;
+  const { input, descriptor } = control;
+  control.pending = true;
+  input.disabled = true;
+  let saved = false;
+  try {
+    let value;
+    if (descriptor.type === 'boolean') value = input.checked;
+    else if (descriptor.type === 'number') {
+      value = Number(input.value);
+      if (!String(input.value).trim() || !Number.isFinite(value) ||
+          (input.min !== undefined && input.min !== '' && value < Number(input.min)) ||
+          (input.max !== undefined && input.max !== '' && value > Number(input.max))) {
+        throw new Error('Enter a finite number within the displayed bounds');
+      }
+    } else if (descriptor.type === 'string') {
+      value = input.value;
+      if (new TextEncoder().encode(value).length > 127) {
+        throw new Error('Text must be at most 127 UTF-8 bytes');
+      }
+    }
+    const body = `id=${id}&key_hex=${chordHexEncode(descriptor.key)}` +
+      (descriptor.type === 'button' ? '' : `&value_hex=${chordHexEncode(String(value))}`);
+    const res = await fetch('/api/scripts/control', {
+      method: 'POST', headers: { 'Content-Type': 'text/plain' }, body,
+    });
+    if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+    const result = await res.text();
+    control.savedValue = value;
+    descriptor.value = value;
+    control.dirty = false;
+    saved = true;
+    setStatus(descriptor.type === 'button' ?
+      'Script button queued (not confirmation of completion)' :
+      result.includes('config_change queued') ?
+        'Script setting saved; config_change queued (not confirmation of completion)' :
+        'Script setting saved', 'ok', 'midi-chords');
+  } catch (err) {
+    restoreScriptControl(control);
+    setStatus(`Script control failed: ${err}`, 'warn', 'midi-chords');
+  } finally {
+    control.pending = false;
+    input.disabled = false;
+  }
+  if (saved) await loadMidiChords({ preserveEditor: true });
 }
 
 async function saveMidiChord(method, chord, button) {
@@ -1911,10 +2111,11 @@ async function saveMidiChord(method, chord, button) {
   button.disabled = true;
   try {
     const configurationScript = method === 'POST' &&
-      (Boolean(chord.config_write_allowed) || chordHexDecode(chord.script_hex || '').includes('config'));
+      (Boolean(chord.config_write_allowed) ||
+        /\b(?:config|settings|system|bluetooth)\b/.test(chordHexDecode(chord.script_hex || '')));
     if (configurationScript && !await AudioxUI.confirm(
-      'This script accesses configuration and may overwrite persistent settings, including MIDI bindings, routing and startup configuration. Writes replace whole files and are not format-validated. Back up your settings first; reload or restart may be required. Save this script?', {
-        title: 'Allow configuration writes?', label: 'Save configuration script',
+      'This script may write official configuration, restart the system, or manage Bluetooth devices. Configuration writes can replace persistent settings, including MIDI bindings, routing and startup configuration, and whole-file writes are not format-validated. Back up your settings first; reload or restart may be required. Allow these permissions and save this script?', {
+        title: 'Allow configuration and system management?', label: 'Allow and save script',
       })) return;
     const payload = method === 'DELETE' ? `id=${chord.id}` :
       (chord.id ? `id=${chord.id}&` : '') +
@@ -1968,7 +2169,7 @@ function resetMacroEditor() {
   document.getElementById('macro-midi-enabled').checked = false;
   document.getElementById('chord-channel').value = '0';
   document.getElementById('chord-note').value = '60';
-  document.getElementById('chord-script').value = defaultScriptSource;
+  AudioxLuaEditor.setValue(document.getElementById('chord-script'), defaultScriptSource);
   document.getElementById('macro-config-write').checked = false;
   document.getElementById('chord-idle-velocity').value = '0';
   document.getElementById('chord-pressed-velocity').value = '0';
@@ -1990,6 +2191,7 @@ document.addEventListener('visibilitychange', () => {
   else if (state.activeTab === 'volume') startMeterPolling();
   if (document.hidden) {
     cancelChordLearn();
+    effectsManager?.closeCustomUis();
   }
 });
 
@@ -3278,6 +3480,7 @@ async function initializeGraphFromConfig() {
   await loadMidiActions();
   await loadSamplerConfig();
   await loadRoutingThings();
+  await loadPluginCatalog();
   if (effectsManager) {
     try {
       await effectsManager.loadEffects();
@@ -3490,8 +3693,9 @@ function renderVolGrid() {
   if (!volGridEl) return;
   volumeMeters.clear();
   volGridEl.innerHTML = '';
-  const effects = state.volumes.filter(vol => isEffectThingId(vol.id));
-  const visibleVolumes = state.volumes.filter(vol => state.volShowEffects || !isEffectThingId(vol.id));
+  const audioVolumes = state.volumes.filter(vol => vol.id !== 'routing_helper');
+  const effects = audioVolumes.filter(vol => isEffectThingId(vol.id));
+  const visibleVolumes = audioVolumes.filter(vol => state.volShowEffects || !isEffectThingId(vol.id));
   const effectSummary = document.getElementById('vol-effect-summary');
   if (effectSummary) {
     const adjusted = effects.filter(vol => vol.gain !== 1).length;
@@ -3504,7 +3708,7 @@ function renderVolGrid() {
   if (!visibleVolumes.length) {
     const empty = document.createElement('div');
     empty.className = 'small';
-    empty.textContent = state.volumes.length
+    empty.textContent = audioVolumes.length
       ? 'Only effect channels are available. Enable Show effect channels to see them.'
       : 'No active devices. Open the Routing tab first.';
     volGridEl.appendChild(empty);

@@ -5,6 +5,7 @@
 #include "audio/gadget_volume.hpp"
 #include "audio/context.hpp"
 #include "midi/context.hpp"
+#include "scripting/keyboard.hpp"
 
 #include <stdio.h>
 #include <fcntl.h>
@@ -70,7 +71,7 @@ static int prepareUsbGadget() {
             return RET_ERR;
         }
     }
-    for (const char *link : {GADGET_CONFIG_LINK, GADGET_NETWORK_LINK, GADGET_MIDI_LINK, GADGET_KEYBOARD_LINK}) {
+    for (const char *link : {GADGET_CONFIG_LINK, GADGET_NETWORK_LINK, GADGET_MIDI_LINK, GADGET_KEYBOARD_LINK, GADGET_MEDIA_LINK}) {
         if (unlink(link) < 0 && errno != ENOENT) {
             printf("[INIT] [ERR] unlink %s before USB gadget setup failed: %s\n",
                    link, strerror(errno));
@@ -81,7 +82,7 @@ static int prepareUsbGadget() {
 }
 
 static int configureMidiFunctions(const ConfigData &cfg) {
-    for (const char *link : {GADGET_MIDI_LINK, GADGET_KEYBOARD_LINK}) {
+    for (const char *link : {GADGET_MIDI_LINK, GADGET_KEYBOARD_LINK, GADGET_MEDIA_LINK}) {
         if (unlink(link) < 0 && errno != ENOENT) {
             printf("[INIT] [ERR] Cannot unlink %s: %s\n", link, strerror(errno));
             return RET_ERR;
@@ -101,30 +102,35 @@ static int configureMidiFunctions(const ConfigData &cfg) {
         return RET_ERR;
     }
     if (cfg.keyboardMacros) {
-        static constexpr uint8_t descriptor[] = {
-            0x05,0x01,0x09,0x06,0xa1,0x01,0x05,0x07,0x19,0xe0,0x29,0xe7,
-            0x15,0x00,0x25,0x01,0x75,0x01,0x95,0x08,0x81,0x02,
-            0x95,0x01,0x75,0x08,0x81,0x01,
-            0x95,0x06,0x75,0x08,0x15,0x00,0x25,0x73,0x19,0x00,0x29,0x73,0x81,0x00,0xc0
-        };
         if (ensureDir(GADGET_KEYBOARD_FUNC, 0755) != RET_OK ||
-            writeSysNode(GADGET_KEYBOARD_FUNC "/protocol", "1\n") != RET_OK ||
-            writeSysNode(GADGET_KEYBOARD_FUNC "/subclass", "1\n") != RET_OK ||
-            writeSysNode(GADGET_KEYBOARD_FUNC "/report_length", "8\n") != RET_OK) return RET_ERR;
+            writeSysNode(GADGET_KEYBOARD_FUNC "/protocol", "0\n") != RET_OK ||
+            writeSysNode(GADGET_KEYBOARD_FUNC "/subclass", "0\n") != RET_OK ||
+            writeSysNodeU32(GADGET_KEYBOARD_FUNC "/report_length", SCRIPT_HID_REPORT_LENGTH) != RET_OK) return RET_ERR;
         int fd = open(GADGET_KEYBOARD_FUNC "/report_desc", O_WRONLY | O_CLOEXEC);
         if (fd < 0) {
             printf("[INIT] [ERR] Cannot open keyboard descriptor: %s\n", strerror(errno));
             return RET_ERR;
         }
-        ssize_t n = write(fd, descriptor, sizeof(descriptor));
+        ssize_t n = write(fd, SCRIPT_HID_DESCRIPTOR, sizeof(SCRIPT_HID_DESCRIPTOR));
         int error = errno;
         close(fd);
-        if (n != (ssize_t)sizeof(descriptor) || symlink(GADGET_KEYBOARD_FUNC, GADGET_KEYBOARD_LINK) < 0) {
-            printf("[INIT] [ERR] Cannot configure USB keyboard: %s\n", strerror(n < 0 ? error : errno));
+        if (n != static_cast<ssize_t>(sizeof(SCRIPT_HID_DESCRIPTOR))) {
+            printf("[INIT] [ERR] Cannot write keyboard/media descriptor: %s\n",
+                   n < 0 ? strerror(error) : "short write");
+            return RET_ERR;
+        }
+        if (symlink(GADGET_KEYBOARD_FUNC, GADGET_KEYBOARD_LINK) < 0) {
+            printf("[INIT] [ERR] Cannot configure USB keyboard/media: %s\n", strerror(errno));
             return RET_ERR;
         }
     } else if (rmdir(GADGET_KEYBOARD_FUNC) < 0 && errno != ENOENT) {
         printf("[INIT] [ERR] Cannot remove USB keyboard function: %s\n", strerror(errno));
+        return RET_ERR;
+    }
+    // Remove the old second HID function on upgrades/restarts. Report IDs keep
+    // media keys within the original keyboard function's endpoint budget.
+    if (rmdir(GADGET_MEDIA_FUNC) < 0 && errno != ENOENT) {
+        printf("[INIT] [ERR] Cannot remove consumer control function: %s\n", strerror(errno));
         return RET_ERR;
     }
     return RET_OK;
@@ -370,7 +376,7 @@ int reloadAudioGadget(void *_context) {
     if (context->audio) {
         context->audio->gadgetVolume.reset();
     }
-    if (context->midi) context->midi->usb.closeDevices();
+    if (context->midi) context->midi->scripts.usb.closeDevices();
 
     ConfigData prevCfg;
     (void)readCurrentAudioConfig(&prevCfg);
@@ -464,7 +470,7 @@ int bindUsbGadget(void *_context) {
     }
 
     if (writeSysNode(GADGET_UDC_NODE, GADGET_UDC_NAME) != RET_OK) {
-        printf("[INIT] [ERR] failed to bind USB gadget to UDC '%s'\n", GADGET_UDC_NAME);
+        printf("[INIT] [ERR] failed to bind USB gadget to UDC '%s': %s\n", GADGET_UDC_NAME, strerror(errno));
         return RET_ERR;
     }
 

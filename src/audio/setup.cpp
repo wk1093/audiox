@@ -1,4 +1,5 @@
 #include "audio/context.hpp"
+#include "audio/plugin_registry.hpp"
 #include "audio/alsa_pcm.h"
 
 #include <time.h>
@@ -335,6 +336,9 @@ AudioContext::AudioContext(Audiox *context) : app(context) {
         nodeGainAtomics[i].store(1.0f, std::memory_order_relaxed);
     }
     nextEffectId = 1;
+    std::string pluginError;
+    if (!audiox::plugin::loadCatalog(pluginError))
+        printf("[PLUGIN] [WARN] %s\n", pluginError.c_str());
 
     if (app && app->config) {
         ConfigData cfg = app->config->readConfigFile();
@@ -506,6 +510,7 @@ uint8_t AudioContext::getSoundboardMode() const {
 }
 
 void AudioContext::poll() {
+    pollPlugins();
     uint64_t now = audioMonotonicMs();
     if (now >= nextHotplugScanMs) {
         nextHotplugScanMs = now + AUDIOX_DEVICE_POLL_INTERVAL_MS;
@@ -683,8 +688,8 @@ void AudioContext::loadEffectsFromConfig() {
 
     MidiMapData data = app->config->readMidiMapFile();
 
-    std::lock_guard<std::mutex> lock(effectsMutex);
-    effectStates.clear();
+    std::unordered_map<std::string, audiox::effects::SlotParams> states;
+    std::unordered_map<std::string, std::unique_ptr<audiox::plugin::PluginHost>> hosts;
 
     uint32_t maxId = 0;
     uint32_t count = data.effectStateCount;
@@ -708,7 +713,12 @@ void AudioContext::loadEffectsFromConfig() {
         (void)audiox::effects::setSlotParamValue(&params, "output", cfg.output);
         audiox::effects::clampSlotParams(&params);
 
-        effectStates[cfg.effectId] = params;
+        if (audiox::plugin::isPluginType(params.type)) {
+            auto host = preparePlugin(cfg.effectId, params.type);
+            params.pluginHost = host.get();
+            if (host) hosts[cfg.effectId] = std::move(host);
+        }
+        states[cfg.effectId] = params;
 
         unsigned parsedId = 0;
         if (sscanf(cfg.effectId, "fx_%u", &parsedId) == 1 && parsedId > maxId) {
@@ -725,13 +735,18 @@ void AudioContext::loadEffectsFromConfig() {
         if (!cfg.effectId[0] || !cfg.param[0]) {
             continue;
         }
-        auto it = effectStates.find(cfg.effectId);
-        if (it == effectStates.end()) {
+        auto it = states.find(cfg.effectId);
+        if (it == states.end()) {
             continue;
         }
         (void)audiox::effects::setSlotParamValue(&it->second, cfg.param, cfg.value);
     }
 
+    std::lock_guard<std::mutex> lock(effectsMutex);
+    while (!pluginHosts.empty()) retirePlugin(pluginHosts.begin()->first.c_str());
+    effectStates.swap(states);
+    pluginHosts.swap(hosts);
+    pluginFaultReported.clear();
     nextEffectId = maxId + 1U;
     if (nextEffectId == 0) {
         nextEffectId = 1;
@@ -806,24 +821,26 @@ int AudioContext::setEffectType(const char *thingId, uint8_t type) {
         return RET_ERR;
     }
 
+    audiox::effects::SlotParams params{};
+    if (getEffectParams(thingId, &params) != RET_OK) return RET_ERR;
+    if (!audiox::effects::isBuiltinEffectType(type) && !audiox::plugin::available(type)) {
+        return RET_ERR;
+    }
+    const uint8_t previousType = params.type;
+    params.type = type;
+    params.pluginHost = nullptr;
+    audiox::effects::setSlotDefaultsForType(&params, type);
+    std::unique_ptr<audiox::plugin::PluginHost> host;
+    if (audiox::plugin::isPluginType(type)) {
+        host = preparePlugin(thingId, type);
+        if (!host) return RET_ERR;
+    }
     std::lock_guard<std::mutex> lock(effectsMutex);
     auto it = effectStates.find(thingId);
-    if (it == effectStates.end()) {
-        return RET_ERR;
-    }
-    if (type != audiox::effects::EFFECT_GAIN &&
-        type != audiox::effects::EFFECT_DISTORTION &&
-        type != audiox::effects::EFFECT_PITCH &&
-        type != audiox::effects::EFFECT_REVERB &&
-        type != audiox::effects::EFFECT_GATE &&
-        type != audiox::effects::EFFECT_CUT) {
-        return RET_ERR;
-    }
-    const uint8_t enabled = it->second.enabled;
-    it->second.type = type;
-    audiox::effects::setSlotDefaultsForType(&it->second, type);
-    it->second.enabled = enabled;
-    audiox::effects::clampSlotParams(&it->second);
+    if (it == effectStates.end() || it->second.type != previousType) return RET_ERR;
+    params.enabled = it->second.enabled;
+    attachPlugin(thingId, params, std::move(host));
+    it->second = params;
     effectStatesSeq.fetch_add(1U, std::memory_order_release);
     return RET_OK;
 }
@@ -949,26 +966,35 @@ int AudioContext::createEffect(const char *type, char *outId, size_t outIdSize) 
     }
 
     uint8_t effectType = audiox::effects::effectTypeFromString(type ? type : "gain");
+    if (type && !strncmp(type, "plugin_", 7) && !audiox::plugin::available(effectType)) return RET_ERR;
     audiox::effects::SlotParams params = {};
     params.enabled = (effectType == audiox::effects::EFFECT_CUT) ? 0U : 1U;
     params.type = effectType;
     audiox::effects::setSlotDefaultsForType(&params, effectType);
     audiox::effects::clampSlotParams(&params);
 
-    std::lock_guard<std::mutex> lock(effectsMutex);
-
     char idBuf[64];
-    for (;;) {
-        unsigned id = nextEffectId++;
-        if (nextEffectId == 0) {
-            nextEffectId = 1;
-        }
-        snprintf(idBuf, sizeof(idBuf), "fx_%u", id);
-        if (effectStates.find(idBuf) == effectStates.end()) {
-            break;
+    {
+        std::lock_guard<std::mutex> lock(effectsMutex);
+        for (;;) {
+            unsigned id = nextEffectId++;
+            if (nextEffectId == 0) {
+                nextEffectId = 1;
+            }
+            snprintf(idBuf, sizeof(idBuf), "fx_%u", id);
+            if (effectStates.find(idBuf) == effectStates.end()) {
+                break;
+            }
         }
     }
 
+    std::unique_ptr<audiox::plugin::PluginHost> host;
+    if (audiox::plugin::isPluginType(effectType)) {
+        host = preparePlugin(idBuf, effectType);
+        if (!host) return RET_ERR;
+    }
+    std::lock_guard<std::mutex> lock(effectsMutex);
+    attachPlugin(idBuf, params, std::move(host));
     effectStates[idBuf] = params;
     effectStatesSeq.fetch_add(1U, std::memory_order_release);
     size_t n = strnlen(idBuf, outIdSize - 1);
@@ -987,6 +1013,7 @@ int AudioContext::deleteEffect(const char *thingId) {
     if (it == effectStates.end()) {
         return RET_ERR;
     }
+    retirePlugin(thingId);
     effectStates.erase(it);
     effectStatesSeq.fetch_add(1U, std::memory_order_release);
     return RET_OK;

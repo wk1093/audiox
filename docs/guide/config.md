@@ -12,7 +12,7 @@ respective pages.
 | USB Capture Channels | Host-to-AudioX channels, shown as `usb_gadget_in` in routing; the host plays into this source |
 | USB Sample Size (bytes) | Bytes per sample exposed by the USB audio function |
 | USB MIDI Passthrough | Whether to expose USB MIDI, and whether to forward mapped messages |
-| USB Keyboard Chords | Whether to expose the optional USB HID keyboard function |
+| USB Keyboard Chords | Whether to expose the combined USB HID keyboard/Consumer Control media-key interface |
 
 Channels range from 1–16 and sample size from 1–4 bytes. Stereo in each
 direction with two bytes per sample (16-bit) is a typical starting format.
@@ -82,6 +82,8 @@ in the newly opened download tab.
 The backup does **not** contain the installed kernel, bootloader, runtime
 firmware, arbitrary files elsewhere on the system, browser-only graph layout,
 or Lua's in-memory `state`. Dim-lights state and current playback are not saved.
+Script-owned persistent options and custom files under `/audiox/scripts/` are
+also excluded; export important script data separately.
 
 ::: warning Keep backups private
 Bluetooth pairing records contain keys. A backup can also include private audio

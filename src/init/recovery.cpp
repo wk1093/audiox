@@ -14,11 +14,14 @@ bool g_trialPendingAtStartup = false;
 bool g_trialArmedThisBoot = false;
 bool g_trialResolved = false;
 time_t g_readySince = 0;
+bool g_startupStable = false;
+bool g_readyTimerStarted = false;
 
 time_t monotonicSeconds() {
     timespec now = {};
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
-        return 0;
+        printf("[RECOVERY] [WARN] Cannot capture startup clock: %s\n", strerror(errno));
+        return -1;
     }
     return now.tv_sec;
 }
@@ -53,6 +56,9 @@ int prepareBootUpdateRecovery() {
 }
 
 void initBootRecovery() {
+    g_readySince = 0;
+    g_readyTimerStarted = false;
+    g_startupStable = false;
     const char *trialEnv = getenv(BOOT_RECOVERY_TRIAL_ENV);
     g_trialPendingAtStartup = trialEnv && strcmp(trialEnv, "1") == 0 && bootRecoveryTrialPending(ROOT_MOUNT_POINT);
     if (g_trialPendingAtStartup) {
@@ -62,6 +68,13 @@ void initBootRecovery() {
 }
 
 void pollBootRecovery() {
+    const time_t now = monotonicSeconds();
+    if (now < 0) return;
+    if (!g_readyTimerStarted) {
+        g_readySince = now;
+        g_readyTimerStarted = true;
+    }
+    g_startupStable = now - g_readySince >= BOOT_RECOVERY_CONFIRM_SECONDS;
     if (!g_trialPendingAtStartup || g_trialResolved) {
         return;
     }
@@ -70,15 +83,15 @@ void pollBootRecovery() {
         g_trialResolved = true;
         return;
     }
-    const time_t now = monotonicSeconds();
-    if (g_readySince == 0) {
-        g_readySince = now;
+    if (!g_startupStable) {
         return;
     }
-    if (now - g_readySince < BOOT_RECOVERY_CONFIRM_SECONDS) {
-        return;
-    }
+
     bootRecoveryConfirm(ROOT_MOUNT_POINT);
     g_trialResolved = true;
     printf("[RECOVERY] new image confirmed healthy; removed backup boot set\n");
+}
+
+bool bootStartupStable() {
+    return g_startupStable;
 }

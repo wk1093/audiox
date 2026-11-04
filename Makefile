@@ -5,8 +5,6 @@ LIBS = -lm -pthread
 
 PKG_FETCH ?= curl -fsSL
 
-AUDIOX_USE_SHARED_GRAPH_PROCESSOR ?= 0
-
 # AUDIOX_QEMU=1 builds the QEMU debug variant (make debug): virtio disk
 # (/dev/vda) instead of the SD card, usbip-vudc instead of the dwc2 UDC, and a
 # generic arm64 kernel. Its build output goes to out/qemu; toolchain deps are
@@ -22,10 +20,8 @@ CPP_SRCS := $(sort $(shell find src -type f -name '*.cpp' 2>/dev/null))
 BOOTLOADER_SRC := src/init/bootloader.cpp
 RUNTIME_MAIN_SRC := src/init/init.cpp
 WATCHDOG_SRC := src/init/watchdog.cpp
-RUNTIME_CPP_SRCS := $(filter-out $(BOOTLOADER_SRC) $(RUNTIME_MAIN_SRC) $(WATCHDOG_SRC) src/audio/engine.cpp,$(CPP_SRCS))
-ifeq ($(AUDIOX_USE_SHARED_GRAPH_PROCESSOR),0)
-RUNTIME_CPP_SRCS := $(filter-out src/audio/graph_processor.cpp,$(RUNTIME_CPP_SRCS))
-endif
+PLUGIN_WORKER_SRC := src/plugin_worker/main.cpp
+RUNTIME_CPP_SRCS := $(filter-out $(BOOTLOADER_SRC) $(RUNTIME_MAIN_SRC) $(WATCHDOG_SRC) $(PLUGIN_WORKER_SRC),$(CPP_SRCS))
 RUNTIME_SRCS := $(RUNTIME_CPP_SRCS)
 RUNTIME_COMPILER := $(CXX)
 RUNTIME_FLAGS = $(CXXFLAGS)
@@ -102,9 +98,9 @@ RUNTIME_LIBS += $(LUA_STATIC_LIB) -lm
 #   PRERELEASE=       -> 1.10.1-nightly+<commit>
 # AUDIOX_VERSION_BUILD defaults to the 12-character git commit for nightly builds.
 AUDIOX_VERSION_MAJOR ?= 1
-AUDIOX_VERSION_MINOR ?= 13
-AUDIOX_VERSION_PATCH ?= 1
-AUDIOX_VERSION_PRERELEASE ?= 
+AUDIOX_VERSION_MINOR ?= 14
+AUDIOX_VERSION_PATCH ?= 0
+AUDIOX_VERSION_PRERELEASE ?= beta.6
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
 $(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
@@ -190,14 +186,13 @@ FFMPEG_URL ?= https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-
 FFMPEG_ARCHIVE_SHA256 ?= 177e40c91564dec3840096f3bf1ffe696b94330585972462cfc739fa29fe0e1a
 FFMPEG_ARCHIVE ?= $(SHARED_OUT_DIR)/downloads/ffmpeg.pkg
 FFMPEG_CROSS_LIB_DIR ?= /usr/aarch64-linux-gnu/lib
-FFMPEG_RUNTIME_LIBS ?= ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 librt.so.1 libpthread.so.0 libgcc_s.so.1
+FFMPEG_RUNTIME_LIBS ?= ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 librt.so.1 libpthread.so.0 libgcc_s.so.1 libstdc++.so.6
 FFMPEG_STAGE_DIR ?= $(OUT_DIR)/ffmpeg_stage
 CONFIG_MENU_BIN = $(SHARED_OUT_DIR)/host/audiox-menuconfig
 CONFIG_MENU_SRC = $(SCRIPTS_DIR)/audiox-menuconfig.cpp
 UPDATE_PACK_BIN = $(SHARED_OUT_DIR)/host/audiox-update-pack
 UPDATE_PACK_SRC = $(SCRIPTS_DIR)/audiox-update-pack.cpp
 UPDATE_ARCHIVE ?= $(OUT_DIR)/audiox-update.axu
-AUDIO_GRAPH_MODE_STAMP = $(OUT_DIR)/.audiox_graph_mode_$(AUDIOX_USE_SHARED_GRAPH_PROCESSOR)
 BOOT_CONFIG_FILE ?= $(OUT_DIR)/dev-config.txt
 BOOT_KERNEL_FILE = $(OUT_DIR)/bootfiles/$(KERNEL_IMAGE)
 BOOT_CMDLINE_FILE ?= $(OUT_DIR)/dev-cmdline.txt
@@ -271,7 +266,6 @@ DEPFLAGS = -MMD -MP
 
 RUNTIME_DEFINES = \
 	-DKERNEL_VERSION='"$(KV)"' \
-	-DAUDIOX_USE_SHARED_GRAPH_PROCESSOR=$(AUDIOX_USE_SHARED_GRAPH_PROCESSOR) \
 	-DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) \
 	-DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) \
 	-DAUDIOX_ENABLE_ALSA_LOGS=$(AUDIOX_ENABLE_ALSA_LOGS) \
@@ -327,13 +321,6 @@ $(AUDIOX_CONFIG_FILE): $(CONFIG_MENU_BIN) $(CURDIR)/Kconfig
 	@$(CONFIG_MENU_BIN) --olddefconfig "$(CURDIR)/Kconfig" "$(AUDIOX_CONFIG_FILE)"
 
 $(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ) $(WATCHDOG_OBJ) $(BOOTLOADER_OBJS): $(AUDIOX_CONFIG_FILE)
-
-$(AUDIO_GRAPH_MODE_STAMP):
-	@mkdir -p "$(OUT_DIR)"
-	@rm -f "$(OUT_DIR)"/.audiox_graph_mode_*
-	@touch "$@"
-
-$(RUNTIME_OBJ_DIR)/audio/processing.o: $(AUDIO_GRAPH_MODE_STAMP)
 
 $(CONFIG_MENU_BIN): $(CONFIG_MENU_SRC)
 	@mkdir -p "$(dir $@)"
@@ -567,6 +554,29 @@ $(ROOTFS_DIR)/sbin/audiox-main: $(RUNTIME_DEPS) $(RUNTIME_OBJS) $(RUNTIME_MAIN_O
 	$(RUNTIME_COMPILER) $(RUNTIME_FLAGS) \
 		-o $@ $(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ) $(RUNTIME_LIBS)
 
+$(ROOTFS_DIR)/sbin/audiox-plugin-worker: $(PLUGIN_WORKER_SRC) include/audio/plugin_api.h include/audio/plugin_ipc.hpp
+	@mkdir -p "$(dir $@)"
+	$(CXX) $(filter-out -static,$(CXXFLAGS)) $(RUNTIME_DEFINES) -o "$@" "$<" -ldl -lm
+
+.PHONY: axm-pack plugin-examples test-plugin-package test-plugin-host
+axm-pack: $(OUT_DIR)/host/axm-pack
+
+plugin-examples: $(OUT_DIR)/plugins/gain.axm $(OUT_DIR)/plugins/softclip.axm
+
+$(OUT_DIR)/plugins/gain.so: examples/plugins/gain/gain.c include/audio/plugin_api.h
+$(OUT_DIR)/plugins/softclip.so: examples/plugins/softclip/softclip.c include/audio/plugin_api.h
+$(OUT_DIR)/plugins/gain.so $(OUT_DIR)/plugins/softclip.so:
+	@mkdir -p "$(dir $@)"
+	$(CC) -std=c11 -O2 -fPIC -shared -fvisibility=hidden -Iinclude -o "$@" "$<" -lm
+
+$(OUT_DIR)/plugins/%.axm: $(OUT_DIR)/plugins/%.so examples/plugins/%/axm.txt $(OUT_DIR)/host/axm-pack
+	@rm -f "$@"
+	"$(OUT_DIR)/host/axm-pack" "examples/plugins/$*/axm.txt" "$<" "$@" $(wildcard examples/plugins/$*/*.html examples/plugins/$*/*.js examples/plugins/$*/*.css)
+
+$(OUT_DIR)/host/axm-pack: tools/axm-pack.cpp src/audio/plugin_package.cpp include/audio/plugin_package.hpp include/audio/plugin_api.h
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tools/axm-pack.cpp src/audio/plugin_package.cpp
+
 bootloader_rootfs: $(BOOTLOADER_ROOTFS_DIR)/init $(BOOT_MODULE_LOAD_LIST) $(BOOT_MODULE_LOAD_BASE_LIST)
 	@echo "Creating bootloader rootfs structure..."
 	mkdir -p $(BOOTLOADER_ROOTFS_DIR)/etc $(BOOTLOADER_ROOTFS_DIR)/lib/modules
@@ -580,7 +590,7 @@ $(LUA_STAGED_LICENSE): $(LUA_LICENSE)
 	@mkdir -p "$(dir $@)"
 	install -m 0644 "$<" "$@"
 
-rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB) $(LUA_STAGED_LICENSE) $(DNSMASQ_BIN) check_dnsmasq_conf
+rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(ROOTFS_DIR)/sbin/audiox-plugin-worker $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB) $(LUA_STAGED_LICENSE) $(DNSMASQ_BIN) check_dnsmasq_conf
 	@echo "Creating runtime rootfs structure..."
 	mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/sbin $(ROOTFS_DIR)/etc
 	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev

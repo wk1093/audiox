@@ -76,20 +76,33 @@ test('effect channels are hidden by default without changing saved gains or MIDI
   f.context.state.ccVolumes = [{ id: 'fx_1', cc: 7 }];
   const before = JSON.stringify(f.context.state);
   f.context.renderVolGrid();
-  assert.equal(f.grid.children.length, 2);
+  assert.equal(f.grid.children.length, 1);
   assert.match(f.summary.textContent, /2 effect channel.*hidden; 1 with adjusted gain/);
   assert.equal(f.context.volumeMeters.has('fx_1'), false);
   assert.equal(JSON.stringify(f.context.state), before);
   f.context.state.volShowEffects = true;
   f.context.renderVolGrid();
-  assert.equal(f.grid.children.length, 4);
+  assert.equal(f.grid.children.length, 3);
   assert.equal(f.summary.hidden, true);
   assert.equal(f.context.volumeMeters.has('fx_1'), true);
   assert.equal(f.context.state.volumes[1].gain, 0.5);
   assert.equal(f.context.state.ccVolumes[0].cc, 7);
   assert.equal(f.saves.length, 0);
+  assert.equal(f.context.volumeMeters.has('routing_helper'), false);
 });
 
+test('a compiled routing helper never creates a volume strip or a misleading effects-only message', () => {
+  const f = fixture(1, [{ id: 'routing_helper', name: 'Audio Mixer', gain: 2 }]);
+  for (const showEffects of [false, true]) {
+    f.context.state.volShowEffects = showEffects;
+    f.context.renderVolGrid();
+    assert.equal(f.grid.children.length, 1);
+    assert.match(f.grid.children[0].textContent, /No active devices/);
+    assert.equal(f.context.volumeMeters.has('routing_helper'), false);
+    assert.equal(f.context.state.volumes[0].gain, 2);
+    assert.equal(f.saves.length, 0);
+  }
+});
 test('an effect-only graph explains how to reveal hidden channels', () => {
   const f = fixture(1, [{ id: 'fx_1', name: 'Reverb', gain: 1 }]);
   assert.match(f.grid.children[0].textContent, /Enable Show effect channels/);

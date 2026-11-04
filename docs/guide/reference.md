@@ -27,6 +27,7 @@ They are not paths on the computer running your browser.
 | `volumes.txt` | Saved gains keyed by audio thing ID |
 | `bluetooth/paired.txt` | Saved Bluetooth pairing records, Auto-connect flags, and sensitive key material |
 | `sfx/` | Soundboard audio files |
+| `plugins/` | Installed native `.axm` modules, metadata, and sandboxed UI assets; excluded from normal backups |
 
 Use the normal editors instead of hand-editing files where possible: edits can
 need validation, runtime reload, and corresponding LED/graph refresh. Backups
@@ -38,6 +39,9 @@ Raspberry Pi boot behavior, kernel selection, and overlays. Changing boot files
 can make the device unbootable.
 
 ## Request conventions
+
+For plugin upload, catalog, reload/removal, and UI asset routes, see
+[Native plugin HTTP management](../plugins#install-and-use).
 
 Base URLs in this page are relative to the device, such as
 `http://audiox.local/api/system/info`.
@@ -136,6 +140,7 @@ not a per-sound lighting form.
 | `POST /api/scripts` | Create or update a saved callback script |
 | `DELETE /api/scripts` | Remove by `id` |
 | `POST /api/scripts/run` | Queue the saved script's `run` hook using `id` |
+| `POST /api/scripts/control` | Persist a declared option or queue a declared button |
 
 A create/update body contains:
 
@@ -157,12 +162,25 @@ from field separators. Delete/Run use `id=<positive integer>`.
 
 The list includes plain `name`, boolean `midi_enabled`, derived `event_mask`,
 `hook_mode: true`, saved `config_write_allowed`, and hex-encoded
-`script_hex` / `runtime_error_hex`. Decode error text as text, not HTML.
+`script_hex` / `runtime_error_hex`. The `ui` array describes native controls:
+`key`, `label`, `type` (`boolean`, `number`, `string`, `button`), typed `value`,
+and optional numeric `min`/`max`. `ui_error_hex` reports per-script
+schema/storage failures without preventing source editing. Decode error text
+as text, not HTML.
 Saving inspects unconditional top-level `hook()` registrations without running
-handlers. Run is rejected without a `run` hook. Configuration permission
+handlers. Run is rejected without a `run` hook. Device-management/configuration permission
 requires explicit acknowledgment. `/api/macros` and `/api/midi/chords` remain
 available for compatibility. `/api/macros` retains its `macros` response
 property.
+
+Control requests use `id=<positive integer>&key_hex=<UTF-8 key as hex>`.
+Options also require `value_hex=<hex-encoded scalar text>`: `true`/`false`,
+a finite decimal number, or UTF-8 string according to the declared type.
+Buttons omit `value_hex`. Unknown keys, invalid values, unavailable scripts,
+and full trigger queues are errors. Options persist before queuing
+`config_change`; buttons queue `ui`. Responses acknowledge saving/queuing,
+not callback completion. Script-owned options need no official-device write
+permission.
 
 Saving syntax-valid Lua does not guarantee every branch will execute
 successfully. Device requirements and actual effect/volume targets are checked

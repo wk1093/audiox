@@ -1,4 +1,5 @@
 #include "audio/effects/gain.hpp"
+#include <cmath>
 
 namespace audiox::effects {
 
@@ -18,7 +19,7 @@ void processGain(const float *in,
     }
 
     for (uint32_t frame = 0; frame < frames; ++frame) {
-        float s = in[frame] * gain;
+        float s = std::isfinite(in[frame]) ? in[frame] * gain : 0.0f;
         if (s > 1.0f) {
             s = 1.0f;
         }

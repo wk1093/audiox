@@ -763,6 +763,15 @@ int main() {
             assert(pluginRequest("POST", "/api/plugins/remove", "id=" + id).find("409 Conflict") != std::string::npos);
             if (package.metadata.paramCount) {
                 const auto &parameter = package.metadata.params[0];
+                if (parameter.min <= 0.00002f && parameter.max >= 0.00002f) {
+                    const auto tinyUpdate = pluginRequest("POST", "/api/effect/set",
+                        "id=" + effectId + "&param=" + parameter.name + "&value=0.00002");
+                    char expected[96]{};
+                    snprintf(expected, sizeof(expected), "\"%s\":%.9g", parameter.name, double(0.00002f));
+                    assert(tinyUpdate.find("200 OK") != std::string::npos);
+                    assert(tinyUpdate.find(expected) != std::string::npos);
+                    assert(pluginRequest("GET", "/api/effects", "").find(expected) != std::string::npos);
+                }
                 assert(pluginRequest("POST", "/api/effect/set",
                     "id=" + effectId + "&param=" + parameter.name + "&value=" +
                     std::to_string(parameter.max)).find("200 OK") != std::string::npos);
@@ -803,6 +812,27 @@ int main() {
             assert(fullResponse.substr(fullResponse.size() - 3) == "]}\n");
             for (unsigned i = 0; i < 24; ++i)
                 audio.effectStates.erase("fx_" + std::to_string(2000 + i));
+            audiox::plugin::PackageMetadata precise{};
+            strcpy(precise.id, "plugin_precise");
+            strcpy(precise.name, "Precise metadata");
+            strcpy(precise.version, "1");
+            precise.paramCount = 1;
+            auto &parameter = precise.params[0];
+            strcpy(parameter.name, "constructor");
+            strcpy(parameter.label, "Small amount");
+            parameter.min = 0.000001f;
+            parameter.max = 0.00003f;
+            parameter.defaultValue = 0.00002f;
+            assert(audiox::plugin::registerPackage(precise, error));
+            auto &preciseEffect = audio.effectStates["fx_3000"];
+            preciseEffect.type = audiox::plugin::findType(precise.id);
+            audiox::effects::setSlotDefaultsForType(&preciseEffect, preciseEffect.type);
+            const auto preciseResponse = pluginRequest("GET", "/api/effects", "");
+            char expectedBounds[160]{};
+            snprintf(expectedBounds, sizeof(expectedBounds), "\"min\":%.9g,\"max\":%.9g,\"default\":%.9g",
+                     double(parameter.min), double(parameter.max), double(parameter.defaultValue));
+            assert(preciseResponse.find(expectedBounds) != std::string::npos);
+            audio.effectStates.erase("fx_3000");
             if (const char *hangModule = getenv("AUDIOX_TEST_PLUGIN_HANG_MODULE")) {
                 std::ifstream library(hangModule, std::ios::binary);
                 assert(library);

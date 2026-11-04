@@ -155,6 +155,7 @@
 
   function parameterHelp(name, type) {
     const help = {
+      __proto__: null,
       level: ['Level', 'x', 'Multiplies the signal level. 1 is unchanged; 0 silences it.'],
       input_gain: ['Input gain', 'x', 'Level entering the effect. 1 leaves the input unchanged.'],
       output_gain: ['Output gain', 'x', 'Level after processing. Reduce this if the result is too loud.'],
@@ -971,12 +972,14 @@
       this.loadEpoch++;
       this.mutationInFlight++;
       try {
-        await this.postSet({ id: effectId, param, value: numeric.toFixed(4) });
+        const result = await this.postSet({ id: effectId, param, value: String(numeric) });
+        const saved = typeof result.params?.[param] === 'number' && Number.isFinite(result.params[param])
+          ? result.params[param] : numeric;
         const rendered = this.effectsSignature === this.buildEffectsSignature();
-        if (fx && fx.params) fx.params[param] = numeric;
+        if (fx && fx.params) fx.params[param] = saved;
         // Keep the open panel (and any custom UI frame) instead of re-rendering for our own save.
         if (rendered) this.effectsSignature = this.buildEffectsSignature();
-        this.syncParamView(effectId, param, numeric);
+        this.syncParamView(effectId, param, saved);
         this.refreshAllNodes();
         this.postParameters(effectId);
       } finally {
@@ -998,7 +1001,7 @@
         const midi = fx?.midi || {};
         const cc = midi?.cc || {};
         const light = midi?.light || {};
-        const paramSig = paramList.map((p) => `${p.name}:${p.min}:${p.max}:${toNumber(params[p.name], p.value).toFixed(4)}`).join(';');
+        const paramSig = paramList.map((p) => `${p.name}:${p.min}:${p.max}:${toNumber(params[p.name], p.value)}`).join(';');
         const ccSig = paramList.map((p) => `${p.name}:${toNumber(cc[p.name], -1)}`).join(';');
         rows.push([
           id,

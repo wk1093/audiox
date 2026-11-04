@@ -145,7 +145,7 @@ test('parameter controls pair sliders and numeric fields with help, units and re
   number.listeners.change();
   assert.equal(slider.value, '2.5');
   await f.flush();
-  assert.equal(new URLSearchParams(f.calls.at(-1).body).get('value'), '2.5000');
+  assert.equal(new URLSearchParams(f.calls.at(-1).body).get('value'), '2.5');
   assert.match(f.notices.at(-1)[0], /Mic level: Level saved/);
   number.value = '5';
   number.listeners.change();
@@ -154,7 +154,7 @@ test('parameter controls pair sliders and numeric fields with help, units and re
   reset.listeners.click();
   await f.flush();
   assert.equal(number.value, '1');
-  assert.equal(new URLSearchParams(f.calls.at(-1).body).get('value'), '1.0000');
+  assert.equal(new URLSearchParams(f.calls.at(-1).body).get('value'), '1');
 });
 
 test('parameter help closes on Escape and effect disclosures survive rerendering', async () => {

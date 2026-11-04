@@ -74,8 +74,12 @@ function fixture({ plugins: pluginRows = [], effects: effectRows = [] } = {}) {
       if (url === '/api/plugins') return { ok: true, text: async () => JSON.stringify({ plugins: state.plugins }) };
       if (url === '/api/effect/set') {
         const fields = new URLSearchParams(options.body);
+        const value = Number(fields.get('value'));
+        const saved = state.roundToFloat ? Number(Math.fround(value).toPrecision(9)) : value;
         state.effects = state.effects.map(fx => fx.id !== fields.get('id') ? fx
-          : { ...fx, params: { ...fx.params, [fields.get('param')]: Number(fields.get('value')) } });
+          : { ...fx, params: { ...fx.params, [fields.get('param')]: saved } });
+        const updated = state.effects.find(fx => fx.id === fields.get('id'));
+        return { ok: true, text: async () => JSON.stringify({ ok: true, params: updated?.params }) };
       }
       return { ok: true, text: async () => JSON.stringify({ effects: state.effects }) };
     },
@@ -125,6 +129,33 @@ test('catalog lists metadata as text and rejects unsafe IDs', async () => {
   assert.equal(f.api.assetUrl('../x'), '');
   f.state.fail = { url: '/api/plugins', status: 503, text: 'registry offline' };
   await assert.rejects(f.plugins.load(), /Plugin list load failed: 503 registry offline/);
+});
+
+test('valid plugin parameter names matching JavaScript properties retain their labels and values', async () => {
+  for (const id of ['plugin_constructor', 'plugin_default']) {
+    const f = fixture({
+      plugins: [{ ...catalogEntry, id }],
+      effects: [{ ...pluginFx, type: id,
+        params: { constructor: 1, default: 0.5 },
+        param_meta: [
+          { name: 'constructor', label: 'Custom amount', min: 0, max: 2, default: 1 },
+          { name: 'default', label: 'Custom mix', min: 0, max: 1, default: 0.5 },
+        ],
+      }],
+    });
+    await f.plugins.load();
+    await f.effects.loadEffects();
+    assert.equal(f.effects.isPluginEffect(f.effects.effectsById.get('fx_3')), true);
+    assert.match(f.effects.typeLabel(f.effects.effectsById.get('fx_3')), /Plugin: Tremolo/);
+    const toggle = find(f.panel, el => el.textContent === 'Open custom UI');
+    assert.ok(toggle && !toggle.disabled);
+    toggle.listeners.click();
+    assert.equal(f.effects.frames.get('fx_3').iframe.src, `/api/plugins/${id}/assets/index.html`);
+    const parameters = f.effects.frameParameters(f.effects.effectsById.get('fx_3'));
+    assert.equal(parameters.params.constructor, 1);
+    assert.equal(parameters.params.default, 0.5);
+    assert.ok(find(f.panel, el => el.tagName === 'LABEL' && el.textContent === 'Custom amount'));
+  }
 });
 
 test('install validates, confirms native code risk, PUTs binary, then reloads catalog and effects', async () => {
@@ -237,7 +268,7 @@ test('custom UI is opt-in, sandboxed, and bridges only validated parameter chang
   assert.equal(sets().length, 1);
   const fields = new URLSearchParams(sets()[0].body);
   assert.equal(fields.get('id'), 'fx_3');
-  assert.equal(fields.get('value'), '1.5000');
+  assert.equal(fields.get('value'), '1.5');
   assert.equal(find(f.panel, el => el.className === 'fx-parameter').children[1].children[1].value, '1.5');
   assert.equal(iframe.contentWindow.posted.at(-1).data.params.level, 1.5);
 
@@ -267,6 +298,28 @@ test('custom UI is opt-in, sandboxed, and bridges only validated parameter chang
   await f.effects.loadEffects();
   assert.equal(findAll(f.panel, el => el.tagName === 'IFRAME').length, 0);
   assert.equal(f.windowListeners.message.length, 0);
+});
+
+test('plugin parameters retain small values in updates and refresh signatures', async () => {
+  const fx = { ...pluginFx, params: { amount: 0.00001 },
+    param_meta: [{ name: 'amount', label: 'Amount', min: 0.000001, max: 0.0001, default: 0.00001 }] };
+  const f = fixture({ plugins: [catalogEntry], effects: [fx] });
+  await f.plugins.load();
+  await f.effects.loadEffects();
+  find(f.panel, el => el.textContent === 'Open custom UI').listeners.click();
+  const frame = f.effects.frames.get('fx_3').iframe;
+  f.state.roundToFloat = true;
+  const before = f.effects.buildEffectsSignature();
+  await f.effects.setParam('fx_3', 'amount', 0.00002);
+  const call = f.calls.find(c => c.url === '/api/effect/set');
+  assert.equal(Number(new URLSearchParams(call.body).get('value')), 0.00002);
+  assert.notEqual(f.effects.buildEffectsSignature(), before);
+  assert.equal(f.effects.effectsById.get('fx_3').params.amount, Number(Math.fround(0.00002).toPrecision(9)));
+  await f.effects.loadEffects();
+  assert.equal(f.effects.frames.get('fx_3').iframe, frame, 'canonical float readback does not reload custom UI');
+  f.state.effects = [{ ...fx, params: { amount: 0.00003 } }];
+  await f.effects.loadEffects();
+  assert.equal(f.effects.effectsById.get('fx_3').params.amount, 0.00003);
 });
 
 test('Effects page hosts the plugin manager and routing offers installed plugin templates', () => {

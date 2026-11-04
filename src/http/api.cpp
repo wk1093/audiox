@@ -2352,7 +2352,7 @@ static int handleEffects(HttpServer *server,
 			}
 			n = snprintf(out + off,
 						 sizeof(out) - off,
-						 "%s\"%s\":%.4f",
+						 "%s\"%s\":%.9g",
 						 (p == 0U) ? "" : ",",
 						 typeSpec->params[p].name,
 						 (double)value);
@@ -2375,7 +2375,7 @@ static int handleEffects(HttpServer *server,
 		for (uint8_t p = 0; p < paramCount; ++p) {
 			n = snprintf(out + off,
 						 sizeof(out) - off,
-						 "%s{\"name\":\"%s\",\"label\":\"%s\",\"min\":%.4f,\"max\":%.4f,\"default\":%.4f}",
+						 "%s{\"name\":\"%s\",\"label\":\"%s\",\"min\":%.9g,\"max\":%.9g,\"default\":%.9g}",
 						 (p == 0U) ? "" : ",",
 						 typeSpec->params[p].name,
 						 audiox::json::escape(typeSpec->params[p].label).c_str(),
@@ -2622,7 +2622,7 @@ static int handleEffectSet(HttpServer *server,
 		}
 		n = snprintf(out + off,
 					 sizeof(out) - off,
-					 "%s\"%s\":%.4f",
+					 "%s\"%s\":%.9g",
 					 (p == 0U) ? "" : ",",
 					 spec->params[p].name,
 					 (double)v);

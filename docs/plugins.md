@@ -10,7 +10,9 @@ data and checks ELF headers; it does not load or execute its module.
 On **Effects**, choose an `.axm` in **Plugins** and select **Install plugin**.
 The Routing Add menu then offers its stereo effect. Parameters use the existing
 sliders, MIDI mappings, and Lua effect API, with stable `fx_N` instance IDs.
-Custom controls are optional and open only when explicitly requested.
+WebUI numeric parameter updates preserve native float precision; values are not
+quantized to four decimal places. Custom controls are optional and open only when
+explicitly requested.
 
 Use **Reload** to restart a faulted plugin's workers. Crashes, forbidden syscalls,
 and repeated missed deadlines produce one device log and delayed dry bypass.
@@ -144,6 +146,9 @@ param=gain|Gain|0|2|1
 * `api` must be exactly `1`.
 * Up to eight `param=name|label|min|max|default` lines are allowed.
   Parameter names are unique, match `[a-z][a-z0-9_]*`, and are at most 23 bytes.
+  The slug grammar is the only identifier restriction: JavaScript keywords and
+  inherited-property names are not additionally reserved (for example,
+  `plugin_default`, parameter `default`, and parameter `constructor` are valid).
   Values are finite decimal floats (scientific notation is allowed), with
   `min < max` and `min <= default <= max`. NaN, infinity, hex, and whitespace
   in numbers are rejected.

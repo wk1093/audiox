@@ -26,9 +26,46 @@ The card shows:
 | Memory | Used/total MB, calculated using available memory |
 | Storage | Used/total persistent storage in GiB or MiB, with free space and filesystem-reserved space below. The bar includes used and reserved space, so its remaining portion matches space available for uploads. This excludes the boot partition and RAM. |
 | Load (1m) | One-minute system load average; not a CPU-percent meter |
+| Audio Buffer | Current target ALSA period, negotiated period/buffer sizes, active ALSA stream count, cumulative X-runs, and (while above base) the quiet interval and failed-downshift count. The DSP block size remains fixed. The displayed duration estimates the largest single ALSA buffer's capacity at the engine rate; it is **not measured end-to-end or output latency**. |
 | FFmpeg | Available converter's reported version/status |
 
 System refreshes while the tab is active and visible. A runtime-only watchdog restart does not reset kernel uptime; a full reboot does. Record the version/kernel/model alongside logs when reporting a fault.
+
+After five X-runs within 30 seconds, AudioX temporarily increases the target
+ALSA period and reopens affected PCM streams. It attempts one step back after
+30 seconds without an X-run, or 60 seconds after a burst of five. If a
+downshift is followed by enough X-runs to return to the previous level within
+10 minutes, AudioX considers that downshift unsuccessful and waits 5 minutes
+before the next attempt; repeated unsuccessful attempts increase the wait to
+10 and then 15 minutes. This tracking is in-memory and resets when the runtime
+restarts. A notification accompanies an increase.
+The first 60 seconds after runtime startup are excluded from adaptive decisions
+and health warnings. Each buffer shift or successful PCM reopen also has a
+10-second settling period; events during settling do not trigger another shift
+or count as a failed downshift. All X-runs remain included in the diagnostic
+total, including startup and settling events.
+
+Playback is primed before starting or restarting: at the base hardware period
+it still starts with one DSP block; larger hardware periods queue up to one
+buffer minus one period before starting, so the extra capacity provides actual
+scheduling headroom. The RW and MMAP paths use the same startup threshold.
+The host test suite verifies policy behavior, but the effective X-run reduction
+and audible latency tradeoff still require testing with the intended Raspberry Pi,
+devices, and workloads. Larger buffers do not resolve sustained CPU overload.
+ALSA buffer capacity is headroom available to the PCM stream; actual latency
+also depends on period scheduling, capture and playback paths, USB/device
+buffering, and the host.
+
+### Optional audio stress controls
+
+The System page includes stress controls only when the build's
+`AUDIO_STRESS_TEST` menuconfig option is enabled. Normal builds default this
+option off. The audio-thread test adds a bounded amount of busy work to each
+audio block (1–20 ms) for up to 30 seconds; the CPU contention test runs workers
+on all available cores, capped at eight, for up to 30 seconds. Only one test can
+run at a time, and either can cause audible dropouts or adaptive-buffer changes.
+Use **Stop Test** to end early. These tests are for controlled diagnostics, not
+normal operation or sound-quality evaluation.
 
 FFmpeg availability matters for [Soundboard](/guide/soundboard) preprocessing. It is not a statement that every source media format will decode.
 

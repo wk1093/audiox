@@ -192,12 +192,22 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Make Cut and bypass routing-only operations; skip silent built-in chains while preserving tails and control release, retain direct buffer aliases and avoid clearing unused DSP buffers.
   - DSP/sanitizer, routing, HTTP persistence, MIDI/Lua and WebUI regressions pass; physical Pi listening and realtime performance still need validation.
 
-## Release - v2.0+
-
-- [ ] IMPORTANT: Create a config versioning system, so that older configs can be upgraded if format is changed. This is important for 2.0+ because it is meant to be a more stable release, and we don't want to break people's configs when they update. This will also allow for more advanced features in the future, like being able to export and import configs between devices.
-- [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)
-- [ ] Look into dynamic sample size for the audio engine, so that if we notice Xruns or any other issues we can automatically increase the sample size when needed (or at least allow the user to change it via the WebUI). This is mainly for people with a lot of channels or effects that could cause issues.
+## Testing and Release preparation - v1.15
 - [ ] Test the framebuffer UI on Pi 5 with a connected screen; rendering, touch interaction, and display hotplug remain untested on that board.
+- [ ] Have a friend use the setup daily for a week, and report any issues, feedback, or suggestions for improvement.
+
+## Release - v2.0+
+- [x] IMPORTANT: Create a config versioning system, so that older configs can be upgraded if format is changed. This is important for 2.0+ because it is meant to be a more stable release, and we don't want to break people's configs when they update. This will also allow for more advanced features in the future, like being able to export and import configs between devices.
+  - [x] Add schema versioning to USB settings, routing, MIDI, effects, volumes, and Bluetooth pairing; read legacy unversioned files and refuse unsupported newer versions.
+  - [x] Validate configuration schema versions when creating or staging a backup.
+- [ ] Stabilize the audio thread under various load conditions and ensure low-latency performance. (maybe dynamic buffer sizing)
+  - [x] Add adaptive ALSA period targets after five X-runs in 30 seconds; downshift after 30/60 seconds stable, with 5/10/15-minute in-memory backoff after failed downshifts. Preserve the fixed DSP block size and expose buffer telemetry.
+  - [x] Prime enlarged playback queues before startup/recovery; ignore the first runtime minute and 10 seconds after PCM buffer transitions for adaptation and health warnings, while retaining diagnostic totals.
+  - [x] Add compile-time-gated, bounded System-page tests for audio-thread overload and whole-system CPU contention; leave normal builds disabled by default.
+  - [ ] Validate X-run reduction, recovery interruptions, and latency tradeoffs on Raspberry Pi hardware under representative workloads.
+- [ ] optimize things
+- [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)
+
 
 ## Future
 - [ ] Option in config to use raspi AUX port as an output source (for people without an audio interface, since custom hardware is still WIP)

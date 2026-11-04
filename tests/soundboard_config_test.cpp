@@ -953,6 +953,14 @@ int main() {
         usbConfig.keyboardMacros = 1;
         assert(config.writeConfigFile(&usbConfig) == RET_OK);
         assert(config.readConfigFile().midiPassthrough == 1 && config.readConfigFile().keyboardMacros == 1);
+        assert(config.readConfigFile().schemaVersion == CONFIG_SCHEMA_VERSION);
+        {
+            std::ifstream savedConfig("config.txt");
+            assert(savedConfig);
+            std::string firstLine;
+            assert(std::getline(savedConfig, firstLine));
+            assert(firstLine == "config_version=1");
+        }
         assert(!config.readMidiMapFile().samplerKeyboardEnabled);
         assert(mkdir("config.txt.tmp", 0755) == 0);
         ConfigData failedUsbConfig = usbConfig;
@@ -2073,6 +2081,45 @@ int main() {
         assert(fclose(fp) == 0);
         assert(config.readScriptConfig("volumes.txt", configText, sizeof(configText), &configLength) == RET_ERR);
         assert(unlink("volumes.txt") == 0);
+    }
+
+    {
+        const std::string futureConfig = "config_version=2\nusb_sample_rate=96000\n";
+        FILE *future = fopen("config.txt", "w");
+        assert(future);
+        assert(fwrite(futureConfig.data(), 1, futureConfig.size(), future) == futureConfig.size());
+        assert(fclose(future) == 0);
+        ConfigData unsupported = config.readConfigFile();
+        assert(unsupported.schemaVersion == 2);
+        assert(config.writeConfigFile(&unsupported) == RET_ERR);
+        std::ifstream preserved("config.txt");
+        assert(preserved);
+        assert(std::string(std::istreambuf_iterator<char>(preserved), {}) == futureConfig);
+    }
+
+    {
+        const std::string futureMap = "# audiox midi map v2\nnote_map=36,future.wav\n";
+        FILE *future = fopen("midi_map.txt", "w");
+        assert(future);
+        assert(fwrite(futureMap.data(), 1, futureMap.size(), future) == futureMap.size());
+        assert(fclose(future) == 0);
+        MidiMapData emptyMap{};
+        assert(config.writeMidiMapFile(&emptyMap) == RET_ERR);
+        assert(readMidiConfig() == futureMap);
+        assert(unlink("midi_map.txt") == 0);
+
+        assert(config.writeMidiMapFile(&emptyMap) == RET_OK);
+        const std::string savedMap = readMidiConfig();
+        const std::string futureParams = "# audiox fx params v2\nfx_param=fx_1,gain,0.5\n";
+        future = fopen("fx_params.txt", "w");
+        assert(future);
+        assert(fwrite(futureParams.data(), 1, futureParams.size(), future) == futureParams.size());
+        assert(fclose(future) == 0);
+        assert(config.writeMidiMapFile(&emptyMap) == RET_ERR);
+        assert(readMidiConfig() == savedMap);
+        std::ifstream preservedParams("fx_params.txt");
+        assert(preservedParams);
+        assert(std::string(std::istreambuf_iterator<char>(preservedParams), {}) == futureParams);
     }
 
     assert(unlink("sfx/keep.wav") == 0);

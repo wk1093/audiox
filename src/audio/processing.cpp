@@ -1,6 +1,7 @@
 #include "audio/context.hpp"
 #include "audio/plugin_registry.hpp"
 #include "audio/alsa_pcm.h"
+#include "audio/stress_test.hpp"
 #include "audio/effects/slot.hpp"
 #include "audio/processing_fx.hpp"
 #include "audio/pcm_convert.hpp"
@@ -26,6 +27,7 @@ constexpr float kSrcI = 0.003f;
 constexpr uint32_t kMaxCaptureStreams = 4;
 constexpr uint32_t kMaxPlaybackStreams = 4;
 constexpr uint32_t kCaptureRingFrames = BUFFER_FRAMES * 16U;
+constexpr uint32_t kMaxAlsaPeriodFrames = audiox::AdaptiveAudioBuffer::kMaxPeriodFrames;
 using CaptureRing = audiox::capture::PcmCaptureRing<kCaptureRingFrames, kMaxChannelsPerThing>;
 constexpr uint32_t kReopenRetryBlocks = 200;
 constexpr float kSoundboardClipGain = 0.35f;
@@ -82,6 +84,9 @@ struct RuntimeGraph {
         uint32_t card;
         uint32_t device;
         uint32_t sampleRate;
+        uint32_t periodFrames;
+        uint32_t bufferFrames;
+        uint32_t bufferLevel;
         uint32_t reopenRetryBlocks;
         uint32_t pendingFrames;
         uint32_t pendingOffsetFrames;
@@ -153,6 +158,9 @@ struct AlsaCaptureBackend {
         uint32_t card;
         uint32_t device;
         uint32_t sampleRate;
+        uint32_t periodFrames;
+        uint32_t bufferFrames;
+        uint32_t bufferLevel;
         uint32_t reopenRetryBlocks;
         snd_pcm_format_t format;
         int mmapAccess;
@@ -215,6 +223,37 @@ static int cmpTimespec(const timespec &a, const timespec &b) {
 
 static uint64_t blockPeriodNs() {
     return (1000000000ULL * (uint64_t)BUFFER_FRAMES) / (uint64_t)SAMPLE_RATE;
+}
+
+struct PcmTimingProfile {
+    unsigned periodFrames;
+    unsigned periods;
+    int configureTiming;
+};
+
+static size_t buildPcmTimingProfiles(uint32_t preferredPeriod, PcmTimingProfile *out,
+                                    size_t capacity) {
+    if (!out || !capacity) return 0;
+    size_t count = 0;
+    auto add = [&](uint32_t frames, unsigned periods, int configureTiming) {
+        if (frames == 0 || frames > kMaxAlsaPeriodFrames) return;
+        for (size_t i = 0; i < count; ++i) {
+            if (out[i].periodFrames == frames && out[i].periods == periods &&
+                out[i].configureTiming == configureTiming) return;
+        }
+        if (count < capacity) out[count++] = {frames, periods, configureTiming};
+    };
+
+    uint32_t frames = std::min(preferredPeriod, kMaxAlsaPeriodFrames);
+    add(frames, 4U, 1);
+    while (frames < kMaxAlsaPeriodFrames && count < capacity) {
+        frames = frames > kMaxAlsaPeriodFrames / 2
+            ? kMaxAlsaPeriodFrames : frames * 2;
+        add(frames, 4U, 1);
+    }
+    add(BUFFER_FRAMES, 2U, 1);
+    add(BUFFER_FRAMES, 2U, 0);
+    return count;
 }
 
 static void waitUntilBlockDeadline(timespec *deadline) {
@@ -473,6 +512,8 @@ static void closeCaptureStream(AlsaCaptureStream *s) {
         snd_pcm_close(s->pcm);
         s->pcm = nullptr;
     }
+    s->periodFrames = 0;
+    s->bufferFrames = 0;
 }
 
 static void closePlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
@@ -483,6 +524,8 @@ static void closePlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
         snd_pcm_close(s->pcm);
         s->pcm = nullptr;
     }
+    s->periodFrames = 0;
+    s->bufferFrames = 0;
 }
 
 static bool openCaptureStream(AlsaCaptureStream *s) {
@@ -490,17 +533,11 @@ static bool openCaptureStream(AlsaCaptureStream *s) {
         return false;
     }
 
-    static const struct {
-        unsigned periodFrames;
-        unsigned periods;
-        int configureTiming;
-    } profiles[] = {
-        {512U, 4U, 1},
-        {256U, 4U, 1},
-        {BUFFER_FRAMES, 4U, 1},
-        {BUFFER_FRAMES, 2U, 1},
-        {BUFFER_FRAMES, 2U, 0},
-    };
+    PcmTimingProfile profiles[8]{};
+    const uint32_t bufferLevel = audiox::adaptiveAudioBuffer.level();
+    const uint32_t targetPeriod = audiox::adaptiveAudioBuffer.targetPeriodFrames(BUFFER_FRAMES);
+    const size_t profileCount = buildPcmTimingProfiles(targetPeriod, profiles,
+                                                        sizeof(profiles) / sizeof(profiles[0]));
 
     const unsigned rates[] = {SAMPLE_RATE, AUDIO_INPUT_FALLBACK_RATE};
     uint8_t chAttempts[3] = {};
@@ -532,9 +569,10 @@ static bool openCaptureStream(AlsaCaptureStream *s) {
             }
 
             for (size_t f = 0; f < (sizeof(formats) / sizeof(formats[0])); ++f) {
-                for (size_t p = 0; p < (sizeof(profiles) / sizeof(profiles[0])); ++p) {
+                for (size_t p = 0; p < profileCount; ++p) {
                     snd_pcm_t *pcm = nullptr;
                     snd_pcm_uframes_t period = 0;
+                    snd_pcm_uframes_t buffer = 0;
                     size_t frameBytes = 0;
                     snd_pcm_access_t access = SND_PCM_ACCESS_MMAP_INTERLEAVED;
                     int openRc = audio_pcm_open_configured(&pcm,
@@ -547,6 +585,7 @@ static bool openCaptureStream(AlsaCaptureStream *s) {
                                                            profiles[p].periodFrames,
                                                            profiles[p].periods,
                                                            &period,
+                                                           &buffer,
                                                            &frameBytes,
                                                            profiles[p].configureTiming,
                                                            0);
@@ -561,6 +600,9 @@ static bool openCaptureStream(AlsaCaptureStream *s) {
                     s->format = formats[f];
                     s->channels = ch;
                     s->sampleRate = rates[r];
+                    s->periodFrames = static_cast<uint32_t>(period);
+                    s->bufferFrames = static_cast<uint32_t>(buffer);
+                    s->bufferLevel = bufferLevel;
                     s->mmapAccess = (access == SND_PCM_ACCESS_MMAP_INTERLEAVED);
                     s->reopenRetryBlocks = 0;
                     captureRingReset(s);
@@ -569,6 +611,8 @@ static bool openCaptureStream(AlsaCaptureStream *s) {
                     if (snd_pcm_start(s->pcm) < 0) {
                         // Capture may auto-start on first read depending on driver.
                     }
+                    audiox::adaptiveAudioBuffer.bufferChanged();
+                    audiox::audioHealth.bufferChanged();
                     // VERBOSE: Uncomment this for debugging capture stream open issues.
                     // printf("[AUDIO] [INFO] capture stream opened %s (%uch, %u Hz, fmt=%s period=%u periods=%u)\n",
                     //        s->path,
@@ -675,17 +719,11 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
         return false;
     }
 
-    static const struct {
-        unsigned periodFrames;
-        unsigned periods;
-        int configureTiming;
-    } profiles[] = {
-        {512U, 4U, 1},
-        {256U, 4U, 1},
-        {BUFFER_FRAMES, 4U, 1},
-        {BUFFER_FRAMES, 2U, 1},
-        {BUFFER_FRAMES, 2U, 0},
-    };
+    PcmTimingProfile profiles[8]{};
+    const uint32_t bufferLevel = audiox::adaptiveAudioBuffer.level();
+    const uint32_t targetPeriod = audiox::adaptiveAudioBuffer.targetPeriodFrames(BUFFER_FRAMES);
+    const size_t profileCount = buildPcmTimingProfiles(targetPeriod, profiles,
+                                                        sizeof(profiles) / sizeof(profiles[0]));
 
     const unsigned rates[] = {SAMPLE_RATE, AUDIO_INPUT_FALLBACK_RATE};
     uint8_t chAttempts[4] = {};
@@ -716,9 +754,10 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
             }
 
             for (size_t f = 0; f < (sizeof(formats) / sizeof(formats[0])); ++f) {
-                for (size_t p = 0; p < (sizeof(profiles) / sizeof(profiles[0])); ++p) {
+                for (size_t p = 0; p < profileCount; ++p) {
                     snd_pcm_t *pcm = nullptr;
                     snd_pcm_uframes_t period = 0;
+                    snd_pcm_uframes_t buffer = 0;
                     size_t frameBytes = 0;
                     snd_pcm_access_t access = SND_PCM_ACCESS_MMAP_INTERLEAVED;
                     int openRc = audio_pcm_open_configured(&pcm,
@@ -731,6 +770,7 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
                                                            profiles[p].periodFrames,
                                                            profiles[p].periods,
                                                            &period,
+                                                           &buffer,
                                                            &frameBytes,
                                                            profiles[p].configureTiming,
                                                            0);
@@ -745,15 +785,22 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
                     s->format = formats[f];
                     s->channels = ch;
                     s->sampleRate = rates[r];
+                    s->periodFrames = static_cast<uint32_t>(period);
+                    s->bufferFrames = static_cast<uint32_t>(buffer);
+                    s->bufferLevel = bufferLevel;
                     s->mmapAccess = (access == SND_PCM_ACCESS_MMAP_INTERLEAVED);
                     s->reopenRetryBlocks = 0;
                     s->pendingFrames = 0;
                     s->pendingOffsetFrames = 0;
-                    printf("[AUDIO] [INFO] playback stream opened %s (%uch, %u Hz, fmt=%s)\n",
+                    audiox::adaptiveAudioBuffer.bufferChanged();
+                    audiox::audioHealth.bufferChanged();
+                    printf("[AUDIO] [INFO] playback stream opened %s (%uch, %u Hz, fmt=%s, period=%u, buffer=%u frames)\n",
                            s->path,
                            (unsigned)s->channels,
                            (unsigned)s->sampleRate,
-                           snd_pcm_format_name(s->format));
+                           snd_pcm_format_name(s->format),
+                           s->periodFrames,
+                           s->bufferFrames);
                     return true;
                 }
             }
@@ -780,6 +827,17 @@ static void maybeReopenCapture(AlsaCaptureStream *s) {
     }
 }
 
+static void syncCaptureBuffer(AlsaCaptureStream *s) {
+    if (!s || !s->active) return;
+    const uint32_t targetLevel = audiox::adaptiveAudioBuffer.level();
+    if (s->pcm && s->bufferLevel != targetLevel) {
+        closeCaptureStream(s);
+        captureRingReset(s);
+        s->reopenRetryBlocks = 0;
+    }
+    maybeReopenCapture(s);
+}
+
 static void maybeReopenPlayback(RuntimeGraph::AlsaPlaybackStream *s) {
     if (!s || !s->active || s->pcm) {
         return;
@@ -791,6 +849,18 @@ static void maybeReopenPlayback(RuntimeGraph::AlsaPlaybackStream *s) {
     if (!openPlaybackStream(s)) {
         s->reopenRetryBlocks = kReopenRetryBlocks;
     }
+}
+
+static void syncPlaybackBuffer(RuntimeGraph::AlsaPlaybackStream *s) {
+    if (!s || !s->active) return;
+    const uint32_t targetLevel = audiox::adaptiveAudioBuffer.level();
+    if (s->pcm && s->bufferLevel != targetLevel) {
+        closePlaybackStream(s);
+        s->pendingFrames = 0;
+        s->pendingOffsetFrames = 0;
+        s->reopenRetryBlocks = 0;
+    }
+    maybeReopenPlayback(s);
 }
 
 static const char *mmapSampleAddress(const snd_pcm_channel_area_t *area,
@@ -905,7 +975,7 @@ static void serviceCaptureIo(AlsaCaptureBackend *backend) {
 
     for (uint16_t i = 0; i < backend->count; ++i) {
         AlsaCaptureStream &s = backend->streams[i];
-        maybeReopenCapture(&s);
+        syncCaptureBuffer(&s);
         if (!s.pcm) {
             continue;
         }
@@ -959,7 +1029,7 @@ static void serviceCaptureIo(AlsaCaptureBackend *backend) {
 
             int err = (framesRead < 0) ? (int)(-framesRead) : EIO;
             if (err == EPIPE || err == ESTRPIPE || err == EIO) {
-                if (audio_pcm_recover(s.pcm, -err, s.path, "capture") < 0) {
+                if (audio_pcm_recover_capture(s.pcm, -err, s.path) < 0) {
                     closeCaptureStream(&s);
                     s.reopenRetryBlocks = kReopenRetryBlocks;
                 }
@@ -1046,7 +1116,7 @@ static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
 
     for (uint16_t i = 0; i < rt->playbackCount; ++i) {
         RuntimeGraph::AlsaPlaybackStream &s = rt->playback[i];
-        maybeReopenPlayback(&s);
+        syncPlaybackBuffer(&s);
         if (!s.pcm) {
             continue;
         }
@@ -1085,8 +1155,13 @@ static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
         }
 
         if (framesWritten > 0) {
-            if (snd_pcm_state(s.pcm) == SND_PCM_STATE_PREPARED) {
-                (void)snd_pcm_start(s.pcm);
+            if (audio_pcm_start_playback_if_ready(s.pcm, s.periodFrames, s.bufferFrames,
+                                                  s.path) < 0) {
+                closePlaybackStream(&s);
+                s.reopenRetryBlocks = kReopenRetryBlocks;
+                s.pendingFrames = 0;
+                s.pendingOffsetFrames = 0;
+                continue;
             }
             s.pendingOffsetFrames += (uint32_t)framesWritten;
             if (s.pendingOffsetFrames >= s.pendingFrames) {
@@ -2258,6 +2333,7 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt, AlsaCaptureBa
         return;
     }
 
+    (void)audiox::adaptiveAudioBuffer.tick(nowMs);
     const bool triggered = ctx->sfxQueueRead.load(std::memory_order_relaxed) !=
         ctx->sfxQueueWrite.load(std::memory_order_acquire);
     consumeSoundboardTriggers(ctx, rt);
@@ -2329,6 +2405,29 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt, AlsaCaptureBa
     if (!clipActive && ctx->sfxIsPlaying.load(std::memory_order_relaxed)) {
         ctx->sfxIsPlaying.store(0, std::memory_order_release);
     }
+
+    uint32_t activeStreams = 0;
+    uint32_t largestPeriodFrames = 0;
+    uint32_t largestBufferFrames = 0;
+    for (uint16_t i = 0; i < captureBackend->count; ++i) {
+        const AlsaCaptureStream &stream = captureBackend->streams[i];
+        if (!stream.pcm) continue;
+        ++activeStreams;
+        largestPeriodFrames = std::max(largestPeriodFrames, stream.periodFrames);
+        largestBufferFrames = std::max(largestBufferFrames, stream.bufferFrames);
+    }
+    for (uint16_t i = 0; i < rt->playbackCount; ++i) {
+        const RuntimeGraph::AlsaPlaybackStream &stream = rt->playback[i];
+        if (!stream.pcm) continue;
+        ++activeStreams;
+        largestPeriodFrames = std::max(largestPeriodFrames, stream.periodFrames);
+        largestBufferFrames = std::max(largestBufferFrames, stream.bufferFrames);
+    }
+    audiox::adaptiveAudioBuffer.publishObserved(activeStreams, largestPeriodFrames,
+                                                 largestBufferFrames);
+#if AUDIOX_ENABLE_STRESS_TEST
+    audiox::audioStressTest.processAudioBlock();
+#endif
 }
 
 static void maybeLogStats(RuntimeGraph *rt, const AlsaCaptureBackend *captureBackend) {

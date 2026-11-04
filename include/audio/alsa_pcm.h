@@ -75,6 +75,7 @@ static inline void audio_pcm_install_error_handler() {
 
 static inline void audio_pcm_track_underrun(const char *path, const char *op) {
     audiox::audioHealth.recordXrun();
+    audiox::adaptiveAudioBuffer.recordXrun(audiox::healthMonotonicMs(), BUFFER_FRAMES);
     static std::atomic<uint64_t> underrunCount{0};
     uint64_t count = underrunCount.fetch_add(1U, std::memory_order_relaxed) + 1U;
     if (!audio_pcm_should_log_underrun_count(count)) {
@@ -87,6 +88,36 @@ static inline void audio_pcm_track_underrun(const char *path, const char *op) {
            path ? path : "(unknown)");
 }
 
+static inline snd_pcm_uframes_t audio_pcm_playback_start_frames(
+    snd_pcm_uframes_t periodFrames, snd_pcm_uframes_t bufferFrames) {
+    // Preserve the base startup latency, but actually prime the larger adaptive queue.
+    const snd_pcm_uframes_t target = periodFrames > BUFFER_FRAMES
+        ? std::max(periodFrames, bufferFrames > periodFrames ? bufferFrames - periodFrames : 0U)
+        : BUFFER_FRAMES;
+    return std::min(target, bufferFrames);
+}
+
+static inline int audio_pcm_start_playback_if_ready(snd_pcm_t *pcm,
+                                                   snd_pcm_uframes_t periodFrames,
+                                                   snd_pcm_uframes_t bufferFrames,
+                                                   const char *path) {
+    if (snd_pcm_state(pcm) != SND_PCM_STATE_PREPARED) return 0;
+    const snd_pcm_sframes_t available = snd_pcm_avail_update(pcm);
+    int rc = 0;
+    if (available < 0) {
+        rc = static_cast<int>(available);
+    } else if (static_cast<snd_pcm_uframes_t>(available) <= bufferFrames &&
+               bufferFrames - static_cast<snd_pcm_uframes_t>(available) >=
+                   audio_pcm_playback_start_frames(periodFrames, bufferFrames)) {
+        rc = snd_pcm_start(pcm);
+    }
+    if (rc < 0) {
+        printf("[AUDIO] [WARN] ALSA playback start failed on %s: %s\n",
+               path ? path : "(unknown)", snd_strerror(rc));
+    }
+    return rc;
+}
+
 static inline int audio_pcm_configure_hw_handle(snd_pcm_t *pcm,
                                                 const char *path,
                                                 unsigned int rate,
@@ -96,6 +127,7 @@ static inline int audio_pcm_configure_hw_handle(snd_pcm_t *pcm,
                                                 unsigned int periodFrames,
                                                 unsigned int periods,
                                                 snd_pcm_uframes_t *periodFramesOut,
+                                                snd_pcm_uframes_t *bufferFramesOut,
                                                 size_t *frameBytesOut,
                                                 int configureTiming,
                                                 int logFail) {
@@ -152,8 +184,12 @@ static inline int audio_pcm_configure_hw_handle(snd_pcm_t *pcm,
     }
 
     snd_pcm_uframes_t actualPeriodFrames = requestedPeriodFrames;
+    snd_pcm_uframes_t actualBufferFrames = requestedBufferFrames;
     if (rc >= 0) {
         rc = snd_pcm_hw_params_get_period_size(hw, &actualPeriodFrames, nullptr);
+    }
+    if (rc >= 0) {
+        rc = snd_pcm_hw_params_get_buffer_size(hw, &actualBufferFrames);
     }
 
     snd_pcm_hw_params_free(hw);
@@ -179,10 +215,13 @@ static inline int audio_pcm_configure_hw_handle(snd_pcm_t *pcm,
         rc = snd_pcm_sw_params_current(pcm, sw);
     }
     if (rc >= 0) {
-        rc = snd_pcm_sw_params_set_start_threshold(pcm, sw, 1U);
+        const snd_pcm_uframes_t startFrames = snd_pcm_stream(pcm) == SND_PCM_STREAM_PLAYBACK
+            ? audio_pcm_playback_start_frames(actualPeriodFrames, actualBufferFrames) : 1U;
+        rc = snd_pcm_sw_params_set_start_threshold(pcm, sw, startFrames);
     }
     if (rc >= 0) {
-        snd_pcm_uframes_t availMin = (actualPeriodFrames > 0) ? actualPeriodFrames : 1U;
+        snd_pcm_uframes_t availMin = actualPeriodFrames > 0
+            ? std::min<snd_pcm_uframes_t>(actualPeriodFrames, BUFFER_FRAMES) : 1U;
         rc = snd_pcm_sw_params_set_avail_min(pcm, sw, availMin);
     }
     if (rc >= 0) {
@@ -200,6 +239,9 @@ static inline int audio_pcm_configure_hw_handle(snd_pcm_t *pcm,
 
     if (periodFramesOut) {
         *periodFramesOut = actualPeriodFrames;
+    }
+    if (bufferFramesOut) {
+        *bufferFramesOut = actualBufferFrames;
     }
     if (frameBytesOut) {
         int widthBits = snd_pcm_format_physical_width(format);
@@ -219,6 +261,7 @@ static inline int audio_pcm_open_configured(snd_pcm_t **pcmOut,
                                             unsigned int periodFrames,
                                             unsigned int periods,
                                             snd_pcm_uframes_t *periodFramesOut,
+                                            snd_pcm_uframes_t *bufferFramesOut,
                                             size_t *frameBytesOut,
                                             int configureTiming,
                                             int logFail) {
@@ -252,6 +295,7 @@ static inline int audio_pcm_open_configured(snd_pcm_t **pcmOut,
                                            periodFrames,
                                            periods,
                                            periodFramesOut,
+                                           bufferFramesOut,
                                            frameBytesOut,
                                            configureTiming,
                                            logFail);
@@ -284,6 +328,21 @@ static inline int audio_pcm_recover(snd_pcm_t *pcm, int err, const char *path, c
                op ? op : "stream",
                path ? path : "(unknown)",
                snd_strerror(rc));
+    }
+    return rc;
+}
+
+static inline int audio_pcm_recover_capture(snd_pcm_t *pcm, int err,
+                                            const char *path) {
+    int rc = audio_pcm_recover(pcm, err, path, "capture");
+    if (rc < 0) return rc;
+
+    if (snd_pcm_state(pcm) == SND_PCM_STATE_PREPARED) {
+        rc = snd_pcm_start(pcm);
+        if (rc < 0) {
+            printf("[AUDIO] [WARN] ALSA capture restart failed on %s: %s\n",
+                   path ? path : "(unknown)", snd_strerror(rc));
+        }
     }
     return rc;
 }

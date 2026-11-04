@@ -4,6 +4,13 @@ Use **Config** to set USB gadget functions and back up or restore AudioX
 settings. Routing, effect, soundboard, and script settings are edited on their
 respective pages.
 
+The USB settings, routing, MIDI/effect, volume, and Bluetooth pairing files are
+schema-versioned. Older unversioned files are read as the legacy schema and
+upgraded when saved. AudioX refuses to overwrite a file declaring a newer
+schema version than it supports. Backup creation and restore staging also
+reject unsupported schema versions, so an older build cannot silently discard
+newer settings.
+
 ## USB audio settings
 
 | Field | Meaning |

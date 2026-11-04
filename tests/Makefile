@@ -9,7 +9,7 @@ test-midi-docs: test-script-docs
 
 test-native: test-audio-runtime test-builtin-effects test-audio-meters test-audio-graph test-audio-graph-mailbox \
 	test-plugin-package test-plugin-host test-plugin-integration \
-	test-audio-pcm-recover test-bluetooth-hci test-bluetooth-a2dp test-display-hotplug test-soundboard-config \
+	test-audio-pcm-recover test-audio-stress test-bluetooth-hci test-bluetooth-a2dp test-display-hotplug test-soundboard-config \
 	test-boot-recovery test-config-backup test-system-logs test-system test-gadget-setup test-mdns \
 	test-gadget-volume test-diagnostics test-midi-usb test-script test-script-storage test-script-docs test-watchdog test-resolve-modules test-build-dependencies test-storage-expand
 
@@ -62,6 +62,7 @@ AUDIO_EFFECT_SRCS = \
 	src/audio/effects/reverb.cpp
 
 HOST_CXXFLAGS += -DAUDIOX_PLUGIN_WORKER_PATH='"$(OUT_DIR)/host/audiox-plugin-worker"'
+HOST_CXXFLAGS += -DAUDIOX_ENABLE_STRESS_TEST=$(AUDIOX_ENABLE_STRESS_TEST)
 
 .PHONY: test-builtin-effects
 test-builtin-effects: $(OUT_DIR)/host/audiox-dynamics-test $(OUT_DIR)/host/audiox-eq-noise-test $(OUT_DIR)/host/audiox-pitch-test
@@ -251,8 +252,20 @@ $(OUT_DIR)/host/audiox-config-backup-http-test: tests/config_backup_http_test.cp
 		-DROOT_MOUNT_POINT='"."' -ffunction-sections -fdata-sections -Wl,--gc-sections \
 		-o "$@" tests/config_backup_http_test.cpp src/config/backup.cpp -pthread
 
-test-audio-pcm-recover: $(OUT_DIR)/host/audiox-audio-pcm-recover-test
+test-audio-pcm-recover: $(OUT_DIR)/host/audiox-audio-pcm-recover-test $(OUT_DIR)/host/audiox-audio-pcm-setup-test
 	@"$<"
+	@"$(OUT_DIR)/host/audiox-audio-pcm-setup-test"
+
+$(OUT_DIR)/host/audiox-audio-pcm-setup-test: tests/audio_pcm_setup_test.cpp include/audio/alsa_pcm.h include/audio/health.hpp include/defs.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-parameter -Iinclude $(shell pkg-config --cflags alsa) -o "$@" "$<" $(shell pkg-config --libs alsa)
+
+test-audio-stress: $(OUT_DIR)/host/audiox-audio-stress-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-audio-stress-test: tests/audio_stress_test.cpp include/audio/stress_test.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -pthread -o "$@" "$<"
 
 test-system-logs: $(OUT_DIR)/host/audiox-system-logs-test
 	@"$<"

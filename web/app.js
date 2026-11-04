@@ -1801,6 +1801,13 @@ async function loadSystemInfo() {
     const mEl = document.getElementById('sysinfo-memory');
     const lEl = document.getElementById('sysinfo-load');
     const fEl = document.getElementById('sysinfo-ffmpeg');
+    const audioBufferEl = document.getElementById('sysinfo-audio-buffer');
+    const audioBufferDetailEl = document.getElementById('sysinfo-audio-buffer-detail');
+    const stressPanel = document.getElementById('system-audio-stress');
+    const stressStatus = document.getElementById('audio-stress-status');
+    const stressAudioButton = document.getElementById('btn-audio-stress-thread');
+    const stressCpuButton = document.getElementById('btn-audio-stress-cpu');
+    const stressStopButton = document.getElementById('btn-audio-stress-stop');
     if (!vEl) return;
 
     vEl.textContent = data.version ? `v${data.version}` : '\u2014';
@@ -1830,6 +1837,46 @@ async function loadSystemInfo() {
 
     if (fEl) {
       fEl.textContent = data.ffmpeg || '\u2014';
+    }
+    if (audioBufferEl && audioBufferDetailEl) {
+      const buffer = data.audio_buffer;
+      const base = Number(buffer?.base_block_frames);
+      const target = Number(buffer?.target_period_frames);
+      const period = Number(buffer?.largest_period_frames);
+      const largest = Number(buffer?.largest_buffer_frames);
+      const streams = Number(buffer?.active_streams);
+      const latency = Number(buffer?.estimated_largest_buffer_ms);
+      const xruns = Number(data.audio_health?.xruns);
+      const downshiftDelay = Number(buffer?.downshift_delay_ms);
+      const downshiftFailures = Number(buffer?.downshift_failures);
+      const downshiftDelaySeconds = Number.isFinite(downshiftDelay)
+        ? Math.round(downshiftDelay / 1000) : 0;
+      const downshiftFailureCount = Number.isFinite(downshiftFailures) ? downshiftFailures : 0;
+      if (Number.isFinite(base) && base > 0 && Number.isFinite(target) && target > 0) {
+        audioBufferEl.textContent = target > base
+          ? `${target} frames (adaptive)`
+          : `${target} frames (base)`;
+        audioBufferDetailEl.textContent = streams > 0 && Number.isFinite(largest) && largest > 0
+          ? `Largest ALSA period: ${Number.isFinite(period) && period > 0 ? period : '—'} frames; largest buffer capacity: ${largest} frames (~${latency.toFixed(1)} ms at engine rate, not measured output latency); ${streams} stream${streams === 1 ? '' : 's'}; X-runs since boot: ${Number.isFinite(xruns) ? xruns : '—'}. ${target > base ? `Next downshift after ${downshiftDelaySeconds} s quiet; ${downshiftFailureCount} failed downshift${downshiftFailureCount === 1 ? '' : 's'}. ` : ''}DSP block remains ${base} frames.`
+          : `Target ALSA period; no active ALSA streams. X-runs since boot: ${Number.isFinite(xruns) ? xruns : '—'}. DSP block remains ${base} frames.`;
+      } else {
+        audioBufferEl.textContent = 'Unavailable';
+        audioBufferDetailEl.textContent = 'Audio buffer status could not be read.';
+      }
+    }
+    showAudioHealth(data);
+    if (stressPanel) {
+      const stress = data.audio_stress_test;
+      stressPanel.hidden = stress?.available !== true;
+      if (stressStatus && stress) {
+        stressStatus.textContent = stress.mode === 'idle'
+          ? 'No stress test running.'
+          : `${stress.mode === 'audio' ? 'Audio-thread overload' : 'System CPU contention'} active; ${Number(stress.remaining_ms || 0)} ms remain${stress.mode === 'cpu' ? ` (${Number(stress.workers || 0)} workers)` : ''}.`;
+      }
+      const running = stress?.mode !== 'idle';
+      if (stressAudioButton) stressAudioButton.disabled = running;
+      if (stressCpuButton) stressCpuButton.disabled = running;
+      if (stressStopButton) stressStopButton.disabled = !running;
     }
     AudioxUI.resolve('system-info');
   } catch (err) {
@@ -4283,6 +4330,37 @@ document.getElementById('btn-system-shutdown').addEventListener('click', async (
   })) return;
   await runSystemAction('/api/system/shutdown', 'shutdown');
 });
+
+async function requestAudioStress(mode) {
+  const duration = Number(document.getElementById('audio-stress-duration').value);
+  const workMs = Number(document.getElementById('audio-stress-work').value);
+  if (mode !== 'stop' && !await AudioxUI.confirm(
+    mode === 'audio'
+      ? 'This intentionally overloads the audio thread and can cause audible dropouts. Start the bounded test?'
+      : 'This runs CPU workers on all available cores (up to 8) and can cause system-wide audio dropouts. Start the bounded test?',
+    { title: 'Run audio stress test?', label: 'Start stress test' })) return;
+
+  const fields = { mode };
+  if (mode !== 'stop') fields.duration_secs = String(duration);
+  if (mode === 'audio') fields.work_ms = String(workMs);
+  try {
+    const response = await fetch('/api/system/audio-stress', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: new URLSearchParams(fields).toString(),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
+    setStatus(mode === 'stop' ? 'Audio stress test stopped.' : 'Audio stress test started.', 'warn', 'audio-stress');
+    await loadSystemInfo();
+  } catch (error) {
+    setStatus(`audio stress test failed: ${error.message}`, 'warn', 'audio-stress');
+  }
+}
+
+document.getElementById('btn-audio-stress-thread').addEventListener('click', () => requestAudioStress('audio'));
+document.getElementById('btn-audio-stress-cpu').addEventListener('click', () => requestAudioStress('cpu'));
+document.getElementById('btn-audio-stress-stop').addEventListener('click', () => requestAudioStress('stop'));
 
 AudioxUpdates.init({ setStatus, ui: AudioxUI });
 AudioxBackup.init({ setStatus, ui: AudioxUI });

@@ -137,7 +137,30 @@
 
   function createHealthNotifier(notify) {
     let lastWarning = '';
+    let lastBufferIncrease = '';
     return (info) => {
+      const buffer = info?.audio_buffer;
+      if (typeof buffer?.increase_id === 'string' && buffer.increase_id !== '0' &&
+          `${buffer.runtime_id || 'runtime'}:${buffer.increase_id}` !== lastBufferIncrease) {
+        lastBufferIncrease = `${buffer.runtime_id || 'runtime'}:${buffer.increase_id}`;
+        let remembered = false;
+        try {
+          remembered = root.sessionStorage?.getItem('audiox-buffer-increase') === lastBufferIncrease;
+          if (!remembered) {
+            root.sessionStorage?.setItem('audiox-buffer-increase', lastBufferIncrease);
+          }
+        } catch (error) {
+          console.warn('AudioX could not remember the adaptive-buffer notice across page reloads:', error.message);
+        }
+        if (!remembered) {
+          const frames = Number(buffer.target_period_frames);
+          const capacityMs = Number(buffer.estimated_largest_buffer_ms);
+          const state = Number.isFinite(frames) && frames > 0
+            ? ` ALSA period target is now ${frames} frames${Number.isFinite(capacityMs) && capacityMs > 0
+              ? `; largest buffer capacity is ~${capacityMs.toFixed(1)} ms, not measured output latency` : ''}.` : '';
+          notify(`Repeated audio xruns detected; temporarily increased buffering.${state} AudioX will retry the base period after a stable period.`, 'warn', 'audio-buffer');
+        }
+      }
       const health = info?.audio_health;
       if (health?.warning_active !== true || typeof health.warning_id !== 'string' ||
           health.warning_id === '0' || health.warning_id === lastWarning) return;

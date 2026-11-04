@@ -279,10 +279,41 @@ void testMalformed() {
     puts("PASS: corrupt, unsafe, incomplete, duplicate, oversized and overflowing archives leave settings untouched");
 }
 
+void testUnsupportedSchema() {
+    Workspace work;
+    fs::path target = work.path / "target", archivePath = work.path / "future.axb";
+    fixture(target);
+    std::vector<Entry> futureConfig = {
+        {"config.txt", 1, "config_version=2\nusb_sample_rate=96000\n"},
+        {"bluetooth", 2, ""},
+        {"sfx", 2, ""},
+    };
+    reject(target, archivePath, encode(futureConfig));
+    std::vector<Entry> futureBluetooth = {
+        {"config.txt", 1, "legacy settings"},
+        {"bluetooth", 2, ""},
+        {"bluetooth/paired.txt", 1, "# audiox bluetooth paired v2\n"},
+        {"sfx", 2, ""},
+    };
+    reject(target, archivePath, encode(futureBluetooth));
+
+    fs::path source = work.path / "source";
+    fixture(source);
+    put(source / "bluetooth/paired.txt", "# audiox bluetooth paired v2\n");
+    int fd = open(archivePath.c_str(), O_CREAT | O_RDWR, 0600);
+    assert(fd >= 0);
+    char error[256] = {};
+    assert(audiox::backup::create(source.c_str(), fd, error, sizeof(error)) < 0);
+    assert(strstr(error, "unsupported schema version"));
+    close(fd);
+    puts("PASS: unsupported configuration schemas cannot be exported or restored");
+}
+
 } // namespace
 
 int main() {
     testRoundTrip();
     testAbsentAndSymlinks();
     testMalformed();
+    testUnsupportedSchema();
 }

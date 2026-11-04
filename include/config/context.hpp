@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include "defs.hpp"
+#include "config/schema.hpp"
 #include "../context.hpp"
 #include "midi/usb.hpp"
 
@@ -104,6 +105,7 @@ struct ConfigData {
     uint8_t framebufferSoundboard;
     uint8_t midiPassthrough;
     uint8_t keyboardMacros;
+    uint32_t schemaVersion;
 };
 
 bool applyScriptSetting(ConfigData &config, const char *key, const ScriptStateEntry &value);

@@ -669,6 +669,15 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
     if (!fp) {
         return (errno == ENOENT) ? RET_WARN : RET_ERR;
     }
+    ConfigTextSchemaStatus schema =
+        checkConfigTextSchema(fp, "# audiox midi map v", MIDI_MAP_SCHEMA_VERSION);
+    if (schema == ConfigTextSchemaStatus::Unsupported ||
+        schema == ConfigTextSchemaStatus::Invalid ||
+        schema == ConfigTextSchemaStatus::IoError) {
+        printf("[CONFIG] [WARN] unsupported or invalid MIDI map schema in %s\n", path);
+        fclose(fp);
+        return RET_ERR;
+    }
 
     char line[SCRIPT_STORAGE_MAX * 2 + 384];
     while (fgets(line, sizeof(line), fp)) {
@@ -944,6 +953,14 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
     if (!path || !data) {
         return RET_ERR;
     }
+    ConfigTextSchemaStatus schema =
+        checkConfigTextFileSchema(path, "# audiox midi map v", MIDI_MAP_SCHEMA_VERSION);
+    if (schema == ConfigTextSchemaStatus::Unsupported ||
+        schema == ConfigTextSchemaStatus::Invalid ||
+        schema == ConfigTextSchemaStatus::IoError) {
+        printf("[CONFIG] [WARN] refusing to overwrite unsupported MIDI map schema in %s\n", path);
+        return RET_ERR;
+    }
 
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
@@ -951,7 +968,11 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         return RET_ERR;
     }
 
-    dprintf(fd, "# audiox midi map v1\n");
+    if (dprintf(fd, "# audiox midi map v%u\n", MIDI_MAP_SCHEMA_VERSION) < 0) {
+        printf("[CONFIG] [WARN] failed to write MIDI map schema in %s: %s\n", path, strerror(errno));
+        close(fd);
+        return RET_ERR;
+    }
     for (uint32_t i = 0; i < data->chordCount && i < SCRIPTS_MAX; ++i) {
         const auto &chord = data->chords[i];
         std::string hex = scriptHexEncode(chord.script);
@@ -1192,12 +1213,26 @@ static int writeFxParamsPath(const char *path, const MidiEffectParam *params, ui
     if (!path) {
         return RET_ERR;
     }
+    ConfigTextSchemaStatus schema =
+        checkConfigTextFileSchema(path, "# audiox fx params v", FX_PARAMS_SCHEMA_VERSION);
+    if (schema == ConfigTextSchemaStatus::Unsupported ||
+        schema == ConfigTextSchemaStatus::Invalid ||
+        schema == ConfigTextSchemaStatus::IoError) {
+        printf("[CONFIG] [WARN] refusing to overwrite unsupported effect parameter schema in %s\n",
+               path);
+        return RET_ERR;
+    }
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
         printf("[CONFIG] [WARN] failed to open %s for writing: %s\n", path, strerror(errno));
         return RET_ERR;
     }
-    dprintf(fd, "# audiox fx params v1\n");
+    if (dprintf(fd, "# audiox fx params v%u\n", FX_PARAMS_SCHEMA_VERSION) < 0) {
+        printf("[CONFIG] [WARN] failed to write effect parameter schema in %s: %s\n",
+               path, strerror(errno));
+        close(fd);
+        return RET_ERR;
+    }
     if (params) {
         uint32_t cap = count > MIDI_EFFECT_PARAMS_MAX ? MIDI_EFFECT_PARAMS_MAX : count;
         for (uint32_t i = 0; i < cap; ++i) {
@@ -1225,6 +1260,15 @@ static int readFxParamsPath(const char *path, MidiEffectParam *out, uint32_t *co
     FILE *fp = fopen(path, "r");
     if (!fp) {
         return (errno == ENOENT) ? RET_WARN : RET_ERR;
+    }
+    ConfigTextSchemaStatus schema =
+        checkConfigTextSchema(fp, "# audiox fx params v", FX_PARAMS_SCHEMA_VERSION);
+    if (schema == ConfigTextSchemaStatus::Unsupported ||
+        schema == ConfigTextSchemaStatus::Invalid ||
+        schema == ConfigTextSchemaStatus::IoError) {
+        printf("[CONFIG] [WARN] unsupported or invalid effect parameter schema in %s\n", path);
+        fclose(fp);
+        return RET_ERR;
     }
     char line[320];
     while (fgets(line, sizeof(line), fp) && *count_out < cap) {
@@ -1303,6 +1347,7 @@ MidiMapData ConfigStore::readMidiMapFile() const {
         migrateMidiMapFromConfig(CONFIG_REAL_FILE_PATH, &data);
         (void)writeMidiMapPath(MIDI_MAP_REAL_FILE_PATH, &data);
     }
+    if (rc == RET_ERR) return data;
 
     // fx_params.txt is the authoritative source for fx_param entries.
     // If it exists, it replaces any fx_param lines read from midi_map.txt.
@@ -1320,6 +1365,21 @@ MidiMapData ConfigStore::readMidiMapFile() const {
 
 int ConfigStore::writeMidiMapFile(MidiMapData *data) {
     if (!data) {
+        return RET_ERR;
+    }
+    ConfigTextSchemaStatus midiSchema =
+        checkConfigTextFileSchema(MIDI_MAP_REAL_FILE_PATH, "# audiox midi map v",
+                                  MIDI_MAP_SCHEMA_VERSION);
+    ConfigTextSchemaStatus paramsSchema =
+        checkConfigTextFileSchema(FX_PARAMS_FILE_PATH, "# audiox fx params v",
+                                  FX_PARAMS_SCHEMA_VERSION);
+    auto schemaUnavailable = [](ConfigTextSchemaStatus status) {
+        return status == ConfigTextSchemaStatus::Unsupported ||
+               status == ConfigTextSchemaStatus::Invalid ||
+               status == ConfigTextSchemaStatus::IoError;
+    };
+    if (schemaUnavailable(midiSchema) || schemaUnavailable(paramsSchema)) {
+        printf("[CONFIG] [WARN] refusing to overwrite unsupported MIDI/effect configuration schema\n");
         return RET_ERR;
     }
     for (uint32_t i = 0; i < std::min<uint32_t>(data->effectStateCount, MIDI_EFFECT_STATES_MAX); ++i) {

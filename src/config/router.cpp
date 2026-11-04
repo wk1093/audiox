@@ -11,12 +11,21 @@ namespace {
 
 static constexpr size_t ROUTE_TEXT_MAX = 256;
 static constexpr size_t ROUTE_COUNT_MAX = AUDIO_GRAPH_MAX_EDGES;
+static constexpr const char *ROUTING_SCHEMA_HEADER = "# audiox routing v";
 
 static void trimRouteText(char *text);
 
 static bool loadRoutingHelper() {
     FILE *fp = fopen(ROUTING_REAL_FILE_PATH, "r");
     if (!fp) {
+        return false;
+    }
+    ConfigTextSchemaStatus schema =
+        checkConfigTextSchema(fp, ROUTING_SCHEMA_HEADER, ROUTING_SCHEMA_VERSION);
+    if (schema == ConfigTextSchemaStatus::Unsupported ||
+        schema == ConfigTextSchemaStatus::Invalid ||
+        schema == ConfigTextSchemaStatus::IoError) {
+        fclose(fp);
         return false;
     }
 
@@ -62,6 +71,16 @@ static int loadRoutes(std::vector<std::string> *routes) {
         printf("[CONFIG] [WARN] failed to open %s for reading: %s\n", ROUTING_REAL_FILE_PATH, strerror(errno));
         return RET_ERR;
     }
+    ConfigTextSchemaStatus schema =
+        checkConfigTextSchema(fp, ROUTING_SCHEMA_HEADER, ROUTING_SCHEMA_VERSION);
+    if (schema == ConfigTextSchemaStatus::Unsupported ||
+        schema == ConfigTextSchemaStatus::Invalid ||
+        schema == ConfigTextSchemaStatus::IoError) {
+        printf("[CONFIG] [WARN] unsupported or invalid routing schema in %s\n",
+               ROUTING_REAL_FILE_PATH);
+        fclose(fp);
+        return RET_ERR;
+    }
 
     char line[ROUTE_TEXT_MAX];
     while (fgets(line, sizeof(line), fp)) {
@@ -89,6 +108,16 @@ static int loadRoutes(std::vector<std::string> *routes) {
 }
 
 static int saveRoutes(const std::vector<std::string> &routes) {
+    ConfigTextSchemaStatus schema =
+        checkConfigTextFileSchema(ROUTING_REAL_FILE_PATH, ROUTING_SCHEMA_HEADER,
+                                  ROUTING_SCHEMA_VERSION);
+    if (schema == ConfigTextSchemaStatus::Unsupported ||
+        schema == ConfigTextSchemaStatus::Invalid ||
+        schema == ConfigTextSchemaStatus::IoError) {
+        printf("[CONFIG] [WARN] refusing to overwrite unsupported routing schema in %s\n",
+               ROUTING_REAL_FILE_PATH);
+        return RET_ERR;
+    }
     bool helperEnabled = loadRoutingHelper();
     FILE *fp = fopen(ROUTING_REAL_FILE_PATH, "w");
     if (!fp) {
@@ -96,7 +125,7 @@ static int saveRoutes(const std::vector<std::string> &routes) {
         return RET_ERR;
     }
 
-    fprintf(fp, "# audiox routing v1\n");
+    fprintf(fp, "# audiox routing v%u\n", ROUTING_SCHEMA_VERSION);
     if (helperEnabled) {
         fprintf(fp, "node=routing_helper\n");
     }
@@ -122,7 +151,7 @@ static int saveRoutingHelper(bool enabled) {
     if (!fp) {
         return RET_ERR;
     }
-    fprintf(fp, "# audiox routing v1\n");
+    fprintf(fp, "# audiox routing v%u\n", ROUTING_SCHEMA_VERSION);
     if (enabled) {
         fprintf(fp, "node=routing_helper\n");
     }

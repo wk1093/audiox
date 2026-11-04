@@ -482,10 +482,34 @@ end)
               <div class="value" id="sysinfo-load">—</div>
             </div>
             <div class="metric">
+              <div class="label">Audio Buffer</div>
+              <div class="value" id="sysinfo-audio-buffer">—</div>
+              <div class="small" id="sysinfo-audio-buffer-detail"></div>
+            </div>
+            <div class="metric">
               <div class="label">FFmpeg</div>
               <div class="value" id="sysinfo-ffmpeg">—</div>
             </div>
           </div>
+        </section>
+
+        <section class="card stack" id="system-audio-stress" hidden>
+          <h2>Audio Stress Tests</h2>
+          <p class="small">Test controls are compile-time gated. Both tests can cause dropouts; audio-thread overload deliberately misses processing deadlines. Tests stop automatically after the selected duration.</p>
+          <div class="cfg-row">
+            <label for="audio-stress-duration">Duration (seconds)</label>
+            <input id="audio-stress-duration" type="number" min="1" max="30" value="10">
+          </div>
+          <div class="cfg-row">
+            <label for="audio-stress-work">Added audio-thread work per block (ms)</label>
+            <input id="audio-stress-work" type="number" min="1" max="20" value="5">
+          </div>
+          <div class="row">
+            <button id="btn-audio-stress-thread" class="warn">Test Audio-Thread Overload</button>
+            <button id="btn-audio-stress-cpu" class="warn">Test System CPU Contention</button>
+            <button id="btn-audio-stress-stop" class="flat" disabled>Stop Test</button>
+          </div>
+          <div class="small" id="audio-stress-status" role="status">No stress test running.</div>
         </section>
 
         <section class="card stack system-actions">

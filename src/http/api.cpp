@@ -3,6 +3,7 @@
 #include "http/logs.hpp"
 #include "audio/context.hpp"
 #include "audio/health.hpp"
+#include "audio/stress_test.hpp"
 #include "audio/effects/slot.hpp"
 #include "bluetooth/context.hpp"
 #include "config/context.hpp"
@@ -64,6 +65,7 @@
 #define HTTP_SYSTEM_RESTART_PATH HTTP_API_PREFIX "system/restart"
 #define HTTP_SYSTEM_SHUTDOWN_PATH HTTP_API_PREFIX "system/shutdown"
 #define HTTP_SYSTEM_BOOT_FAILURE_PATH HTTP_API_PREFIX "system/boot-failure"
+#define HTTP_SYSTEM_AUDIO_STRESS_PATH HTTP_API_PREFIX "system/audio-stress"
 #define HTTP_VERSION_PATH HTTP_API_PREFIX "version"
 #define HTTP_SYSTEM_INFO_PATH HTTP_API_PREFIX "system/info"
 #define HTTP_MIDI_LAST_NOTE_PATH HTTP_API_PREFIX "midi/last_note"
@@ -4295,7 +4297,19 @@ static int handleSystemInfo(HttpServer *server,
 
 	const uint64_t warningAt = audiox::audioHealth.warningAt();
 	const uint64_t now = audiox::healthMonotonicMs();
-	char out[1536];
+	const uint32_t targetPeriodFrames =
+		audiox::adaptiveAudioBuffer.targetPeriodFrames(BUFFER_FRAMES);
+	const uint32_t largestPeriodFrames = audiox::adaptiveAudioBuffer.largestPeriodFrames();
+	const uint32_t largestBufferFrames = audiox::adaptiveAudioBuffer.largestBufferFrames();
+	const double estimatedBufferMs = SAMPLE_RATE
+		? 1000.0 * largestBufferFrames / SAMPLE_RATE : 0.0;
+	const uint32_t stressMode = audiox::audioStressTest.mode();
+#if AUDIOX_ENABLE_STRESS_TEST
+	const char *stressAvailable = "true";
+#else
+	const char *stressAvailable = "false";
+#endif
+	char out[2048];
 	int n = snprintf(out, sizeof(out),
 					 "{\"version\":\"%s\",\"kernel\":\"%s\","
 					 "\"board\":\"%s\","
@@ -4308,15 +4322,124 @@ static int handleSystemInfo(HttpServer *server,
 					 "\"ffmpeg\":\"%s\","
 					 "\"storage\":%s,"
 					 "\"audio_health\":{\"xruns\":%llu,\"warning_id\":\"%llu\","
-					 "\"warning_active\":%s}}\n",
+					 "\"warning_active\":%s},"
+					 "\"audio_buffer\":{\"base_block_frames\":%u,\"target_period_frames\":%u,"
+					 "\"largest_period_frames\":%u,\"largest_buffer_frames\":%u,"
+					 "\"active_streams\":%u,"
+					 "\"estimated_largest_buffer_ms\":%.2f,\"level\":%u,"
+					 "\"downshift_delay_ms\":%u,\"downshift_failures\":%u,"
+					 "\"runtime_id\":\"%llu\",\"change_id\":\"%llu\","
+					 "\"increase_id\":\"%llu\"},"
+					 "\"audio_stress_test\":{\"available\":%s,\"mode\":\"%s\","
+					 "\"remaining_ms\":%u,\"workers\":%u}}\n",
 					 version_str, kernel_buf, audioxDetectBoard(), model_buf, cpu_freq_mhz,
 					 uptime_secs, mem_total_mb, mem_avail_mb, load1,
 					 ffmpeg_version, storage_json,
 					 (unsigned long long)audiox::audioHealth.total(),
 					 (unsigned long long)warningAt,
-					 audiox::audioHealth.warningActive(now) ? "true" : "false");
+					 audiox::audioHealth.warningActive(now) ? "true" : "false",
+					 (unsigned)BUFFER_FRAMES, (unsigned)targetPeriodFrames,
+					 (unsigned)largestPeriodFrames,
+					 (unsigned)largestBufferFrames,
+					 (unsigned)audiox::adaptiveAudioBuffer.activeStreams(),
+					 estimatedBufferMs, (unsigned)audiox::adaptiveAudioBuffer.level(),
+					 (unsigned)audiox::adaptiveAudioBuffer.downshiftDelayMs(),
+					 (unsigned)audiox::adaptiveAudioBuffer.downshiftFailures(),
+					 (unsigned long long)audiox::adaptiveAudioBuffer.instanceId(),
+					 (unsigned long long)audiox::adaptiveAudioBuffer.changeId(),
+					 (unsigned long long)audiox::adaptiveAudioBuffer.increaseId(),
+					 stressAvailable, audiox::AudioStressTest::modeName(stressMode),
+					 (unsigned)audiox::audioStressTest.remainingMs(),
+					 (unsigned)audiox::audioStressTest.workerCount());
 	if (n < 0 || n >= (int)sizeof(out)) n = 0;
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
+static int handleSystemAudioStress(HttpServer *server, int cfd, const char *method,
+								  const char *body, size_t body_len) {
+	if (!server) return -1;
+#if !AUDIOX_ENABLE_STRESS_TEST
+	(void)method;
+	(void)body;
+	(void)body_len;
+	static const char unavailable[] = "audio stress tests are not enabled in this build\n";
+	return server->sendResponse(cfd, "404 Not Found", "text/plain; charset=utf-8",
+								unavailable, sizeof(unavailable) - 1);
+#else
+	if (!method) return -1;
+	if (strcmp(method, "POST") != 0) return sendMethodNotAllowed(server, cfd);
+
+	char mode[16];
+	if (!body || !body_get_value(body, body_len, "mode", mode, sizeof(mode))) {
+		static const char bad[] = "expected mode=audio|cpu|stop\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8",
+									bad, sizeof(bad) - 1);
+	}
+
+	if (strcmp(mode, "stop") == 0) {
+		audiox::audioStressTest.stop();
+		static const char stopped[] = "{\"ok\":true,\"mode\":\"idle\"}\n";
+		return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8",
+									stopped, sizeof(stopped) - 1);
+	}
+
+	char durationText[16];
+	if (!body_get_value(body, body_len, "duration_secs", durationText, sizeof(durationText))) {
+		static const char bad[] = "duration_secs is required\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8",
+									bad, sizeof(bad) - 1);
+	}
+	char *end = nullptr;
+	const unsigned long duration = strtoul(durationText, &end, 10);
+	if (!end || *end != '\0' || duration == 0 ||
+		duration > audiox::AudioStressTest::kMaxDurationSeconds) {
+		static const char bad[] = "duration_secs must be between 1 and 30\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8",
+									bad, sizeof(bad) - 1);
+	}
+
+	int rc = 0;
+	if (strcmp(mode, "cpu") == 0) {
+		rc = audiox::audioStressTest.startCpuContention(static_cast<uint32_t>(duration));
+	} else if (strcmp(mode, "audio") == 0) {
+		char workText[16];
+		if (!body_get_value(body, body_len, "work_ms", workText, sizeof(workText))) {
+			static const char bad[] = "work_ms is required for audio mode\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8",
+										bad, sizeof(bad) - 1);
+		}
+		end = nullptr;
+		const unsigned long workMs = strtoul(workText, &end, 10);
+		if (!end || *end != '\0' || workMs == 0 ||
+			workMs > audiox::AudioStressTest::kMaxAudioWorkMsPerBlock) {
+			static const char bad[] = "work_ms must be between 1 and 20\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8",
+										bad, sizeof(bad) - 1);
+		}
+		rc = audiox::audioStressTest.startAudioThread(static_cast<uint32_t>(duration),
+													  static_cast<uint32_t>(workMs));
+	} else {
+		static const char bad[] = "mode must be audio, cpu, or stop\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8",
+									bad, sizeof(bad) - 1);
+	}
+
+	if (rc == -EBUSY) {
+		static const char busy[] = "another stress test is already running\n";
+		return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8",
+									busy, sizeof(busy) - 1);
+	}
+	if (rc < 0) {
+		printf("[HTTP] [ERR] start audio stress test: %s\n", strerror(-rc));
+		static const char failed[] = "failed to start stress test\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8",
+									failed, sizeof(failed) - 1);
+	}
+
+	static const char started[] = "{\"ok\":true}\n";
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8",
+								started, sizeof(started) - 1);
+#endif
 }
 
 static int handleVersion(HttpServer *server,
@@ -5370,6 +5493,10 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_SYSTEM_BOOT_FAILURE_PATH) == 0) {
 		return handleSystemBootFailure(server, cfd, method);
+	}
+
+	if (strcmp(path, HTTP_SYSTEM_AUDIO_STRESS_PATH) == 0) {
+		return handleSystemAudioStress(server, cfd, method, body, body_len);
 	}
 
 	if (strcmp(path, HTTP_SYSTEM_INFO_PATH) == 0) {

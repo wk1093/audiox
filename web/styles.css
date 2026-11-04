@@ -735,6 +735,7 @@ a { color: var(--accent); text-underline-offset: 3px; }
 .reference-panel > .grid-2 { margin-top: 12px; }
 
 #macro-midi-binding[hidden],
+#system-audio-stress[hidden],
 #chord-script-editor[hidden] {
   display: none;
 }

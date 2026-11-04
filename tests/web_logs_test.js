@@ -160,3 +160,24 @@ test('health popups use backend decisions and deduplicate events, including page
   assert.equal(notices[0][2], 'audio-xruns');
   delete global.sessionStorage;
 });
+
+test('adaptive-buffer notices are deduplicated and report the new target', () => {
+  const saved = new Map();
+  global.sessionStorage = { getItem: (key) => saved.get(key), setItem: (key, value) => saved.set(key, value) };
+  const notices = [];
+  const info = (id) => ({
+    audio_buffer: {
+      increase_id: id,
+      runtime_id: 'runtime-1',
+      target_period_frames: 512,
+      estimated_largest_buffer_ms: 21.33,
+    },
+  });
+  createHealthNotifier((...args) => notices.push(args))(info('1'));
+  createHealthNotifier((...args) => notices.push(args))(info('1'));
+  assert.equal(notices.length, 1);
+  assert.match(notices[0][0], /temporarily increased buffering/);
+  assert.match(notices[0][0], /512 frames/);
+  assert.equal(notices[0][2], 'audio-buffer');
+  delete global.sessionStorage;
+});

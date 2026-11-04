@@ -170,6 +170,14 @@ config ALSA_LOGS
 	help
 	  Enables additional ALSA diagnostics in the runtime log.
 
+config AUDIO_STRESS_TEST
+	bool "Enable audio stress-test controls"
+	default n
+	help
+	  Adds opt-in System page controls for injecting bounded audio-thread
+	  work or running CPU contention workers. Both can cause audible dropouts
+	  and should only be enabled for testing.
+
 endmenu
 
 menu "Development"

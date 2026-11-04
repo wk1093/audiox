@@ -1,4 +1,5 @@
 #include "config/backup.hpp"
+#include "config/schema.hpp"
 #include "update_archive.hpp"
 #include "watchdog_heartbeat.hpp"
 
@@ -54,6 +55,84 @@ bool pathJoin(char *out, const char *a, const char *b) {
         return false;
     }
     return true;
+}
+
+int validateConfigVersion(const char *root, const char *name, Error &error) {
+    char path[maxPath];
+    if (!pathJoin(path, root, name)) return error.io("configuration path");
+    struct stat st{};
+    if (lstat(path, &st) < 0) return errno == ENOENT ? 0 : error.io("inspect backed-up configuration");
+    if (!S_ISREG(st.st_mode)) return 0;
+    FILE *file = fopen(path, "r");
+    if (!file) return error.io("open backed-up configuration");
+
+    if (!strcmp(name, "config.txt") || !strcmp(name, "config.staging.txt")) {
+        char line[512];
+        bool seen = false;
+        uint32_t version = 0;
+        while (fgets(line, sizeof(line), file)) {
+            char *key = line;
+            while (*key == ' ' || *key == '\t') ++key;
+            if (strncmp(key, "config_version", 14) != 0) continue;
+            char *equals = key + 14;
+            if (*equals != '=' && *equals != ' ' && *equals != '\t') continue;
+            while (*equals == ' ' || *equals == '\t') ++equals;
+            if (*equals++ != '=' || seen) {
+                fclose(file);
+                return error.fail("Invalid configuration schema marker in backup: %s", name);
+            }
+            seen = true;
+            while (*equals == ' ' || *equals == '\t') ++equals;
+            if (*equals < '0' || *equals > '9') {
+                fclose(file);
+                return error.fail("Invalid configuration schema version in backup: %s", name);
+            }
+            errno = 0;
+            char *end = nullptr;
+            unsigned long parsed = strtoul(equals, &end, 10);
+            while (*end == '\r' || *end == '\n' || *end == ' ' || *end == '\t') ++end;
+            if (errno || *end || parsed > UINT32_MAX) {
+                fclose(file);
+                return error.fail("Invalid configuration schema version in backup: %s", name);
+            }
+            version = static_cast<uint32_t>(parsed);
+        }
+        bool failed = ferror(file) != 0;
+        fclose(file);
+        if (failed) return error.io("read backed-up configuration");
+        if (version > CONFIG_SCHEMA_VERSION)
+            return error.fail("Backup uses unsupported config.txt schema version %u", version);
+        return 0;
+    }
+
+    const char *prefix = nullptr;
+    uint32_t supportedVersion = 0;
+    if (!strcmp(name, "routing.txt")) {
+        prefix = "# audiox routing v";
+        supportedVersion = ROUTING_SCHEMA_VERSION;
+    } else if (!strcmp(name, "midi_map.txt")) {
+        prefix = "# audiox midi map v";
+        supportedVersion = MIDI_MAP_SCHEMA_VERSION;
+    } else if (!strcmp(name, "fx_params.txt")) {
+        prefix = "# audiox fx params v";
+        supportedVersion = FX_PARAMS_SCHEMA_VERSION;
+    } else if (!strcmp(name, "volumes.txt")) {
+        prefix = "# audiox volumes v";
+        supportedVersion = VOLUMES_SCHEMA_VERSION;
+    } else if (!strcmp(name, "bluetooth/paired.txt")) {
+        prefix = "# audiox bluetooth paired v";
+        supportedVersion = BLUETOOTH_PAIRED_SCHEMA_VERSION;
+    }
+    ConfigTextSchemaStatus status =
+        checkConfigTextSchema(file, prefix, supportedVersion);
+    bool failed = fclose(file) != 0;
+    if (failed || status == ConfigTextSchemaStatus::IoError)
+        return error.io("read backed-up configuration");
+    if (status == ConfigTextSchemaStatus::Unsupported)
+        return error.fail("Backup uses unsupported schema version in %s", name);
+    if (status == ConfigTextSchemaStatus::Invalid)
+        return error.fail("Backup has an invalid schema marker in %s", name);
+    return 0;
 }
 
 int syncDir(const char *path, Error &error) {
@@ -289,6 +368,10 @@ int create(const char *root, int archiveFd, char *text, size_t textSize) {
     char config[maxPath];
     if (!pathJoin(config, root, roots[0])) return error.io("backup path");
     if (access(config, R_OK) < 0) return error.io("read main configuration");
+    for (size_t i = 0; i < 6; ++i) {
+        if (validateConfigVersion(root, roots[i], error) < 0) return -1;
+    }
+    if (validateConfigVersion(root, "bluetooth/paired.txt", error) < 0) return -1;
     if (ftruncate(archiveFd, 0) < 0 || lseek(archiveFd, 0, SEEK_SET) < 0) return error.io("initialize backup");
     unsigned char header[16] = {};
     memcpy(header, "AXBACKUP", 8);
@@ -372,6 +455,10 @@ int stage(const char *root, int fd, uint64_t size, char *text, size_t textSize) 
     if (pos != size - 4 || !(mask & 1) || !(mask & (1u << 6)) || !(mask & (1u << 7))) {
         return error.fail("Backup is incomplete or contains trailing data");
     }
+    for (size_t i = 0; i < 6; ++i) {
+        if (validateConfigVersion(fresh, roots[i], error) < 0) return -1;
+    }
+    if (validateConfigVersion(fresh, "bluetooth/paired.txt", error) < 0) return -1;
     char plan[maxPath], old[maxPath];
     if (!pathJoin(plan, temp.path, "plan") || !pathJoin(old, temp.path, "old")) return error.io("restore plan path");
     Fd planFd(open(plan, O_WRONLY | O_CREAT | O_EXCL, 0600));

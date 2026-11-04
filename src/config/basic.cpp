@@ -106,6 +106,9 @@ static int readConfigPath(const char *path, ConfigData *out, int warnIfMissing) 
     }
 
     char line[256];
+    uint32_t sourceVersion = 0;
+    bool sawVersion = false;
+    bool invalidVersion = false;
     while (fgets(line, sizeof(line), fp)) {
         char *eq = strchr(line, '=');
         if (!eq) {
@@ -136,6 +139,20 @@ static int readConfigPath(const char *path, ConfigData *out, int warnIfMissing) 
             cfg.midiPassthrough = strcmp(value, "unmapped") == 0 ? 1 : strcmp(value, "all") == 0 ? 2 : 0;
         } else if (strcmp(key, "keyboard_macros") == 0) {
             cfg.keyboardMacros = strcmp(value, "1") == 0;
+        } else if (strcmp(key, "config_version") == 0) {
+            if (sawVersion || !*value || *value == '-') {
+                invalidVersion = true;
+                continue;
+            }
+            sawVersion = true;
+            errno = 0;
+            char *end = nullptr;
+            unsigned long parsed = strtoul(value, &end, 10);
+            if (errno || end == value || *end || parsed > UINT32_MAX) {
+                invalidVersion = true;
+                continue;
+            }
+            sourceVersion = (uint32_t)parsed;
         }
     }
 
@@ -146,6 +163,28 @@ static int readConfigPath(const char *path, ConfigData *out, int warnIfMissing) 
     }
     fclose(fp);
 
+    if (invalidVersion || sourceVersion > CONFIG_SCHEMA_VERSION) {
+        cfg.schemaVersion = invalidVersion ? UINT32_MAX : sourceVersion;
+        *out = cfg;
+        printf("[CONFIG] [WARN] unsupported or invalid config version in %s\n", path);
+        return RET_ERR;
+    }
+
+    while (sourceVersion < CONFIG_SCHEMA_VERSION) {
+        switch (sourceVersion) {
+        case 0:
+            // Unversioned settings use the initial schema.
+            sourceVersion = 1;
+            break;
+        default:
+            cfg.schemaVersion = UINT32_MAX;
+            *out = cfg;
+            printf("[CONFIG] [WARN] no migration available for config version %u in %s\n",
+                   sourceVersion, path);
+            return RET_ERR;
+        }
+    }
+    cfg.schemaVersion = sourceVersion;
     normalizeConfig(&cfg);
     *out = cfg;
     return RET_OK;
@@ -317,8 +356,14 @@ int ConfigStore::writeConfigFile(ConfigData *cfg) {
     if (!cfg) {
         return -1;
     }
+    if (cfg->schemaVersion > CONFIG_SCHEMA_VERSION) {
+        printf("[CONFIG] [WARN] refusing to overwrite config version %u (supported through %u)\n",
+               cfg->schemaVersion, CONFIG_SCHEMA_VERSION);
+        return RET_ERR;
+    }
 
     normalizeConfig(cfg);
+    cfg->schemaVersion = CONFIG_SCHEMA_VERSION;
 
     const char *temporary = CONFIG_REAL_FILE_PATH ".tmp";
     int fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -326,10 +371,10 @@ int ConfigStore::writeConfigFile(ConfigData *cfg) {
         printf("[CONFIG] [WARN] failed to open %s for writing: %s\n", CONFIG_REAL_FILE_PATH, strerror(errno));
         return -1;
     }
-    int n = dprintf(fd, "usb_sample_rate=%u\nusb_playback_channels=%u\nusb_capture_channels=%u\n"
+    int n = dprintf(fd, "config_version=%u\nusb_sample_rate=%u\nusb_playback_channels=%u\nusb_capture_channels=%u\n"
                    "usb_sample_size=%u\nsoundboard_mode=%s\nframebuffer_view=%s\n"
                    "midi_passthrough=%s\nkeyboard_macros=%u\n",
-                   cfg->sampleRate, cfg->playbackChannels, cfg->captureChannels, cfg->sampleSize,
+                   cfg->schemaVersion, cfg->sampleRate, cfg->playbackChannels, cfg->captureChannels, cfg->sampleSize,
                    soundboardModeToString(cfg->soundboardMode), cfg->framebufferSoundboard ? "soundboard" : "meters",
                    cfg->midiPassthrough == 1 ? "unmapped" : cfg->midiPassthrough == 2 ? "all" : "off",
                    cfg->keyboardMacros);
@@ -421,6 +466,15 @@ int ConfigStore::readVolumesFile(VolumeEntry *out, uint32_t *count_out, uint32_t
     if (!fp) {
         return (errno == ENOENT) ? RET_WARN : RET_ERR;
     }
+    ConfigTextSchemaStatus schema =
+        checkConfigTextSchema(fp, "# audiox volumes v", VOLUMES_SCHEMA_VERSION);
+    if (schema == ConfigTextSchemaStatus::Unsupported ||
+        schema == ConfigTextSchemaStatus::Invalid ||
+        schema == ConfigTextSchemaStatus::IoError) {
+        printf("[CONFIG] [WARN] unsupported or invalid volume schema in %s\n", VOLUMES_FILE_PATH);
+        fclose(fp);
+        return RET_ERR;
+    }
 
     char line[256];
     while (fgets(line, sizeof(line), fp) && *count_out < cap) {
@@ -475,6 +529,15 @@ int ConfigStore::writeVolumesFile(const VolumeEntry *entries, uint32_t count) {
         printf("[CONFIG] [WARN] volume table exceeds capacity\n");
         return RET_ERR;
     }
+    ConfigTextSchemaStatus schema =
+        checkConfigTextFileSchema(VOLUMES_FILE_PATH, "# audiox volumes v", VOLUMES_SCHEMA_VERSION);
+    if (schema == ConfigTextSchemaStatus::Unsupported ||
+        schema == ConfigTextSchemaStatus::Invalid ||
+        schema == ConfigTextSchemaStatus::IoError) {
+        printf("[CONFIG] [WARN] refusing to overwrite unsupported volume schema in %s\n",
+               VOLUMES_FILE_PATH);
+        return RET_ERR;
+    }
     for (uint32_t i = 0; i < count; ++i) {
         if (!std::isfinite(entries[i].gain) || entries[i].gain < 0.0f || entries[i].gain > 2.0f) {
             printf("[CONFIG] [WARN] invalid gain while saving %s\n", VOLUMES_FILE_PATH);
@@ -488,7 +551,8 @@ int ConfigStore::writeVolumesFile(const VolumeEntry *entries, uint32_t count) {
         return RET_ERR;
     }
 
-    bool ok = fchmod(fd, 0644) == 0 && dprintf(fd, "# audiox volumes v1\n") >= 0;
+    bool ok = fchmod(fd, 0644) == 0 &&
+              dprintf(fd, "# audiox volumes v%u\n", VOLUMES_SCHEMA_VERSION) >= 0;
     for (uint32_t i = 0; ok && i < count; ++i) {
         if (!entries[i].thingId[0]) {
             continue;

@@ -13,6 +13,15 @@ static int16_t captureSample;
 static unsigned captureReads;
 static unsigned playbackWrites;
 static int16_t playbackSample;
+static bool modelPlayback = false;
+static snd_pcm_state_t modeledState = SND_PCM_STATE_PREPARED;
+static snd_pcm_uframes_t modeledQueued = 0, modeledBuffer = 0;
+static snd_pcm_uframes_t modeledStartThreshold = 0;
+static unsigned modeledStarts = 0, modeledRecoveries = 0;
+static int16_t modeledMmapSamples[BUFFER_FRAMES * 2U]{};
+static snd_pcm_channel_area_t modeledAreas[2] = {
+    {modeledMmapSamples, 0, 32}, {modeledMmapSamples, 16, 32}
+};
 
 extern "C" snd_pcm_sframes_t snd_pcm_readi(snd_pcm_t *pcm, void *buffer, snd_pcm_uframes_t frames) {
     assert(pcm == &testPcm);
@@ -25,10 +34,112 @@ extern "C" snd_pcm_sframes_t snd_pcm_writei(snd_pcm_t *pcm, const void *buffer, 
     assert(pcm == &testPcm);
     ++playbackWrites;
     playbackSample = static_cast<const int16_t *>(buffer)[0];
+    if (modelPlayback) {
+        if (modeledState == SND_PCM_STATE_XRUN) return -EPIPE;
+        if (modeledQueued + frames > modeledBuffer) return -EAGAIN;
+        modeledQueued += frames;
+    }
     return static_cast<snd_pcm_sframes_t>(frames);
 }
 
-extern "C" snd_pcm_state_t snd_pcm_state(snd_pcm_t *) { return SND_PCM_STATE_RUNNING; }
+extern "C" snd_pcm_state_t snd_pcm_state(snd_pcm_t *) {
+    return modelPlayback ? modeledState : SND_PCM_STATE_RUNNING;
+}
+
+extern "C" snd_pcm_sframes_t snd_pcm_avail_update(snd_pcm_t *) {
+    assert(modelPlayback);
+    return modeledState == SND_PCM_STATE_XRUN ? -EPIPE
+        : static_cast<snd_pcm_sframes_t>(modeledBuffer - modeledQueued);
+}
+
+extern "C" int snd_pcm_start(snd_pcm_t *) {
+    assert(modelPlayback && modeledState == SND_PCM_STATE_PREPARED);
+    assert(modeledQueued >= modeledStartThreshold);
+    ++modeledStarts;
+    modeledState = SND_PCM_STATE_RUNNING;
+    return 0;
+}
+
+extern "C" int snd_pcm_recover(snd_pcm_t *, int err, int) {
+    assert(modelPlayback && err == -EPIPE);
+    ++modeledRecoveries;
+    modeledState = SND_PCM_STATE_PREPARED;
+    modeledQueued = 0;
+    return 0;
+}
+
+extern "C" int snd_pcm_mmap_begin(snd_pcm_t *, const snd_pcm_channel_area_t **areas,
+                                  snd_pcm_uframes_t *offset, snd_pcm_uframes_t *frames) {
+    assert(modelPlayback);
+    *areas = modeledAreas;
+    *offset = 0;
+    *frames = std::min(*frames, modeledBuffer - modeledQueued);
+    return 0;
+}
+
+extern "C" snd_pcm_sframes_t snd_pcm_mmap_commit(snd_pcm_t *, snd_pcm_uframes_t,
+                                                snd_pcm_uframes_t frames) {
+    assert(modelPlayback);
+    modeledQueued += frames;
+    return static_cast<snd_pcm_sframes_t>(frames);
+}
+
+static void testAdaptivePlaybackPriming() {
+    auto context = std::make_unique<AudioContext>(nullptr);
+    auto runtime = std::make_unique<RuntimeGraph>();
+    runtime->snapshot.thingCount = 1;
+    runtime->snapshot.things[0].inputs = 2;
+    runtime->playbackCount = 1;
+    auto &output = runtime->playback[0];
+    output.pcm = &testPcm;
+    output.channels = 2;
+    output.format = SND_PCM_FORMAT_S16_LE;
+    runtime->inputs[0][0] = runtime->silence;
+    runtime->inputs[0][1] = runtime->silence;
+
+    modelPlayback = true;
+    for (bool mmap : {false, true}) {
+        output.mmapAccess = mmap;
+        for (unsigned period = BUFFER_FRAMES; period <= 1024; period *= 2) {
+            output.periodFrames = period;
+            output.bufferFrames = period * 4U;
+            modeledBuffer = output.bufferFrames;
+            modeledQueued = 0;
+            modeledState = SND_PCM_STATE_PREPARED;
+            modeledStarts = modeledRecoveries = 0;
+            output.pendingFrames = output.pendingOffsetFrames = 0;
+            const snd_pcm_uframes_t target = period == BUFFER_FRAMES
+                ? BUFFER_FRAMES : period * 3U;
+            assert(audio_pcm_playback_start_frames(period, modeledBuffer) == target);
+            modeledStartThreshold = target;
+            unsigned runningBlocks = 0;
+            auto process = [&]() {
+                servicePlaybackIo(context.get(), runtime.get());
+                if (modeledState == SND_PCM_STATE_RUNNING) {
+                    if (++runningBlocks % (period / BUFFER_FRAMES) == 0) {
+                        assert(modeledQueued >= period); // No self-induced underrun at a period tick.
+                        modeledQueued -= period;
+                    }
+                } else {
+                    assert(modeledQueued < target);
+                }
+            };
+            for (unsigned i = 0; i < 128; ++i) process();
+            assert(modeledState == SND_PCM_STATE_RUNNING && modeledStarts == 1);
+            assert(modeledRecoveries == 0);
+
+            modeledState = SND_PCM_STATE_XRUN; // A real overload must re-prime, not restart empty.
+            process();
+            assert(modeledRecoveries == 1);
+            runningBlocks = 0;
+            for (unsigned i = 0; i < 128; ++i) process();
+            assert(modeledState == SND_PCM_STATE_RUNNING && modeledStarts == 2);
+            assert(modeledRecoveries == 1);
+        }
+    }
+    modelPlayback = false;
+    puts("Adaptive playback primes and recovers at every tier through RW and MMAP");
+}
 
 AudioContext::AudioContext(Audiox *context) : app(context) {}
 AudioContext::~AudioContext() {}
@@ -772,6 +883,7 @@ static void testNativePlugin() {
 }
 
 int main() {
+    testAdaptivePlaybackPriming();
     testDirectProcessing();
     testGraphFastPaths();
     testSilentRelease();

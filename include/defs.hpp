@@ -12,6 +12,10 @@ inline constexpr unsigned AUDIOX_DEVICE_POLL_INTERVAL_MS = 500;
 #define AUDIOX_ENABLE_ALSA_LOGS 1
 #endif
 
+#ifndef AUDIOX_ENABLE_STRESS_TEST
+#define AUDIOX_ENABLE_STRESS_TEST 0
+#endif
+
 #ifndef AUDIOX_SAMPLE_RATE
 #define AUDIOX_SAMPLE_RATE 48000
 #endif

@@ -1,4 +1,5 @@
 #include "bluetooth/context.hpp"
+#include "config/schema.hpp"
 #include "json.hpp"
 #include "bluetooth/a2dp.hpp"
 #include "bluetooth/route_id.hpp"
@@ -3215,6 +3216,16 @@ void BluetoothContext::loadPaired() {
     if (!fp) {
         return;
     }
+    ConfigTextSchemaStatus schema =
+        checkConfigTextSchema(fp, "# audiox bluetooth paired v",
+                              BLUETOOTH_PAIRED_SCHEMA_VERSION);
+    if (schema == ConfigTextSchemaStatus::Unsupported ||
+        schema == ConfigTextSchemaStatus::Invalid ||
+        schema == ConfigTextSchemaStatus::IoError) {
+        printf("[BT] [WARN] unsupported or invalid paired-device schema in %s\n", BT_PAIRED_FILE);
+        fclose(fp);
+        return;
+    }
     char line[BT_NAME_MAX + 64];
     std::lock_guard<std::mutex> lock(mutex);
     while (fgets(line, sizeof(line), fp) && deviceCount < BT_MAX_DEVICES) {
@@ -3275,6 +3286,16 @@ void BluetoothContext::loadPaired() {
 
 bool BluetoothContext::savePaired() {
     std::lock_guard<std::mutex> fileLock(pairedFileMutex);
+    ConfigTextSchemaStatus schema =
+        checkConfigTextFileSchema(BT_PAIRED_FILE, "# audiox bluetooth paired v",
+                                  BLUETOOTH_PAIRED_SCHEMA_VERSION);
+    if (schema == ConfigTextSchemaStatus::Unsupported ||
+        schema == ConfigTextSchemaStatus::Invalid ||
+        schema == ConfigTextSchemaStatus::IoError) {
+        printf("[BT] [WARN] refusing to overwrite unsupported paired-device schema in %s\n",
+               BT_PAIRED_FILE);
+        return false;
+    }
     if (mkdir(BT_STATE_DIR, 0755) != 0 && errno != EEXIST) {
         printf("[BT] [WARN] cannot create %s: %s\n", BT_STATE_DIR, strerror(errno));
         return false;
@@ -3285,6 +3306,7 @@ bool BluetoothContext::savePaired() {
         printf("[BT] [WARN] cannot write %s: %s\n", tmpPath, strerror(errno));
         return false;
     }
+    fprintf(fp, "# audiox bluetooth paired v%u\n", BLUETOOTH_PAIRED_SCHEMA_VERSION);
     {
         std::lock_guard<std::mutex> lock(mutex);
         for (size_t i = 0; i < deviceCount; ++i) {

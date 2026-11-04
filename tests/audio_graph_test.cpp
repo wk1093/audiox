@@ -131,6 +131,48 @@ int main() {
         assert(audio->buildDevicesJson(devices, 8) == RET_ERR);
         assert(audiox::json::escape("\b\f\r") == "\\u0008\\u000c\\u000d");
         assert(audiox::json::escape("caf\xc3\xa9") == "caf\xc3\xa9");
+        const auto systemInfo = request([&](int fd) {
+            return handleSystemInfo(&http, fd, "GET", "");
+        });
+        assert(systemInfo.find("\"audio_health\":{") != std::string::npos);
+        assert(systemInfo.find("\"audio_buffer\":{\"base_block_frames\":") != std::string::npos);
+        assert(systemInfo.find("\"largest_period_frames\":") != std::string::npos);
+        assert(systemInfo.find("\"downshift_delay_ms\":") != std::string::npos);
+        assert(systemInfo.find("\"downshift_failures\":") != std::string::npos);
+        assert(systemInfo.find("\"runtime_id\":\"") != std::string::npos);
+#if AUDIOX_ENABLE_STRESS_TEST
+        assert(systemInfo.find("\"audio_stress_test\":{\"available\":true") != std::string::npos);
+        const char audioStressBody[] = "mode=audio&duration_secs=10&work_ms=1";
+        const auto audioStressStarted = request([&](int fd) {
+            return handleSystemAudioStress(&http, fd, "POST", audioStressBody,
+                                           sizeof(audioStressBody) - 1);
+        });
+        assert(audioStressStarted.find("200 OK") != std::string::npos);
+        const char cpuStressBody[] = "mode=cpu&duration_secs=10";
+        const auto concurrentStress = request([&](int fd) {
+            return handleSystemAudioStress(&http, fd, "POST", cpuStressBody,
+                                           sizeof(cpuStressBody) - 1);
+        });
+        assert(concurrentStress.find("409 Conflict") != std::string::npos);
+        const char stopStressBody[] = "mode=stop";
+        const auto audioStressStopped = request([&](int fd) {
+            return handleSystemAudioStress(&http, fd, "POST", stopStressBody,
+                                           sizeof(stopStressBody) - 1);
+        });
+        assert(audioStressStopped.find("200 OK") != std::string::npos);
+        const auto cpuStressStarted = request([&](int fd) {
+            return handleSystemAudioStress(&http, fd, "POST", cpuStressBody,
+                                           sizeof(cpuStressBody) - 1);
+        });
+        assert(cpuStressStarted.find("200 OK") != std::string::npos);
+        const auto cpuStressStopped = request([&](int fd) {
+            return handleSystemAudioStress(&http, fd, "POST", stopStressBody,
+                                           sizeof(stopStressBody) - 1);
+        });
+        assert(cpuStressStopped.find("200 OK") != std::string::npos);
+#else
+        assert(systemInfo.find("\"audio_stress_test\":{\"available\":false") != std::string::npos);
+#endif
 
         assert(unlink("snd/pcmC98D0p") == 0);
         audio->nextHotplugScanMs = 0;
@@ -337,6 +379,23 @@ int main() {
         writeFile("routing.txt", helperRoutes(12, 0));
         assert(audio->reloadRoutingGraph() == RET_OK);
         assert(audio->routingGraph.edgeCount == 0 && audio->routingGraph.skippedEdgeCount == 0);
+
+        const std::string futureRouting = "# audiox routing v2\nedge=preserve,me,0,0\n";
+        writeFile("routing.txt", futureRouting);
+        assert(config.router().getRouteCount() == -1);
+        const char *replacementRoutes[] = {"new,route,0,0"};
+        config.router().replaceAllRoutes(replacementRoutes, 1);
+        assert(readFile("routing.txt") == futureRouting);
+
+        const std::string futureVolumes = "# audiox volumes v2\nsoundboard_out=1\n";
+        writeFile("volumes.txt", futureVolumes);
+        VolumeEntry guardedVolume{};
+        strcpy(guardedVolume.thingId, "soundboard_out");
+        guardedVolume.gain = 0.5f;
+        uint32_t guardedCount = 0;
+        assert(config.readVolumesFile(&guardedVolume, &guardedCount, VOLUME_ENTRIES_MAX) == RET_ERR);
+        assert(config.writeVolumesFile(&guardedVolume, 1) == RET_ERR);
+        assert(readFile("volumes.txt") == futureVolumes);
     }
     for (const char *file : {"config.txt", "routing.txt", "volumes.txt", "midi_map.txt", "fx_params.txt"}) assert(unlink(file) == 0);
     assert(chdir(original) == 0);

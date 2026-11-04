@@ -94,6 +94,135 @@ test('layout handles empty columns and large nodes without overlapping headers',
   assert.ok(positions.output.x >= positions.fx_2.x + effects[1].width + 30);
 });
 
+const edge = (src, dst) => ({ src, dst, srcChannel: 0, dstChannel: 0 });
+const box = (id, width = 260, height = 100) =>
+  ({ id, kind: 'effect', inputs: 2, outputs: 2, width, height });
+
+function assertNoOverlap(boxes, positions) {
+  for (const node of boxes) {
+    assert.ok(Number.isFinite(positions[node.id].x) && Number.isFinite(positions[node.id].y));
+    for (const other of boxes) {
+      if (other === node) continue;
+      const a = positions[node.id], b = positions[other.id];
+      assert.ok(a.x + node.width <= b.x || b.x + other.width <= a.x ||
+        a.y + node.height + 30 <= b.y || b.y + other.height + 30 <= a.y,
+      `${node.id} overlaps ${other.id}`);
+    }
+  }
+}
+
+function crossingCount(routes, positions) {
+  let count = 0;
+  for (let i = 0; i < routes.length; i++) {
+    const a = routes[i], src = positions[a.src], dst = positions[a.dst];
+    for (let j = i + 1; j < routes.length; j++) {
+      const b = routes[j], otherSrc = positions[b.src], otherDst = positions[b.dst];
+      if (src.x === otherSrc.x && dst.x === otherDst.x &&
+          (src.y - otherSrc.y) * (dst.y - otherDst.y) < 0) count++;
+    }
+  }
+  return count;
+}
+
+test('route-aware Arrange places each serial effect after its actual predecessor', () => {
+  const chain = [nodes[2], box('fx_a', 600, 520), nodes[3], box('fx_b', 400, 700), nodes[0]];
+  const routes = chain.slice(1).map((node, i) => edge(chain[i].id, node.id));
+  const positions = routing.layoutNodes([...chain].reverse(), routes);
+  for (let i = 1; i < chain.length; i++)
+    assert.equal(positions[chain[i].id].x, positions[chain[i - 1].id].x + chain[i - 1].width + 60);
+  assertNoOverlap(chain, positions);
+  assert.deepEqual(routing.layoutNodes(chain, [...routes].reverse()), positions);
+});
+
+test('branch ordering measurably removes avoidable wire crossings', () => {
+  const boxes = ['start', 'a', 'b', 'c', 'd', 'finish'].map(id => box(id));
+  const routes = [edge('start', 'a'), edge('start', 'b'), edge('a', 'd'), edge('b', 'c'),
+    edge('c', 'finish'), edge('d', 'finish')];
+  const naive = { start: { x: 0, y: 0 }, a: { x: 1, y: 0 }, b: { x: 1, y: 1 },
+    c: { x: 2, y: 0 }, d: { x: 2, y: 1 }, finish: { x: 3, y: 0 } };
+  assert.equal(crossingCount(routes, naive), 1);
+  const positions = routing.layoutNodes(boxes, routes);
+  assert.equal(crossingCount(routes, positions), 0);
+  assert.equal(positions.b.y - positions.a.y, boxes[1].height + 50);
+  assertNoOverlap(boxes, positions);
+  assert.deepEqual(routing.layoutNodes([...boxes].reverse(), [...routes].reverse()), positions);
+});
+
+test('unused nodes and separate routed patches use compact header-safe gaps', () => {
+  const boxes = ['a', 'b', 'c', 'd', 'unused'].map(id => box(id));
+  const positions = routing.layoutNodes(boxes, [edge('a', 'b'), edge('c', 'd')]);
+  assert.equal(positions.c.y - (positions.a.y + boxes[0].height), 70);
+  assert.equal(positions.unused.y - (positions.c.y + boxes[2].height), 70);
+  const fallback = routing.layoutNodes(boxes);
+  assert.equal(fallback.b.y - (fallback.a.y + boxes[0].height), 50);
+  assertNoOverlap(boxes, positions);
+  assertNoOverlap(boxes, fallback);
+});
+
+test('long routes, fan-in/out and duplicate stereo wires retain stable placement', () => {
+  const boxes = ['start', 'a', 'b', 'c', 'd', 'finish'].map((id, i) => box(id, 260 + i * 20, 80 + i * 90));
+  const routes = [edge('start', 'a'), edge('start', 'b'), edge('a', 'c'), edge('b', 'd'),
+    edge('c', 'finish'), edge('d', 'finish'), edge('start', 'finish'), edge('a', 'finish')];
+  const positions = routing.layoutNodes(boxes, routes);
+  for (const route of routes) assert.ok(positions[route.src].x < positions[route.dst].x);
+  assertNoOverlap(boxes, positions);
+  const stereo = routes.flatMap(route => [route, { ...route, srcChannel: 1, dstChannel: 1 }]);
+  assert.deepEqual(routing.layoutNodes(boxes, stereo), positions);
+  assert.deepEqual(routing.layoutNodes(boxes, [...routes, edge('missing', 'a'), edge('b', 'missing'),
+    edge('c', 'c')]), positions);
+});
+
+test('cyclic groups, disconnected patches and unused nodes remain finite and separated', () => {
+  const boxes = ['a', 'b', 'c', 'd', 'e', 'f', 'unused'].map(id => box(id));
+  const routes = [edge('a', 'b'), edge('b', 'c'), edge('c', 'b'), edge('c', 'd'), edge('e', 'f')];
+  const positions = routing.layoutNodes(boxes, routes);
+  assert.equal(positions.b.x, positions.c.x);
+  assert.ok(positions.a.x < positions.b.x && positions.c.x < positions.d.x);
+  assert.ok(positions.e.y > Math.max(...['a', 'b', 'c', 'd'].map(id => positions[id].y + 100)));
+  assert.ok(positions.unused.y > Math.max(positions.e.y, positions.f.y) + 100);
+  assertNoOverlap(boxes, positions);
+  assert.deepEqual(routing.layoutNodes(boxes, routes), positions);
+  const cycle = routing.layoutNodes(boxes.slice(0, 3), [edge('a', 'b'), edge('b', 'c'), edge('c', 'a')]);
+  assert.equal(cycle.a.x, cycle.b.x);
+  assert.equal(cycle.b.x, cycle.c.x);
+  assertNoOverlap(boxes.slice(0, 3), cycle);
+});
+
+test('Arrange uses current unsaved routes without overwriting manually positioned nodes', () => {
+  const source = fs.readFileSync(require.resolve('../web/app.js'), 'utf8');
+  const graphNodes = new Map(['a', 'b'].map(id => [id, { pos: [0, 0], size: [260, 100] }]));
+  const state = { nodeByThingId: graphNodes, edges: [edge('b', 'a')], autoArrange: true,
+    positions: {}, activeTab: 'routing' };
+  let fitted = 0;
+  const context = vm.createContext({ state, AudioxRouting: routing,
+    routingNodeBoxes: () => [...graphNodes.keys()].map(id => box(id)),
+    fitRoutingGraph: () => fitted++ });
+  vm.runInContext(source.slice(source.indexOf('function arrangeRoutingGraph()'),
+    source.indexOf('function rebuildRoutingGraph()')), context);
+  context.arrangeRoutingGraph();
+  assert.ok(graphNodes.get('b').pos[0] < graphNodes.get('a').pos[0]);
+  assert.equal(fitted, 1);
+  state.autoArrange = false;
+  state.positions = { a: { x: 123, y: 456 }, b: { x: 789, y: 100 } };
+  context.arrangeRoutingGraph();
+  assert.deepEqual(Array.from(graphNodes.get('a').pos), [123, 456]);
+  assert.deepEqual(Array.from(graphNodes.get('b').pos), [789, 100]);
+  assert.equal(fitted, 1);
+  assert.deepEqual(state.edges, [edge('b', 'a')]);
+});
+
+test('maximum-size graphs with many long routes keep every node ordered and nonoverlapping', () => {
+  const boxes = Array.from({ length: 64 }, (_, i) => box(`n${String(i).padStart(2, '0')}`, 260, 100 + i * 7));
+  const routes = boxes.slice(1).map((node, i) => edge(boxes[i].id, node.id));
+  for (let i = 0; i < 65; i++) routes.push(edge(boxes[i % 32].id, boxes[63 - i % 16].id));
+  const positions = routing.layoutNodes(boxes, routes);
+  assert.equal(Object.keys(positions).length, 64);
+  assertNoOverlap(boxes, positions);
+  for (const route of routes) assert.ok(positions[route.src].x < positions[route.dst].x);
+  const view = routing.fitNodes(boxes.map(node => ({ ...node, ...positions[node.id] })), 800, 600);
+  assert.ok(Number.isFinite(view.scale) && view.scale > 0);
+});
+
 test('fit contains every node and header within desktop and mobile graph viewports', () => {
   const positions = routing.layoutNodes(nodes);
   const boxes = nodes.map((node) => ({ ...node, ...positions[node.id] }));

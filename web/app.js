@@ -1478,7 +1478,7 @@ function fitRoutingGraph() {
 
 function arrangeRoutingGraph() {
   const boxes = routingNodeBoxes();
-  const positions = AudioxRouting.layoutNodes(boxes);
+  const positions = AudioxRouting.layoutNodes(boxes, state.edges);
   let newNodeY = Math.max(60, ...boxes.filter((node) => state.positions[node.id])
     .map((node) => state.positions[node.id].y + node.height + 80));
   for (const [id, node] of state.nodeByThingId) {

@@ -125,8 +125,13 @@ removes the node; review and save any remaining routes that you want to keep.
 
 ## Arrange and navigate the graph
 
-- **Arrange** places source/device nodes, the helper, effects, and destinations
-  in columns. Drag node headers to position them manually.
+- **Arrange** follows the current routes from left to right, placing successive
+  effects in successive layers and reordering branches to reduce wire crossings.
+  Separate routed groups occupy separate rows. Cycles stay together in a layer;
+  unused nodes are grouped below the routed graph. With no routes, nodes are
+  grouped by source/helper/effect/destination. Crossing reduction is a heuristic,
+  not a guarantee of a crossing-free graph. Spacing is compact, with room for
+  headers and wires. Drag node headers to place them manually.
 - **Fit** scales and centers all nodes in the current graph area. The `+`,
   `−`, and percentage buttons zoom; scrolling over the canvas also zooms.
 - **Fullscreen** expands the graph area.

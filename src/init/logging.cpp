@@ -57,3 +57,17 @@ void flushLogs() {
     fsync(fileno(stdout));
     fsync(fileno(stderr));
 }
+
+void flushLogsPeriodic(uint64_t nowMs) {
+    // fsync stalls on SD cards, so the heartbeat only forces logs to disk every few seconds;
+    // fatal paths still call flushLogs() for an immediate fsync.
+    static constexpr uint64_t kLogSyncIntervalMs = 10000;
+    static uint64_t lastSyncMs = 0;
+    if (!lastSyncMs || nowMs - lastSyncMs >= kLogSyncIntervalMs) {
+        lastSyncMs = nowMs;
+        flushLogs();
+        return;
+    }
+    fflush(stdout);
+    fflush(stderr);
+}

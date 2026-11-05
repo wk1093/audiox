@@ -178,12 +178,13 @@ void setupNetworkIp() {
 }
 
 int setupNetworkInterface(Audiox *) {
-    for (int i = 0; i < 20; ++i) {
+    // Poll finely so boot continues as soon as the gadget interface appears (10s limit).
+    for (int i = 0; i < 200; ++i) {
         if (isNetworkReady()) {
             setupNetworkIp();
             return RET_OK;
         }
-        usleep(500 * 1000);
+        usleep(50 * 1000);
     }
 
     return RET_ERR;

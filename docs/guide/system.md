@@ -210,11 +210,19 @@ Older v1 archives lack the v2 board metadata and use `kernel8.img`; do not rely 
 
 Only the **browser/computer needs internet**. It queries GitHub without a token, identifies the board from System info (or a supported older model string), and chooses `audiox-update-pi4.axu` or `audiox-update-pi5.axu`. Already-installed releases disable the online install button.
 
-Nightly lookup resolves the rolling release to a versioned nightly and compares it with the latest stable release using SemVer precedence. If the nightly is missing or is not newer, it selects stable instead, including the stable download mirror entry. A final stable version takes precedence over a prerelease of the same version; build metadata does not affect precedence. The browser uses the project's CORS-enabled download mirror for archive bytes and requires its tag/path/size to match GitHub metadata. It checks download size and AXU magic, then the device checks archive entries. **The browser does not independently verify the SHA-256 sidecar.** For a manual SHA-256 check, use the local-file workflow above.
+Nightly lookup resolves the rolling release to a versioned nightly and compares it with the latest stable release by GitHub publication date: whichever was published later is selected, so a `1.14.2` published after `1.15.0-beta` wins. SemVer precedence only breaks ties when a date is missing or identical (a final stable version beats a prerelease of the same version; build metadata is ignored). If the nightly is missing or is not newer, it selects stable instead, including the stable download mirror entry. The browser uses the project's CORS-enabled download mirror for archive bytes and requires its tag/path/size to match GitHub metadata. It checks download size and AXU magic, then the device checks archive entries. **The browser does not independently verify the SHA-256 sidecar.** For a manual SHA-256 check, use the local-file workflow above.
 
 If the mirror is unavailable, GitHub is rate-limited, or the browser is offline,
 the status explains the failure. **Download matching AXU manually** remains an
 alternative when a release asset exists.
+
+### Update notifications
+
+While the WebUI is open, the browser checks GitHub for the release channel selected in **System > Firmware Update** (the choice is remembered per browser) and shows a banner when an update is available. **View update** opens the Firmware Update card and runs a check; nothing is installed without confirmation. **Dismiss** hides the banner until a different release is published.
+
+A release counts as an update when it was published on GitHub after the installed release. An installed version not found in the recent GitHub release history (for example a local or deleted build) is treated as older, so any published release is offered. Results are cached in the browser for 6 hours (1 hour after a failed check), or until the channel or installed version changes.
+
+Clear **Notify me when an update is available** to stop the automatic checks. The setting is stored on the device (`update_notifications=0` in `config.txt`), so it applies to every browser; manual **Check GitHub Releases** still works.
 
 ### If an update appears to fail
 

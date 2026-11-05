@@ -1,6 +1,7 @@
 CC = aarch64-linux-gnu-gcc
 CXX = aarch64-linux-gnu-g++
-CXXFLAGS = -static -O3 -Iinclude -Wall -Wextra -Werror -Wno-error=format-truncation -Wno-error=unused-parameter -pthread -fno-exceptions -fno-rtti -std=c++17
+STRIP = aarch64-linux-gnu-strip
+CXXFLAGS = -static -O3 $(TARGET_CPU_FLAGS) -Iinclude -Wall -Wextra -Werror -Wno-error=format-truncation -Wno-error=unused-parameter -pthread -fno-exceptions -fno-rtti -std=c++17
 LIBS = -lm -pthread
 
 PKG_FETCH ?= curl -fsSL
@@ -29,7 +30,7 @@ RUNTIME_LIBS = $(LIBS)
 
 BOOTLOADER_SRCS := $(BOOTLOADER_SRC)
 BOOTLOADER_COMPILER := $(CXX)
-BOOTLOADER_FLAGS := $(CXXFLAGS)
+BOOTLOADER_FLAGS = $(CXXFLAGS)
 
 # ALSA dependency strategy (build-only; runtime audio code remains unchanged).
 # Source build is the only supported mode.
@@ -98,9 +99,9 @@ RUNTIME_LIBS += $(LUA_STATIC_LIB) -lm
 #   PRERELEASE=       -> 1.10.1-nightly+<commit>
 # AUDIOX_VERSION_BUILD defaults to the 12-character git commit for nightly builds.
 AUDIOX_VERSION_MAJOR ?= 1
-AUDIOX_VERSION_MINOR ?= 15
-AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.1
+AUDIOX_VERSION_MINOR ?= 14
+AUDIOX_VERSION_PATCH ?= 3
+AUDIOX_VERSION_PRERELEASE ?= 
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
 $(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
@@ -133,6 +134,9 @@ config_str = $(subst ",,$(CONFIG_$(1)))
 
 # Board selection (see Kconfig; make pi4_defconfig / pi5_defconfig).
 AUDIOX_BOARD = $(if $(filter y,$(CONFIG_BOARD_PI5)),pi5,pi4)
+# Pi 4 is Cortex-A72, Pi 5 is Cortex-A76. Images and OTA updates are board-specific
+# (updates are rejected on the wrong board), so tuning for the exact core is safe.
+TARGET_CPU_FLAGS ?= $(if $(filter y,$(CONFIG_BOARD_PI5)),-mcpu=cortex-a76,-mcpu=cortex-a72)
 KERNEL_IMAGE ?= $(call config_str,KERNEL_IMAGE)
 BOARD_DTBS ?= $(call config_str,BOARD_DTBS)
 BOARD_FIRMWARE_FILES ?= $(call config_str,BOARD_FIRMWARE_FILES)
@@ -162,6 +166,7 @@ endif
 BOOTLOADER_ROOTFS_DIR = $(OUT_DIR)/bootloader_rootfs
 ROOTFS_DIR = $(OUT_DIR)/program_rootfs
 PROGRAM_STAGE_DIR = $(OUT_DIR)/program_stage
+BOOTLOADER_STAGE_DIR = $(OUT_DIR)/bootloader_stage
 INITRAMFS = $(OUT_DIR)/initramfs.cpio.gz
 PROGRAM_INITRAMFS = $(OUT_DIR)/program.cpio.gz
 COMBINED_INITRAMFS = $(OUT_DIR)/combined-initramfs.cpio.gz
@@ -262,6 +267,8 @@ KV = $(QEMU_KERNEL_VERSION)
 MODULES_ROOT = $(QEMU_KERNEL_DIR)/modules
 MODULES_SOURCE_TARGET = qemu_kernel
 override AUDIOX_USB_GADGET_UDC = usbip-vudc.0
+# The debug VM emulates a Cortex-A72 regardless of the configured board.
+override TARGET_CPU_FLAGS = -mcpu=cortex-a72
 endif
 
 DEPFLAGS = -MMD -MP
@@ -691,14 +698,21 @@ stage_ffmpeg: ffmpeg
 
 bootloader_initramfs: bootloader_rootfs
 	@echo "Packaging bootloader initramfs..."
-	cd $(BOOTLOADER_ROOTFS_DIR) && \
+	rm -rf $(BOOTLOADER_STAGE_DIR)
+	mkdir -p $(BOOTLOADER_STAGE_DIR)
+	cp -a $(BOOTLOADER_ROOTFS_DIR)/. $(BOOTLOADER_STAGE_DIR)/
+	$(STRIP) --strip-all $(BOOTLOADER_STAGE_DIR)/init
+	cd $(BOOTLOADER_STAGE_DIR) && \
 	find . -print0 | cpio --null --create --format=newc | gzip -9 > $(INITRAMFS)
 
+# Binaries are stripped only in the packaged copy; $(ROOTFS_DIR) keeps symbols for debugging.
 program_initramfs: rootfs
 	@echo "Packaging runtime initramfs..."
 	rm -rf $(PROGRAM_STAGE_DIR)
 	mkdir -p $(PROGRAM_STAGE_DIR)/program
 	cp -a $(ROOTFS_DIR)/. $(PROGRAM_STAGE_DIR)/program/
+	$(STRIP) --strip-all $(PROGRAM_STAGE_DIR)/program/init $(PROGRAM_STAGE_DIR)/program/sbin/*
+	$(STRIP) --strip-unneeded $(addprefix $(PROGRAM_STAGE_DIR)/program/lib/,$(FFMPEG_RUNTIME_LIBS))
 	cd $(PROGRAM_STAGE_DIR) && \
 	find . -print0 | cpio --null --create --format=newc | gzip -9 > $(PROGRAM_INITRAMFS)
 

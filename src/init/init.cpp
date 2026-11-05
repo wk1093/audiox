@@ -92,11 +92,12 @@ int main() {
     
     fb.bootStatus("Loading configuration...");
     ConfigStore config(&mainContext);
+    const ConfigData bootConfig = config.readConfigFile();
     printf("[INIT] config: sampleRate=%u, playbackChannels=%u, captureChannels=%u, sampleSize=%u\n",
-           config.readConfigFile().sampleRate,
-           config.readConfigFile().playbackChannels,
-           config.readConfigFile().captureChannels,
-           config.readConfigFile().sampleSize);
+           bootConfig.sampleRate,
+           bootConfig.playbackChannels,
+           bootConfig.captureChannels,
+           bootConfig.sampleSize);
 
     fb.bootStatus("Setting up Audio gadget...");
     HANDLE_ERROR(setupAudioGadget(&mainContext));
@@ -106,8 +107,6 @@ int main() {
 
     fb.bootStatus("Binding USB gadget...");
     HANDLE_ERROR(bindUsbGadget(&mainContext));
-
-    sleep(1); // give it a moment to setup the interface
 
     fb.bootStatus("Setting up network interface...");
     HANDLE_ERROR(setupNetworkInterface(&mainContext));
@@ -141,7 +140,6 @@ int main() {
     audiox::mdns::Responder mdns(USB_NET_IFACE, AUDIOX_MDNS_HOSTNAME);
 
     fb.bootStatus("Starting main event loop...");
-    sleep(1);
     mainContext.setReady();
     flushLogs();
     // Heartbeat on elapsed time, not iteration count: slow iterations (e.g. software
@@ -153,7 +151,7 @@ int main() {
         usleep(10000); // 10ms
         const uint64_t nowMs = monotonicMs();
         if (nowMs - lastHeartbeatMs >= 1000) {
-            flushLogs();
+            flushLogsPeriodic(nowMs);
             lastHeartbeatMs = nowMs;
             audioxWatchdogHeartbeat();
         }

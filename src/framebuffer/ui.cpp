@@ -925,6 +925,21 @@ void FramebufferContext::drawMain(TouchState *touchState) {
         }
         soundboardUi.visible = visible;
     }
+
+    // The main loop ticks every ~10ms; idle redraws are capped near 30fps. Touch input is handled
+    // inside the draw path, so frames are never skipped while touching or when touch state changes.
+    static constexpr uint64_t kIdleFrameIntervalMs = 33;
+    static uint64_t lastFrameMs = 0;
+    static TouchState lastFrameTouch{};
+    const TouchState currentTouch = touchState ? *touchState : TouchState{};
+    const bool touchChanged = currentTouch.is_pressed != lastFrameTouch.is_pressed ||
+                              currentTouch.x != lastFrameTouch.x || currentTouch.y != lastFrameTouch.y;
+    if (!touchDown && !touchChanged && lastFrameMs && viewNowMs - lastFrameMs < kIdleFrameIntervalMs) {
+        return;
+    }
+    lastFrameMs = viewNowMs;
+    lastFrameTouch = currentTouch;
+
     if (soundboardUi.visible) {
         if (app && app->config) refreshSoundboardFiles(app->config, viewNowMs);
         drawSoundboard(this, touchState);
@@ -972,7 +987,6 @@ void FramebufferContext::drawMain(TouchState *touchState) {
     uint64_t meterKeys[kMaxUiDevices] = {};
     bool bluetoothConnected[kMaxUiDevices] = {};
     size_t deviceCount = 0;
-    ConfigData liveCfg = {};
     if (app && app->audio) {
         deviceCount = app->audio->copyDeviceInfos(deviceInfos, 32);
         sortDeviceInfos(deviceInfos, deviceCount);
@@ -1000,9 +1014,6 @@ void FramebufferContext::drawMain(TouchState *touchState) {
             bluetoothConnected[deviceCount] = device.connected;
             ++deviceCount;
         }
-    }
-    if (app && app->config) {
-        liveCfg = app->config->readConfigFile();
     }
 
     int contentHeight = headerHeight + 8;

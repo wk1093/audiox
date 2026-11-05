@@ -47,6 +47,7 @@
 #define HTTP_SOUNDBOARD_MODE_SET_PATH HTTP_API_PREFIX "soundboard/mode/set"
 #define HTTP_SOUNDBOARD_RELOAD_PATH HTTP_API_PREFIX "soundboard/reload"
 #define HTTP_FRAMEBUFFER_VIEW_PATH HTTP_API_PREFIX "framebuffer/view"
+#define HTTP_UPDATE_NOTIFICATIONS_PATH HTTP_API_PREFIX "updates/notifications"
 #define HTTP_CONFIG_RELOAD_PATH HTTP_API_PREFIX "config/reload"
 #define HTTP_ROUTING_RELOAD_PATH HTTP_API_PREFIX "routing/reload"
 #define HTTP_ROUTING_THINGS_PATH HTTP_API_PREFIX "routing/things"
@@ -773,6 +774,32 @@ static int handleFramebufferView(HttpServer *server, int cfd, const char *method
 	}
 	const char *out = cfg.framebufferSoundboard ? "{\"view\":\"soundboard\"}\n" : "{\"view\":\"meters\"}\n";
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
+}
+
+static int handleUpdateNotifications(HttpServer *server, int cfd, const char *method,
+                                     const char *body, size_t body_len) {
+	if (!server || !server->app || !server->app->config) return -1;
+	static const char enabledJson[] = "{\"enabled\":true}\n";
+	static const char disabledJson[] = "{\"enabled\":false}\n";
+	auto replyState = [&](const ConfigData &cfg) {
+		const char *out = cfg.updateNotificationsOff ? disabledJson : enabledJson;
+		return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
+	};
+	if (strcmp(method, "GET") == 0) return replyState(server->app->config->readConfigFile());
+	if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) return sendMethodNotAllowed(server, cfd);
+	char enabled[8];
+	if (!body || !body_get_value(body, body_len, "enabled", enabled, sizeof(enabled)) ||
+	    (strcmp(enabled, "0") != 0 && strcmp(enabled, "1") != 0)) {
+		static const char bad[] = "expected enabled=0|1\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+	ConfigData cfg = server->app->config->readConfigFile();
+	cfg.updateNotificationsOff = strcmp(enabled, "0") == 0 ? 1 : 0;
+	if (server->app->config->writeConfigFile(&cfg) != RET_OK) {
+		static const char err[] = "failed to write config\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	return replyState(cfg);
 }
 
 static int handleSoundboardOrder(HttpServer *server, int cfd, const char *method,
@@ -5379,6 +5406,9 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_FRAMEBUFFER_VIEW_PATH) == 0) {
 		return handleFramebufferView(server, cfd, method, body, body_len);
+	}
+	if (strcmp(path, HTTP_UPDATE_NOTIFICATIONS_PATH) == 0) {
+		return handleUpdateNotifications(server, cfd, method, body, body_len);
 	}
 
 	if (strcmp(path, HTTP_CONFIG_RELOAD_PATH) == 0) {

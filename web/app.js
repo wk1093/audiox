@@ -4367,7 +4367,14 @@ document.getElementById('btn-audio-stress-thread').addEventListener('click', () 
 document.getElementById('btn-audio-stress-cpu').addEventListener('click', () => requestAudioStress('cpu'));
 document.getElementById('btn-audio-stress-stop').addEventListener('click', () => requestAudioStress('stop'));
 
-AudioxUpdates.init({ setStatus, ui: AudioxUI });
+AudioxUpdates.init({
+  setStatus,
+  ui: AudioxUI,
+  showUpdates: () => {
+    setActiveTab('system');
+    document.getElementById('update-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  },
+});
 AudioxBackup.init({ setStatus, ui: AudioxUI });
 
 

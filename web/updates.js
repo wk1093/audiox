@@ -5,6 +5,11 @@
   const api = `https://api.github.com/repos/${repository}`;
   const mirror = 'https://wklab.net/audiox/';
   const maxArchiveSize = 256 * 1024 * 1024;
+  const noticeKey = 'audiox.updateNotice';
+  const dismissedKey = 'audiox.updateDismissed';
+  const channelKey = 'audiox.updateChannel';
+  const noticeInterval = 6 * 60 * 60 * 1000;
+  const noticeRetryInterval = 60 * 60 * 1000;
   const releases = typeof module !== 'undefined' && module.exports
     ? require('./releases.js') : root.AudioxReleases;
 
@@ -80,6 +85,70 @@
     return match ? match[1] : '';
   }
 
+  async function checkForUpdate(channel, installedVersion, request = fetch) {
+    const [latest, history] = await Promise.all([
+      latestRelease(channel, request),
+      githubJson('/releases?per_page=100', request),
+    ]);
+    if (!Array.isArray(history)) throw new Error('GitHub returned an invalid release list.');
+    return {
+      available: releases.updateAvailable(installedVersion, latest, history),
+      tag: latest.tag_name,
+      version: releaseVersion(latest) || String(latest.tag_name || '').replace(/^v/, ''),
+      prerelease: Boolean(latest.prerelease),
+    };
+  }
+
+  function readStored(storage, key) {
+    try {
+      return storage ? storage.getItem(key) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeStored(storage, key, value) {
+    try {
+      if (storage) storage.setItem(key, value);
+    } catch (_) {
+      // Private browsing or full storage only disables caching.
+    }
+  }
+
+  // Limits GitHub API use to one check per browser every 6 hours (1 hour after a failure).
+  async function cachedUpdateCheck({ channel, version, request = fetch, storage, now = Date.now() }) {
+    let cached = null;
+    try {
+      cached = JSON.parse(readStored(storage, noticeKey));
+    } catch (_) {
+      cached = null;
+    }
+    if (cached && cached.channel === channel && cached.deviceVersion === version &&
+        Number.isFinite(cached.checkedAt) && cached.checkedAt <= now &&
+        now - cached.checkedAt < (cached.error ? noticeRetryInterval : noticeInterval)) {
+      if (cached.error) throw new Error(cached.error);
+      return cached.result;
+    }
+    const entry = { checkedAt: now, channel, deviceVersion: version };
+    try {
+      entry.result = await checkForUpdate(channel, version, request);
+    } catch (error) {
+      entry.error = error.message || String(error);
+      writeStored(storage, noticeKey, JSON.stringify(entry));
+      throw error;
+    }
+    writeStored(storage, noticeKey, JSON.stringify(entry));
+    return entry.result;
+  }
+
+  function noticeVisible(result, storage) {
+    return Boolean(result && result.available && result.tag && readStored(storage, dismissedKey) !== result.tag);
+  }
+
+  function dismissNotice(result, storage) {
+    if (result && result.tag) writeStored(storage, dismissedKey, result.tag);
+  }
+
   async function mirrorArchive(channel, release, board, asset, request = fetch) {
     const response = await request(`${mirror}updates.json`, {
       credentials: 'omit',
@@ -132,8 +201,15 @@
     return blob;
   }
 
-  function init({ setStatus, ui }) {
+  function init({ setStatus, ui, showUpdates, storage }) {
     const element = (id) => document.getElementById(id);
+    if (storage === undefined) {
+      try {
+        storage = root.localStorage;
+      } catch (_) {
+        storage = null;
+      }
+    }
     const channel = element('update-channel');
     const check = element('btn-update-check');
     const online = element('btn-update-online');
@@ -166,14 +242,60 @@
       link.removeAttribute('href');
       summary.textContent = 'No release checked yet.';
     }
-    async function deviceInfo() {
+    async function systemInfo() {
       const response = await fetch('/api/system/info', { cache: 'no-store' });
       if (!response.ok) throw new Error(`Cannot identify device (${response.status}).`);
       const info = await response.json();
       if (typeof info.version !== 'string' || !info.version) {
         throw new Error('Device did not report its firmware version.');
       }
+      return info;
+    }
+    async function deviceInfo() {
+      const info = await systemInfo();
       return { ...info, board: deviceBoard(info) };
+    }
+
+    const banner = element('update-banner');
+    const bannerText = element('update-banner-text');
+    const bannerView = element('btn-update-banner-view');
+    const bannerDismiss = element('btn-update-banner-dismiss');
+    const notifications = element('update-notifications');
+    const noticeEnabled = Boolean(banner && bannerText && bannerView && bannerDismiss && notifications);
+    let notice = null;
+    let noticeRun = 0;
+
+    function hideNotice() {
+      if (banner) banner.hidden = true;
+    }
+    function renderNotice() {
+      if (!noticeEnabled) return;
+      if (!notifications.checked || !noticeVisible(notice, storage)) return hideNotice();
+      bannerText.textContent = `AudioX ${notice.version} is available${notice.prerelease ? ' (nightly)' : ''}.`;
+      banner.hidden = false;
+    }
+    async function refreshNotice() {
+      if (!noticeEnabled || !notifications.checked) return hideNotice();
+      const run = ++noticeRun;
+      try {
+        const { version } = await systemInfo();
+        const result = await cachedUpdateCheck({ channel: channel.value, version, storage });
+        if (run !== noticeRun) return;
+        notice = result;
+        renderNotice();
+      } catch (error) {
+        if (run === noticeRun) hideNotice();
+        if (root.console) root.console.debug(`Update notification check skipped: ${error.message}`);
+      }
+    }
+    async function loadNoticePreference() {
+      try {
+        const response = await fetch('/api/updates/notifications', { cache: 'no-store' });
+        if (response.ok) notifications.checked = (await response.json()).enabled !== false;
+      } catch (_) {
+        // Older firmware lacks the endpoint; notifications stay enabled.
+      }
+      await refreshNotice();
     }
 
     async function upload(blob, name) {
@@ -209,7 +331,45 @@
       });
     }
 
-    channel.addEventListener('change', invalidate);
+    if (readStored(storage, channelKey) === 'nightly' || readStored(storage, channelKey) === 'stable') {
+      channel.value = readStored(storage, channelKey);
+    }
+    channel.addEventListener('change', () => {
+      writeStored(storage, channelKey, channel.value);
+      invalidate();
+      refreshNotice();
+    });
+    if (noticeEnabled) {
+      notifications.checked = true;
+      notifications.addEventListener('change', async () => {
+        const enabled = notifications.checked;
+        notifications.disabled = true;
+        try {
+          const response = await fetch('/api/updates/notifications', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `enabled=${enabled ? 1 : 0}`,
+          });
+          if (!response.ok) throw new Error(`${response.status} ${(await response.text()).trim()}`);
+          message(enabled ? 'Update notifications enabled.' : 'Update notifications disabled.', 'ok');
+          await refreshNotice();
+        } catch (error) {
+          notifications.checked = !enabled;
+          message(`Could not save update notification setting: ${error.message}`, 'warn');
+        } finally {
+          notifications.disabled = false;
+        }
+      });
+      bannerDismiss.addEventListener('click', () => {
+        dismissNotice(notice, storage);
+        hideNotice();
+      });
+      bannerView.addEventListener('click', () => {
+        if (showUpdates) showUpdates();
+        if (!busy) check.click();
+      });
+      loadNoticePreference();
+    }
     check.addEventListener('click', async () => {
       if (busy) return;
       invalidate();
@@ -294,7 +454,10 @@
     });
   }
 
-  const exported = { deviceBoard, selectAsset, latestRelease, releaseVersion, mirrorArchive, downloadArchive, init };
+  const exported = {
+    deviceBoard, selectAsset, latestRelease, releaseVersion, checkForUpdate, cachedUpdateCheck,
+    noticeVisible, dismissNotice, mirrorArchive, downloadArchive, init,
+  };
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
   else root.AudioxUpdates = exported;
 })(globalThis);

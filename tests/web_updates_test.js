@@ -240,3 +240,136 @@ test('controller rejects changed hardware, resets channel selection and retains 
   await click('btn-update-upload');
   assert.equal(uploads.length, 1);
 });
+
+function memoryStorage() {
+  const values = new Map();
+  return {
+    values,
+    getItem: (key) => (values.has(key) ? values.get(key) : null),
+    setItem: (key, value) => values.set(key, String(value)),
+  };
+}
+
+const dated = { ...release, published_at: '2026-05-03T10:00:00Z' };
+const githubRequest = (calls, history = [dated, { ...release, tag_name: 'v1.9.1', published_at: '2026-04-01T00:00:00Z' }]) =>
+  async (url) => {
+    calls.push(url);
+    if (url.endsWith('/releases/latest')) return response(dated);
+    if (url.endsWith('/releases?per_page=100')) return response(history);
+    return response({}, 404);
+  };
+
+test('update check compares the selected channel with GitHub release history', async () => {
+  const calls = [];
+  assert.deepEqual(await updates.checkForUpdate('stable', '1.9.1', githubRequest(calls)),
+    { available: true, tag: 'v1.9.2', version: '1.9.2', prerelease: false });
+  assert.equal((await updates.checkForUpdate('stable', '1.9.2', githubRequest(calls))).available, false);
+  assert.equal((await updates.checkForUpdate('stable', '0.1.0-local', githubRequest(calls))).available, true);
+  await assert.rejects(updates.checkForUpdate('stable', '1.9.1', githubRequest(calls, {})), /invalid release list/);
+});
+
+test('update checks are cached per channel and device version, with shorter retry after errors', async () => {
+  const storage = memoryStorage();
+  const calls = [];
+  const now = 1_000_000_000;
+  const check = (extra) => updates.cachedUpdateCheck({
+    channel: 'stable', version: '1.9.1', request: githubRequest(calls), storage, now, ...extra,
+  });
+  assert.equal((await check()).available, true);
+  const fetched = calls.length;
+  await check({ now: now + 5 * 3600 * 1000 });
+  assert.equal(calls.length, fetched, 'cached for 6 hours');
+  await check({ now: now + 6 * 3600 * 1000 });
+  assert.equal(calls.length, fetched * 2);
+  await check({ now: now + 6 * 3600 * 1000, version: '1.9.2' });
+  assert.equal(calls.length, fetched * 3, 'device version change invalidates cache');
+
+  const failing = memoryStorage();
+  let attempts = 0;
+  const fail = (at) => updates.cachedUpdateCheck({
+    channel: 'stable', version: '1.9.1', storage: failing, now: at,
+    request: async () => { attempts += 1; return response({}, 403); },
+  });
+  await assert.rejects(fail(now), /rate limit/);
+  await assert.rejects(fail(now + 30 * 60 * 1000), /rate limit/);
+  assert.equal(attempts, 2, 'releases and latest fetched once');
+  await assert.rejects(fail(now + 60 * 60 * 1000), /rate limit/);
+  assert.equal(attempts, 4, 'retried after an hour');
+
+  const broken = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
+  assert.equal((await updates.cachedUpdateCheck({
+    channel: 'stable', version: '1.9.1', request: githubRequest([]), storage: broken, now,
+  })).available, true);
+});
+
+test('dismissing hides only the dismissed release', () => {
+  const storage = memoryStorage();
+  const result = { available: true, tag: 'v1.9.2', version: '1.9.2' };
+  assert.equal(updates.noticeVisible(result, storage), true);
+  updates.dismissNotice(result, storage);
+  assert.equal(updates.noticeVisible(result, storage), false);
+  assert.equal(updates.noticeVisible({ ...result, tag: 'v1.9.3' }, storage), true);
+  assert.equal(updates.noticeVisible({ ...result, available: false }, memoryStorage()), false);
+});
+
+test('controller shows the update banner, persists the opt-out and remembers the channel', async () => {
+  const elements = new Map();
+  const make = (id, extra = {}) => elements.set(id, {
+    id, value: 0, files: [], disabled: false, hidden: true, checked: false, listeners: {}, textContent: '',
+    addEventListener(event, callback) { this.listeners[event] = callback; },
+    removeAttribute(name) { delete this[name]; },
+    click() { return this.listeners.click?.(); },
+    ...extra,
+  });
+  for (const id of ['btn-update-check', 'btn-update-online', 'btn-update-upload', 'update_file',
+    'update-progress', 'update-status', 'update-release', 'update-download', 'update-banner',
+    'update-banner-text', 'btn-update-banner-view', 'btn-update-banner-dismiss', 'update-notifications']) make(id);
+  make('update-channel', { value: 'stable' });
+  global.document = { getElementById: (id) => elements.get(id) };
+  const storage = memoryStorage();
+  storage.setItem('audiox.updateChannel', 'nightly');
+  let enabled = true;
+  const posts = [];
+  global.fetch = async (url, options = {}) => {
+    if (url === '/api/system/info') return response({ board: 'pi4', version: '1.9.1' });
+    if (url === '/api/updates/notifications') {
+      if (options.method === 'POST') {
+        posts.push(options.body);
+        enabled = options.body === 'enabled=1';
+      }
+      return response({ enabled });
+    }
+    return githubRequest([])(url);
+  };
+  let shown = 0;
+  const popup = { ...require('../web/ui.js'), runTask: async (_title, action) => action() };
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 10));
+  updates.init({ setStatus: () => {}, ui: popup, storage, showUpdates: () => { shown += 1; } });
+  assert.equal(elements.get('update-channel').value, 'nightly');
+  await flush();
+  const banner = elements.get('update-banner');
+  assert.equal(banner.hidden, false);
+  assert.match(elements.get('update-banner-text').textContent, /1\.9\.2 is available/);
+
+  elements.get('btn-update-banner-view').click();
+  assert.equal(shown, 1);
+
+  elements.get('btn-update-banner-dismiss').click();
+  assert.equal(banner.hidden, true);
+  assert.equal(storage.getItem('audiox.updateDismissed'), 'v1.9.2');
+
+  storage.values.delete('audiox.updateDismissed');
+  const box = elements.get('update-notifications');
+  box.checked = false;
+  await box.listeners.change();
+  assert.deepEqual(posts, ['enabled=0']);
+  assert.equal(banner.hidden, true);
+  box.checked = true;
+  await box.listeners.change();
+  assert.equal(banner.hidden, false);
+
+  elements.get('update-channel').value = 'stable';
+  elements.get('update-channel').listeners.change();
+  assert.equal(storage.getItem('audiox.updateChannel'), 'stable');
+  await flush();
+});

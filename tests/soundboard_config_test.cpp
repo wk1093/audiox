@@ -969,6 +969,32 @@ int main() {
         assert(config.readConfigFile().midiPassthrough == 1);
         assert(rmdir("config.txt.tmp") == 0);
 
+        auto updateNoticeRequest = [&](const char *method, const char *body, const char *expected) {
+            int sockets[2];
+            assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+            assert(handleUpdateNotifications(&http, sockets[0], method, body, strlen(body)) == 0);
+            char reply[1024] = {};
+            assert(read(sockets[1], reply, sizeof(reply) - 1) > 0);
+            assert(strstr(reply, expected));
+            close(sockets[0]);
+            close(sockets[1]);
+        };
+        assert(!config.readConfigFile().updateNotificationsOff);
+        updateNoticeRequest("GET", "", "{\"enabled\":true}");
+        updateNoticeRequest("POST", "enabled=0", "{\"enabled\":false}");
+        assert(config.readConfigFile().updateNotificationsOff == 1);
+        assert(config.readConfigFile().midiPassthrough == 1);
+        updateNoticeRequest("GET", "", "{\"enabled\":false}");
+        updateNoticeRequest("POST", "enabled=maybe", "400 Bad Request");
+        updateNoticeRequest("DELETE", "", "405 Method Not Allowed");
+        {
+            std::ifstream savedConfig("config.txt");
+            std::string text((std::istreambuf_iterator<char>(savedConfig)), std::istreambuf_iterator<char>());
+            assert(text.find("\nupdate_notifications=0\n") != std::string::npos);
+        }
+        updateNoticeRequest("POST", "enabled=1", "{\"enabled\":true}");
+        assert(!config.readConfigFile().updateNotificationsOff);
+
         int midiInput[2];
         assert(socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, midiInput) == 0);
         midi.fd = midiInput[0];

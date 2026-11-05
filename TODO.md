@@ -206,7 +206,12 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Add compile-time-gated, bounded System-page tests for audio-thread overload and whole-system CPU contention; leave normal builds disabled by default.
   - [ ] Validate X-run reduction, recovery interruptions, and latency tradeoffs on Raspberry Pi hardware under representative workloads.
 - [ ] optimize things
+  - [x] Strip shipped binaries/libraries in initramfs staging and build with board-specific `-mcpu`.
+  - [x] Cache parsed config.txt / midi_map.txt + fx_params.txt behind stat fingerprints.
+  - [x] Framebuffer UI: row-fill rects, cached pre-scaled logo, idle frame cap.
+  - [x] Throttle log fsyncs on the heartbeat; remove fixed boot sleeps.
 - [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)
+- [x] WebUI update-available banner: browser-side GitHub check (6h cache, per-release dismiss, remembered channel), releases ordered by publish date with unknown installs treated as old, device-stored opt-out.
 
 
 ## Future

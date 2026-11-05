@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 #include <dirent.h>
 #include <algorithm>
@@ -1339,7 +1340,22 @@ void midiEffectDisplayName(const MidiMapData &map, const char *id, const char *t
 }
 
 MidiMapData ConfigStore::readMidiMapFile() const {
+    // MidiMapData is ~364KB: every path must return `data` so NRVO avoids a second stack copy.
     MidiMapData data = {};
+    ConfigFileStamp mapBefore{}, fxBefore{};
+    bool stamped = configFileStamp(MIDI_MAP_REAL_FILE_PATH, &mapBefore) &&
+                   configFileStamp(FX_PARAMS_FILE_PATH, &fxBefore);
+    if (stamped) {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        if (midiMapCached && midiMapCacheData &&
+            configFileStampEqual(mapBefore, midiMapCacheStamp) &&
+            configFileStampEqual(fxBefore, fxParamsCacheStamp)) {
+            data = *midiMapCacheData;
+            return data;
+        }
+    }
+    timespec now{};
+    clock_gettime(CLOCK_REALTIME, &now);
     int rc = readMidiMapPath(MIDI_MAP_REAL_FILE_PATH, &data);
     if (rc == RET_WARN) {
         // File doesn't exist yet; migrate from config.txt.
@@ -1360,6 +1376,19 @@ MidiMapData ConfigStore::readMidiMapFile() const {
     }
     // If fx_params.txt doesn't exist (RET_WARN), keep whatever was in midi_map.txt.
 
+    ConfigFileStamp mapAfter{}, fxAfter{};
+    if (rc == RET_OK && stamped &&
+        configFileStamp(MIDI_MAP_REAL_FILE_PATH, &mapAfter) &&
+        configFileStamp(FX_PARAMS_FILE_PATH, &fxAfter) &&
+        configFileStampEqual(mapBefore, mapAfter) && configFileStampEqual(fxBefore, fxAfter) &&
+        configFileStampSettled(mapBefore, now) && configFileStampSettled(fxBefore, now)) {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        if (!midiMapCacheData) midiMapCacheData.reset(new MidiMapData);
+        *midiMapCacheData = data;
+        midiMapCacheStamp = mapBefore;
+        fxParamsCacheStamp = fxBefore;
+        midiMapCached = true;
+    }
     return data;
 }
 
@@ -1478,6 +1507,7 @@ int ConfigStore::writeMidiMapFile(MidiMapData *data) {
         paramCount = MIDI_EFFECT_PARAMS_MAX;
     }
     int fxRc = writeFxParamsPath(FX_PARAMS_FILE_PATH, data->effectParams, paramCount);
+    invalidateConfigCache();
     if (rc != RET_OK || fxRc != RET_OK) {
         return RET_ERR;
     }

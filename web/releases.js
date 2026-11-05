@@ -39,13 +39,52 @@
     return release.version || (notes && notes[1]) || release.tag_name || release.tag;
   }
 
+  function releaseDate(release) {
+    // GitHub's created_at is the tagged commit's date, so it is only a last resort.
+    const time = Date.parse(release?.published_at || release?.date || release?.created_at || '');
+    return Number.isFinite(time) ? time : null;
+  }
+
+  // Releases are ordered by publication time, so a 1.14.2 published after 1.15.0-beta is newer.
+  // SemVer only breaks ties when a date is missing or identical (catalogs record whole days).
+  function compareReleases(left, right) {
+    const a = releaseDate(left);
+    const b = releaseDate(right);
+    if (a !== null && b !== null && a !== b) return a > b ? 1 : -1;
+    return compareVersions(versionOf(left), versionOf(right));
+  }
+
   function newestRelease(stable, nightly) {
     if (!stable) return nightly;
     if (!nightly) return stable;
-    return compareVersions(versionOf(nightly), versionOf(stable)) > 0 ? nightly : stable;
+    return compareReleases(nightly, stable) > 0 ? nightly : stable;
   }
 
-  const exported = { compareVersions, newestRelease };
+  function releaseMatchesVersion(release, version) {
+    const installed = String(version || '').replace(/^v/, '');
+    if (!release || !installed) return false;
+    const notes = /Version:\s*`([^`]+)`/.exec(release.body || '');
+    for (const candidate of [release.version, notes && notes[1], release.tag_name, release.tag]) {
+      if (candidate && String(candidate).replace(/^v/, '') === installed) return true;
+    }
+    const commit = release.target_commitish || '';
+    return Boolean(release.prerelease) && /^[a-f0-9]{40}$/i.test(commit) &&
+      installed.endsWith(`+${commit.slice(0, 12)}`);
+  }
+
+  // `history` is GitHub's release list. An installed version that is not in the history
+  // (deleted release, local build) is treated as older than every release.
+  function updateAvailable(installedVersion, latest, history) {
+    if (!latest || releaseMatchesVersion(latest, installedVersion)) return false;
+    const installed = (Array.isArray(history) ? history : [])
+      .filter((release) => release && !release.draft && release.tag_name !== 'nightly' &&
+        releaseMatchesVersion(release, installedVersion))
+      .reduce((best, release) => (!best || compareReleases(release, best) > 0 ? release : best), null);
+    if (!installed) return true;
+    return compareReleases(latest, installed) > 0;
+  }
+
+  const exported = { compareVersions, compareReleases, newestRelease, releaseMatchesVersion, updateAvailable };
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
   else root.AudioxReleases = exported;
 })(globalThis);

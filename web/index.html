@@ -37,6 +37,14 @@
         <pre id="boot-failure-report" class="logs-view" hidden></pre>
       </section>
 
+      <section id="update-banner" class="update-banner" role="status" hidden>
+        <strong id="update-banner-text">A firmware update is available.</strong>
+        <div class="update-banner-actions">
+          <button id="btn-update-banner-view" class="flat">View update</button>
+          <button id="btn-update-banner-dismiss" class="flat">Dismiss</button>
+        </div>
+      </section>
+
       <nav class="tabs" id="tabs" aria-label="Main navigation">
         <button class="tab-btn active" data-tab="routing">Routing</button>
         <button class="tab-btn" data-tab="bluetooth">Bluetooth</button>
@@ -558,7 +566,7 @@ end)
           <pre id="logs-view" class="logs-view" tabindex="0" aria-label="Device logs"></pre>
         </section>
 
-        <section class="card stack">
+        <section id="update-card" class="card stack">
           <h2>Firmware Update</h2>
           <p class="small">Download releases through this browser; the device does not need internet access. Installation requires confirmation and reboots the device.</p>
           <div class="cfg-row">
@@ -568,6 +576,7 @@ end)
               <option value="nightly">Nightly (may be unstable)</option>
             </select>
           </div>
+          <label><input id="update-notifications" type="checkbox" checked> Notify me when an update is available (checks GitHub from this browser every 6 hours)</label>
           <button id="btn-update-check" class="flat">Check GitHub Releases</button>
           <div id="update-release" class="small" aria-live="polite">Select a release channel, then check for updates.</div>
           <a id="update-download" class="small" target="_blank" rel="noopener noreferrer" hidden>Download matching AXU manually</a>

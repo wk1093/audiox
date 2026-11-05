@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include "defs.hpp"
 
 // Warn if return values are ignored
@@ -9,6 +10,8 @@ int loadBaseModules() WARN_UNUSED;
 int loadAllModules() WARN_UNUSED;
 int setupLogging(void *context) WARN_UNUSED;
 void flushLogs();
+// Flushes stdio each call but only fsyncs the log files periodically.
+void flushLogsPeriodic(uint64_t nowMs);
 int mountRootfs(void *context) WARN_UNUSED;
 int prepareBootUpdateRecovery() WARN_UNUSED;
 void initBootRecovery();

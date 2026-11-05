@@ -2,6 +2,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
+#include <memory>
+#include <mutex>
+#include <sys/types.h>
 #include "defs.hpp"
 #include "config/schema.hpp"
 #include "../context.hpp"
@@ -105,6 +109,8 @@ struct ConfigData {
     uint8_t framebufferSoundboard;
     uint8_t midiPassthrough;
     uint8_t keyboardMacros;
+    // Zero (the default for configs without the key) keeps WebUI update notifications enabled.
+    uint8_t updateNotificationsOff;
     uint32_t schemaVersion;
 };
 
@@ -228,6 +234,22 @@ bool midiEffectNameValid(const char *name);
 void midiEffectDisplayName(const MidiMapData &map, const char *id, const char *type,
                            char *out, size_t capacity);
 
+// stat() fingerprint used to detect config file changes, including writes made outside ConfigStore.
+struct ConfigFileStamp {
+    bool exists;
+    dev_t dev;
+    ino_t ino;
+    off_t size;
+    timespec mtime;
+    timespec ctime;
+};
+// Returns false if the file could not be stat()ed for a reason other than not existing.
+bool configFileStamp(const char *path, ConfigFileStamp *out);
+bool configFileStampEqual(const ConfigFileStamp &a, const ConfigFileStamp &b);
+// File timestamps are coarse, so a file changed shortly before it was cached could change again
+// without a visible stamp difference. Such entries are re-read until they age out.
+bool configFileStampSettled(const ConfigFileStamp &stamp, const timespec &cachedAt);
+
 struct ConfigStore {
     // For interacting with the config files
     Audiox *app;
@@ -253,4 +275,16 @@ struct ConfigStore {
 
     RouterConfig router() const;
 
+private:
+    // Parsed copies of config.txt and midi_map.txt + fx_params.txt. Callers poll these from the
+    // UI, MIDI, audio and HTTP paths, so re-parsing from the SD card on each call is avoided.
+    void invalidateConfigCache();
+    mutable std::mutex cacheMutex;
+    mutable bool configCached = false;
+    mutable ConfigFileStamp configCacheStamp{};
+    mutable ConfigData configCacheData{};
+    mutable bool midiMapCached = false;
+    mutable ConfigFileStamp midiMapCacheStamp{};
+    mutable ConfigFileStamp fxParamsCacheStamp{};
+    mutable std::unique_ptr<MidiMapData> midiMapCacheData;
 };

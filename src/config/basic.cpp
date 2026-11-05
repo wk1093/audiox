@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <cmath>
 #include <sys/stat.h>
+#include <time.h>
 
 namespace {
 
@@ -55,6 +56,7 @@ static inline void normalizeConfig(ConfigData *cfg) {
     }
     if (cfg->midiPassthrough > 2) cfg->midiPassthrough = 0;
     cfg->keyboardMacros = cfg->keyboardMacros ? 1 : 0;
+    cfg->updateNotificationsOff = cfg->updateNotificationsOff ? 1 : 0;
 }
 
 static inline char *trimLeft(char *s) {
@@ -139,6 +141,8 @@ static int readConfigPath(const char *path, ConfigData *out, int warnIfMissing) 
             cfg.midiPassthrough = strcmp(value, "unmapped") == 0 ? 1 : strcmp(value, "all") == 0 ? 2 : 0;
         } else if (strcmp(key, "keyboard_macros") == 0) {
             cfg.keyboardMacros = strcmp(value, "1") == 0;
+        } else if (strcmp(key, "update_notifications") == 0) {
+            cfg.updateNotificationsOff = strcmp(value, "0") == 0;
         } else if (strcmp(key, "config_version") == 0) {
             if (sawVersion || !*value || *value == '-') {
                 invalidVersion = true;
@@ -279,13 +283,67 @@ int ConfigStore::writeScriptConfig(const char *name, const char *text, size_t le
             printf("[CONFIG] [WARN] Lua staging cleanup failed: %s\n", strerror(errno));
         return RET_ERR;
     }
+    invalidateConfigCache();
     printf("[CONFIG] [LUA] Saved %s; reload/restart may be required\n", name);
     return RET_OK;
 }
 
+bool configFileStamp(const char *path, ConfigFileStamp *out) {
+    *out = {};
+    struct stat st{};
+    if (stat(path, &st) < 0)
+        return errno == ENOENT;
+    out->exists = true;
+    out->dev = st.st_dev;
+    out->ino = st.st_ino;
+    out->size = st.st_size;
+    out->mtime = st.st_mtim;
+    out->ctime = st.st_ctim;
+    return true;
+}
+
+bool configFileStampEqual(const ConfigFileStamp &a, const ConfigFileStamp &b) {
+    if (a.exists != b.exists) return false;
+    if (!a.exists) return true;
+    return a.dev == b.dev && a.ino == b.ino && a.size == b.size &&
+           a.mtime.tv_sec == b.mtime.tv_sec && a.mtime.tv_nsec == b.mtime.tv_nsec &&
+           a.ctime.tv_sec == b.ctime.tv_sec && a.ctime.tv_nsec == b.ctime.tv_nsec;
+}
+
+bool configFileStampSettled(const ConfigFileStamp &stamp, const timespec &cachedAt) {
+    // FAT stores mtime with 2 second resolution.
+    static constexpr time_t kGranularitySec = 3;
+    if (!stamp.exists) return true;
+    return cachedAt.tv_sec - stamp.mtime.tv_sec >= kGranularitySec &&
+           cachedAt.tv_sec - stamp.ctime.tv_sec >= kGranularitySec;
+}
+
+void ConfigStore::invalidateConfigCache() {
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    configCached = false;
+    midiMapCached = false;
+}
+
 ConfigData ConfigStore::readConfigFile() const {
+    ConfigFileStamp before{};
+    bool stamped = configFileStamp(CONFIG_REAL_FILE_PATH, &before);
+    if (stamped) {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        if (configCached && configFileStampEqual(before, configCacheStamp))
+            return configCacheData;
+    }
+    timespec now{};
+    clock_gettime(CLOCK_REALTIME, &now);
     ConfigData cfg = {};
     (void)readConfigPath(CONFIG_REAL_FILE_PATH, &cfg, 0);
+    ConfigFileStamp after{};
+    if (stamped && configFileStamp(CONFIG_REAL_FILE_PATH, &after) &&
+        configFileStampEqual(before, after) && configFileStampSettled(before, now)) {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        configCacheStamp = before;
+        configCacheData = cfg;
+        configCached = true;
+    }
     return cfg;
 }
 
@@ -365,6 +423,7 @@ int ConfigStore::writeConfigFile(ConfigData *cfg) {
     normalizeConfig(cfg);
     cfg->schemaVersion = CONFIG_SCHEMA_VERSION;
 
+    invalidateConfigCache();
     const char *temporary = CONFIG_REAL_FILE_PATH ".tmp";
     int fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
@@ -373,11 +432,11 @@ int ConfigStore::writeConfigFile(ConfigData *cfg) {
     }
     int n = dprintf(fd, "config_version=%u\nusb_sample_rate=%u\nusb_playback_channels=%u\nusb_capture_channels=%u\n"
                    "usb_sample_size=%u\nsoundboard_mode=%s\nframebuffer_view=%s\n"
-                   "midi_passthrough=%s\nkeyboard_macros=%u\n",
+                   "midi_passthrough=%s\nkeyboard_macros=%u\nupdate_notifications=%u\n",
                    cfg->schemaVersion, cfg->sampleRate, cfg->playbackChannels, cfg->captureChannels, cfg->sampleSize,
                    soundboardModeToString(cfg->soundboardMode), cfg->framebufferSoundboard ? "soundboard" : "meters",
                    cfg->midiPassthrough == 1 ? "unmapped" : cfg->midiPassthrough == 2 ? "all" : "off",
-                   cfg->keyboardMacros);
+                   cfg->keyboardMacros, cfg->updateNotificationsOff ? 0u : 1u);
     bool ok = n >= 0 && fsync(fd) == 0;
     int error = errno;
     if (close(fd) < 0 && ok) { ok = false; error = errno; }
@@ -389,6 +448,7 @@ int ConfigStore::writeConfigFile(ConfigData *cfg) {
         }
         return RET_ERR;
     }
+    invalidateConfigCache();
     return 0;
 }
 

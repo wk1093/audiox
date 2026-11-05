@@ -98,9 +98,9 @@ RUNTIME_LIBS += $(LUA_STATIC_LIB) -lm
 #   PRERELEASE=       -> 1.10.1-nightly+<commit>
 # AUDIOX_VERSION_BUILD defaults to the 12-character git commit for nightly builds.
 AUDIOX_VERSION_MAJOR ?= 1
-AUDIOX_VERSION_MINOR ?= 14
-AUDIOX_VERSION_PATCH ?= 2
-AUDIOX_VERSION_PRERELEASE ?= 
+AUDIOX_VERSION_MINOR ?= 15
+AUDIOX_VERSION_PATCH ?= 0
+AUDIOX_VERSION_PRERELEASE ?= beta.1
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
 $(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
@@ -141,7 +141,8 @@ AUDIOX_DEVICE_IP ?= $(call config_str,DEVICE_IP)
 KERNEL_CMDLINE ?= $(call config_str,KERNEL_CMDLINE)
 VC4_OVERLAY ?= $(call config_str,VC4_OVERLAY)
 DSI_TOUCH_OVERLAY ?= $(call config_str,DSI_TOUCH_OVERLAY)
-BOOT_OVERLAYS = $(VC4_OVERLAY) $(DSI_TOUCH_OVERLAY) dwc2 $(if $(filter y,$(CONFIG_BT_MINIUART)),miniuart-bt)
+BOARD_OVERLAYS ?= $(call config_str,BOARD_OVERLAYS)
+BOOT_OVERLAYS = $(VC4_OVERLAY) $(DSI_TOUCH_OVERLAY) dwc2 $(if $(filter y,$(CONFIG_BT_MINIUART)),miniuart-bt) $(BOARD_OVERLAYS)
 
 # Auto-detected from firmware after fetch_deps runs, using the uname file that
 # matches the kernel image (kernel_2712.img -> uname_string_2712).

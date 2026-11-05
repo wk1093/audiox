@@ -38,6 +38,18 @@ config BOARD_DTBS
 	  Space-separated device tree files copied to the boot partition. The
 	  firmware picks the one matching the board revision.
 
+config BOARD_OVERLAYS
+	string "Board revision overlays"
+	default "bcm2712d0" if BOARD_PI5
+	default ""
+	help
+	  Space-separated overlays (without .dtbo) copied to the boot
+	  partition's overlays directory but not listed in config.txt. The
+	  firmware applies them on its own for specific board revisions: Pi 5
+	  boards with the D0 stepping (every 2GB model and newer 4/8/16GB
+	  boards) boot bcm2712-rpi-5-b.dtb patched by bcm2712d0.dtbo, and the
+	  kernel panics during boot without it.
+
 config BOARD_FIRMWARE_FILES
 	string "GPU firmware files"
 	default "" if BOARD_PI5

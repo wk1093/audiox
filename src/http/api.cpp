@@ -69,6 +69,7 @@
 #define HTTP_SYSTEM_AUDIO_STRESS_PATH HTTP_API_PREFIX "system/audio-stress"
 #define HTTP_VERSION_PATH HTTP_API_PREFIX "version"
 #define HTTP_SYSTEM_INFO_PATH HTTP_API_PREFIX "system/info"
+#define HTTP_SYSTEM_FAN_PATH HTTP_API_PREFIX "system/fan"
 #define HTTP_MIDI_LAST_NOTE_PATH HTTP_API_PREFIX "midi/last_note"
 #define HTTP_MIDI_MAPPINGS_PATH HTTP_API_PREFIX "midi/mappings"
 #define HTTP_MIDI_MAPPING_SET_PATH HTTP_API_PREFIX "midi/mapping/set"
@@ -220,6 +221,279 @@ static int handleBootConfig(HttpServer *server,
 
 	static const char ok[] = "{\"ok\":true}\n";
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
+}
+
+static int sendPi5FanSettings(HttpServer *server, int cfd, bool enabled,
+							  const int temperatures[4], const int speeds[4], int hysteresis) {
+	char out[256];
+	int n = snprintf(out, sizeof(out),
+					 "{\"enabled\":%s,\"temperatures\":[%d,%d,%d,%d],"
+					 "\"speeds\":[%d,%d,%d,%d],\"hysteresis\":%d}\n",
+					 enabled ? "true" : "false",
+					 temperatures[0], temperatures[1], temperatures[2], temperatures[3],
+					 speeds[0], speeds[1], speeds[2], speeds[3], hysteresis);
+	if (n < 0 || n >= (int)sizeof(out)) return -1;
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+}
+
+static bool readPi5FanSettings(const char *config, size_t length, int temperatures[4],
+							   int speeds[4], int *hysteresis, bool *enabled) {
+	static const char begin[] = "# AudioX Pi 5 fan curve: begin";
+	static const char end[] = "# AudioX Pi 5 fan curve: end";
+	const char *block = strstr(config, begin);
+	if (!block) {
+		static const int defaultTemperatures[4] = {50, 60, 68, 75};
+		static const int defaultSpeeds[4] = {75, 125, 175, 250};
+		memcpy(temperatures, defaultTemperatures, sizeof(defaultTemperatures));
+		memcpy(speeds, defaultSpeeds, sizeof(defaultSpeeds));
+		*hysteresis = 5;
+		*enabled = false;
+		return true;
+	}
+	const char *blockEnd = strstr(block, end);
+	if (!blockEnd || (size_t)(blockEnd - config) >= length || strstr(blockEnd + sizeof(end) - 1, begin))
+		return false;
+	*enabled = true;
+	bool haveTemperature[4] = {};
+	bool haveSpeed[4] = {};
+	bool haveHysteresis[4] = {};
+	int hysteresisByStep[4] = {};
+	const char *line = strchr(block, '\n');
+	if (!line || line >= blockEnd) return false;
+	++line;
+	while (line < blockEnd) {
+		const char *lineEnd = strchr(line, '\n');
+		if (!lineEnd || lineEnd > blockEnd) lineEnd = blockEnd;
+		char entry[96];
+		size_t entryLength = (size_t)(lineEnd - line);
+		if (entryLength >= sizeof(entry)) return false;
+		memcpy(entry, line, entryLength);
+		entry[entryLength] = '\0';
+		if (strcmp(entry, "[all]") == 0) {
+			line = lineEnd + (lineEnd < blockEnd ? 1 : 0);
+			continue;
+		}
+		int index = -1;
+		long value = 0;
+		int consumed = 0;
+		if (sscanf(entry, "dtparam=fan_temp%d=%ld%n", &index, &value, &consumed) == 2 &&
+			entry[consumed] == '\0' && index >= 0 && index < 4 && value >= 35000 && value <= 80000) {
+			temperatures[index] = (int)(value / 1000);
+			haveTemperature[index] = true;
+		} else if (sscanf(entry, "dtparam=fan_temp%d_hyst=%ld%n", &index, &value, &consumed) == 2 &&
+				   entry[consumed] == '\0' && index >= 0 && index < 4 && value >= 1000 && value <= 15000) {
+			hysteresisByStep[index] = (int)(value / 1000);
+			haveHysteresis[index] = true;
+		} else if (sscanf(entry, "dtparam=fan_temp%d_speed=%ld%n", &index, &value, &consumed) == 2 &&
+				   entry[consumed] == '\0' && index >= 0 && index < 4 && value >= 1 && value <= 255) {
+			speeds[index] = (int)value;
+			haveSpeed[index] = true;
+		} else {
+			return false;
+		}
+		line = lineEnd + (lineEnd < blockEnd ? 1 : 0);
+	}
+	for (int i = 0; i < 4; ++i) {
+		if (!haveTemperature[i] || !haveSpeed[i] || !haveHysteresis[i] ||
+			(i > 0 && (temperatures[i] <= temperatures[i - 1] || speeds[i] <= speeds[i - 1])) ||
+			(i > 0 && temperatures[i] - temperatures[i - 1] <= hysteresisByStep[0]) ||
+			(i > 0 && hysteresisByStep[i] != hysteresisByStep[0]))
+			return false;
+	}
+	*hysteresis = hysteresisByStep[0];
+	return true;
+}
+
+static bool fanInteger(const char *body, size_t bodyLength, const char *key, long minimum,
+					   long maximum, long *value) {
+	char text[16];
+	if (!body_get_value(body, bodyLength, key, text, sizeof(text)) || !text[0]) return false;
+	char *end = nullptr;
+	errno = 0;
+	long parsed = strtol(text, &end, 10);
+	if (errno || !end || *end || parsed < minimum || parsed > maximum) return false;
+	*value = parsed;
+	return true;
+}
+
+static int handlePi5FanConfig(HttpServer *server, int cfd, const char *method,
+							  const char *body, size_t bodyLength) {
+	if (!server || !method) return -1;
+	if (strcmp(audioxDetectBoard(), "pi5") != 0) {
+		static const char unsupported[] = "Pi 5 fan controls are only available on Raspberry Pi 5.\n";
+		return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8",
+									unsupported, sizeof(unsupported) - 1);
+	}
+	if (strcmp(method, "GET") != 0 && strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0)
+		return sendMethodNotAllowed(server, cfd);
+	if (mountBootConfig() != RET_OK) {
+		static const char unavailable[] = "boot partition unavailable\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "text/plain; charset=utf-8",
+									unavailable, sizeof(unavailable) - 1);
+	}
+	char config[HTTP_BODY_MAX];
+	int fd = open(HTTP_BOOT_CONFIG_FILE, O_RDONLY);
+	if (fd < 0) {
+		static const char unavailable[] = "boot config unavailable\n";
+		return server->sendResponse(cfd, "404 Not Found", "text/plain; charset=utf-8",
+									unavailable, sizeof(unavailable) - 1);
+	}
+	size_t configLength = 0;
+	while (configLength < sizeof(config)) {
+		ssize_t count = read(fd, config + configLength, sizeof(config) - configLength);
+		if (count < 0 && errno == EINTR) continue;
+		if (count < 0) {
+			close(fd);
+			static const char error[] = "failed to read boot config\n";
+			return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8",
+										error, sizeof(error) - 1);
+		}
+		if (count == 0) break;
+		configLength += (size_t)count;
+	}
+	close(fd);
+	if (configLength == sizeof(config)) {
+		static const char tooLarge[] = "boot config is too large to update safely\n";
+		return server->sendResponse(cfd, "413 Payload Too Large", "text/plain; charset=utf-8",
+									tooLarge, sizeof(tooLarge) - 1);
+	}
+	config[configLength] = '\0';
+
+	int temperatures[4] = {}, speeds[4] = {}, hysteresis = 0;
+	bool enabled = false;
+	if (!readPi5FanSettings(config, configLength, temperatures, speeds, &hysteresis, &enabled)) {
+		static const char invalid[] = "managed Pi 5 fan settings are incomplete or invalid\n";
+		return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8",
+									invalid, sizeof(invalid) - 1);
+	}
+	if (strcmp(method, "GET") == 0)
+		return sendPi5FanSettings(server, cfd, enabled, temperatures, speeds, hysteresis);
+
+	long enabledValue = 0;
+	if (!fanInteger(body, bodyLength, "enabled", 0, 1, &enabledValue)) {
+		static const char invalid[] = "expected enabled=0|1 and a valid four-step fan curve\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8",
+									invalid, sizeof(invalid) - 1);
+	}
+	enabled = enabledValue != 0;
+	long hysteresisValue = 0;
+	if (!fanInteger(body, bodyLength, "hysteresis", 1, 15, &hysteresisValue)) {
+		static const char invalid[] = "fan hysteresis must be between 1 and 15 degrees C\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8",
+									invalid, sizeof(invalid) - 1);
+	}
+	hysteresis = (int)hysteresisValue;
+	for (int i = 0; i < 4; ++i) {
+		char key[24];
+		long value = 0;
+		snprintf(key, sizeof(key), "temperature%d", i);
+		if (!fanInteger(body, bodyLength, key, 40, 80, &value)) {
+			static const char invalid[] = "fan temperatures must be between 40 and 80 degrees C\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8",
+										invalid, sizeof(invalid) - 1);
+		}
+		temperatures[i] = (int)value;
+		snprintf(key, sizeof(key), "speed%d", i);
+		if (!fanInteger(body, bodyLength, key, 1, 255, &value)) {
+			static const char invalid[] = "fan speeds must be between 1 and 255\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8",
+										invalid, sizeof(invalid) - 1);
+		}
+		speeds[i] = (int)value;
+		if (i > 0 && (temperatures[i] <= temperatures[i - 1] || speeds[i] <= speeds[i - 1] ||
+					  temperatures[i] - temperatures[i - 1] <= hysteresis)) {
+			static const char invalid[] = "fan temperatures and speeds must increase at every step; temperature gaps must exceed hysteresis\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8",
+										invalid, sizeof(invalid) - 1);
+		}
+	}
+	static const char begin[] = "# AudioX Pi 5 fan curve: begin";
+	static const char end[] = "# AudioX Pi 5 fan curve: end";
+	char updated[HTTP_BODY_MAX];
+	size_t configWritten = 0;
+	int syncResult = 0;
+	size_t prefixLength = configLength;
+	size_t suffixOffset = configLength;
+	const char *oldBegin = strstr(config, begin);
+	if (oldBegin) {
+		const char *oldEnd = strstr(oldBegin, end);
+		if (!oldEnd) {
+			static const char invalid[] = "managed Pi 5 fan settings are incomplete\n";
+			return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8",
+										invalid, sizeof(invalid) - 1);
+		}
+		const char *after = strchr(oldEnd, '\n');
+		if (after) ++after;
+		else after = config + configLength;
+		prefixLength = (size_t)(oldBegin - config);
+		suffixOffset = (size_t)(after - config);
+	}
+	size_t written = prefixLength;
+	memcpy(updated, config, prefixLength);
+	if (suffixOffset < configLength) {
+		size_t suffixLength = configLength - suffixOffset;
+		if (suffixLength >= sizeof(updated) - written) goto fan_config_too_large;
+		memcpy(updated + written, config + suffixOffset, suffixLength);
+		written += suffixLength;
+	}
+	if (enabled) {
+		if (written && updated[written - 1] != '\n') updated[written++] = '\n';
+		int count = snprintf(updated + written, sizeof(updated) - written,
+							 "%s\n[all]\n", begin);
+		if (count < 0 || (size_t)count >= sizeof(updated) - written) goto fan_config_too_large;
+		written += (size_t)count;
+		for (int i = 0; i < 4; ++i) {
+			count = snprintf(updated + written, sizeof(updated) - written,
+							 "dtparam=fan_temp%d=%d000\n"
+							 "dtparam=fan_temp%d_hyst=%d000\n"
+							 "dtparam=fan_temp%d_speed=%d\n",
+							 i, temperatures[i], i, hysteresis, i, speeds[i]);
+			if (count < 0 || (size_t)count >= sizeof(updated) - written) goto fan_config_too_large;
+			written += (size_t)count;
+		}
+		count = snprintf(updated + written, sizeof(updated) - written, "%s\n", end);
+		if (count < 0 || (size_t)count >= sizeof(updated) - written) goto fan_config_too_large;
+		written += (size_t)count;
+	}
+	if (written == 0 || written >= sizeof(updated)) goto fan_config_too_large;
+	updated[written] = '\0';
+	if (prepareBootUpdateRecovery() != RET_OK) {
+		static const char error[] = "failed to back up boot files\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8",
+									error, sizeof(error) - 1);
+	}
+	fd = open(HTTP_BOOT_CONFIG_FILE, O_WRONLY | O_TRUNC | O_CREAT, 0644);
+	if (fd < 0) {
+		static const char error[] = "failed to open boot config\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8",
+									error, sizeof(error) - 1);
+	}
+	while (configWritten < written) {
+		ssize_t count = write(fd, updated + configWritten, written - configWritten);
+		if (count < 0 && errno == EINTR) continue;
+		if (count <= 0) {
+			close(fd);
+			static const char error[] = "failed to write boot config\n";
+			return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8",
+										error, sizeof(error) - 1);
+		}
+		configWritten += (size_t)count;
+	}
+	syncResult = fsync(fd);
+	close(fd);
+	if (syncResult < 0) {
+		static const char error[] = "failed to sync boot config\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8",
+									error, sizeof(error) - 1);
+	}
+	return sendPi5FanSettings(server, cfd, enabled, temperatures, speeds, hysteresis);
+
+fan_config_too_large:
+	{
+		static const char tooLarge[] = "updated boot config is too large\n";
+		return server->sendResponse(cfd, "413 Payload Too Large", "text/plain; charset=utf-8",
+									tooLarge, sizeof(tooLarge) - 1);
+	}
 }
 
 static int handleBootCmdline(HttpServer *server, int cfd, const char *method, const char *body, size_t body_len) {
@@ -4296,6 +4570,17 @@ static int handleSystemInfo(HttpServer *server,
 		}
 		fclose(cpu_freq_file);
 	}
+	char temperature_json[24] = "null";
+	FILE *temperature_file = fopen("/sys/class/thermal/thermal_zone0/temp", "r");
+	if (temperature_file) {
+		long temperature_millidegrees = -1;
+		if (fscanf(temperature_file, "%ld", &temperature_millidegrees) == 1 &&
+			temperature_millidegrees >= 0 && temperature_millidegrees <= 150000) {
+			snprintf(temperature_json, sizeof(temperature_json), "%.1f",
+					 temperature_millidegrees / 1000.0);
+		}
+		fclose(temperature_file);
+	}
 	struct sysinfo si;
 	if (sysinfo(&si) == 0) {
 		uptime_secs = si.uptime;
@@ -4342,6 +4627,7 @@ static int handleSystemInfo(HttpServer *server,
 					 "\"board\":\"%s\","
 					 "\"model\":\"%s\","
 					 "\"cpu_freq_mhz\":%ld,"
+					 "\"temperature_c\":%s,"
 					 "\"uptime_secs\":%ld,"
 					 "\"mem_total_mb\":%ld,"
 					 "\"mem_avail_mb\":%ld,"
@@ -4360,6 +4646,7 @@ static int handleSystemInfo(HttpServer *server,
 					 "\"audio_stress_test\":{\"available\":%s,\"mode\":\"%s\","
 					 "\"remaining_ms\":%u,\"workers\":%u}}\n",
 					 version_str, kernel_buf, audioxDetectBoard(), model_buf, cpu_freq_mhz,
+					 temperature_json,
 					 uptime_secs, mem_total_mb, mem_avail_mb, load1,
 					 ffmpeg_version, storage_json,
 					 (unsigned long long)audiox::audioHealth.total(),
@@ -5527,6 +5814,10 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_SYSTEM_AUDIO_STRESS_PATH) == 0) {
 		return handleSystemAudioStress(server, cfd, method, body, body_len);
+	}
+
+	if (strcmp(path, HTTP_SYSTEM_FAN_PATH) == 0) {
+		return handlePi5FanConfig(server, cfd, method, body, body_len);
 	}
 
 	if (strcmp(path, HTTP_SYSTEM_INFO_PATH) == 0) {

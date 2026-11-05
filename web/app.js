@@ -74,6 +74,8 @@ const state = {
   volShowEffects: false,
   systemPollTimer: null,
   systemPollInFlight: false,
+  pi5FanSettingsLoaded: false,
+  pi5FanSettingsLoading: false,
 };
 
 const soundboardOrder = AudioxSoundboardOrder.attach(sbGridEl, {
@@ -1797,6 +1799,9 @@ async function loadSystemInfo() {
     const kEl = document.getElementById('sysinfo-kernel');
     const modelEl = document.getElementById('sysinfo-model');
     const cpuClockEl = document.getElementById('sysinfo-cpu-clock');
+    const temperatureEl = document.getElementById('sysinfo-temperature');
+    const temperatureMeter = document.getElementById('sysinfo-temperature-meter');
+    const fanPanel = document.getElementById('system-pi5-fan');
     const uEl = document.getElementById('sysinfo-uptime');
     const mEl = document.getElementById('sysinfo-memory');
     const lEl = document.getElementById('sysinfo-load');
@@ -1818,6 +1823,24 @@ async function loadSystemInfo() {
     if (cpuClockEl) {
       const cpuFreq = Number(data.cpu_freq_mhz || 0);
       cpuClockEl.textContent = cpuFreq > 0 ? `${cpuFreq} MHz` : '\u2014';
+    }
+    if (temperatureEl && temperatureMeter) {
+      const temperature = Number(data.temperature_c);
+      if (data.temperature_c !== null && data.temperature_c !== undefined
+          && Number.isFinite(temperature) && temperature >= 0 && temperature <= 150) {
+        temperatureEl.textContent = `${temperature.toFixed(1)} °C`;
+        temperatureMeter.value = temperature;
+        temperatureMeter.hidden = false;
+      } else {
+        temperatureEl.textContent = 'Unavailable';
+        temperatureMeter.hidden = true;
+      }
+    }
+    if (fanPanel) {
+      fanPanel.hidden = data.board !== 'pi5';
+      if (data.board === 'pi5' && !state.pi5FanSettingsLoaded && !state.pi5FanSettingsLoading) {
+        loadPi5FanSettings();
+      }
     }
 
     const secs = Number(data.uptime_secs || 0);
@@ -1882,6 +1905,47 @@ async function loadSystemInfo() {
   } catch (err) {
     renderStorageUsage(null);
     setStatus(`device info load error: ${err}`, 'warn', 'system-info');
+  }
+}
+
+function setPi5FanInputsDisabled() {
+  const disabled = !document.getElementById('pi5-fan-enabled').checked;
+  for (let i = 0; i < 4; i += 1) {
+    document.getElementById(`pi5-fan-temperature-${i}`).disabled = disabled;
+    document.getElementById(`pi5-fan-speed-${i}`).disabled = disabled;
+  }
+  document.getElementById('pi5-fan-hysteresis').disabled = disabled;
+}
+
+async function loadPi5FanSettings() {
+  state.pi5FanSettingsLoading = true;
+  const status = document.getElementById('pi5-fan-status');
+  try {
+    const response = await fetch('/api/system/fan', { cache: 'no-store' });
+    const text = (await response.text()).trim();
+    if (!response.ok) throw new Error(`${response.status} ${text}`);
+    const settings = JSON.parse(text);
+    if (!Array.isArray(settings.temperatures) || settings.temperatures.length !== 4
+        || !Array.isArray(settings.speeds) || settings.speeds.length !== 4) {
+      throw new Error('device returned invalid fan settings');
+    }
+    document.getElementById('pi5-fan-enabled').checked = settings.enabled === true;
+    for (let i = 0; i < 4; i += 1) {
+      document.getElementById(`pi5-fan-temperature-${i}`).value = settings.temperatures[i];
+      document.getElementById(`pi5-fan-speed-${i}`).value = settings.speeds[i];
+    }
+    document.getElementById('pi5-fan-hysteresis').value = settings.hysteresis;
+    setPi5FanInputsDisabled();
+    AudioxUI.setUnsaved('pi5-fan', false);
+    status.textContent = settings.enabled
+      ? 'Custom fan curve loaded. Save changes, then restart to apply.'
+      : 'No AudioX-managed curve is set. Firmware defaults or other boot-config fan settings remain active.';
+    state.pi5FanSettingsLoaded = true;
+  } catch (error) {
+    status.textContent = `Could not load Pi 5 fan settings: ${error.message}. Reload the page to retry.`;
+    state.pi5FanSettingsLoaded = true;
+  } finally {
+    state.pi5FanSettingsLoading = false;
   }
 }
 
@@ -4320,6 +4384,49 @@ document.getElementById('btn-sampler-config-load').addEventListener('click', loa
 
 document.getElementById('btn-system-sync').addEventListener('click', async () => {
   await runSystemAction('/api/system/sync', 'sync');
+});
+
+const pi5FanEnabled = document.getElementById('pi5-fan-enabled');
+const pi5FanStatus = document.getElementById('pi5-fan-status');
+pi5FanEnabled.addEventListener('change', () => {
+  setPi5FanInputsDisabled();
+  AudioxUI.setUnsaved('pi5-fan', true);
+});
+for (let i = 0; i < 4; i += 1) {
+  document.getElementById(`pi5-fan-temperature-${i}`).addEventListener('input', () => {
+    AudioxUI.setUnsaved('pi5-fan', true);
+  });
+  document.getElementById(`pi5-fan-speed-${i}`).addEventListener('input', () => {
+    AudioxUI.setUnsaved('pi5-fan', true);
+  });
+}
+document.getElementById('pi5-fan-hysteresis').addEventListener('input', () => {
+  AudioxUI.setUnsaved('pi5-fan', true);
+});
+document.getElementById('btn-pi5-fan-save').addEventListener('click', async () => {
+  const settings = { enabled: pi5FanEnabled.checked ? 1 : 0 };
+  for (let i = 0; i < 4; i += 1) {
+    settings[`temperature${i}`] = document.getElementById(`pi5-fan-temperature-${i}`).value;
+    settings[`speed${i}`] = document.getElementById(`pi5-fan-speed-${i}`).value;
+  }
+  settings.hysteresis = document.getElementById('pi5-fan-hysteresis').value;
+  try {
+    const response = await fetch('/api/system/fan', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(settings).toString(),
+    });
+    const text = (await response.text()).trim();
+    if (!response.ok) throw new Error(`${response.status} ${text}`);
+    const saved = JSON.parse(text);
+    state.pi5FanSettingsLoaded = true;
+    AudioxUI.setUnsaved('pi5-fan', false);
+    pi5FanStatus.textContent = saved.enabled
+      ? 'Fan curve saved to boot config. Restart the device to apply it.'
+      : 'AudioX curve removed. Firmware defaults or other boot-config fan settings will apply after restart.';
+  } catch (error) {
+    pi5FanStatus.textContent = `Fan curve save failed: ${error.message}`;
+  }
 });
 
 document.getElementById('btn-system-restart').addEventListener('click', async () => {

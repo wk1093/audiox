@@ -22,6 +22,7 @@ The card shows:
 | Kernel | Running kernel identity |
 | Raspberry Pi | Hardware model; the update API also reports a machine-readable board |
 | CPU Clock | Reported current CPU frequency in MHz, or a dash if unavailable |
+| CPU Temperature | Live CPU temperature in °C, refreshed while System is open; unavailable if the kernel does not expose a thermal sensor |
 | Uptime | Time since kernel boot, displayed in hours/minutes or days |
 | Memory | Used/total MB, calculated using available memory |
 | Storage | Used/total persistent storage in GiB or MiB, with free space and filesystem-reserved space below. The bar includes used and reserved space, so its remaining portion matches space available for uploads. This excludes the boot partition and RAM. |
@@ -30,6 +31,12 @@ The card shows:
 | FFmpeg | Available converter's reported version/status |
 
 System refreshes while the tab is active and visible. A runtime-only watchdog restart does not reset kernel uptime; a full reboot does. Record the version/kernel/model alongside logs when reporting a fault.
+
+### Raspberry Pi 5 fan curve
+
+On a Pi 5, **Raspberry Pi 5 Fan Curve** configures the four automatic speed steps for a fan or Active Cooler connected to the board's fan header. Set increasing temperature thresholds (40–80 °C), increasing PWM speeds (1–255), and a shared hysteresis (1–15 °C); each temperature step must be farther apart than the hysteresis. The suggested curve is 50/60/68/75 °C at PWM 75/125/175/250 with 5 °C hysteresis.
+
+Saving writes a managed `dtparam=fan_tempN` block to boot `config.txt`; firmware applies it on restart. Disabling the custom curve removes only AudioX's managed block and leaves other boot settings intact. A fan must be connected to the Pi 5 fan header; this does not control USB, GPIO, or case-specific fans.
 
 After five X-runs within 30 seconds, AudioX temporarily increases the target
 ALSA period and reopens affected PCM streams. It attempts one step back after

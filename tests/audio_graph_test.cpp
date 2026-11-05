@@ -75,6 +75,32 @@ extern "C" int __wrap_close(int fd) {
 size_t BluetoothContext::copyRoutingDevices(BluetoothRoutingDevice *, size_t) const { return 0; }
 
 int main() {
+    int fanTemperatures[4] = {}, fanSpeeds[4] = {}, fanHysteresis = 0;
+    bool fanEnabled = true;
+    const char defaultFanConfig[] = "# boot config\n";
+    assert(readPi5FanSettings(defaultFanConfig, sizeof(defaultFanConfig) - 1,
+                             fanTemperatures, fanSpeeds, &fanHysteresis, &fanEnabled));
+    assert(!fanEnabled && fanTemperatures[0] == 50 && fanTemperatures[1] == 60 &&
+           fanTemperatures[2] == 68 && fanTemperatures[3] == 75);
+    assert(fanSpeeds[0] == 75 && fanSpeeds[1] == 125 && fanSpeeds[2] == 175 &&
+           fanSpeeds[3] == 250 && fanHysteresis == 5);
+    const char customFanConfig[] =
+        "# AudioX Pi 5 fan curve: begin\n[all]\n"
+        "dtparam=fan_temp0=45000\ndtparam=fan_temp0_hyst=5000\ndtparam=fan_temp0_speed=50\n"
+        "dtparam=fan_temp1=55000\ndtparam=fan_temp1_hyst=5000\ndtparam=fan_temp1_speed=100\n"
+        "dtparam=fan_temp2=65000\ndtparam=fan_temp2_hyst=5000\ndtparam=fan_temp2_speed=150\n"
+        "dtparam=fan_temp3=75000\ndtparam=fan_temp3_hyst=5000\ndtparam=fan_temp3_speed=250\n"
+        "# AudioX Pi 5 fan curve: end\n";
+    assert(readPi5FanSettings(customFanConfig, sizeof(customFanConfig) - 1,
+                             fanTemperatures, fanSpeeds, &fanHysteresis, &fanEnabled));
+    assert(fanEnabled && fanTemperatures[0] == 45 && fanTemperatures[3] == 75 &&
+           fanSpeeds[0] == 50 && fanSpeeds[3] == 250 && fanHysteresis == 5);
+    const char invalidFanConfig[] =
+        "# AudioX Pi 5 fan curve: begin\n[all]\ndtparam=fan_temp0=50000\n"
+        "# AudioX Pi 5 fan curve: end\n";
+    assert(!readPi5FanSettings(invalidFanConfig, sizeof(invalidFanConfig) - 1,
+                              fanTemperatures, fanSpeeds, &fanHysteresis, &fanEnabled));
+
     char original[4096];
     assert(getcwd(original, sizeof(original)));
     char directory[] = "/tmp/audiox-graph-XXXXXX";
@@ -134,12 +160,19 @@ int main() {
         const auto systemInfo = request([&](int fd) {
             return handleSystemInfo(&http, fd, "GET", "");
         });
+        assert(systemInfo.find("\"temperature_c\":") != std::string::npos);
         assert(systemInfo.find("\"audio_health\":{") != std::string::npos);
         assert(systemInfo.find("\"audio_buffer\":{\"base_block_frames\":") != std::string::npos);
         assert(systemInfo.find("\"largest_period_frames\":") != std::string::npos);
         assert(systemInfo.find("\"downshift_delay_ms\":") != std::string::npos);
         assert(systemInfo.find("\"downshift_failures\":") != std::string::npos);
         assert(systemInfo.find("\"runtime_id\":\"") != std::string::npos);
+        if (strcmp(audioxDetectBoard(), "pi5") != 0) {
+            const auto unavailableFan = request([&](int fd) {
+                return handlePi5FanConfig(&http, fd, "GET", nullptr, 0);
+            });
+            assert(unavailableFan.find("409 Conflict") != std::string::npos);
+        }
 #if AUDIOX_ENABLE_STRESS_TEST
         assert(systemInfo.find("\"audio_stress_test\":{\"available\":true") != std::string::npos);
         const char audioStressBody[] = "mode=audio&duration_secs=10&work_ms=1";

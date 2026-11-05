@@ -473,6 +473,11 @@ end)
               <div class="value" id="sysinfo-cpu-clock">—</div>
             </div>
             <div class="metric">
+              <div class="label">CPU Temperature</div>
+              <div class="value" id="sysinfo-temperature">—</div>
+              <meter id="sysinfo-temperature-meter" class="storage-meter" min="0" low="60" high="75" max="85" value="0" aria-label="CPU temperature" hidden></meter>
+            </div>
+            <div class="metric">
               <div class="label">Uptime</div>
               <div class="value" id="sysinfo-uptime">—</div>
             </div>
@@ -500,6 +505,25 @@ end)
               <div class="value" id="sysinfo-ffmpeg">—</div>
             </div>
           </div>
+        </section>
+
+        <section class="card stack" id="system-pi5-fan" hidden>
+          <h2>Raspberry Pi 5 Fan Curve</h2>
+          <p class="small">Configure the Pi 5 fan connector's automatic four-step curve. Speeds are PWM values (1–255); changes are saved to boot config and take effect after restart. A fan or Active Cooler must be connected to the Pi 5 fan header.</p>
+          <label><input id="pi5-fan-enabled" type="checkbox"> Use a custom fan curve</label>
+          <div class="pi5-fan-curve" id="pi5-fan-curve">
+            <div class="pi5-fan-heading"><span>Step</span><span>Temperature (°C)</span><span>Fan speed (1–255)</span></div>
+            <div class="pi5-fan-row"><label for="pi5-fan-temperature-0">1</label><input id="pi5-fan-temperature-0" type="number" min="40" max="80" step="1"><input id="pi5-fan-speed-0" type="number" min="1" max="255" step="1"></div>
+            <div class="pi5-fan-row"><label for="pi5-fan-temperature-1">2</label><input id="pi5-fan-temperature-1" type="number" min="40" max="80" step="1"><input id="pi5-fan-speed-1" type="number" min="1" max="255" step="1"></div>
+            <div class="pi5-fan-row"><label for="pi5-fan-temperature-2">3</label><input id="pi5-fan-temperature-2" type="number" min="40" max="80" step="1"><input id="pi5-fan-speed-2" type="number" min="1" max="255" step="1"></div>
+            <div class="pi5-fan-row"><label for="pi5-fan-temperature-3">4</label><input id="pi5-fan-temperature-3" type="number" min="40" max="80" step="1"><input id="pi5-fan-speed-3" type="number" min="1" max="255" step="1"></div>
+          </div>
+          <div class="cfg-row">
+            <label for="pi5-fan-hysteresis">Hysteresis (°C)</label>
+            <input id="pi5-fan-hysteresis" type="number" min="1" max="15" step="1">
+          </div>
+          <button id="btn-pi5-fan-save" class="primary">Save Fan Curve</button>
+          <div class="small" id="pi5-fan-status" role="status" aria-live="polite">Loading fan settings…</div>
         </section>
 
         <section class="card stack" id="system-audio-stress" hidden>

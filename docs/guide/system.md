@@ -33,11 +33,13 @@ The card shows:
 
 System refreshes while the tab is active and visible. A runtime-only watchdog restart does not reset kernel uptime; a full reboot does. Record the version/kernel/model alongside logs when reporting a fault.
 
-### Raspberry Pi 5 fan curve
+### Fan curve
 
-On a Pi 5, **Raspberry Pi 5 Fan Curve** configures the four automatic speed steps for a fan or Active Cooler connected to the board's fan header. Set increasing temperature thresholds (40–80 °C), increasing PWM speeds (1–255), and a shared hysteresis (1–15 °C); each temperature step must be farther apart than the hysteresis. The suggested curve is 50/60/68/75 °C at PWM 75/125/175/250 with 5 °C hysteresis.
+Open **Fan curve** in the CPU Temperature card to configure the four automatic speed steps. Drag the graph points or focus one and use the arrow keys (Shift + arrow adjusts speed more finely); temperature thresholds must increase and stay farther apart than the hysteresis. A fan must be connected to the Pi 5 fan header; this does not control USB, GPIO, or case-specific fans.
 
-Saving writes a managed `dtparam=fan_tempN` block to boot `config.txt`; firmware applies it on restart. Disabling the custom curve removes only AudioX's managed block and leaves other boot settings intact. A fan must be connected to the Pi 5 fan header; this does not control USB, GPIO, or case-specific fans.
+On a Pi 5, the graph edits thresholds (40–80 °C), PWM speeds (1–255), and shared hysteresis (1–15 °C). Saving writes a managed `dtparam=fan_tempN` block to boot `config.txt`; firmware applies it after restart. Disabling the custom curve removes only AudioX's managed block and leaves other boot settings intact.
+
+On Pi 4, the dialog displays a **preview-only warning** and the graph remains interactive for UI testing, but saving is disabled because Pi 4 does not have the Pi 5 fan connector/firmware fan-curve control.
 
 After five X-runs within 30 seconds, AudioX temporarily increases the target
 ALSA period and reopens affected PCM streams. It attempts one step back after

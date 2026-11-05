@@ -195,6 +195,10 @@ The above last two features are mainly to improve my setup, but could probably b
 ## Testing and Release preparation - v1.15
 - [ ] Test the framebuffer UI on Pi 5 with a connected screen; rendering, touch interaction, and display hotplug remain untested on that board.
 - [ ] Have a friend use the setup daily for a week, and report any issues, feedback, or suggestions for improvement.
+  - [x] Fix Pi 5 2GB specific boot issue (missing overlay)
+  - [x] Add temperature data on webui
+  - [x] Add Pi 5 fan curve editor on webui
+  - [ ] Validate fan curve editor
 
 ## Release - v2.0+
 - [x] IMPORTANT: Create a config versioning system, so that older configs can be upgraded if format is changed. This is important for 2.0+ because it is meant to be a more stable release, and we don't want to break people's configs when they update. This will also allow for more advanced features in the future, like being able to export and import configs between devices.

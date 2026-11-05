@@ -473,7 +473,10 @@ end)
               <div class="value" id="sysinfo-cpu-clock">—</div>
             </div>
             <div class="metric">
-              <div class="label">CPU Temperature</div>
+              <div class="metric-heading">
+                <div class="label">CPU Temperature</div>
+                <button id="btn-pi5-fan-open" class="flat metric-action" type="button" aria-haspopup="dialog" aria-controls="pi5-fan-dialog">Fan curve</button>
+              </div>
               <div class="value" id="sysinfo-temperature">—</div>
               <div id="sysinfo-temperature-meter" class="resource-meter resource-meter--temperature" role="meter" aria-label="CPU temperature" aria-valuemin="0" aria-valuemax="90" hidden></div>
             </div>
@@ -513,25 +516,6 @@ end)
               <div class="value" id="sysinfo-ffmpeg">—</div>
             </div>
           </div>
-        </section>
-
-        <section class="card stack" id="system-pi5-fan" hidden>
-          <h2>Raspberry Pi 5 Fan Curve</h2>
-          <p class="small">Configure the Pi 5 fan connector's automatic four-step curve. Speeds are PWM values (1–255); changes are saved to boot config and take effect after restart. A fan or Active Cooler must be connected to the Pi 5 fan header.</p>
-          <label><input id="pi5-fan-enabled" type="checkbox"> Use a custom fan curve</label>
-          <div class="pi5-fan-curve" id="pi5-fan-curve">
-            <div class="pi5-fan-heading"><span>Step</span><span>Temperature (°C)</span><span>Fan speed (1–255)</span></div>
-            <div class="pi5-fan-row"><label for="pi5-fan-temperature-0">1</label><input id="pi5-fan-temperature-0" type="number" min="40" max="80" step="1"><input id="pi5-fan-speed-0" type="number" min="1" max="255" step="1"></div>
-            <div class="pi5-fan-row"><label for="pi5-fan-temperature-1">2</label><input id="pi5-fan-temperature-1" type="number" min="40" max="80" step="1"><input id="pi5-fan-speed-1" type="number" min="1" max="255" step="1"></div>
-            <div class="pi5-fan-row"><label for="pi5-fan-temperature-2">3</label><input id="pi5-fan-temperature-2" type="number" min="40" max="80" step="1"><input id="pi5-fan-speed-2" type="number" min="1" max="255" step="1"></div>
-            <div class="pi5-fan-row"><label for="pi5-fan-temperature-3">4</label><input id="pi5-fan-temperature-3" type="number" min="40" max="80" step="1"><input id="pi5-fan-speed-3" type="number" min="1" max="255" step="1"></div>
-          </div>
-          <div class="cfg-row">
-            <label for="pi5-fan-hysteresis">Hysteresis (°C)</label>
-            <input id="pi5-fan-hysteresis" type="number" min="1" max="15" step="1">
-          </div>
-          <button id="btn-pi5-fan-save" class="primary">Save Fan Curve</button>
-          <div class="small" id="pi5-fan-status" role="status" aria-live="polite">Loading fan settings…</div>
         </section>
 
         <section class="card stack" id="system-audio-stress" hidden>
@@ -626,6 +610,37 @@ end)
   </main>
 
   <div id="notifications" class="notifications" aria-label="Notifications"></div>
+  <dialog id="pi5-fan-dialog" class="fan-dialog" aria-labelledby="pi5-fan-title" aria-describedby="pi5-fan-description">
+    <div class="fan-dialog-header">
+      <div>
+        <div class="dialog-heading">System cooling</div>
+        <h2 id="pi5-fan-title">Fan curve</h2>
+      </div>
+      <button id="btn-pi5-fan-close" class="flat" type="button" aria-label="Close fan curve editor">Close</button>
+    </div>
+    <p id="pi5-fan-description" class="fan-dialog-description">Drag the curve points to set fan speed as CPU temperature rises. Select a point and use the arrow keys for precise adjustments.</p>
+    <div id="pi5-fan-warning" class="fan-warning" role="alert" hidden>Preview only on this Raspberry Pi 4. Fan-curve control requires a Raspberry Pi 5 fan connector; changes here cannot control or configure a fan on this device. Saving is disabled.</div>
+    <div class="fan-dialog-body">
+      <div class="fan-graph-card">
+        <svg id="pi5-fan-graph" class="fan-graph" viewBox="0 0 760 410" role="group" aria-label="Interactive fan curve chart"></svg>
+        <div class="fan-graph-legend"><span>Cooler / quieter</span><span>Hotter / faster</span></div>
+      </div>
+      <div class="fan-controls">
+        <label class="fan-enable"><input id="pi5-fan-enabled" type="checkbox"> Use a custom fan curve</label>
+        <div class="fan-hysteresis-control">
+          <label for="pi5-fan-hysteresis">Hysteresis <output id="pi5-fan-hysteresis-value" for="pi5-fan-hysteresis">5 °C</output></label>
+          <input id="pi5-fan-hysteresis" type="range" min="1" max="15" step="1" value="5">
+          <div class="small">Prevents fan speed from changing rapidly near a temperature threshold.</div>
+        </div>
+        <div class="fan-curve-summary" id="pi5-fan-curve-summary" aria-live="polite"></div>
+        <div class="small" id="pi5-fan-status" role="status" aria-live="polite">Open to load fan settings.</div>
+        <p class="small">Fan speeds are PWM values from 1–255. Changes on Pi 5 are saved to boot config and take effect after restart. A fan or Active Cooler must be connected to the Pi 5 fan header.</p>
+      </div>
+    </div>
+    <div class="fan-dialog-actions">
+      <button id="btn-pi5-fan-save" class="primary" type="button">Save fan curve</button>
+    </div>
+  </dialog>
   <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
     <div class="dialog-heading">Confirm action</div>
     <h2 id="confirm-title">Confirm action</h2>

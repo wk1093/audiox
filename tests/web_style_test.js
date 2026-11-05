@@ -26,6 +26,18 @@ test('shared controls include editor focus, native file-picker styling and globa
   assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{\s*\.page, \.notification \{ animation: none; \}\s*\}/);
 });
 
+test('System resource meters use severity gradients without decorating static identity metrics', () => {
+  const identityMetrics = html.slice(html.indexOf('id="sysinfo-version"'), html.indexOf('id="sysinfo-temperature"'));
+  assert.doesNotMatch(identityMetrics, /resource-meter/);
+  for (const kind of ['temperature', 'memory', 'storage', 'load', 'cpu']) {
+    assert.match(html, new RegExp(`class="resource-meter resource-meter--${kind}"`));
+  }
+  assert.match(css, /linear-gradient\(180deg, var\(--meter-color-soft/);
+  assert.match(css, /transition: width 350ms ease, background 350ms ease/);
+  assert.match(css, /\.resource-meter\[data-state="critical"\]/);
+  assert.match(html, /id="sysinfo-load"[\s\S]*id="sysinfo-cpu-utilization"/);
+});
+
 test('WebUI copy documents current operation without migration or roadmap narration', () => {
   const visible = html.replace(/<!--[\s\S]*?-->/g, '');
   assert.doesNotMatch(visible, /legacy scripts|migration wrappers|automatically converted|planned later/i);

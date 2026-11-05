@@ -22,11 +22,12 @@ The card shows:
 | Kernel | Running kernel identity |
 | Raspberry Pi | Hardware model; the update API also reports a machine-readable board |
 | CPU Clock | Reported current CPU frequency in MHz, or a dash if unavailable |
-| CPU Temperature | Live CPU temperature in °C, refreshed while System is open; unavailable if the kernel does not expose a thermal sensor |
+| CPU Temperature | Live CPU temperature in °C, refreshed while System is open; its meter shifts from cool green through yellow to red as it warms |
 | Uptime | Time since kernel boot, displayed in hours/minutes or days |
-| Memory | Used/total MB, calculated using available memory |
-| Storage | Used/total persistent storage in GiB or MiB, with free space and filesystem-reserved space below. The bar includes used and reserved space, so its remaining portion matches space available for uploads. This excludes the boot partition and RAM. |
-| Load (1m) | One-minute system load average; not a CPU-percent meter |
+| Memory | Used/total MB, calculated using available memory. The meter turns yellow as usage rises and red near capacity. |
+| Storage | Used/total persistent storage in GiB or MiB, with free space and filesystem-reserved space below. The bar includes used and reserved space, so its remaining portion matches space available for uploads; it shifts from green to yellow as space runs low and red when nearly full. This excludes the boot partition and RAM. |
+| Load (1m) | One-minute system load average, with a meter scaled against the number of online CPUs. This is a relative load indicator, not a CPU-utilization percentage. |
+| CPU Utilization | Current CPU busy-time percentage calculated from `/proc/stat` counter changes between visible System refreshes; a fresh reading appears after the next sample. |
 | Audio Buffer | Current target ALSA period, negotiated period/buffer sizes, active ALSA stream count, cumulative X-runs, and (while above base) the quiet interval and failed-downshift count. The DSP block size remains fixed. The displayed duration estimates the largest single ALSA buffer's capacity at the engine rate; it is **not measured end-to-end or output latency**. |
 | FFmpeg | Available converter's reported version/status |
 

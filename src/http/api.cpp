@@ -4570,6 +4570,25 @@ static int handleSystemInfo(HttpServer *server,
 		}
 		fclose(cpu_freq_file);
 	}
+	long cpu_count = sysconf(_SC_NPROCESSORS_ONLN);
+	if (cpu_count < 1) cpu_count = 1;
+	char cpu_times_json[128] = "null";
+	FILE *cpu_stat_file = fopen("/proc/stat", "r");
+	if (cpu_stat_file) {
+		char cpu_label[8] = {};
+		unsigned long long user = 0, nice = 0, system = 0, idle = 0;
+		unsigned long long iowait = 0, irq = 0, softirq = 0, steal = 0;
+		if (fscanf(cpu_stat_file, "%7s %llu %llu %llu %llu %llu %llu %llu %llu",
+				   cpu_label, &user, &nice, &system, &idle, &iowait, &irq, &softirq, &steal) == 9 &&
+			strcmp(cpu_label, "cpu") == 0) {
+			const unsigned long long totalTicks = user + nice + system + idle + iowait +
+				irq + softirq + steal;
+			const unsigned long long idleTicks = idle + iowait;
+			snprintf(cpu_times_json, sizeof(cpu_times_json),
+					 "{\"total_ticks\":%llu,\"idle_ticks\":%llu}", totalTicks, idleTicks);
+		}
+		fclose(cpu_stat_file);
+	}
 	char temperature_json[24] = "null";
 	FILE *temperature_file = fopen("/sys/class/thermal/thermal_zone0/temp", "r");
 	if (temperature_file) {
@@ -4627,6 +4646,8 @@ static int handleSystemInfo(HttpServer *server,
 					 "\"board\":\"%s\","
 					 "\"model\":\"%s\","
 					 "\"cpu_freq_mhz\":%ld,"
+					 "\"cpu_count\":%ld,"
+					 "\"cpu_times\":%s,"
 					 "\"temperature_c\":%s,"
 					 "\"uptime_secs\":%ld,"
 					 "\"mem_total_mb\":%ld,"
@@ -4646,7 +4667,7 @@ static int handleSystemInfo(HttpServer *server,
 					 "\"audio_stress_test\":{\"available\":%s,\"mode\":\"%s\","
 					 "\"remaining_ms\":%u,\"workers\":%u}}\n",
 					 version_str, kernel_buf, audioxDetectBoard(), model_buf, cpu_freq_mhz,
-					 temperature_json,
+					 cpu_count, cpu_times_json, temperature_json,
 					 uptime_secs, mem_total_mb, mem_avail_mb, load1,
 					 ffmpeg_version, storage_json,
 					 (unsigned long long)audiox::audioHealth.total(),

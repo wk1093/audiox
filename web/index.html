@@ -475,7 +475,7 @@ end)
             <div class="metric">
               <div class="label">CPU Temperature</div>
               <div class="value" id="sysinfo-temperature">—</div>
-              <meter id="sysinfo-temperature-meter" class="storage-meter" min="0" low="60" high="75" max="85" value="0" aria-label="CPU temperature" hidden></meter>
+              <div id="sysinfo-temperature-meter" class="resource-meter resource-meter--temperature" role="meter" aria-label="CPU temperature" aria-valuemin="0" aria-valuemax="90" hidden></div>
             </div>
             <div class="metric">
               <div class="label">Uptime</div>
@@ -484,16 +484,24 @@ end)
             <div class="metric">
               <div class="label">Memory</div>
               <div class="value" id="sysinfo-memory">—</div>
+              <div id="sysinfo-memory-meter" class="resource-meter resource-meter--memory" role="meter" aria-label="Memory used" aria-valuemin="0" aria-valuemax="100" hidden></div>
             </div>
             <div class="metric">
               <div class="label">Storage</div>
               <div class="value" id="sysinfo-storage">—</div>
-              <meter id="sysinfo-storage-meter" class="storage-meter" min="0" max="100" value="0" aria-label="Storage used and reserved" hidden></meter>
+              <div id="sysinfo-storage-meter" class="resource-meter resource-meter--storage" role="meter" aria-label="Storage used and reserved" aria-valuemin="0" aria-valuemax="100" hidden></div>
               <div class="small" id="sysinfo-storage-free"></div>
             </div>
             <div class="metric">
               <div class="label">Load (1m)</div>
               <div class="value" id="sysinfo-load">—</div>
+              <div id="sysinfo-load-meter" class="resource-meter resource-meter--load" role="meter" aria-label="One-minute load relative to online CPU count" aria-valuemin="0" aria-valuemax="100" hidden></div>
+              <div class="small" id="sysinfo-load-detail"></div>
+            </div>
+            <div class="metric">
+              <div class="label">CPU Utilization</div>
+              <div class="value" id="sysinfo-cpu-utilization">Sampling…</div>
+              <div id="sysinfo-cpu-utilization-meter" class="resource-meter resource-meter--cpu" role="meter" aria-label="CPU utilization" aria-valuemin="0" aria-valuemax="100" hidden></div>
             </div>
             <div class="metric">
               <div class="label">Audio Buffer</div>

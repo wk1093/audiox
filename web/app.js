@@ -76,6 +76,7 @@ const state = {
   systemPollInFlight: false,
   pi5FanSettingsLoaded: false,
   pi5FanSettingsLoading: false,
+  cpuTimesSample: null,
 };
 
 const soundboardOrder = AudioxSoundboardOrder.attach(sbGridEl, {
@@ -1768,16 +1769,64 @@ async function loadVersion() {
   }
 }
 
+function renderResourceMeter(id, value, max, warningAt, criticalAt, valueText) {
+  const meter = document.getElementById(id);
+  if (!meter) return;
+  if (!Number.isFinite(value) || !Number.isFinite(max) || max <= 0) {
+    meter.hidden = true;
+    return;
+  }
+  const bounded = Math.max(0, Math.min(max, value));
+  const percent = bounded / max * 100;
+  const palettes = {
+    'sysinfo-temperature-meter': [[0, 53, 190, 151], [66.7, 53, 190, 151], [83.3, 241, 195, 72], [100, 239, 79, 91]],
+    'sysinfo-memory-meter': [[0, 53, 190, 151], [70, 53, 190, 151], [85, 241, 195, 72], [100, 239, 79, 91]],
+    'sysinfo-storage-meter': [[0, 53, 190, 151], [65, 53, 190, 151], [75, 241, 195, 72], [90, 239, 79, 91], [100, 239, 79, 91]],
+    'sysinfo-load-meter': [[0, 53, 190, 151], [60, 53, 190, 151], [80, 241, 195, 72], [100, 239, 79, 91]],
+    'sysinfo-cpu-utilization-meter': [[0, 53, 190, 151], [65, 53, 190, 151], [80, 241, 195, 72], [100, 239, 79, 91]],
+  };
+  const stops = palettes[id];
+  if (stops) {
+    const position = percent;
+    let upper = stops.findIndex(([stop]) => stop >= position);
+    if (upper < 0) upper = stops.length - 1;
+    const lower = Math.max(0, upper - 1);
+    const [lowerAt, ...lowerRgb] = stops[lower];
+    const [upperAt, ...upperRgb] = stops[upper];
+    const amount = upperAt === lowerAt ? 0 : (position - lowerAt) / (upperAt - lowerAt);
+    const rgb = lowerRgb.map((channel, index) => Math.round(channel + (upperRgb[index] - channel) * amount));
+    const rgbCss = `rgb(${rgb.join(', ')})`;
+    meter.style.setProperty('--meter-color', rgbCss);
+    meter.style.setProperty('--meter-color-soft',
+      `rgb(${rgb.map((channel) => Math.round(channel + (255 - channel) * 0.28)).join(', ')})`);
+    meter.style.setProperty('--meter-glow', `rgba(${rgb.join(', ')}, 0.28)`);
+  }
+  meter.style.setProperty('--meter-level', `${percent}%`);
+  meter.dataset.state = bounded >= criticalAt ? 'critical' : bounded >= warningAt ? 'warning' : 'normal';
+  meter.setAttribute('aria-valuenow', String(Math.round(bounded * 10) / 10));
+  meter.setAttribute('aria-valuetext', valueText || `${Math.round(percent)}%`);
+  meter.hidden = false;
+}
+
+function calculateCpuUtilization(previous, current) {
+  if (!previous || !current
+      || !Number.isSafeInteger(previous.total_ticks) || !Number.isSafeInteger(previous.idle_ticks)
+      || !Number.isSafeInteger(current.total_ticks) || !Number.isSafeInteger(current.idle_ticks)) return null;
+  const totalDelta = current.total_ticks - previous.total_ticks;
+  const idleDelta = current.idle_ticks - previous.idle_ticks;
+  if (totalDelta <= 0 || idleDelta < 0 || idleDelta > totalDelta) return null;
+  return Math.max(0, Math.min(100, (totalDelta - idleDelta) / totalDelta * 100));
+}
+
 function renderStorageUsage(storage) {
   const value = document.getElementById('sysinfo-storage');
-  const meter = document.getElementById('sysinfo-storage-meter');
   const free = document.getElementById('sysinfo-storage-free');
   const fields = ['total_bytes', 'used_bytes', 'free_bytes', 'reserved_bytes'];
   if (!storage || !fields.every((key) => Number.isSafeInteger(storage[key]) && storage[key] >= 0)
       || storage.total_bytes === 0
       || storage.used_bytes + storage.free_bytes + storage.reserved_bytes !== storage.total_bytes) {
     value.textContent = 'Unavailable';
-    meter.hidden = true;
+    renderResourceMeter('sysinfo-storage-meter', NaN, 100, 70, 90);
     free.textContent = 'Storage usage could not be read.';
     return;
   }
@@ -1785,8 +1834,9 @@ function renderStorageUsage(storage) {
     ? `${(bytes / 1024 ** 3).toFixed(1)} GiB`
     : `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
   value.textContent = `${format(storage.used_bytes)} / ${format(storage.total_bytes)} used`;
-  meter.value = (storage.total_bytes - storage.free_bytes) / storage.total_bytes * 100;
-  meter.hidden = false;
+  const occupiedPercent = (storage.total_bytes - storage.free_bytes) / storage.total_bytes * 100;
+  renderResourceMeter('sysinfo-storage-meter', occupiedPercent, 100, 70, 90,
+    `${occupiedPercent.toFixed(1)}% used or reserved`);
   free.textContent = `${format(storage.free_bytes)} free`
     + (storage.reserved_bytes > 0 ? ` (${format(storage.reserved_bytes)} reserved)` : '');
 }
@@ -1829,11 +1879,11 @@ async function loadSystemInfo() {
       if (data.temperature_c !== null && data.temperature_c !== undefined
           && Number.isFinite(temperature) && temperature >= 0 && temperature <= 150) {
         temperatureEl.textContent = `${temperature.toFixed(1)} °C`;
-        temperatureMeter.value = temperature;
-        temperatureMeter.hidden = false;
+        renderResourceMeter('sysinfo-temperature-meter', temperature, 90, 60, 75,
+          `${temperature.toFixed(1)} degrees Celsius`);
       } else {
         temperatureEl.textContent = 'Unavailable';
-        temperatureMeter.hidden = true;
+        renderResourceMeter('sysinfo-temperature-meter', NaN, 90, 60, 75);
       }
     }
     if (fanPanel) {
@@ -1853,10 +1903,50 @@ async function loadSystemInfo() {
     const availMbRaw = Number(data.mem_avail_mb || 0);
     const availMb = Math.max(0, Math.min(totalMb, availMbRaw));
     const usedMb = Math.max(0, totalMb - availMb);
-    mEl.textContent = `${usedMb} / ${totalMb} MB`;
+    if (Number.isFinite(totalMb) && totalMb > 0 && Number.isFinite(availMbRaw)) {
+      mEl.textContent = `${usedMb} / ${totalMb} MB`;
+      const memoryPercent = usedMb / totalMb * 100;
+      renderResourceMeter('sysinfo-memory-meter', memoryPercent, 100, 75, 90,
+        `${memoryPercent.toFixed(1)}% of memory used`);
+    } else {
+      mEl.textContent = 'Unavailable';
+      renderResourceMeter('sysinfo-memory-meter', NaN, 100, 75, 90);
+    }
     renderStorageUsage(data.storage);
 
-    lEl.textContent = Number(data.load1 || 0).toFixed(2);
+    const cpuSample = data.cpu_times;
+    const utilization = calculateCpuUtilization(state.cpuTimesSample, cpuSample);
+    state.cpuTimesSample = cpuSample && Number.isSafeInteger(cpuSample.total_ticks)
+      && Number.isSafeInteger(cpuSample.idle_ticks) ? cpuSample : null;
+    const cpuUtilization = document.getElementById('sysinfo-cpu-utilization');
+    if (Number.isFinite(utilization)) {
+      cpuUtilization.textContent = `${utilization.toFixed(1)}%`;
+      renderResourceMeter('sysinfo-cpu-utilization-meter', utilization, 100, 70, 90,
+        `${utilization.toFixed(1)}% CPU utilization`);
+    } else {
+      cpuUtilization.textContent = state.cpuTimesSample ? 'Sampling…' : 'Unavailable';
+      renderResourceMeter('sysinfo-cpu-utilization-meter', NaN, 100, 70, 90);
+    }
+
+    const load = Number(data.load1);
+    const onlineCpus = Number(data.cpu_count);
+    if (Number.isFinite(load) && load >= 0) {
+      lEl.textContent = load.toFixed(2);
+      if (Number.isFinite(onlineCpus) && onlineCpus > 0) {
+        const loadPercent = load / onlineCpus * 100;
+        document.getElementById('sysinfo-load-detail').textContent =
+          `${loadPercent.toFixed(0)}% of ${onlineCpus} online CPUs (load average, not CPU utilization)`;
+        renderResourceMeter('sysinfo-load-meter', loadPercent, 100, 70, 100,
+          `${load.toFixed(2)} load average relative to ${onlineCpus} online CPUs`);
+      } else {
+        document.getElementById('sysinfo-load-detail').textContent = 'Online CPU count unavailable.';
+        renderResourceMeter('sysinfo-load-meter', NaN, 100, 70, 100);
+      }
+    } else {
+      lEl.textContent = 'Unavailable';
+      document.getElementById('sysinfo-load-detail').textContent = '';
+      renderResourceMeter('sysinfo-load-meter', NaN, 100, 70, 100);
+    }
 
     if (fEl) {
       fEl.textContent = data.ffmpeg || '\u2014';

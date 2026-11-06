@@ -7,7 +7,6 @@
   const maxArchiveSize = 256 * 1024 * 1024;
   const noticeKey = 'audiox.updateNotice';
   const dismissedKey = 'audiox.updateDismissed';
-  const channelKey = 'audiox.updateChannel';
   const noticeInterval = 6 * 60 * 60 * 1000;
   const noticeRetryInterval = 60 * 60 * 1000;
   const releases = typeof module !== 'undefined' && module.exports
@@ -278,6 +277,8 @@
       if (!noticeEnabled || !notifications.checked) return hideNotice();
       const run = ++noticeRun;
       try {
+        await channelReady;
+        if (!channelChosen) return hideNotice();
         const { version } = await systemInfo();
         const result = await cachedUpdateCheck({ channel: channel.value, version, storage });
         if (run !== noticeRun) return;
@@ -331,13 +332,53 @@
       });
     }
 
-    if (readStored(storage, channelKey) === 'nightly' || readStored(storage, channelKey) === 'stable') {
-      channel.value = readStored(storage, channelKey);
+    let channelChosen = false;
+    let savedChannel = null;
+    async function deviceChannel(options) {
+      const response = await fetch('/api/updates/channel', { cache: 'no-store', ...options });
+      if (!response.ok) throw new Error(`${response.status} ${(await response.text()).trim()}`);
+      const result = await response.json();
+      if (result.channel !== 'stable' && result.channel !== 'nightly') {
+        throw new Error('Device returned an invalid update channel.');
+      }
+      return result.channel;
     }
-    channel.addEventListener('change', () => {
-      writeStored(storage, channelKey, channel.value);
+    async function initializeChannel() {
+      channel.disabled = true;
+      try {
+        savedChannel = await deviceChannel();
+        channel.value = savedChannel;
+        channelChosen = true;
+      } catch (error) {
+        channel.value = '';
+        message(`Could not load the device update channel: ${error.message} Select a release channel to save it on the device.`, 'warn');
+      } finally {
+        channel.disabled = busy;
+      }
+    }
+    const channelReady = initializeChannel();
+    channel.addEventListener('change', async () => {
+      if (busy) return;
+      controls(true);
+      ++noticeRun;
+      hideNotice();
       invalidate();
-      refreshNotice();
+      try {
+        savedChannel = await deviceChannel({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: `channel=${encodeURIComponent(channel.value)}`,
+        });
+        channel.value = savedChannel;
+        channelChosen = true;
+        message('Update channel saved on the device.', 'ok');
+        await refreshNotice();
+      } catch (error) {
+        channel.value = savedChannel || '';
+        message(`Could not save the device update channel: ${error.message}`, 'warn');
+      } finally {
+        controls(false);
+      }
     });
     if (noticeEnabled) {
       notifications.checked = true;
@@ -377,6 +418,8 @@
       message('Checking device and GitHub release...');
       try {
         await ui.runTask('Checking firmware releases', async () => {
+          await channelReady;
+          if (!channelChosen) throw new Error('Select a release channel before checking for updates.');
           const info = await deviceInfo();
           const release = await latestRelease(channel.value);
           const asset = selectAsset(release, info.board);
@@ -452,6 +495,7 @@
         }
       }
     });
+    return channelReady;
   }
 
   const exported = {

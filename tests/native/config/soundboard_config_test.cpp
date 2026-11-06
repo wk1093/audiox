@@ -1112,6 +1112,53 @@ int main() {
         updateNoticeRequest("POST", "enabled=1", "{\"enabled\":true}");
         assert(!config.readConfigFile().updateNotificationsOff);
 
+        auto updateChannelRequest = [&](const char *method, const char *body, const char *expected) {
+            int sockets[2];
+            assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+            assert(handleUpdateChannel(&http, sockets[0], method, body, strlen(body)) == 0);
+            char reply[1024] = {};
+            assert(read(sockets[1], reply, sizeof(reply) - 1) > 0);
+            assert(strstr(reply, expected));
+            close(sockets[0]);
+            close(sockets[1]);
+        };
+        ConfigData defaultChannel{};
+        assert(config.writeConfigFile(&defaultChannel) == RET_OK);
+#if defined(AUDIOX_VERSION_STRING)
+        const bool nightlyBuild = strstr(AUDIOX_VERSION_STRING, "-nightly") || strstr(AUDIOX_VERSION_STRING, ".nightly");
+#else
+        const bool nightlyBuild = false;
+#endif
+        assert(config.readConfigFile().updateChannel ==
+               (nightlyBuild ? UPDATE_CHANNEL_NIGHTLY : UPDATE_CHANNEL_STABLE));
+        assert(config.writeConfigFile(&usbConfig) == RET_OK);
+        updateChannelRequest("POST", "channel=nightly", "{\"channel\":\"nightly\"}");
+        assert(config.readConfigFile().updateChannel == UPDATE_CHANNEL_NIGHTLY);
+        assert(config.readConfigFile().midiPassthrough == 1);
+        updateChannelRequest("GET", "", "{\"channel\":\"nightly\"}");
+        updateNoticeRequest("POST", "enabled=0", "{\"enabled\":false}");
+        updateChannelRequest("GET", "", "{\"channel\":\"nightly\"}");
+        updateChannelRequest("POST", "channel=invalid", "400 Bad Request");
+        updateChannelRequest("POST", "", "400 Bad Request");
+        updateChannelRequest("DELETE", "", "405 Method Not Allowed");
+        assert(mkdir("config.txt.tmp", 0755) == 0);
+        updateChannelRequest("POST", "channel=stable", "500 Internal Server Error");
+        assert(rmdir("config.txt.tmp") == 0);
+        updateChannelRequest("GET", "", "{\"channel\":\"nightly\"}");
+        {
+            std::ifstream savedConfig("config.txt");
+            std::string text((std::istreambuf_iterator<char>(savedConfig)), std::istreambuf_iterator<char>());
+            assert(text.find("\nupdate_channel=nightly\n") != std::string::npos);
+        }
+        updateChannelRequest("PUT", "channel=stable", "{\"channel\":\"stable\"}");
+        updateChannelRequest("GET", "", "{\"channel\":\"stable\"}");
+        {
+            ConfigStore restartedConfig(&app);
+            assert(restartedConfig.readConfigFile().updateChannel == UPDATE_CHANNEL_STABLE);
+        }
+        app.config = &config;
+        updateNoticeRequest("POST", "enabled=1", "{\"enabled\":true}");
+
         int midiInput[2];
         assert(socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, midiInput) == 0);
         midi.fd = midiInput[0];

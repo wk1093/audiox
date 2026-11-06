@@ -112,7 +112,13 @@ test('browser downloads mirror bytes, checks length and magic, and reports progr
   await assert.rejects(updates.downloadArchive(asset, mirrorUrl, () => {}, async () => new Response('', { status: 404 })), /download failed/);
 });
 
-function controller() {
+function controller({ storage = memoryStorage(), device = { channel: 'stable' }, request = global.fetch } = {}) {
+  global.fetch = async (url, options = {}) => {
+    if (url !== '/api/updates/channel') return request(url, options);
+    if (device.error) return new Response('Device configuration unavailable', { status: device.error });
+    if (options.method === 'POST') device.channel = new URLSearchParams(options.body).get('channel');
+    return response({ channel: device.channel });
+  };
   const elements = new Map();
   for (const id of ['update-channel', 'btn-update-check', 'btn-update-online', 'btn-update-upload',
     'update_file', 'update-progress', 'update-status', 'update-release', 'update-download',
@@ -144,9 +150,78 @@ function controller() {
       this.events.load();
     }
   };
-  updates.init({ setStatus: () => {}, ui: popup });
-  return { elements, uploads, popup, click: (id) => elements.get(id).listeners.click() };
+  const ready = updates.init({ setStatus: () => {}, ui: popup, storage });
+  return { elements, uploads, popup, ready, click: (id) => elements.get(id).listeners.click() };
 }
+
+test('device channel persists across browsers and overrides old browser preferences', async () => {
+  for (const expected of ['stable', 'nightly']) {
+    const device = { channel: expected };
+    const storage = memoryStorage(expected === 'stable' ? 'nightly' : 'stable');
+    const first = controller({ storage, device });
+    await first.ready;
+    assert.equal(first.elements.get('update-channel').value, expected);
+
+    const reloaded = controller({ device, storage: null });
+    await reloaded.ready;
+    assert.equal(reloaded.elements.get('update-channel').value, expected);
+
+    const changed = expected === 'nightly' ? 'stable' : 'nightly';
+    reloaded.elements.get('update-channel').value = changed;
+    await reloaded.elements.get('update-channel').listeners.change();
+    assert.equal(device.channel, changed);
+    const next = controller({ device, storage: memoryStorage() });
+    await next.ready;
+    assert.equal(next.elements.get('update-channel').value, changed);
+  }
+});
+
+test('checking immediately waits for the device channel and stable fallback does not replace it', async () => {
+  const urls = [];
+  const request = async (url) => {
+    urls.push(url);
+    if (url === '/api/system/info') return response({ board: 'pi4', version: '1.15.0-nightly+0123456789ab' });
+    if (url.endsWith('/releases/latest')) return response(release);
+    if (url.endsWith('/releases/tags/nightly')) return response({}, 404);
+    assert.ok(url.endsWith('/updates.json'));
+    return response({ stable: { tag: release.tag_name, assets: {
+      pi4: { size: asset.size, url: 'updates/v1.9.2/audiox-update-pi4.axu' },
+    } } });
+  };
+  const device = { channel: 'nightly' };
+  const { elements, click } = controller({ device, request });
+  const checked = click('btn-update-check');
+  assert.deepEqual(urls, []);
+  await checked;
+  assert.ok(urls.some((url) => url.endsWith('/releases/tags/nightly')));
+  assert.match(elements.get('update-release').textContent, /Using stable/);
+  assert.equal(elements.get('update-channel').value, 'nightly');
+  assert.equal(device.channel, 'nightly');
+});
+
+test('channel initialization and persistence failures are reported', async () => {
+  const device = { channel: 'nightly', error: 503 };
+  const failed = controller({ device });
+  await failed.ready;
+  assert.match(failed.elements.get('update-status').textContent, /Could not load.*503/);
+  await failed.click('btn-update-check');
+  assert.match(failed.elements.get('update-status').textContent, /Select a release channel/);
+
+  delete device.error;
+  const unsaved = controller({ device });
+  await unsaved.ready;
+  assert.equal(unsaved.elements.get('update-channel').value, 'nightly');
+  device.error = 500;
+  unsaved.elements.get('update-channel').value = 'stable';
+  await unsaved.elements.get('update-channel').listeners.change();
+  assert.match(unsaved.elements.get('update-status').textContent, /Could not save.*500/);
+  assert.equal(unsaved.elements.get('update-channel').value, 'nightly');
+  assert.equal(device.channel, 'nightly');
+  delete device.error;
+  unsaved.elements.get('update-channel').value = 'stable';
+  await unsaved.elements.get('update-channel').listeners.change();
+  assert.equal(device.channel, 'stable');
+});
 
 test('controller checks, confirms, downloads and uploads without Pi internet; cancellation sends nothing', async () => {
   const { elements, uploads, popup, click } = controller();
@@ -175,7 +250,7 @@ test('controller checks, confirms, downloads and uploads without Pi internet; ca
 });
 
 test('nightly controller downloads and installs the stable archive when nightly is older', async () => {
-  const { elements, uploads, click } = controller();
+  const { elements, uploads, click } = controller({ device: { channel: 'nightly' } });
   elements.get('update-channel').value = 'nightly';
   const urls = [];
   global.fetch = async (url) => {
@@ -204,7 +279,7 @@ test('nightly controller downloads and installs the stable archive when nightly 
 });
 
 test('nightly fallback recognizes an already installed stable release', async () => {
-  const { elements, uploads, click } = controller();
+  const { elements, uploads, click } = controller({ device: { channel: 'nightly' } });
   elements.get('update-channel').value = 'nightly';
   global.fetch = async (url) => {
     if (url === '/api/system/info') return response({ board: 'pi4', version: '1.9.2' });
@@ -222,6 +297,7 @@ test('controller rejects changed hardware, resets channel selection and retains 
   const { elements, uploads, click } = controller();
   let board = 'pi4';
   global.fetch = async (url) => {
+    if (url === '/api/updates/channel') return response({ channel: 'stable' });
     if (url === '/api/system/info') return response({ board, version: '1.9.1' });
     if (url.endsWith('/releases/latest')) return response(release);
     return response({ stable: { tag: 'v1.9.2', assets: {
@@ -234,15 +310,16 @@ test('controller rejects changed hardware, resets channel selection and retains 
   assert.equal(uploads.length, 0);
   assert.match(elements.get('update-status').textContent, /hardware changed/);
   assert.equal(elements.get('btn-update-upload').disabled, false);
-  elements.get('update-channel').listeners.change();
+  await elements.get('update-channel').listeners.change();
   assert.equal(elements.get('btn-update-online').disabled, true);
   elements.get('update_file').files = [Object.assign(new Blob([bytes]), { name: 'manual.axu' })];
   await click('btn-update-upload');
   assert.equal(uploads.length, 1);
 });
 
-function memoryStorage() {
+function memoryStorage(channel) {
   const values = new Map();
+  if (channel) values.set('audiox.updateChannel', channel);
   return {
     values,
     getItem: (key) => (values.has(key) ? values.get(key) : null),
@@ -312,7 +389,7 @@ test('dismissing hides only the dismissed release', () => {
   assert.equal(updates.noticeVisible({ ...result, available: false }, memoryStorage()), false);
 });
 
-test('controller shows the update banner, persists the opt-out and remembers the channel', async () => {
+test('controller loads the device channel before checking notices and persists the opt-out', async () => {
   const elements = new Map();
   const make = (id, extra = {}) => elements.set(id, {
     id, value: 0, files: [], disabled: false, hidden: true, checked: false, listeners: {}, textContent: '',
@@ -327,11 +404,16 @@ test('controller shows the update banner, persists the opt-out and remembers the
   make('update-channel', { value: 'stable' });
   global.document = { getElementById: (id) => elements.get(id) };
   const storage = memoryStorage();
-  storage.setItem('audiox.updateChannel', 'nightly');
   let enabled = true;
   const posts = [];
+  const lookups = [];
+  let deviceChannel = 'nightly';
   global.fetch = async (url, options = {}) => {
-    if (url === '/api/system/info') return response({ board: 'pi4', version: '1.9.1' });
+    if (url === '/api/updates/channel') {
+      if (options.method === 'POST') deviceChannel = new URLSearchParams(options.body).get('channel');
+      return response({ channel: deviceChannel });
+    }
+    if (url === '/api/system/info') return response({ board: 'pi4', version: '1.9.1-nightly+0123456789ab' });
     if (url === '/api/updates/notifications') {
       if (options.method === 'POST') {
         posts.push(options.body);
@@ -339,20 +421,23 @@ test('controller shows the update banner, persists the opt-out and remembers the
       }
       return response({ enabled });
     }
-    return githubRequest([])(url);
+    return githubRequest(lookups)(url);
   };
   let shown = 0;
   const popup = { ...require('../../web/embedded/ui.js'), runTask: async (_title, action) => action() };
   const flush = () => new Promise((resolve) => setTimeout(resolve, 10));
-  updates.init({ setStatus: () => {}, ui: popup, storage, showUpdates: () => { shown += 1; } });
+  await updates.init({ setStatus: () => {}, ui: popup, storage, showUpdates: () => { shown += 1; } });
   assert.equal(elements.get('update-channel').value, 'nightly');
+  assert.equal(deviceChannel, 'nightly');
   await flush();
+  assert.ok(lookups.some((url) => url.endsWith('/releases/tags/nightly')));
   const banner = elements.get('update-banner');
   assert.equal(banner.hidden, false);
   assert.match(elements.get('update-banner-text').textContent, /1\.9\.2 is available/);
 
-  elements.get('btn-update-banner-view').click();
+  await elements.get('btn-update-banner-view').click();
   assert.equal(shown, 1);
+  await flush();
 
   elements.get('btn-update-banner-dismiss').click();
   assert.equal(banner.hidden, true);
@@ -369,7 +454,7 @@ test('controller shows the update banner, persists the opt-out and remembers the
   assert.equal(banner.hidden, false);
 
   elements.get('update-channel').value = 'stable';
-  elements.get('update-channel').listeners.change();
-  assert.equal(storage.getItem('audiox.updateChannel'), 'stable');
+  await elements.get('update-channel').listeners.change();
+  assert.equal(deviceChannel, 'stable');
   await flush();
 });

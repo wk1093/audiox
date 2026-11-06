@@ -103,6 +103,12 @@ struct RouterConfig {
 };
 
 
+enum UpdateChannel : uint8_t {
+    UPDATE_CHANNEL_DEFAULT = 0,
+    UPDATE_CHANNEL_STABLE = 1,
+    UPDATE_CHANNEL_NIGHTLY = 2,
+};
+
 struct ConfigData {
     uint32_t sampleRate;
     uint32_t playbackChannels;
@@ -114,6 +120,7 @@ struct ConfigData {
     uint8_t keyboardMacros;
     // Zero (the default for configs without the key) keeps WebUI update notifications enabled.
     uint8_t updateNotificationsOff;
+    uint8_t updateChannel;
     uint32_t schemaVersion;
 };
 

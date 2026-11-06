@@ -52,6 +52,7 @@
 #define HTTP_SOUNDBOARD_RELOAD_PATH HTTP_API_PREFIX "soundboard/reload"
 #define HTTP_FRAMEBUFFER_VIEW_PATH HTTP_API_PREFIX "framebuffer/view"
 #define HTTP_UPDATE_NOTIFICATIONS_PATH HTTP_API_PREFIX "updates/notifications"
+#define HTTP_UPDATE_CHANNEL_PATH HTTP_API_PREFIX "updates/channel"
 #define HTTP_CONFIG_RELOAD_PATH HTTP_API_PREFIX "config/reload"
 #define HTTP_ROUTING_RELOAD_PATH HTTP_API_PREFIX "routing/reload"
 #define HTTP_ROUTING_THINGS_PATH HTTP_API_PREFIX "routing/things"
@@ -1051,6 +1052,29 @@ static int handleFramebufferView(HttpServer *server, int cfd, const char *method
 		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
 	}
 	const char *out = cfg.framebufferSoundboard ? "{\"view\":\"soundboard\"}\n" : "{\"view\":\"meters\"}\n";
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
+}
+
+static int handleUpdateChannel(HttpServer *server, int cfd, const char *method,
+                               const char *body, size_t body_len) {
+	if (!server || !server->app || !server->app->config) return -1;
+	ConfigData cfg = server->app->config->readConfigFile();
+	if (strcmp(method, "GET") != 0) {
+		if (strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) return sendMethodNotAllowed(server, cfd);
+		char channel[16];
+		if (!body || !body_get_value(body, body_len, "channel", channel, sizeof(channel)) ||
+		    (strcmp(channel, "stable") != 0 && strcmp(channel, "nightly") != 0)) {
+			static const char bad[] = "expected channel=stable|nightly\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+		}
+		cfg.updateChannel = strcmp(channel, "nightly") == 0 ? UPDATE_CHANNEL_NIGHTLY : UPDATE_CHANNEL_STABLE;
+		if (server->app->config->writeConfigFile(&cfg) != RET_OK) {
+			static const char err[] = "failed to write config\n";
+			return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+		}
+	}
+	const char *out = cfg.updateChannel == UPDATE_CHANNEL_NIGHTLY
+		? "{\"channel\":\"nightly\"}\n" : "{\"channel\":\"stable\"}\n";
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
 }
 
@@ -5855,6 +5879,9 @@ int handleApiRequest(HttpServer *server,
 	}
 	if (strcmp(path, HTTP_UPDATE_NOTIFICATIONS_PATH) == 0) {
 		return handleUpdateNotifications(server, cfd, method, body, body_len);
+	}
+	if (strcmp(path, HTTP_UPDATE_CHANNEL_PATH) == 0) {
+		return handleUpdateChannel(server, cfd, method, body, body_len);
 	}
 
 	if (strcmp(path, HTTP_CONFIG_RELOAD_PATH) == 0) {

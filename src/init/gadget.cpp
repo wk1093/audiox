@@ -426,8 +426,9 @@ int reloadAudioGadget(void *_context) {
     }
 
     if (configSourceIsStaging) {
-        // The staged file only carries USB settings; keep the live WebUI preference.
+        // The staged file only carries USB settings; keep the live WebUI preferences.
         nextCfg.updateNotificationsOff = saved.updateNotificationsOff;
+        nextCfg.updateChannel = saved.updateChannel;
         if (context->config->writeConfigFile(&nextCfg) < 0) {
             printf("[INIT] [WARN] gadget reload succeeded but failed to commit staged config\n");
             restore();

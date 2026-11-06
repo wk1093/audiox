@@ -57,6 +57,13 @@ static inline void normalizeConfig(ConfigData *cfg) {
     if (cfg->midiPassthrough > 2) cfg->midiPassthrough = 0;
     cfg->keyboardMacros = cfg->keyboardMacros ? 1 : 0;
     cfg->updateNotificationsOff = cfg->updateNotificationsOff ? 1 : 0;
+    if (cfg->updateChannel != UPDATE_CHANNEL_STABLE && cfg->updateChannel != UPDATE_CHANNEL_NIGHTLY) {
+        cfg->updateChannel = UPDATE_CHANNEL_STABLE;
+#if defined(AUDIOX_VERSION_STRING)
+        if (strstr(AUDIOX_VERSION_STRING, "-nightly") || strstr(AUDIOX_VERSION_STRING, ".nightly"))
+            cfg->updateChannel = UPDATE_CHANNEL_NIGHTLY;
+#endif
+    }
 }
 
 static inline char *trimLeft(char *s) {
@@ -143,6 +150,10 @@ static int readConfigPath(const char *path, ConfigData *out, int warnIfMissing) 
             cfg.keyboardMacros = strcmp(value, "1") == 0;
         } else if (strcmp(key, "update_notifications") == 0) {
             cfg.updateNotificationsOff = strcmp(value, "0") == 0;
+        } else if (strcmp(key, "update_channel") == 0) {
+            if (strcmp(value, "stable") == 0) cfg.updateChannel = UPDATE_CHANNEL_STABLE;
+            else if (strcmp(value, "nightly") == 0) cfg.updateChannel = UPDATE_CHANNEL_NIGHTLY;
+            else printf("[CONFIG] [WARN] invalid update_channel: %s\n", value);
         } else if (strcmp(key, "config_version") == 0) {
             if (sawVersion || !*value || *value == '-') {
                 invalidVersion = true;
@@ -432,11 +443,12 @@ int ConfigStore::writeConfigFile(ConfigData *cfg) {
     }
     int n = dprintf(fd, "config_version=%u\nusb_sample_rate=%u\nusb_playback_channels=%u\nusb_capture_channels=%u\n"
                    "usb_sample_size=%u\nsoundboard_mode=%s\nframebuffer_view=%s\n"
-                   "midi_passthrough=%s\nkeyboard_macros=%u\nupdate_notifications=%u\n",
+                   "midi_passthrough=%s\nkeyboard_macros=%u\nupdate_notifications=%u\nupdate_channel=%s\n",
                    cfg->schemaVersion, cfg->sampleRate, cfg->playbackChannels, cfg->captureChannels, cfg->sampleSize,
                    soundboardModeToString(cfg->soundboardMode), cfg->framebufferSoundboard ? "soundboard" : "meters",
                    cfg->midiPassthrough == 1 ? "unmapped" : cfg->midiPassthrough == 2 ? "all" : "off",
-                   cfg->keyboardMacros, cfg->updateNotificationsOff ? 0u : 1u);
+                   cfg->keyboardMacros, cfg->updateNotificationsOff ? 0u : 1u,
+                   cfg->updateChannel == UPDATE_CHANNEL_NIGHTLY ? "nightly" : "stable");
     bool ok = n >= 0 && fsync(fd) == 0;
     int error = errno;
     if (close(fd) < 0 && ok) { ok = false; error = errno; }

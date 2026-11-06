@@ -200,6 +200,7 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Add Pi 5 fan curve editor on webui
   - [x] Validate fan curve editor
   - [x] Render LiteGraph at display pixel density on high-DPI/4K displays.
+  - [x] Stereo routing and split/merge operations instead of separate mono connections.
 
 ## Quality of life
 - [x] Optimize pitch FFT/window work without changing High quality; add High/Balanced/Economy overlap settings.

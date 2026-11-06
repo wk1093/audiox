@@ -108,7 +108,14 @@ static pid_t startPowerButtonShutdown(int *resultFd) {
         sleep(1);
         if (reboot(RB_POWER_OFF) < 0) {
             const int error = errno;
-            (void)write(resultPipe[1], &error, sizeof(error));
+            ssize_t count;
+            do {
+                count = write(resultPipe[1], &error, sizeof(error));
+            } while (count < 0 && errno == EINTR);
+            if (count != (ssize_t)sizeof(error)) {
+                fprintf(stderr, "[INIT] [ERR] reporting power-off failure (%s) failed: %s\n",
+                        strerror(error), count < 0 ? strerror(errno) : "short pipe write");
+            }
             _exit(1);
         }
         _exit(0);

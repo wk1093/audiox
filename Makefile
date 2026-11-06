@@ -101,7 +101,7 @@ RUNTIME_LIBS += $(LUA_STATIC_LIB) -lm
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 15
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.9
+AUDIOX_VERSION_PRERELEASE ?= beta.10
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
 $(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
@@ -151,7 +151,7 @@ BOOT_OVERLAYS = $(VC4_OVERLAY) $(DSI_TOUCH_OVERLAY) dwc2 $(if $(filter y,$(CONFI
 # Auto-detected from firmware after fetch_deps runs, using the uname file that
 # matches the kernel image (kernel_2712.img -> uname_string_2712).
 KERNEL_UNAME_FILE = uname_string$(patsubst kernel%.img,%,$(KERNEL_IMAGE))
-KV = $(shell $(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+" "$(KERNEL_UNAME_FILE)")
+KV = $(shell $(TOOLS_DIR)/build/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+" "$(KERNEL_UNAME_FILE)")
 
 # Paths
 ARCH ?= aarch64
@@ -176,18 +176,18 @@ BOOTLOADER_OBJ_DIR = $(OBJ_DIR)/bootloader
 MODULE_LOAD_LIST = $(OUT_DIR)/module-load.list
 MODULE_LOAD_BASE_LIST = $(OUT_DIR)/module-load.base.list
 MODULE_LOAD_NORMAL_LIST = $(OUT_DIR)/module-load.normal.list
-BOOT_DEP_FILE = $(CURDIR)/bootmod.txt
+BOOT_DEP_FILE = $(CURDIR)/config/modules/bootmod.txt
 BOOT_MODULE_LOAD_LIST = $(OUT_DIR)/bootmodule-load.list
 BOOT_MODULE_LOAD_BASE_LIST = $(OUT_DIR)/bootmodule-load.base.list
 BOOT_MODULE_LOAD_NORMAL_LIST = $(OUT_DIR)/bootmodule-load.normal.list
-SCRIPTS_DIR = $(CURDIR)/scripts
-DEP_FILE = $(CURDIR)/depmod.txt
-BOOT_LOGO_PPM ?= $(CURDIR)/logo_boot.ppm
-WEB_LOGO_SVG ?= $(CURDIR)/logo.svg
-WEB_LOGO_PNG ?= $(CURDIR)/logo.png
-WEB_FAVICON_SVG ?= $(CURDIR)/logo_small.svg
-WEB_FAVICON_PNG ?= $(CURDIR)/logo_small.png
-WEB_INDEX_HTML ?= $(CURDIR)/web/index.html
+TOOLS_DIR = $(CURDIR)/tools
+DEP_FILE = $(CURDIR)/config/modules/depmod.txt
+BOOT_LOGO_PPM ?= $(CURDIR)/assets/branding/logo_boot.ppm
+WEB_LOGO_SVG ?= $(CURDIR)/assets/branding/logo.svg
+WEB_LOGO_PNG ?= $(CURDIR)/assets/branding/logo.png
+WEB_FAVICON_SVG ?= $(CURDIR)/assets/branding/logo_small.svg
+WEB_FAVICON_PNG ?= $(CURDIR)/assets/branding/logo_small.png
+WEB_INDEX_HTML ?= $(CURDIR)/web/embedded/index.html
 FFMPEG_BIN ?= $(CURDIR)/third_party/ffmpeg/ffmpeg
 FFMPEG_URL ?= https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-31-14-10/ffmpeg-n8.1.2-34-g9b6c8969e0-linuxarm64-gpl-8.1.tar.xz
 FFMPEG_ARCHIVE_SHA256 ?= 177e40c91564dec3840096f3bf1ffe696b94330585972462cfc739fa29fe0e1a
@@ -196,9 +196,9 @@ FFMPEG_CROSS_LIB_DIR ?= /usr/aarch64-linux-gnu/lib
 FFMPEG_RUNTIME_LIBS ?= ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 librt.so.1 libpthread.so.0 libgcc_s.so.1 libstdc++.so.6
 FFMPEG_STAGE_DIR ?= $(OUT_DIR)/ffmpeg_stage
 CONFIG_MENU_BIN = $(SHARED_OUT_DIR)/host/audiox-menuconfig
-CONFIG_MENU_SRC = $(SCRIPTS_DIR)/audiox-menuconfig.cpp
+CONFIG_MENU_SRC = $(TOOLS_DIR)/config/audiox-menuconfig.cpp
 UPDATE_PACK_BIN = $(SHARED_OUT_DIR)/host/audiox-update-pack
-UPDATE_PACK_SRC = $(SCRIPTS_DIR)/audiox-update-pack.cpp
+UPDATE_PACK_SRC = $(TOOLS_DIR)/release/audiox-update-pack.cpp
 UPDATE_ARCHIVE ?= $(OUT_DIR)/audiox-update.axu
 BOOT_CONFIG_FILE ?= $(OUT_DIR)/dev-config.txt
 BOOT_KERNEL_FILE = $(OUT_DIR)/bootfiles/$(KERNEL_IMAGE)
@@ -312,23 +312,23 @@ config: menuconfig
 archive: update_archive
 
 menuconfig: $(CONFIG_MENU_BIN)
-	@$(CONFIG_MENU_BIN) "$(AUDIOX_CONFIG_FILE)" "$(CURDIR)/Kconfig"
+	@$(CONFIG_MENU_BIN) "$(AUDIOX_CONFIG_FILE)" "$(CURDIR)/config/Kconfig"
 
 defconfig: pi4_defconfig
 
 pi4_defconfig pi5_defconfig: $(CONFIG_MENU_BIN)
-	@$(CONFIG_MENU_BIN) --defconfig "$(CURDIR)/Kconfig" "$(AUDIOX_CONFIG_FILE)" BOARD_$(shell echo "$(@:_defconfig=)" | tr a-z A-Z)
+	@$(CONFIG_MENU_BIN) --defconfig "$(CURDIR)/config/Kconfig" "$(AUDIOX_CONFIG_FILE)" BOARD_$(shell echo "$(@:_defconfig=)" | tr a-z A-Z)
 	@echo "Default $(@:_defconfig=) audiox configuration written to $(AUDIOX_CONFIG_FILE)"
 
 olddefconfig: $(CONFIG_MENU_BIN)
-	@$(CONFIG_MENU_BIN) --olddefconfig "$(CURDIR)/Kconfig" "$(AUDIOX_CONFIG_FILE)"
+	@$(CONFIG_MENU_BIN) --olddefconfig "$(CURDIR)/config/Kconfig" "$(AUDIOX_CONFIG_FILE)"
 
 print-config:
 	@cat "$(AUDIOX_CONFIG_FILE)"
 
 # Keeps existing choices and fills in options added to Kconfig since the last run.
-$(AUDIOX_CONFIG_FILE): $(CONFIG_MENU_BIN) $(CURDIR)/Kconfig
-	@$(CONFIG_MENU_BIN) --olddefconfig "$(CURDIR)/Kconfig" "$(AUDIOX_CONFIG_FILE)"
+$(AUDIOX_CONFIG_FILE): $(CONFIG_MENU_BIN) $(CURDIR)/config/Kconfig
+	@$(CONFIG_MENU_BIN) --olddefconfig "$(CURDIR)/config/Kconfig" "$(AUDIOX_CONFIG_FILE)"
 
 $(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ) $(WATCHDOG_OBJ) $(BOOTLOADER_OBJS): $(AUDIOX_CONFIG_FILE)
 
@@ -342,16 +342,16 @@ include $(CURDIR)/tests/Makefile
 
 fetch_deps:
 	@mkdir -p $(OUT_DIR)
-	@$(SCRIPTS_DIR)/sync_firmware.sh "$(FIRMWARE_GIT_URL)" "$(FIRMWARE_GIT_REF)" "$(OUT_DIR)" "$(KERNEL_IMAGE)" "$(BOARD_DTBS)" "$(BOARD_FIRMWARE_FILES)" "$(BOOT_OVERLAYS)"
+	@$(TOOLS_DIR)/build/sync_firmware.sh "$(FIRMWARE_GIT_URL)" "$(FIRMWARE_GIT_REF)" "$(OUT_DIR)" "$(KERNEL_IMAGE)" "$(BOARD_DTBS)" "$(BOARD_FIRMWARE_FILES)" "$(BOOT_OVERLAYS)"
 
 fetch_modules: $(MODULES_SOURCE_TARGET)
-	@$(SCRIPTS_DIR)/resolve_modules.sh "$(KV)" "$(OUT_DIR)" "$(DEP_FILE)" "module-load" "modules_staging" "$(AUDIOX_BOARD)" "$(MODULES_ROOT)"
+	@$(TOOLS_DIR)/build/resolve_modules.sh "$(KV)" "$(OUT_DIR)" "$(DEP_FILE)" "module-load" "modules_staging" "$(AUDIOX_BOARD)" "$(MODULES_ROOT)"
 
 fetch_boot_modules: $(MODULES_SOURCE_TARGET)
-	@$(SCRIPTS_DIR)/resolve_modules.sh "$(KV)" "$(OUT_DIR)" "$(BOOT_DEP_FILE)" "bootmodule-load" "bootmodules_staging" "$(AUDIOX_BOARD)" "$(MODULES_ROOT)"
+	@$(TOOLS_DIR)/build/resolve_modules.sh "$(KV)" "$(OUT_DIR)" "$(BOOT_DEP_FILE)" "bootmodule-load" "bootmodules_staging" "$(AUDIOX_BOARD)" "$(MODULES_ROOT)"
 
 qemu_kernel:
-	@$(SCRIPTS_DIR)/fetch_qemu_kernel.sh "$(QEMU_KERNEL_DIR)" "$(QEMU_KERNEL_VERSION)" \
+	@$(TOOLS_DIR)/qemu/fetch_qemu_kernel.sh "$(QEMU_KERNEL_DIR)" "$(QEMU_KERNEL_VERSION)" \
 		"$(SHARED_OUT_DIR)/downloads/$(QEMU_KERNEL_DEB)" "$(QEMU_KERNEL_SHA256)" $(QEMU_KERNEL_URLS)
 
 show_modules: fetch_modules
@@ -453,14 +453,14 @@ dnsmasq: $(DNSMASQ_BIN)
 .PHONY: lua
 lua: $(LUA_STATIC_LIB) $(LUA_HEADERS) $(LUA_LICENSE)
 
-$(LUA_STATIC_LIB) $(LUA_HEADERS) $(LUA_LICENSE) &: scripts/build_lua.sh
-	@bash "$(CURDIR)/scripts/build_lua.sh" "$(LUA_VERSION)" "$(LUA_SHA256)" "$(LUA_BUILD_ROOT)" "$(CC)" "$(LUA_AR)" "$(PKG_FETCH)"
+$(LUA_STATIC_LIB) $(LUA_HEADERS) $(LUA_LICENSE) &: tools/build/build_lua.sh
+	@bash "$(CURDIR)/tools/build/build_lua.sh" "$(LUA_VERSION)" "$(LUA_SHA256)" "$(LUA_BUILD_ROOT)" "$(CC)" "$(LUA_AR)" "$(PKG_FETCH)"
 
-$(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS) &: scripts/build_lua.sh
-	@bash "$(CURDIR)/scripts/build_lua.sh" "$(LUA_VERSION)" "$(LUA_SHA256)" "$(HOST_LUA_BUILD_ROOT)" "$(HOSTCC)" "$(HOSTAR)" "$(PKG_FETCH)"
+$(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS) &: tools/build/build_lua.sh
+	@bash "$(CURDIR)/tools/build/build_lua.sh" "$(LUA_VERSION)" "$(LUA_SHA256)" "$(HOST_LUA_BUILD_ROOT)" "$(HOSTCC)" "$(HOSTAR)" "$(PKG_FETCH)"
 
-$(DNSMASQ_BIN): scripts/build_dnsmasq.sh
-	@"$(CURDIR)/scripts/build_dnsmasq.sh" "$(DNSMASQ_VERSION)" "$(DNSMASQ_SHA256)" "$(SHARED_OUT_DIR)" "$@" "$(CC)" "$(PKG_FETCH)"
+$(DNSMASQ_BIN): tools/build/build_dnsmasq.sh
+	@"$(CURDIR)/tools/build/build_dnsmasq.sh" "$(DNSMASQ_VERSION)" "$(DNSMASQ_SHA256)" "$(SHARED_OUT_DIR)" "$@" "$(CC)" "$(PKG_FETCH)"
 
 # The static dnsmasq.conf must agree with CONFIG_DEVICE_IP (a /24 on usb0).
 check_dnsmasq_conf:
@@ -583,9 +583,9 @@ $(OUT_DIR)/plugins/%.axm: $(OUT_DIR)/plugins/%.so examples/plugins/%/axm.txt $(O
 	@rm -f "$@"
 	"$(OUT_DIR)/host/axm-pack" "examples/plugins/$*/axm.txt" "$<" "$@" $(wildcard examples/plugins/$*/*.html examples/plugins/$*/*.js examples/plugins/$*/*.css)
 
-$(OUT_DIR)/host/axm-pack: tools/axm-pack.cpp src/audio/plugin_package.cpp include/audio/plugin_package.hpp include/audio/plugin_api.h
+$(OUT_DIR)/host/axm-pack: tools/plugins/axm-pack.cpp src/audio/plugin_package.cpp include/audio/plugin_package.hpp include/audio/plugin_api.h
 	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tools/axm-pack.cpp src/audio/plugin_package.cpp
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tools/plugins/axm-pack.cpp src/audio/plugin_package.cpp
 
 bootloader_rootfs: $(BOOTLOADER_ROOTFS_DIR)/init $(BOOT_MODULE_LOAD_LIST) $(BOOT_MODULE_LOAD_BASE_LIST)
 	@echo "Creating bootloader rootfs structure..."
@@ -601,11 +601,11 @@ $(LUA_STAGED_LICENSE): $(LUA_LICENSE)
 	install -m 0644 "$<" "$@"
 
 .PHONY: web_assets
-web_assets: $(CURDIR)/web/node_modules/.audiox-assets-installed
-	node "$(CURDIR)/web/stage-assets.js" "$(OUT_DIR)/web-vendor"
+web_assets: $(CURDIR)/web/embedded/node_modules/.audiox-assets-installed
+	node "$(CURDIR)/web/embedded/stage-assets.js" "$(OUT_DIR)/web-vendor"
 
-$(CURDIR)/web/node_modules/.audiox-assets-installed: $(CURDIR)/web/package.json $(CURDIR)/web/package-lock.json
-	npm ci --prefix "$(CURDIR)/web" --ignore-scripts --no-audit --no-fund
+$(CURDIR)/web/embedded/node_modules/.audiox-assets-installed: $(CURDIR)/web/embedded/package.json $(CURDIR)/web/embedded/package-lock.json
+	npm ci --prefix "$(CURDIR)/web/embedded" --ignore-scripts --no-audit --no-fund
 	touch "$@"
 
 rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(ROOTFS_DIR)/sbin/audiox-plugin-worker $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB) $(LUA_STAGED_LICENSE) $(DNSMASQ_BIN) check_dnsmasq_conf web_assets
@@ -657,11 +657,11 @@ rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(ROOTFS_DIR)/sbin/aud
 	else \
 		echo "Warning: web index file not found at $(WEB_INDEX_HTML)"; \
 	fi
-	@if [ -d "$(CURDIR)/web" ]; then \
-		echo "Staging web assets from $(CURDIR)/web/..."; \
-		find "$(CURDIR)/web" -maxdepth 1 -type f \( -name '*.html' -o -name '*.css' -o -name '*.js' -o -name '*.svg' -o -name '*.png' \) ! -name 'stage-assets.js' -exec cp -t "$(ROOTFS_DIR)/etc/www/" {} +; \
+	@if [ -d "$(CURDIR)/web/embedded" ]; then \
+		echo "Staging web assets from $(CURDIR)/web/embedded/..."; \
+		find "$(CURDIR)/web/embedded" -maxdepth 1 -type f \( -name '*.html' -o -name '*.css' -o -name '*.js' -o -name '*.svg' -o -name '*.png' \) ! -name 'stage-assets.js' -exec cp -t "$(ROOTFS_DIR)/etc/www/" {} +; \
 	else \
-		echo "Warning: web assets directory not found at $(CURDIR)/web"; \
+		echo "Warning: web assets directory not found at $(CURDIR)/web/embedded"; \
 	fi
 	mkdir -p "$(ROOTFS_DIR)/etc/www/vendor"
 	cp -a "$(OUT_DIR)/web-vendor/." "$(ROOTFS_DIR)/etc/www/vendor/"
@@ -756,7 +756,7 @@ debug_ui:
 	@$(MAKE) --no-print-directory AUDIOX_QEMU=1 QEMU_EXTRA_ARGS="-display $(QEMU_UI_DISPLAY) $(QEMU_EXTRA_ARGS)" qemu_debug
 
 debug-attach:
-	@$(SCRIPTS_DIR)/qemu_usbip_attach.sh 127.0.0.1 "$(QEMU_USBIP_PORT)" usbip-vudc.0 30
+	@$(TOOLS_DIR)/qemu/qemu_usbip_attach.sh 127.0.0.1 "$(QEMU_USBIP_PORT)" usbip-vudc.0 30
 
 debug-reset-disk:
 	rm -f "$(QEMU_DISK)"
@@ -768,7 +768,7 @@ qemu_require_debug_build:
 	@if [ "$(AUDIOX_QEMU)" != "1" ]; then echo "This target needs AUDIOX_QEMU=1 (use make debug)."; exit 1; fi
 
 qemu_disk: qemu_require_debug_build initramfs $(BOOT_CONFIG_FILE) $(BOOT_CMDLINE_FILE)
-	@$(SCRIPTS_DIR)/build_qemu_disk.sh "$(QEMU_DISK)" "$(QEMU_DISK_SIZE_MB)" "$(INITRAMFS)" "$(PROGRAM_INITRAMFS)" \
+	@$(TOOLS_DIR)/qemu/build_qemu_disk.sh "$(QEMU_DISK)" "$(QEMU_DISK_SIZE_MB)" "$(INITRAMFS)" "$(PROGRAM_INITRAMFS)" \
 		"$(BOOT_CONFIG_FILE)" "$(BOOT_CMDLINE_FILE)" "$(FFMPEG_BIN)"
 
 qemu_debug: qemu_require_debug_build qemu_kernel qemu_disk $(COMBINED_INITRAMFS)
@@ -776,7 +776,7 @@ qemu_debug: qemu_require_debug_build qemu_kernel qemu_disk $(COMBINED_INITRAMFS)
 		QEMU_CMDLINE="$(QEMU_CMDLINE)" QEMU_MEMORY="$(QEMU_MEMORY)" QEMU_SMP="$(QEMU_SMP)" \
 		QEMU_HTTP_PORT="$(QEMU_HTTP_PORT)" QEMU_USBIP_PORT="$(QEMU_USBIP_PORT)" \
 		QEMU_USBIP_ATTACH="$(QEMU_USBIP_ATTACH)" QEMU_EXTRA_ARGS="$(QEMU_EXTRA_ARGS)" AUDIOX_DEVICE_IP="$(AUDIOX_DEVICE_IP)" \
-		$(SCRIPTS_DIR)/qemu_debug.sh
+		$(TOOLS_DIR)/qemu/qemu_debug.sh
 
 upload_ffmpeg: stage_ffmpeg
 	@if [ ! -f "$(FFMPEG_STAGE_DIR)/ffmpeg" ]; then \
@@ -826,7 +826,7 @@ upload_cmdline: $(BOOT_CMDLINE_FILE)
 	@echo "Kernel command line upload complete."
 
 fancyexport: initramfs
-	@$(SCRIPTS_DIR)/wait_and_export.sh "$(SD_MOUNT_BOOT)" "$(CURDIR)"
+	@$(TOOLS_DIR)/dev/wait_and_export.sh "$(SD_MOUNT_BOOT)" "$(CURDIR)"
 
 export: initramfs $(BOOT_CONFIG_FILE) $(BOOT_CMDLINE_FILE)
 	@if [ ! -d "$(SD_MOUNT_BOOT)" ]; then \
@@ -862,7 +862,7 @@ update_archive: $(UPDATE_PACK_BIN)
 	@$(MAKE) initramfs
 	@$(MAKE) boot_config
 	@"$(UPDATE_PACK_BIN)" --board "$(AUDIOX_BOARD)" --kernel-name "$(KERNEL_IMAGE)" --version "$(AUDIOX_VERSION_STRING)" \
-		--kernel-version "$$($(SCRIPTS_DIR)/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+" "$(KERNEL_UNAME_FILE)")" \
+		--kernel-version "$$($(TOOLS_DIR)/build/detect_kernel_version.sh "$(OUT_DIR)" "6.18.37-v8+" "$(KERNEL_UNAME_FILE)")" \
 		--cmdline "$(BOOT_CMDLINE_FILE)" \
 		"$(UPDATE_ARCHIVE)" "$(BOOT_CONFIG_FILE)" "$(INITRAMFS)" "$(BOOT_KERNEL_FILE)" "$(PROGRAM_INITRAMFS)"
 
@@ -926,7 +926,7 @@ dev: $(BOOT_CONFIG_FILE) $(BOOT_CMDLINE_FILE)
 	@echo "All uploads complete. Device will reboot once to install the staged runtime, then reboot into the new kernel and images."
 
 image: initramfs ffmpeg $(BOOT_CONFIG_FILE) $(BOOT_CMDLINE_FILE)
-	@$(SCRIPTS_DIR)/build_image.sh "$(IMG_FILE)" "$(IMG_SIZE_MB)" "$(OUT_DIR)" "$(INITRAMFS)" "$(PROGRAM_INITRAMFS)" "$(BOOT_CONFIG_FILE)" "$(BOOT_CMDLINE_FILE)" "$(FFMPEG_BIN)"
+	@$(TOOLS_DIR)/build/build_image.sh "$(IMG_FILE)" "$(IMG_SIZE_MB)" "$(OUT_DIR)" "$(INITRAMFS)" "$(PROGRAM_INITRAMFS)" "$(BOOT_CONFIG_FILE)" "$(BOOT_CMDLINE_FILE)" "$(FFMPEG_BIN)"
 
 clean:
 	rm -rf $(OUT_DIR)

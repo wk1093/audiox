@@ -69,4 +69,4 @@ API MIDI channels are **zero-based** (0–15). Use `channel=-1&note=-1` for
 unbound scenes. Saving an existing ID explicitly replaces that capture.
 
 Focused checks: `make test-scenes test-audio-runtime` and
-`node --test tests/web_scenes_test.js`.
+`node --test tests/web/web_scenes_test.js`.

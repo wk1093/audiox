@@ -7,20 +7,17 @@ on:
       - 'src/**'
       - 'include/**'
       - 'root/**'
-      - 'web/**'
-      - 'scripts/**'
+      - 'web/embedded/**'
+      - 'tools/**'
       - 'tests/**'
       - '.github/workflows/**'
-      - '!scripts/mirror-updates.sh'
-      - '!scripts/prepare-release.sh'
-      - '!scripts/release-notes.py'
+      - '!tools/release/mirror-updates.sh'
+      - '!tools/release/prepare-release.sh'
+      - '!tools/release/release-notes.py'
       - 'Makefile'
-      - 'Kconfig'
-      - 'bootmod.txt'
-      - 'depmod.txt'
-      - 'logo*.png'
-      - 'logo*.svg'
-      - 'logo*.ppm'
+      - 'config/Kconfig'
+      - 'config/modules/**'
+      - 'assets/branding/**'
   pull_request:
     branches: [ "main" ]
   workflow_call:
@@ -164,7 +161,7 @@ jobs:
         with:
           ref: ${{ github.workflow_sha }}
           path: .publishing-tools
-          sparse-checkout: scripts
+          sparse-checkout: tools/release
           persist-credentials: false
 
       - name: Install cross-compiler and build dependencies
@@ -220,7 +217,7 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           RELEASE_DATE: ${{ needs.prepare.outputs.date }}
         run: |
-          bash .publishing-tools/scripts/package-imager.sh out/audiox.img out/imager \
+          bash .publishing-tools/tools/release/package-imager.sh out/audiox.img out/imager \
             "$BOARD" "$CHANNEL" "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$RELEASE_DATE" \
             "$(make --silent print-version)"
           cp out/audiox-update.axu "out/imager/audiox-update-$BOARD.axu"
@@ -290,7 +287,7 @@ jobs:
         with:
           ref: ${{ github.workflow_sha }}
           path: .publishing-tools
-          sparse-checkout: scripts
+          sparse-checkout: tools/release
           persist-credentials: false
 
       - name: Download both boards' Imager files
@@ -310,7 +307,7 @@ jobs:
           SOURCE_REPO: ${{ github.workspace }}/source
           # Avoid collisions with the previous push workflow's nightly run numbers.
           PUBLISH_SEQUENCE: ${{ github.run_id }}
-        run: bash .publishing-tools/scripts/publish-imager.sh release
+        run: bash .publishing-tools/tools/release/publish-imager.sh release
 
   update-mirror:
     name: Deploy browser update mirror

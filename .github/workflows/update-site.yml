@@ -6,13 +6,12 @@ on:
   push:
     branches: [ "main" ]
     paths:
-      - 'site/**'
+      - 'web/public/**'
       - 'docs/**'
-      - 'scripts/mirror-updates.sh'
-      - 'web/styles.css'
-      - 'web/releases.js'
-      - 'logo.svg'
-      - 'logo_small.png'
+      - 'tools/release/mirror-updates.sh'
+      - 'web/embedded/styles.css'
+      - 'web/embedded/releases.js'
+      - 'assets/branding/**'
       - '.github/workflows/update-site.yml'
 
 permissions:
@@ -38,8 +37,8 @@ jobs:
         with:
           ref: ${{ github.workflow_sha }}
           sparse-checkout: |
-            scripts
-            site
+            tools/release
+            assets/branding
             web
             docs
           persist-credentials: false
@@ -60,7 +59,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: bash scripts/mirror-updates.sh out/update-pages
+        run: bash tools/release/mirror-updates.sh out/update-pages
 
       - name: Add documentation to Pages artifact
         run: |

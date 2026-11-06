@@ -22,14 +22,21 @@ Pi 4 Model B and Pi 5 are hardware-tested targets. The Pi 5 framebuffer UI remai
 | `src/http/` | HTTP/API, bounded logs, USB network setup, mDNS |
 | `src/scripting/`, `include/scripting/` | Lua compiler/API, independent script runtime/state, storage, utilities and media-key definitions |
 | `src/midi/`, `include/midi/` | MIDI controller input, lighting, and USB transport adapters used by scripts |
-| `web/` | Device browser UI, staged into `/etc/www` |
+| `web/embedded/` | Device browser UI, staged into `/etc/www` |
 | `root/` | Runtime rootfs seed files, including dnsmasq configuration |
-| `scripts/` | Dependency, module, image, QEMU, and release tools |
-| `Kconfig`, `.config` | Configuration definitions and local selected values |
-| `depmod.txt`, `bootmod.txt` | Runtime and bootloader module seeds |
-| `tests/`, `tests/Makefile` | Host regressions, including direct audio-runtime tests |
+| `tools/build/` | Dependency, module, firmware, and image tooling |
+| `tools/config/`, `tools/plugins/` | Menuconfig and native plugin packaging tools |
+| `tools/qemu/`, `tools/dev/`, `tools/release/` | VM, card-export, and release tooling |
+| `config/Kconfig`, `.config` | Configuration definitions and local selected values |
+| `config/modules/` | Runtime (`depmod.txt`) and bootloader (`bootmod.txt`) module seeds |
+| `config/imager/os_list.json` | Raspberry Pi Imager entry catalog |
+| `assets/branding/` | Shared logos and boot splash; docs icons link to these files |
+| `tests/native/` | C++ regressions grouped by subsystem, including direct audio-runtime tests |
+| `tests/web/`, `tests/build/`, `tests/release/` | Browser, build-tool, and publishing regressions |
+| `tests/Makefile` | Public test targets, included by the root Makefile |
 | `docs/` | VitePress documentation; separate dependencies |
-| `site/` | Public download site, distinct from device UI/docs |
+| `web/public/` | Public download site, distinct from device UI/docs |
+| `docs/TODO.md` | Contributor roadmap |
 | `out/` | Generated binaries, dependencies, firmware, rootfs trees, and images |
 
 Scripting has its own `ScriptContext`; MIDI is an event source and output
@@ -58,7 +65,7 @@ Additional tools depend on the workflow:
 
 - Host audio tests: host ALSA development headers/library (Debian/Ubuntu: `libasound2-dev`).
 - Firmware WebUI assets and JavaScript regressions: Node.js/npm. `make web_assets`
-  installs the pinned `web/package-lock.json` packages with lifecycle scripts
+  installs the pinned `web/embedded/package-lock.json` packages with lifecycle scripts
   disabled, stages the graph library/fonts and their licenses in `out/web-vendor`,
   and `rootfs` copies them to the device. Once dependencies are cached, device
   operation requires no CDN or Google Fonts connection.
@@ -128,7 +135,7 @@ make initramfs
 - ALSA is built from source into `out/alsa-sysroot`; static ALSA is the supported build strategy.
 - SBC, Lua, dnsmasq, and Bluetooth firmware are prepared by their build dependencies. Lua/dnsmasq and configured firmware downloads use the checks specified in the build scripts/Makefile.
 - Module dependencies are resolved and copied into the appropriate rootfs.
-- Web assets from `web/` are copied into the runtime image.
+- Web assets from `web/embedded/` are copied into the runtime image.
 
 Outputs:
 
@@ -145,8 +152,8 @@ The Pi firmware loads both initramfs files; the bootloader enters the runtime wi
 
 ### Module changes
 
-Use `bootmod.txt` for the bootloader's storage/filesystem requirements and Pi 5
-cooling during updates/recovery. Use `depmod.txt` for runtime seeds:
+Use `config/modules/bootmod.txt` for the bootloader's storage/filesystem requirements and Pi 5
+cooling during updates/recovery. Use `config/modules/depmod.txt` for runtime seeds:
 
 ```text
 base: drivers/example/early-driver
@@ -183,13 +190,13 @@ make image
 make image IMG_SIZE_MB=1024
 ```
 
-The default output is `out/audiox.img`, default size 256 MiB. `scripts/build_image.sh` creates an MBR image with a FAT boot partition and an ext4 storage partition, uses a loop device, formats/mounts the image partitions, and copies boot files plus the converter. The script checks required space for FFmpeg staging.
+The default output is `out/audiox.img`, default size 256 MiB. `tools/build/build_image.sh` creates an MBR image with a FAT boot partition and an ext4 storage partition, uses a loop device, formats/mounts the image partitions, and copies boot files plus the converter. The script checks required space for FFmpeg staging.
 
 This command creates an image file; it does **not** select and flash a physical SD card. Install it using the explicit card-identification/verification steps in [Getting started](/guide/getting-started). Successful image generation is not proof that the resulting image boots on hardware.
 
 For an **already partitioned card**, `make export SD_MOUNT_BOOT=/actual/boot/mount` copies the boot artifacts into the mounted boot partition. It does not create or populate a new ext4 storage layout.
 
-`make fancyexport` watches for newly inserted storage and exports to its first partition using `scripts/wait_and_export.sh`. This is not a disk-selection wizard: inspect the script and disconnect unrelated removable drives before using it. Both export paths overwrite boot files and are not substitutes for a configuration backup.
+`make fancyexport` watches for newly inserted storage and exports to its first partition using `tools/dev/wait_and_export.sh`. This is not a disk-selection wizard: inspect the script and disconnect unrelated removable drives before using it. Both export paths overwrite boot files and are not substitutes for a configuration backup.
 
 ## Build and install an AXU
 
@@ -292,18 +299,19 @@ Some targets use sanitizers, need host ALSA headers, or build host Lua. `test-dn
 Browser behavior uses Node's built-in runner, for example:
 
 ```bash
-node --test tests/web_ui_test.js tests/web_logs_test.js tests/web_updates_test.js
-node --test tests/web_backup_test.js tests/web_midi_test.js tests/web_lighting_test.js
-node --test tests/web_routing_test.js tests/web_soundboard_order_test.js
-node --test tests/build_dependencies_test.js tests/site_navigation_test.js
-node --test tests/web_bluetooth_test.js
+node --test tests/web/web_ui_test.js tests/web/web_logs_test.js tests/web/web_updates_test.js
+node --test tests/web/web_backup_test.js tests/web/web_midi_test.js tests/web/web_lighting_test.js
+node --test tests/web/web_routing_test.js tests/web/web_soundboard_order_test.js
+bash tests/build/build_dependencies_test.sh
+node --test tests/web/site_navigation_test.js
+node --test tests/web/web_bluetooth_test.js
 ```
 
 Packaging/release tests use local mocks, not real publication:
 
 ```bash
-bash tests/imager_package_test.sh
-bash tests/imager_publish_test.sh
+bash tests/release/imager_package_test.sh
+bash tests/release/imager_publish_test.sh
 ```
 
 Those packaging tests require tools such as `jq` and `xz`. Packet/parser/browser tests do not establish host OS, electrical, latency, or physical hotplug compatibility. For release validation, exercise actual power/cables, display/touch, USB networking, both audio directions and host gain/mute, MIDI/keyboard reconnects, and update/recovery on the target board.
@@ -337,12 +345,12 @@ static output, not the development server. VitePress is pinned by the docs
 manifest and lockfile.
 
 Release tooling builds Pi 4 and Pi 5 images, checksums, manifests, and
-board-matched AXU archives. `scripts/package-imager.sh`,
-`scripts/publish-imager.sh`, and `scripts/mirror-updates.sh` handle packaging,
+board-matched AXU archives. `tools/release/package-imager.sh`,
+`tools/release/publish-imager.sh`, and `tools/release/mirror-updates.sh` handle packaging,
 catalogs, and browser-update mirrors. Firmware publication and mirror
 deployment are separate workflows.
 
-Forks must review repository/mirror URLs in `web/updates.js`, Imager catalogs, and site links before publishing. Do not change upstream URLs just to perform a local firmware build.
+Forks must review repository/mirror URLs in `web/embedded/updates.js`, Imager catalogs, and site links before publishing. Do not change upstream URLs just to perform a local firmware build.
 
 See [Releases and publishing](./publishing) for stable-release steps, nightly
 retention, version strings, catalog behavior, and required repository permissions.

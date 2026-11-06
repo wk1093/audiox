@@ -38,13 +38,13 @@ reproducible installation, record the release version alongside the checksum.
 2. Obtain Raspberry Pi Imager. Load the project's custom catalog:
 
    ```text
-   https://raw.githubusercontent.com/wk1093/audiox/main/os_list.json
+   https://raw.githubusercontent.com/wk1093/audiox/main/config/imager/os_list.json
    ```
 
    Imager versions differ in how a custom repository is opened. On versions with the repository command-line option, launch:
 
    ```bash
-   rpi-imager --repo https://raw.githubusercontent.com/wk1093/audiox/main/os_list.json
+   rpi-imager --repo https://raw.githubusercontent.com/wk1093/audiox/main/config/imager/os_list.json
    ```
 
 3. Select the matching Raspberry Pi model, **AudioX Stable** or **AudioX Nightly**, and the matching board entry. Refresh an old catalog if a retained nightly has expired.

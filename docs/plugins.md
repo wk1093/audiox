@@ -51,7 +51,7 @@ From the repository root (a C++17 compiler and Linux headers are required):
 
 ```sh
 mkdir -p build/plugins
-c++ -std=c++17 -O2 -Iinclude tools/axm-pack.cpp src/audio/plugin_package.cpp \
+c++ -std=c++17 -O2 -Iinclude tools/plugins/axm-pack.cpp src/audio/plugin_package.cpp \
   -o build/plugins/axm-pack
 cc -std=c11 -O2 -fPIC -shared -fvisibility=hidden -Iinclude \
   examples/plugins/gain/gain.c -o build/plugins/gain.so
@@ -310,7 +310,7 @@ lifecycle, and planar DSP/bypass/sleep/retirement regressions.
 
 ```sh
 c++ -std=c++17 -Wall -Wextra -Werror -Iinclude \
-  tests/plugin_package_test.cpp src/audio/plugin_package.cpp \
+  tests/native/plugins/plugin_package_test.cpp src/audio/plugin_package.cpp \
   -o build/plugins/plugin_package_test
 build/plugins/plugin_package_test
 ```

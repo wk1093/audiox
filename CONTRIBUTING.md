@@ -49,12 +49,25 @@ reversion does not cover every failure.
 ## Project layout
 
 - `src/`, `include/`: C++ runtime, bootloader, and shared headers.
-- `scripts/`: build, image, QEMU, and release tools.
-- `web/`: device control interface.
+- `tools/`: host tooling grouped into `build/`, `config/`, `dev/`, `plugins/`,
+  `qemu/`, and `release/`. Scripts and compiled host tools live together by purpose.
+- `config/`: `Kconfig` definitions, module seeds in `modules/`, and the
+  Raspberry Pi Imager entry catalog in `imager/`. Local selections stay in `.config`.
+- `assets/branding/`: shared logos and the boot splash. Documentation icons
+  link here instead of maintaining duplicate artwork.
+- `web/embedded/`: device control interface, staged into `/etc/www`.
+- `web/public/`: public download site. Documentation remains in `docs/`.
 - `root/`: runtime root-filesystem seed files.
-- `tests/`: host regressions, including direct audio-runtime tests.
+- `tests/`: `native/` regressions grouped by subsystem, plus `web/`, `build/`,
+  and `release/` suites. `tests/Makefile` keeps the public Make targets together.
 - `docs/`: VitePress documentation.
 - `out/`: generated dependencies, images, and build outputs.
+
+Run Make targets from the repository root; the layout does not change target
+names, output locations, device paths, or published site URLs. See the
+[development guide](docs/guide/development.md) for individual commands and
+[TODO.md](docs/TODO.md) for the roadmap. Keep new files with their subsystem
+rather than adding root-level helpers.
 
 ## Contribution workflow
 

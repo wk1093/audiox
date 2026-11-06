@@ -85,7 +85,7 @@ npm run docs:build --prefix docs
 ## Contributing
 
 Focused contributions, hardware testing, reliability work, and documentation
-updates are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and [TODO.md](TODO.md)
+updates are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/TODO.md](docs/TODO.md)
 before starting a larger change. Issue reports are most useful with the Pi
 model, firmware and kernel versions, connected hardware, reproduction steps,
 and relevant logs.

@@ -39,7 +39,7 @@ jobs:
             echo "::error::Run this workflow from main to release its selected commit."
             exit 1
           fi
-          bash scripts/prepare-release.sh >> "$GITHUB_OUTPUT"
+          bash tools/release/prepare-release.sh >> "$GITHUB_OUTPUT"
 
   release:
     name: Build and publish ${{ needs.prepare.outputs.channel }} release

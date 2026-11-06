@@ -12,7 +12,7 @@ workflow** on `main`.
 
 The workflow compares firmware inputs selected by its `push.paths` filter.
 Documentation, tests, Imager catalogs, and mirror-only edits do not trigger a
-nightly. Keep the workflow filter and `scripts/prepare-release.sh` aligned when
+nightly. Keep the workflow filter and `tools/release/prepare-release.sh` aligned when
 adding firmware inputs.
 
 ## Select a release channel
@@ -87,10 +87,16 @@ metadata. Nightly packaging retains the configured prerelease.
 ## Imager catalogs and permissions
 
 The AudioX Imager repository is
-`https://raw.githubusercontent.com/wk1093/audiox/main/os_list.json`. The
+`https://raw.githubusercontent.com/wk1093/audiox/main/config/imager/os_list.json`. The
 catalog provides Stable and Nightly entries for Pi 4 and Pi 5, with board tags,
 image sizes, icons, and SHA-256 hashes. Forks must replace repository-specific
 URLs before publication.
+
+Branding lives in `assets/branding/`. Packaging uses the relocated icon URL;
+catalog publication also repairs the old root-level icon URL in retained
+release entries. Archived manifests and firmware download URLs are left
+unchanged. Imager clients using the former root-level catalog URL must switch
+to the URL above.
 
 Release workflows use `GITHUB_TOKEN` with release-content and tag-management
 permissions. Repository policy must allow replacement of rolling assets and
@@ -102,13 +108,13 @@ download/update mirror; firmware publication does not deploy Pages.
 These tests use local mocks and do not publish a release:
 
 ```sh
-bash tests/imager_package_test.sh
-bash tests/imager_publish_test.sh
-bash tests/release_workflows_test.sh
-python3 tests/release_notes_test.py
-node --test tests/site_navigation_test.js tests/docs_site_test.js
+bash tests/release/imager_package_test.sh
+bash tests/release/imager_publish_test.sh
+bash tests/release/release_workflows_test.sh
+python3 tests/release/release_notes_test.py
+node --test tests/web/site_navigation_test.js tests/web/docs_site_test.js
 ```
 
 The shell tests require tools including `jq` and `xz`. See
-`scripts/package-imager.sh`, `scripts/publish-imager.sh`, and
-`scripts/mirror-updates.sh` for the maintained entry points.
+`tools/release/package-imager.sh`, `tools/release/publish-imager.sh`, and
+`tools/release/mirror-updates.sh` for the maintained entry points.

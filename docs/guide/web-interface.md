@@ -12,7 +12,7 @@ your browser needs internet access to open it.
 The device interface itself works without internet: its graph library and
 fonts are shipped locally. The online manual and optional update checks still
 need internet. For a local development preview, run `npm ci --prefix web`
-and `node web/stage-assets.js` before serving the `web` directory.
+and `node web/embedded/stage-assets.js` before serving the `web` directory.
 
 The interface is designed for both a desktop browser and a phone or tablet.
 On a narrow screen, scroll the navigation tabs horizontally to reach every page.

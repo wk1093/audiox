@@ -1,6 +1,10 @@
 #include "http/context.hpp"
 #include "http/ffmpeg.hpp"
 #include "http/logs.hpp"
+#include "http/diagnostic_summary.hpp"
+#include "http/scenes.hpp"
+#include "hardware_telemetry.hpp"
+#include "system_history.hpp"
 #include "audio/context.hpp"
 #include "audio/health.hpp"
 #include "audio/stress_test.hpp"
@@ -4514,13 +4518,8 @@ static int handleBluetoothAutoConnect(HttpServer *server,
     return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
 }
 
-static int handleSystemInfo(HttpServer *server,
-							 int cfd,
-							 const char *method,
-							 const char *path) {
-	(void)method;
-	(void)path;
-	if (!server) return -1;
+static int buildSystemInfo(HttpServer *server, char *out, size_t capacity) {
+	if (!server || !out || !capacity) return RET_ERR;
 
 	const char *version_str = "unknown";
 #if defined(AUDIOX_VERSION_STRING)
@@ -4573,33 +4572,14 @@ static int handleSystemInfo(HttpServer *server,
 	long cpu_count = sysconf(_SC_NPROCESSORS_ONLN);
 	if (cpu_count < 1) cpu_count = 1;
 	char cpu_times_json[128] = "null";
-	FILE *cpu_stat_file = fopen("/proc/stat", "r");
-	if (cpu_stat_file) {
-		char cpu_label[8] = {};
-		unsigned long long user = 0, nice = 0, system = 0, idle = 0;
-		unsigned long long iowait = 0, irq = 0, softirq = 0, steal = 0;
-		if (fscanf(cpu_stat_file, "%7s %llu %llu %llu %llu %llu %llu %llu %llu",
-				   cpu_label, &user, &nice, &system, &idle, &iowait, &irq, &softirq, &steal) == 9 &&
-			strcmp(cpu_label, "cpu") == 0) {
-			const unsigned long long totalTicks = user + nice + system + idle + iowait +
-				irq + softirq + steal;
-			const unsigned long long idleTicks = idle + iowait;
-			snprintf(cpu_times_json, sizeof(cpu_times_json),
-					 "{\"total_ticks\":%llu,\"idle_ticks\":%llu}", totalTicks, idleTicks);
-		}
-		fclose(cpu_stat_file);
-	}
+	audiox::system::CpuTimes cpuTimes;
+	if (audiox::system::readCpuTimes(cpuTimes))
+		snprintf(cpu_times_json, sizeof(cpu_times_json),
+				 "{\"total_ticks\":%llu,\"idle_ticks\":%llu}",
+				 (unsigned long long)cpuTimes.total, (unsigned long long)cpuTimes.idle);
 	char temperature_json[24] = "null";
-	FILE *temperature_file = fopen("/sys/class/thermal/thermal_zone0/temp", "r");
-	if (temperature_file) {
-		long temperature_millidegrees = -1;
-		if (fscanf(temperature_file, "%ld", &temperature_millidegrees) == 1 &&
-			temperature_millidegrees >= 0 && temperature_millidegrees <= 150000) {
-			snprintf(temperature_json, sizeof(temperature_json), "%.1f",
-					 temperature_millidegrees / 1000.0);
-		}
-		fclose(temperature_file);
-	}
+	const double temperature = audiox::system::readCpuTemperature();
+	if (std::isfinite(temperature)) snprintf(temperature_json, sizeof(temperature_json), "%.1f", temperature);
 	struct sysinfo si;
 	if (sysinfo(&si) == 0) {
 		uptime_secs = si.uptime;
@@ -4640,8 +4620,8 @@ static int handleSystemInfo(HttpServer *server,
 #else
 	const char *stressAvailable = "false";
 #endif
-	char out[2048];
-	int n = snprintf(out, sizeof(out),
+	const std::string hardware = audiox::system::hardwareTelemetryJson();
+	int n = snprintf(out, capacity,
 					 "{\"version\":\"%s\",\"kernel\":\"%s\","
 					 "\"board\":\"%s\","
 					 "\"model\":\"%s\","
@@ -4655,6 +4635,7 @@ static int handleSystemInfo(HttpServer *server,
 					 "\"load1\":%.2f,"
 					 "\"ffmpeg\":\"%s\","
 					 "\"storage\":%s,"
+					 "\"hardware\":%s,"
 					 "\"audio_health\":{\"xruns\":%llu,\"warning_id\":\"%llu\","
 					 "\"warning_active\":%s},"
 					 "\"audio_buffer\":{\"base_block_frames\":%u,\"target_period_frames\":%u,"
@@ -4669,7 +4650,7 @@ static int handleSystemInfo(HttpServer *server,
 					 version_str, kernel_buf, audioxDetectBoard(), model_buf, cpu_freq_mhz,
 					 cpu_count, cpu_times_json, temperature_json,
 					 uptime_secs, mem_total_mb, mem_avail_mb, load1,
-					 ffmpeg_version, storage_json,
+					 ffmpeg_version, storage_json, hardware.c_str(),
 					 (unsigned long long)audiox::audioHealth.total(),
 					 (unsigned long long)warningAt,
 					 audiox::audioHealth.warningActive(now) ? "true" : "false",
@@ -4686,8 +4667,122 @@ static int handleSystemInfo(HttpServer *server,
 					 stressAvailable, audiox::AudioStressTest::modeName(stressMode),
 					 (unsigned)audiox::audioStressTest.remainingMs(),
 					 (unsigned)audiox::audioStressTest.workerCount());
-	if (n < 0 || n >= (int)sizeof(out)) n = 0;
-	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, (size_t)n);
+	if (n < 0 || (size_t)n >= capacity) {
+		printf("[HTTP] [ERR] system info response exceeded capacity\n");
+		return RET_ERR;
+	}
+	return RET_OK;
+}
+
+static int handleSystemInfo(HttpServer *server, int cfd, const char *, const char *) {
+	char out[8192];
+	if (buildSystemInfo(server, out, sizeof(out)) != RET_OK) {
+		static const char error[] = "could not build system information\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain",
+									error, sizeof(error) - 1);
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
+}
+
+static int handleSystemHistory(HttpServer *server, int cfd, const char *method, const char *query) {
+	if (strcmp(method, "GET") != 0) return sendMethodNotAllowed(server, cfd);
+	size_t limit = audiox::system::SystemHistory::kCapacity;
+	if (query && *query) {
+		const std::string_view input(query);
+		bool valid = input.substr(0, 6) == "limit=" && input.size() > 6 && input.size() <= 10;
+		limit = 0;
+		for (size_t i = 6; valid && i < input.size(); ++i) {
+			valid = input[i] >= '0' && input[i] <= '9';
+			if (valid) limit = limit * 10 + (input[i] - '0');
+		}
+		if (!valid || limit < 1 || limit > audiox::system::SystemHistory::kCapacity) {
+			static const char error[] = "{\"error\":\"limit must be an integer from 1 to 1000\"}";
+			return server->sendResponse(cfd, "400 Bad Request", "application/json", error, sizeof(error) - 1);
+		}
+	}
+	const auto &history = audiox::system::systemHistory;
+	std::string response = "{\"runtime_id\":\"" + std::to_string(history.runtime())
+		+ "\",\"sample_interval_ms\":1000,\"capacity\":1000,\"now_ms\":"
+		+ std::to_string(audiox::healthMonotonicMs()) + ",\"samples\":[";
+	const size_t first = history.size() - std::min(limit, history.size());
+	for (size_t i = first; i < history.size(); ++i) {
+		const auto &sample = history.at(i);
+		char temperature[32] = "null", cpu[32] = "null", xruns[32] = "null";
+		if (std::isfinite(sample.temperature)) snprintf(temperature, sizeof(temperature), "%.1f", sample.temperature);
+		if (std::isfinite(sample.cpu)) snprintf(cpu, sizeof(cpu), "%.2f", sample.cpu);
+		if (sample.xrunsValid) snprintf(xruns, sizeof(xruns), "%llu", (unsigned long long)sample.xruns);
+		char row[256];
+		snprintf(row, sizeof(row), "%s{\"id\":%llu,\"now\":%llu,\"temperature\":%s,\"cpu\":%s,\"xruns\":%s}",
+				 i == first ? "" : ",", (unsigned long long)sample.id, (unsigned long long)sample.now,
+				 temperature, cpu, xruns);
+		response += row;
+	}
+	response += "]}";
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", response.data(), response.size());
+}
+
+static int handleAudioDeviceHealth(HttpServer *server, int cfd, const char *method) {
+	if (strcmp(method, "GET") != 0) return sendMethodNotAllowed(server, cfd);
+	if (!server->app || !server->app->audio) {
+		static const char error[] = "audio subsystem unavailable\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "text/plain", error, sizeof(error) - 1);
+	}
+	AudioContext &audio = *server->app->audio;
+	char detected[32768];
+	if (audio.buildDevicesJson(detected, sizeof(detected)) != RET_OK) {
+		static const char error[] = "could not read audio devices\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain", error, sizeof(error) - 1);
+	}
+	const auto &snapshot = audio.deviceHealth.read();
+	std::string response = "{\"detected\":";
+	response += detected;
+	const uint64_t now = audiox::healthMonotonicMs();
+	const bool stale = !snapshot.sampledAt || now < snapshot.sampledAt || now - snapshot.sampledAt > 2000;
+	response += ",\"sampled_at_ms\":" + std::to_string(snapshot.sampledAt)
+		+ ",\"stale\":" + (stale ? "true" : "false") + ",\"streams\":[";
+	for (unsigned i = 0; i < snapshot.count; ++i) {
+		const auto &stream = snapshot.streams[i];
+		char metrics[256];
+		snprintf(metrics, sizeof(metrics),
+				 "\",\"capture\":%s,\"active\":%s,\"rate\":%u,\"period_frames\":%u,"
+				 "\"buffer_frames\":%u,\"mode\":\"%s\",\"xruns\":%llu}",
+				 stream.capture ? "true" : "false", stream.active ? "true" : "false",
+				 stream.rate, stream.period, stream.buffer, stream.active ? (stream.mmap ? "MMAP" : "RW") : "offline",
+				 (unsigned long long)stream.xruns);
+		response += (i ? ",{\"id\":\"" : "{\"id\":\"");
+		response += audiox::json::escape(stream.id);
+		response += metrics;
+	}
+	response += "]}";
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", response.data(), response.size());
+}
+
+static int handleDiagnosticSummary(HttpServer *server, int cfd, const char *method) {
+	if (strcmp(method, "GET") != 0) return sendMethodNotAllowed(server, cfd);
+	char system[8192];
+	if (buildSystemInfo(server, system, sizeof(system)) != RET_OK) {
+		static const char error[] = "could not collect diagnostic information\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain", error, sizeof(error) - 1);
+	}
+	std::string response = "{\"format\":\"audiox-diagnostics-v1\",\"system\":";
+	response += system;
+	response += ",\"privacy\":\"Raw log messages, device identifiers, configuration, pairing records, scripts and audio are omitted.\",\"logs\":[";
+	for (unsigned i = 0; i < 2; ++i) {
+		const char *source = i == 0 ? "stdout" : "stderr";
+		char text[65536];
+		size_t length = 0;
+		const int rc = readSystemLogText(source, 128, text, sizeof(text), &length);
+		const auto counts = audiox::summarizeDiagnosticLogs(text, rc == RET_OK ? length : 0);
+		char entry[256];
+		snprintf(entry, sizeof(entry),
+				 "%s{\"source\":\"%s\",\"available\":%s,\"line_limit\":128,\"byte_limit\":65536,"
+				 "\"lines\":%u,\"errors\":%u,\"warnings\":%u,\"xrun_messages\":%u}",
+				 i ? "," : "", source, rc == RET_OK ? "true" : "false",
+				 counts.lines, counts.errors, counts.warnings, counts.xruns);
+		response += entry;
+	}
+	response += "]}\n";
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", response.data(), response.size());
 }
 
 static int handleSystemAudioStress(HttpServer *server, int cfd, const char *method,
@@ -5650,6 +5745,11 @@ int handleApiRequest(HttpServer *server,
 	    return handlePlugins(server, cfd, method, path, body, body_len);
 
 	if (strcmp(path, "/api/system/logs") == 0) return handleSystemLogs(server, cfd, method, query);
+	if (strcmp(path, "/api/scenes") == 0 || strncmp(path, "/api/scenes/", 12) == 0)
+		return handleSceneRequest(server, cfd, method, path, query);
+	if (strcmp(path, "/api/system/audio-devices") == 0) return handleAudioDeviceHealth(server, cfd, method);
+	if (strcmp(path, "/api/system/history") == 0) return handleSystemHistory(server, cfd, method, query);
+	if (strcmp(path, "/api/system/diagnostics") == 0) return handleDiagnosticSummary(server, cfd, method);
 
 	if (strncmp(path, HTTP_SOUNDBOARD_TRIGGER_PREFIX, strlen(HTTP_SOUNDBOARD_TRIGGER_PREFIX)) == 0) {
 		if (strcmp(method, "GET") != 0 && strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {

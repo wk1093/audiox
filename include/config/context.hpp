@@ -5,6 +5,8 @@
 #include <ctime>
 #include <memory>
 #include <mutex>
+#include <vector>
+#include <string>
 #include <sys/types.h>
 #include "defs.hpp"
 #include "config/schema.hpp"
@@ -97,6 +99,7 @@ struct RouterConfig {
     void replaceAllRoutes(const char *const *routes, size_t count);
     bool hasRoutingHelper() const;
     void setRoutingHelper(bool enabled);
+    int replaceSceneRoutes(const std::vector<std::string> &routes, bool helper);
 };
 
 

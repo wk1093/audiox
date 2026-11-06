@@ -19,7 +19,8 @@ sudo apt-get install -y \
 ```
 
 Additional dependencies depend on the target. Host audio tests require ALSA
-development files; browser tests require Node.js; docs require Node.js/npm;
+development files; firmware WebUI assets require Node.js/npm; browser tests
+require Node.js; docs require Node.js/npm;
 some target checks use `qemu-aarch64`. The [development guide](docs/guide/development.md)
 lists commands, outputs, and optional tooling.
 

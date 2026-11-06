@@ -6,6 +6,7 @@
 #include "audio/processing_fx.hpp"
 #include "audio/pcm_convert.hpp"
 #include "audio/capture_ring.hpp"
+#include "audio/scene_fade.hpp"
 #include "bluetooth/route_id.hpp"
 
 #include <algorithm>
@@ -55,6 +56,7 @@ enum NodeKind {
 };
 
 struct RuntimeGraph {
+    audiox::scenes::Fade sceneFade;
     struct SoundboardVoice {
         uint8_t active;
         uint8_t hold;
@@ -92,6 +94,7 @@ struct RuntimeGraph {
         uint32_t pendingOffsetFrames;
         snd_pcm_format_t format;
         int mmapAccess;
+        uint64_t xruns;
         char path[64];
         int16_t pendingBlock[BUFFER_FRAMES * kMaxChannelsPerThing];
         int32_t pendingBlock32[BUFFER_FRAMES * kMaxChannelsPerThing];
@@ -164,6 +167,7 @@ struct AlsaCaptureBackend {
         uint32_t reopenRetryBlocks;
         snd_pcm_format_t format;
         int mmapAccess;
+        uint64_t xruns;
         AdaptiveSrcController src;
         char path[64];
         int16_t ioBlock[BUFFER_FRAMES * kMaxChannelsPerThing];
@@ -574,6 +578,7 @@ static bool openCaptureStream(AlsaCaptureStream *s) {
                     snd_pcm_uframes_t period = 0;
                     snd_pcm_uframes_t buffer = 0;
                     size_t frameBytes = 0;
+                    unsigned int negotiatedRate = 0;
                     snd_pcm_access_t access = SND_PCM_ACCESS_MMAP_INTERLEAVED;
                     int openRc = audio_pcm_open_configured(&pcm,
                                                            s->path,
@@ -588,7 +593,8 @@ static bool openCaptureStream(AlsaCaptureStream *s) {
                                                            &buffer,
                                                            &frameBytes,
                                                            profiles[p].configureTiming,
-                                                           0);
+                                                           0,
+                                                           &negotiatedRate);
                     if (openRc != 0 || !pcm) {
                         lastErr = openRc;
                         lastAttemptPath = s->path;
@@ -599,7 +605,7 @@ static bool openCaptureStream(AlsaCaptureStream *s) {
                     s->pcm = pcm;
                     s->format = formats[f];
                     s->channels = ch;
-                    s->sampleRate = rates[r];
+                    s->sampleRate = negotiatedRate;
                     s->periodFrames = static_cast<uint32_t>(period);
                     s->bufferFrames = static_cast<uint32_t>(buffer);
                     s->bufferLevel = bufferLevel;
@@ -759,6 +765,7 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
                     snd_pcm_uframes_t period = 0;
                     snd_pcm_uframes_t buffer = 0;
                     size_t frameBytes = 0;
+                    unsigned int negotiatedRate = 0;
                     snd_pcm_access_t access = SND_PCM_ACCESS_MMAP_INTERLEAVED;
                     int openRc = audio_pcm_open_configured(&pcm,
                                                            s->path,
@@ -773,7 +780,8 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
                                                            &buffer,
                                                            &frameBytes,
                                                            profiles[p].configureTiming,
-                                                           0);
+                                                           0,
+                                                           &negotiatedRate);
                     if (openRc != 0 || !pcm) {
                         lastErr = openRc;
                         lastAttemptPath = s->path;
@@ -784,7 +792,7 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
                     s->pcm = pcm;
                     s->format = formats[f];
                     s->channels = ch;
-                    s->sampleRate = rates[r];
+                    s->sampleRate = negotiatedRate;
                     s->periodFrames = static_cast<uint32_t>(period);
                     s->bufferFrames = static_cast<uint32_t>(buffer);
                     s->bufferLevel = bufferLevel;
@@ -1028,6 +1036,7 @@ static void serviceCaptureIo(AlsaCaptureBackend *backend) {
             }
 
             int err = (framesRead < 0) ? (int)(-framesRead) : EIO;
+            if (err == EPIPE) ++s.xruns;
             if (err == EPIPE || err == ESTRPIPE || err == EIO) {
                 if (audio_pcm_recover_capture(s.pcm, -err, s.path) < 0) {
                     closeCaptureStream(&s);
@@ -1067,6 +1076,25 @@ static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
     if (!ctx || !rt) {
         return;
     }
+
+    const bool muted = ctx->sceneMuted.load(std::memory_order_acquire);
+    if (muted || rt->sceneFade.gain < 1.0f) {
+        float envelope[BUFFER_FRAMES];
+        for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame)
+            envelope[frame] = rt->sceneFade.next(muted, SAMPLE_RATE);
+        for (uint16_t i = 0; i < rt->sinkNodeCount; ++i) {
+            const uint16_t node = rt->sinkNodes[i];
+            const uint8_t channels = std::min<uint8_t>(rt->snapshot.things[node].inputs, kMaxChannelsPerThing);
+            for (uint8_t channel = 0; channel < channels; ++channel) {
+                const float *source = rt->inputs[node][channel];
+                float *output = rt->inputStorage[node][channel];
+                for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame)
+                    output[frame] = source[frame] * envelope[frame];
+                rt->inputs[node][channel] = output;
+            }
+        }
+    }
+    ctx->sceneSilent.store(muted && rt->sceneFade.gain == 0.0f, std::memory_order_release);
 
     uint32_t bluetoothSlotsServiced = 0;
     for (uint16_t i = 0; i < rt->sinkNodeCount; ++i) {
@@ -1176,6 +1204,7 @@ static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
         }
 
         int err = (framesWritten < 0) ? (int)(-framesWritten) : EIO;
+        if (err == EPIPE) ++s.xruns;
         if (err == EPIPE || err == ESTRPIPE || err == EIO) {
             if (audio_pcm_recover(s.pcm, -err, s.path, "playback") < 0) {
                 closePlaybackStream(&s);
@@ -2492,6 +2521,29 @@ static void maybeLogStats(RuntimeGraph *rt, const AlsaCaptureBackend *captureBac
     }
 }
 
+static void publishDeviceHealth(AudioContext *ctx, const RuntimeGraph &runtime,
+                                const AlsaCaptureBackend &capture, uint64_t now) {
+    audiox::DeviceHealthSnapshot snapshot{};
+    snapshot.sampledAt = now;
+    const auto add = [&](const auto &stream, bool isCapture) {
+        if (snapshot.count >= audiox::DeviceHealthSnapshot::kMaxStreams ||
+            stream.nodeIndex >= runtime.snapshot.thingCount) return;
+        auto &row = snapshot.streams[snapshot.count++];
+        memcpy(row.id, runtime.snapshot.things[stream.nodeIndex].id, sizeof(row.id));
+        row.id[sizeof(row.id) - 1] = '\0';
+        row.capture = isCapture;
+        row.active = stream.pcm != nullptr;
+        row.rate = row.active ? stream.sampleRate : 0;
+        row.period = row.active ? stream.periodFrames : 0;
+        row.buffer = row.active ? stream.bufferFrames : 0;
+        row.mmap = row.active && stream.mmapAccess;
+        row.xruns = stream.xruns;
+    };
+    for (uint16_t i = 0; i < capture.count; ++i) add(capture.streams[i], true);
+    for (uint16_t i = 0; i < runtime.playbackCount; ++i) add(runtime.playback[i], false);
+    ctx->deviceHealth.publish(snapshot);
+}
+
 static void *audioProcessingThreadMain(void *arg) {
     AudioContext *ctx = reinterpret_cast<AudioContext *>(arg);
     if (!ctx) {
@@ -2506,6 +2558,7 @@ static void *audioProcessingThreadMain(void *arg) {
         runtime.effectParamsSeq[i] = 0;
     }
     uint32_t lastGraphGeneration = 0;
+    uint64_t lastHealthAt = 0;
     timespec nextDeadline = monotonicNow();
     addNs(&nextDeadline, blockPeriodNs());
 
@@ -2530,15 +2583,27 @@ static void *audioProcessingThreadMain(void *arg) {
             ctx->snapshotGainsForGraph(graphSnapshot);
         }
 
+        const uint32_t release = ctx->sceneReleaseGeneration.load(std::memory_order_acquire);
+        if (release && runtime.snapshot.generation >= release) {
+            ctx->sceneMuted.store(false, std::memory_order_release);
+            ctx->sceneReleaseGeneration.store(0, std::memory_order_release);
+        }
+
         if (runtime.snapshot.generation > 0 && runtime.snapshot.thingCount > 0) {
             processGraphBlock(ctx, &runtime, &captureBackend);
             maybeLogStats(&runtime, &captureBackend);
         }
 
+        const uint64_t healthAt = monotonicMs();
+        if (healthAt - lastHealthAt >= 500) {
+            publishDeviceHealth(ctx, runtime, captureBackend, healthAt);
+            lastHealthAt = healthAt;
+        }
         waitUntilBlockDeadline(&nextDeadline);
     }
 
     closeAllStreams(&runtime, &captureBackend);
+    publishDeviceHealth(ctx, runtime, captureBackend, monotonicMs());
 
     return nullptr;
 }

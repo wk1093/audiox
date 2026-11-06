@@ -1,4 +1,5 @@
 #include "midi/context.hpp"
+#include "config/scenes.hpp"
 
 #include <dirent.h>
 #include <algorithm>
@@ -899,6 +900,7 @@ void MidiContext::poll() {
                     lastNote = d0;
                     lastVelocity = d1;
                     lastChannel = channel;
+                    if (audiox::scenes::recallMidi(app, channel, d0)) continue;
                 }
 
                 int samplerKeyboardChannel = -1;

@@ -7,11 +7,9 @@
   <link rel="icon" type="image/svg+xml" href="/logo_small.svg">
   <link rel="icon" type="image/png" sizes="512x512" href="/logo_small.png">
   <link rel="apple-touch-icon" href="/logo_small.png">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/css/litegraph.css">
+  <link rel="stylesheet" href="/vendor/litegraph.css">
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/scenes.css">
 </head>
 <body>
   <main class="app">
@@ -64,6 +62,11 @@
           <div class="graph-toolbar">
             <div class="graph-actions">
               <button id="btn-route-save" class="primary">Save Routing</button>
+              <button id="btn-route-undo" class="flat" disabled title="Undo wire edit (Ctrl+Z)">Undo</button>
+              <button id="btn-route-redo" class="flat" disabled title="Redo wire edit (Ctrl+Shift+Z)">Redo</button>
+              <span id="routing-dirty" class="small" role="status">Routing saved</span>
+              <button id="btn-route-reload" class="flat">Load Active Routing</button>
+              <button id="btn-route-draft" class="flat" hidden>Download Wire Draft</button>
               <button id="btn-route-arrange" class="flat" title="Arrange inputs, helpers, effects, and outputs in rows">Arrange</button>
               <div class="zoom-controls" role="group" aria-label="Graph zoom">
                 <button id="btn-zoom-out" aria-label="Zoom out">-</button>
@@ -80,6 +83,11 @@
           <div class="graph-wrap" id="graph-wrap">
             <canvas id="graph-canvas"></canvas>
           </div>
+          <section id="scene-routing-conflict" class="card small" role="alert" hidden>Scene recalled on device. Download your wire draft, then load active routing.</section>
+          <details id="scenes-menu" class="scenes-menu">
+            <summary>Scenes</summary>
+            <section id="scenes-panel" class="stack"></section>
+          </details>
         </section>
 
       </div>
@@ -499,28 +507,77 @@ end)
               <div class="label">Load (1m)</div>
               <div class="value" id="sysinfo-load">—</div>
               <div id="sysinfo-load-meter" class="resource-meter resource-meter--load" role="meter" aria-label="One-minute load relative to online CPU count" aria-valuemin="0" aria-valuemax="100" hidden></div>
-              <div class="small" id="sysinfo-load-detail"></div>
             </div>
             <div class="metric">
               <div class="label">CPU Utilization</div>
               <div class="value" id="sysinfo-cpu-utilization">Sampling…</div>
               <div id="sysinfo-cpu-utilization-meter" class="resource-meter resource-meter--cpu" role="meter" aria-label="CPU utilization" aria-valuemin="0" aria-valuemax="100" hidden></div>
             </div>
-            <div class="metric">
-              <div class="label">Audio Buffer</div>
-              <div class="value" id="sysinfo-audio-buffer">—</div>
-              <div class="small" id="sysinfo-audio-buffer-detail"></div>
-            </div>
-            <div class="metric">
-              <div class="label">FFmpeg</div>
-              <div class="value" id="sysinfo-ffmpeg">—</div>
-            </div>
           </div>
         </section>
 
-        <section class="card stack" id="system-audio-stress" hidden>
+        <section class="card stack system-actions">
+          <h2>Actions</h2>
+          <button id="btn-system-sync">Sync Filesystem</button>
+          <button id="btn-system-restart" class="warn">Restart Device</button>
+          <button id="btn-system-shutdown" class="warn">Shutdown Device</button>
+        </section>
+
+        <section id="update-card" class="card stack">
+          <h2>Firmware Update</h2>
+          <div class="cfg-row">
+            <label for="update-channel">Release Channel</label>
+            <select id="update-channel">
+              <option value="stable">Stable</option>
+              <option value="nightly">Nightly (may be unstable)</option>
+            </select>
+          </div>
+          <label><input id="update-notifications" type="checkbox" checked> Notify me when an update is available</label>
+          <button id="btn-update-check" class="flat">Check GitHub Releases</button>
+          <div id="update-release" class="small" aria-live="polite">Select a release channel, then check for updates.</div>
+          <a id="update-download" class="small" target="_blank" rel="noopener noreferrer" hidden>Download matching AXU manually</a>
+          <button id="btn-update-online" class="warn" disabled>Download and Install Release</button>
+          <div class="cfg-row" style="margin-top: 0;">
+            <label for="update_file">Update Image</label>
+            <input id="update_file" type="file" accept=".axu,application/octet-stream">
+          </div>
+          <progress id="update-progress" class="update-progress" max="100" value="0" hidden></progress>
+          <div id="update-status" class="small" role="status" aria-live="polite">Select an .axu update archive. Installation reboots the device.</div>
+          <button id="btn-update-upload" class="warn">Install Update</button>
+        </section>
+
+        <details id="system-advanced" class="card system-advanced">
+          <summary>Health and Logs</summary>
+          <div class="system-health-layout">
+        <section class="stack" id="system-hardware-health">
+          <h2>Power and Cooling</h2>
+          <div class="sysinfo-grid">
+            <div class="metric"><div class="label">Undervoltage</div><div class="small" id="sysinfo-undervoltage">Waiting for hardware.</div></div>
+            <div class="metric"><div class="label">Throttling</div><div class="small" id="sysinfo-throttling">Waiting for hardware.</div></div>
+            <div class="metric"><div class="label">Soft temperature limit</div><div class="small" id="sysinfo-soft-temperature">Waiting for hardware.</div></div>
+            <div class="metric"><div class="label">Pi 5 Header Fan</div><div class="small" id="sysinfo-fan">Waiting for hardware.</div></div>
+          </div>
+        </section>
+        <section class="stack">
+          <h2>Recent Health</h2>
+          <div class="history-legend"><span>Temperature (°C)</span><span>CPU (%)</span><span>X-runs</span></div>
+          <svg id="system-history" class="system-history" viewBox="0 0 850 225" role="img" aria-label="Recent device health"></svg>
+          <p class="small" id="system-history-status" role="status">Loading history…</p>
+        </section>
+        <section class="stack">
+          <h2>Audio Device Health</h2>
+          <div id="system-device-health" class="sysinfo-grid"></div>
+          <p id="system-device-health-status" class="small" role="status">Waiting for devices.</p>
+        </section>
+        <section class="stack">
+          <h2>Audio Buffer</h2>
+          <div class="value" id="sysinfo-audio-buffer">—</div>
+          <div class="small" id="sysinfo-audio-buffer-detail"></div>
+          <div class="metric"><div class="label">FFmpeg</div><div class="value" id="sysinfo-ffmpeg">—</div></div>
+        </section>
+        <section class="stack" id="system-audio-stress" hidden>
           <h2>Audio Stress Tests</h2>
-          <p class="small">Test controls are compile-time gated. Both tests can cause dropouts; audio-thread overload deliberately misses processing deadlines. Tests stop automatically after the selected duration.</p>
+          <p class="small">These tests can interrupt audio.</p>
           <div class="cfg-row">
             <label for="audio-stress-duration">Duration (seconds)</label>
             <input id="audio-stress-duration" type="number" min="1" max="30" value="10">
@@ -537,15 +594,11 @@ end)
           <div class="small" id="audio-stress-status" role="status">No stress test running.</div>
         </section>
 
-        <section class="card stack system-actions">
-          <h2>Actions</h2>
-          <p class="small">Restart and shutdown interrupt all audio. Save your changes first.</p>
-          <button id="btn-system-sync">Sync Filesystem</button>
-          <button id="btn-system-restart" class="warn">Restart Device</button>
-          <button id="btn-system-shutdown" class="warn">Shutdown Device</button>
-        </section>
+        <div>
+          <button id="btn-system-diagnostics">Download Diagnostic Summary</button>
+        </div>
 
-        <section class="card stack system-logs">
+        <section class="stack system-logs">
           <h2>Logs</h2>
           <div class="logs-toolbar">
             <button id="btn-logs-refresh" class="flat">Refresh Logs</button>
@@ -581,30 +634,9 @@ end)
           <div class="small" id="logs-summary">No logs loaded yet.</div>
           <pre id="logs-view" class="logs-view" tabindex="0" aria-label="Device logs"></pre>
         </section>
+          </div>
+        </details>
 
-        <section id="update-card" class="card stack">
-          <h2>Firmware Update</h2>
-          <p class="small">Download releases through this browser; the device does not need internet access. Installation requires confirmation and reboots the device.</p>
-          <div class="cfg-row">
-            <label for="update-channel">Release Channel</label>
-            <select id="update-channel">
-              <option value="stable">Stable</option>
-              <option value="nightly">Nightly (may be unstable)</option>
-            </select>
-          </div>
-          <label><input id="update-notifications" type="checkbox" checked> Notify me when an update is available (checks GitHub from this browser every 6 hours)</label>
-          <button id="btn-update-check" class="flat">Check GitHub Releases</button>
-          <div id="update-release" class="small" aria-live="polite">Select a release channel, then check for updates.</div>
-          <a id="update-download" class="small" target="_blank" rel="noopener noreferrer" hidden>Download matching AXU manually</a>
-          <button id="btn-update-online" class="warn" disabled>Download and Install Release</button>
-          <div class="cfg-row" style="margin-top: 0;">
-            <label for="update_file">Update Image</label>
-            <input id="update_file" type="file" accept=".axu,application/octet-stream">
-          </div>
-          <progress id="update-progress" class="update-progress" max="100" value="0" hidden></progress>
-          <div id="update-status" class="small" role="status" aria-live="polite">Select an .axu update archive. Installation reboots the device.</div>
-          <button id="btn-update-upload" class="warn">Install Update</button>
-        </section>
       </div>
     </section>
   </main>
@@ -618,8 +650,8 @@ end)
       </div>
       <button id="btn-pi5-fan-close" class="flat" type="button" aria-label="Close fan curve editor">Close</button>
     </div>
-    <p id="pi5-fan-description" class="fan-dialog-description">Drag the curve points to set fan speed as CPU temperature rises. Select a point and use the arrow keys for precise adjustments.</p>
-    <div id="pi5-fan-warning" class="fan-warning" role="alert" hidden>Preview only on this Raspberry Pi 4. Fan-curve control requires a Raspberry Pi 5 fan connector; changes here cannot control or configure a fan on this device. Saving is disabled.</div>
+    <p id="pi5-fan-description" class="fan-dialog-description">Drag points to adjust. Use arrow keys for fine control.</p>
+    <div id="pi5-fan-warning" class="fan-warning" role="alert" hidden>Preview only on this Raspberry Pi 4. Fan control requires a Raspberry Pi 5 header. Saving is disabled.</div>
     <div class="fan-dialog-body">
       <div class="fan-graph-card">
         <svg id="pi5-fan-graph" class="fan-graph" viewBox="0 0 760 410" role="group" aria-label="Interactive fan curve chart"></svg>
@@ -630,11 +662,12 @@ end)
         <div class="fan-hysteresis-control">
           <label for="pi5-fan-hysteresis">Hysteresis <output id="pi5-fan-hysteresis-value" for="pi5-fan-hysteresis">5 °C</output></label>
           <input id="pi5-fan-hysteresis" type="range" min="1" max="15" step="1" value="5">
-          <div class="small">Prevents fan speed from changing rapidly near a temperature threshold.</div>
         </div>
         <div class="fan-curve-summary" id="pi5-fan-curve-summary" aria-live="polite"></div>
         <div class="small" id="pi5-fan-status" role="status" aria-live="polite">Open to load fan settings.</div>
-        <p class="small">Fan speeds are PWM values from 1–255. Changes on Pi 5 are saved to boot config and take effect after restart. A fan or Active Cooler must be connected to the Pi 5 fan header.</p>
+        <div class="small" id="pi5-fan-live" role="status">Live fan readings unavailable.</div>
+        <div class="small"><strong>Active at boot:</strong> <span id="pi5-fan-active-curve">Unavailable</span></div>
+        <div class="small"><strong>Saved on disk:</strong> <span id="pi5-fan-saved-curve">Unavailable</span></div>
       </div>
     </div>
     <div class="fan-dialog-actions">
@@ -659,7 +692,10 @@ end)
     <button id="loading-stop" class="flat" hidden>Stop waiting</button>
   </dialog>
 
-  <script src="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/build/litegraph.js"></script>
+  <script src="/vendor/litegraph.js"></script>
+  <script src="/routing-history.js"></script>
+  <script src="/system-monitor.js"></script>
+  <script src="/scenes.js"></script>
   <script src="/ui.js"></script>
   <script src="/routing.js"></script>
   <script src="/soundboard-grid.js"></script>

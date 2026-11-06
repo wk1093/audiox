@@ -12,6 +12,9 @@
 base(pi5): drivers/pwm/pwm-rp1
 base(pi5): drivers/hwmon/pwm-fan
 
+# Pi 5 onboard power button reports KEY_POWER through gpio-keys (evdev is built in).
+base(pi5): drivers/input/keyboard/gpio_keys
+
 # Audio / UAC2 gadget
 normal: sound/soc/snd-soc-core
 normal: sound/core/snd-rawmidi

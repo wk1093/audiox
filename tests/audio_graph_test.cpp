@@ -169,6 +169,25 @@ int main() {
         assert(systemInfo.find("\"downshift_delay_ms\":") != std::string::npos);
         assert(systemInfo.find("\"downshift_failures\":") != std::string::npos);
         assert(systemInfo.find("\"runtime_id\":\"") != std::string::npos);
+        audiox::DeviceHealthSnapshot streamHealth{};
+        streamHealth.sampledAt = 456;
+        streamHealth.count = 1;
+        strcpy(streamHealth.streams[0].id, "alsa_\"test_dev0_out");
+        streamHealth.streams[0].rate = 48000;
+        streamHealth.streams[0].active = true;
+        streamHealth.streams[0].mmap = true;
+        streamHealth.streams[0].xruns = 3;
+        audio->deviceHealth.publish(streamHealth);
+        const auto health = request([&](int fd) { return handleAudioDeviceHealth(&http, fd, "GET"); });
+        assert(health.find("\"sampled_at_ms\":456") != std::string::npos);
+        assert(health.find("\"mode\":\"MMAP\",\"xruns\":3") != std::string::npos);
+        assert(health.find("alsa_\\\"test") != std::string::npos);
+        assert(request([&](int fd) { return handleAudioDeviceHealth(&http, fd, "POST"); }).find("405") != std::string::npos);
+        const auto diagnostics = request([&](int fd) { return handleDiagnosticSummary(&http, fd, "GET"); });
+        assert(diagnostics.find("\"format\":\"audiox-diagnostics-v1\"") != std::string::npos);
+        assert(diagnostics.find("\"line_limit\":128") != std::string::npos);
+        assert(diagnostics.find(escaped) == std::string::npos);
+        assert(diagnostics.find("alsa_") == std::string::npos);
         if (strcmp(audioxDetectBoard(), "pi5") != 0) {
             const auto unavailableFan = request([&](int fd) {
                 return handlePi5FanConfig(&http, fd, "GET", nullptr, 0);

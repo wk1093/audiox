@@ -90,7 +90,35 @@ const state = {
     hysteresis: defaultFanCurve.hysteresis,
   },
   cpuTimesSample: null,
+  sceneRoutingConflict: false,
 };
+
+const routingHistory = AudioxRoutingHistory.create({
+  apply(edges) {
+    state.edges = edges;
+    state.dormantEdges = [];
+    state.selectedEdgeIdx = -1;
+    rebuildRoutingGraph();
+    const restored = [...state.edges, ...state.dormantEdges];
+    if (restored.length !== edges.length) {
+      routingHistory.record(restored);
+      setStatus('Some restored wires refer to removed nodes or channels and could not be restored. Review routing before saving.', 'warn');
+    } else {
+      setStatus('Wire edit restored; Save Routing to apply it.', 'ok');
+    }
+  },
+  changed({ undo, redo, dirty }) {
+    document.getElementById('btn-route-undo').disabled = !undo;
+    document.getElementById('btn-route-redo').disabled = !redo;
+    document.getElementById('routing-dirty').textContent = dirty ? 'Unsaved wire edits' : 'Routing saved';
+    document.querySelector('.tab-btn[data-tab="routing"]')?.toggleAttribute('data-unsaved', dirty);
+    AudioxUI.setUnsaved('routing', dirty);
+  },
+});
+
+function recordRoutingHistory() {
+  routingHistory.record([...state.edges, ...state.dormantEdges]);
+}
 
 const soundboardOrder = AudioxSoundboardOrder.attach(sbGridEl, {
   enabled: () => state.soundboardEditing && state.soundboardLayout.mode !== 'grid' &&
@@ -115,7 +143,10 @@ const logViewer = AudioxLogs.create({
   clear: document.getElementById('btn-logs-clear-filter'),
   notify: setStatus, resolve: AudioxUI.resolve,
 });
-const loadLogs = () => logViewer.load();
+const loadLogs = () => document.getElementById('system-advanced').open ? logViewer.load() : Promise.resolve();
+document.getElementById('system-advanced').addEventListener('toggle', () => {
+  if (document.getElementById('system-advanced').open && state.activeTab === 'system') loadLogs();
+});
 const showAudioHealth = AudioxLogs.createHealthNotifier(setStatus);
 
 async function pollSystemIfNeeded() {
@@ -315,7 +346,7 @@ function setActiveTab(tab) {
   } else {
     effectsManager?.closeCustomUis();
   }
-  if (tab === 'effects' && effectsManager) {
+  if (tab === 'effects' && effectsManager && !state.sceneRoutingConflict) {
     effectsManager.loadEffects().catch((err) => {
       setStatus(String(err), 'warn', 'effects-load');
     });
@@ -939,6 +970,7 @@ function addEdgeFromConnection(srcNode, srcSlot, dstNode, dstSlot) {
   state.edges.push(edge);
   AudioxUI.setUnsaved('routing');
   syncEdgesFromGraph();
+  recordRoutingHistory();
   setStatus('route added (not saved yet)', 'ok');
   return true;
 }
@@ -1086,6 +1118,7 @@ function removeNearestLinkAt(x, y) {
   state.edges.splice(bestIdx, 1);
   AudioxUI.setUnsaved('routing');
   syncEdgesFromGraph();
+  recordRoutingHistory();
   setStatus('route removed (not saved yet)', 'ok');
   return true;
 }
@@ -1099,6 +1132,7 @@ function removeEdgeByIndex(index) {
 
   AudioxUI.setUnsaved('routing');
   syncEdgesFromGraph();
+  recordRoutingHistory();
   setStatus('route removed (not saved yet)', 'ok');
 }
 
@@ -1635,6 +1669,7 @@ async function loadRoutingThingsWithOptions(options = {}) {
 }
 
 async function pollRoutingThingsIfNeeded() {
+  if (state.sceneRoutingConflict) return;
   if (AudioxUI.isBusy()) return;
   if (state.activeTab !== 'routing') {
     return;
@@ -1668,6 +1703,7 @@ function startRoutingThingsPolling() {
 }
 
 async function pollEffectsIfNeeded() {
+  if (state.sceneRoutingConflict) return;
   if (!effectsManager) {
     return;
   }
@@ -1703,6 +1739,7 @@ async function loadRoutingFile() {
       state.dormantEdges = [];
       rebuildRoutingGraph();
       AudioxUI.setUnsaved('routing', false);
+      routingHistory.reset([]);
       setStatus('routing file missing, starting empty', 'warn');
       return;
     }
@@ -1712,6 +1749,7 @@ async function loadRoutingFile() {
     state.selectedEdgeIdx = -1;
     rebuildRoutingGraph();
     AudioxUI.setUnsaved('routing', false);
+    routingHistory.reset([...state.edges, ...state.dormantEdges]);
     setStatus('routing loaded', 'ok');
   } catch (err) {
     setStatus(`routing load error: ${err}`, 'warn');
@@ -1744,8 +1782,13 @@ async function reloadRoutingFast(successMessage = null) {
 }
 
 async function saveRouting() {
+  if (state.sceneRoutingConflict) {
+    setStatus('A scene changed the live setup. Download your wire draft, then load active routing before saving.', 'warn');
+    return false;
+  }
   setStatus('saving routing...');
   try {
+    const savedEdges = [...state.edges, ...state.dormantEdges].map((edge) => ({ ...edge }));
     const res = await fetch(routingPath, {
       method: 'PUT',
       headers: { 'Content-Type': 'text/plain' },
@@ -1762,7 +1805,7 @@ async function saveRouting() {
       return false;
     }
 
-    AudioxUI.setUnsaved('routing', false);
+    routingHistory.saved(savedEdges);
     return true;
   } catch (err) {
     setStatus(`routing save error: ${err}`, 'warn');
@@ -1940,17 +1983,13 @@ async function loadSystemInfo() {
       lEl.textContent = load.toFixed(2);
       if (Number.isFinite(onlineCpus) && onlineCpus > 0) {
         const loadPercent = load / onlineCpus * 100;
-        document.getElementById('sysinfo-load-detail').textContent =
-          `${loadPercent.toFixed(0)}% of ${onlineCpus} online CPUs (load average, not CPU utilization)`;
         renderResourceMeter('sysinfo-load-meter', loadPercent, 100, 70, 100,
           `${load.toFixed(2)} load average relative to ${onlineCpus} online CPUs`);
       } else {
-        document.getElementById('sysinfo-load-detail').textContent = 'Online CPU count unavailable.';
         renderResourceMeter('sysinfo-load-meter', NaN, 100, 70, 100);
       }
     } else {
       lEl.textContent = 'Unavailable';
-      document.getElementById('sysinfo-load-detail').textContent = '';
       renderResourceMeter('sysinfo-load-meter', NaN, 100, 70, 100);
     }
 
@@ -1976,14 +2015,15 @@ async function loadSystemInfo() {
           ? `${target} frames (adaptive)`
           : `${target} frames (base)`;
         audioBufferDetailEl.textContent = streams > 0 && Number.isFinite(largest) && largest > 0
-          ? `Largest ALSA period: ${Number.isFinite(period) && period > 0 ? period : '—'} frames; largest buffer capacity: ${largest} frames (~${latency.toFixed(1)} ms at engine rate, not measured output latency); ${streams} stream${streams === 1 ? '' : 's'}; X-runs since boot: ${Number.isFinite(xruns) ? xruns : '—'}. ${target > base ? `Next downshift after ${downshiftDelaySeconds} s quiet; ${downshiftFailureCount} failed downshift${downshiftFailureCount === 1 ? '' : 's'}. ` : ''}DSP block remains ${base} frames.`
-          : `Target ALSA period; no active ALSA streams. X-runs since boot: ${Number.isFinite(xruns) ? xruns : '—'}. DSP block remains ${base} frames.`;
+          ? `Period ${Number.isFinite(period) && period > 0 ? period : '—'} · buffer ${largest} frames (~${latency.toFixed(1)} ms capacity) · ${streams} streams · ${Number.isFinite(xruns) ? xruns : '—'} X-runs${target > base ? ` · downshift after ${downshiftDelaySeconds}s quiet · ${downshiftFailureCount} failed downshifts` : ''}`
+          : `No active streams · ${Number.isFinite(xruns) ? xruns : '—'} X-runs`;
       } else {
         audioBufferEl.textContent = 'Unavailable';
         audioBufferDetailEl.textContent = 'Audio buffer status could not be read.';
       }
     }
     showAudioHealth(data);
+    window.AudioxSystemMonitor?.update(data, utilization);
     if (stressPanel) {
       const stress = data.audio_stress_test;
       stressPanel.hidden = stress?.available !== true;
@@ -2000,6 +2040,7 @@ async function loadSystemInfo() {
     AudioxUI.resolve('system-info');
   } catch (err) {
     renderStorageUsage(null);
+    window.AudioxSystemMonitor?.unavailable();
     setStatus(`device info load error: ${err}`, 'warn', 'system-info');
   }
 }
@@ -2175,7 +2216,7 @@ function openPi5FanDialog() {
     status.textContent = state.pi5FanSettingsLoaded
       ? status.textContent : 'Loading saved fan curve…';
   } else {
-    status.textContent = 'Preview mode: edit the graph to test curve interactions. Nothing can be saved on a Pi 4.';
+    status.textContent = 'Preview mode · saving disabled';
   }
   renderPi5FanCurve();
   dialog.showModal();
@@ -4298,7 +4339,12 @@ async function deleteCcVolumeMapping(cc) {
 }
 
 tabsEl.querySelectorAll('.tab-btn').forEach((btn) => {
-  btn.addEventListener('click', () => {
+  btn.addEventListener('click', async () => {
+    if (state.activeTab === 'routing' && btn.dataset.tab !== 'routing'
+        && AudioxUI.hasUnsavedChanges('routing')
+        && !await AudioxUI.confirm('Routing has unsaved wire edits. They will remain pending until you save or undo them.', {
+          title: 'Leave unsaved routing?', label: 'Leave with edits',
+        })) return;
     setActiveTab(btn.dataset.tab);
     if (btn.dataset.tab === 'routing') {
       pollRoutingThingsIfNeeded();
@@ -4428,7 +4474,65 @@ if (typeof ResizeObserver === 'function') {
   ro.observe(graphWrapEl);
 }
 
+document.getElementById('btn-route-undo').addEventListener('click', () => routingHistory.undo());
+document.getElementById('btn-route-redo').addEventListener('click', () => routingHistory.redo());
+window.addEventListener('audiox-scene-conflict', () => {
+  state.sceneRoutingConflict = true;
+  document.getElementById('scene-routing-conflict').hidden = false;
+  document.getElementById('btn-route-draft').hidden = false;
+});
+
+async function loadActiveRouting() {
+  if (AudioxUI.hasUnsavedChanges('routing') && !await AudioxUI.confirm(
+    'Discard pending wire edits and load the active setup? Download the wire draft first if you want to keep it.', {
+      title: 'Load active routing?', label: 'Discard draft and load',
+    })) return;
+  const response = await fetch(routingPath, { cache: 'no-store' });
+  if (!response.ok) throw new Error(`Could not read active routing (${response.status}). Draft retained.`);
+  const activeEdges = parseRoutingText(await response.text());
+  const loaded = await loadRoutingThingsWithOptions({ silent: false, force: true });
+  if (!loaded) return;
+  state.edges = activeEdges;
+  state.dormantEdges = [];
+  state.selectedEdgeIdx = -1;
+  rebuildRoutingGraph();
+  routingHistory.reset([...state.edges, ...state.dormantEdges]);
+  state.sceneRoutingConflict = false;
+  document.getElementById('scene-routing-conflict').hidden = true;
+  document.getElementById('btn-route-draft').hidden = true;
+  await effectsManager?.loadEffects();
+  await loadVolumes();
+}
+
+window.addEventListener('audiox-scene-recalled', () => {
+  if (AudioxUI.hasUnsavedChanges('routing')) {
+    window.dispatchEvent(new CustomEvent('audiox-scene-conflict'));
+    return;
+  }
+  loadActiveRouting().catch((error) => setStatus(`scene refresh failed: ${error}`, 'warn', 'scenes'));
+});
+document.getElementById('btn-route-reload').addEventListener('click', () => {
+  loadActiveRouting().catch((error) => setStatus(`routing refresh failed: ${error}`, 'warn'));
+});
+document.getElementById('btn-route-draft').addEventListener('click', () => {
+  const url = URL.createObjectURL(new Blob([formatRoutingText()], { type: 'text/plain' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'audiox-wire-draft.txt';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+
 document.addEventListener('keydown', async (ev) => {
+  if (ev.target?.closest?.('input, textarea, select, [contenteditable], dialog')
+      || AudioxUI.isBusy()) return;
+  if (state.activeTab === 'routing' && (ev.ctrlKey || ev.metaKey)
+      && (ev.key.toLowerCase() === 'z' || ev.key.toLowerCase() === 'y')) {
+    ev.preventDefault();
+    if (ev.shiftKey || ev.key.toLowerCase() === 'y') routingHistory.redo();
+    else routingHistory.undo();
+    return;
+  }
   if (ev.key === 'Delete') {
     if (state.activeTab !== 'routing') {
       return;

@@ -18,6 +18,7 @@
 #include "audio/plugin_host.hpp"
 #include "audio/gadget_volume.hpp"
 #include "audio/bluetooth_stream.hpp"
+#include "audio/device_health.hpp"
 #include <vector>
 
 #define AUDIO_GRAPH_MAX_THINGS 64
@@ -175,6 +176,7 @@ struct AudioEffectSlotState {
 
 struct AudioContext {
     Audiox *app;
+    audiox::DeviceHealthMailbox deviceHealth;
     AudioRegistry registry;
 
     pthread_t processingThread;
@@ -258,6 +260,12 @@ struct AudioContext {
     // Authoritative gain map by thing ID, persisted to volumes.txt.
     mutable std::mutex gainsMutex;
     std::unordered_map<std::string, float> thingGains;
+    std::mutex sceneMutex;
+    std::atomic<bool> sceneMuted{false};
+    std::atomic<bool> sceneSilent{false};
+    std::atomic<uint32_t> sceneReleaseGeneration{0};
+    std::string activeSceneId;
+    std::atomic<uint32_t> sceneRecallSeq{0};
 
     std::unordered_map<std::string, audiox::effects::SlotParams> effectStates;
     std::atomic<uint32_t> effectStatesSeq;

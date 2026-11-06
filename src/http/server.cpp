@@ -1724,6 +1724,8 @@ int HttpServer::sendFilePath(int cfd,
             ctype = "application/javascript; charset=utf-8";
         } else if (strcasecmp(dot, ".json") == 0) {
             ctype = "application/json; charset=utf-8";
+        } else if (strcasecmp(dot, ".woff2") == 0) {
+            ctype = "font/woff2";
         } else if (strcasecmp(dot, ".txt") == 0) {
             ctype = "text/plain; charset=utf-8";
         } else if (strcasecmp(dot, ".svg") == 0) {

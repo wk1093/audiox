@@ -883,6 +883,38 @@ static void testNativePlugin() {
 }
 
 int main() {
+    {
+        auto context = std::make_unique<AudioContext>(nullptr);
+        auto runtime = std::make_unique<RuntimeGraph>();
+        runtime->snapshot.thingCount = 2;
+        runtime->snapshot.things[0].inputs = 1;
+        runtime->snapshot.things[1].inputs = 1;
+        runtime->sinkNodeCount = 2;
+        runtime->sinkNodes[0] = 0;
+        runtime->sinkNodes[1] = 1;
+        float source[BUFFER_FRAMES];
+        std::fill_n(source, BUFFER_FRAMES, 1.0f);
+        context->sceneMuted.store(true);
+        for (unsigned block = 0; block < 8; ++block) {
+            runtime->inputs[0][0] = source;
+            runtime->inputs[1][0] = source;
+            servicePlaybackIo(context.get(), runtime.get());
+            assert(source[0] == 1.0f && source[BUFFER_FRAMES - 1] == 1.0f);
+            for (unsigned frame = 0; frame < BUFFER_FRAMES; ++frame)
+                assert(runtime->inputs[0][0][frame] == runtime->inputs[1][0][frame]);
+            assert(runtime->inputs[0][0][0] >= runtime->inputs[0][0][BUFFER_FRAMES - 1]);
+        }
+        assert(context->sceneSilent.load() && runtime->sceneFade.gain == 0);
+        context->sceneMuted.store(false);
+        for (unsigned block = 0; block < 8; ++block) {
+            runtime->inputs[0][0] = source;
+            runtime->inputs[1][0] = source;
+            servicePlaybackIo(context.get(), runtime.get());
+            assert(runtime->inputs[0][0][0] <= runtime->inputs[0][0][BUFFER_FRAMES - 1]);
+        }
+        assert(!context->sceneSilent.load() && runtime->sceneFade.gain == 1);
+        puts("Scene sink fades preserve shared source aliases and acknowledge exact silence");
+    }
     testAdaptivePlaybackPriming();
     testDirectProcessing();
     testGraphFastPaths();

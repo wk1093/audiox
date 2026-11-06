@@ -89,6 +89,45 @@ The local UI checks availability at roughly 500 ms intervals. On detected displa
 
 Cable-loss detection depends on the framebuffer's driver. DRM connector status is used when available; on non-DRM panels, a still-present framebuffer may not reveal that the physical cable is absent. Shared framebuffer devices remain active if any relevant connector reports connected. Physical HDMI/DSI reconnect behavior still needs target-side validation.
 
+## Hardware health and the Pi 5 power button
+
+The System page reports Raspberry Pi firmware undervoltage, throttling, and
+soft-temperature-limit flags when the firmware mailbox is available. The
+firmware's generic `throttled` bit does not identify its cause (it can include
+undervoltage), so it must not be presented as proof of thermal throttling.
+The separate soft-temperature-limit bit is thermal-specific. `Current` is the
+live flag; `since boot` records whether firmware has observed the condition
+since startup. An `unsupported` or `unavailable` result is distinct from a
+clear (`false`) flag and must not be interpreted as a healthy reading.
+The API exposes `throttling` (generic bit), `soft_temperature_limit` (thermal
+bit), and `thermal_throttling` as a compatibility summary that is true if
+either bit is set. The compatibility summary does not identify cause.
+
+Pi 5 fan telemetry is read from the running `pwm-fan` hwmon/cooling interfaces.
+The driver, fan RPM, PWM output, and cooling-device state are reported
+independently because not every fan setup exposes tachometer feedback. The
+shipped Pi 5 device tree declares an RPM regmap for its onboard fan; telemetry
+still reports RPM only if the running driver actually publishes `fan1_input`.
+A stall warning is only raised when RPM feedback exists, cooling is requested,
+and zero RPM persists for at least 15 seconds.
+`module_status` reports whether `pwm_fan` is loaded; `device_status` reports
+whether hwmon or thermal cooling interfaces for a fan are bound.
+
+The managed curve saved in `/boot/config.txt` is compared with the loaded
+Pi 5 device-tree fan thresholds and cooling levels. The active curve describes
+the configuration loaded at boot, not the current cooling state. If either
+curve cannot be read (for example, because the fan node is disabled or the
+driver is unavailable), its status says so and the comparison is `null`; a
+saved curve alone is not evidence that the same curve is active.
+
+On Raspberry Pi 5, a press of the onboard power key requests a normal system
+power-off through the kernel power-off path. The framebuffer displays
+“Shutting down…” before the same sync-and-power-off sequence used by the
+System shutdown action. Do not remove external power until shutdown has
+completed. This input relies on the shipped `gpio-keys` module and built-in `evdev` driver;
+other boards and environments without a `KEY_POWER` input do not get this
+physical-button behavior.
+
 ## A safe bring-up sequence
 
 1. Flash the matching image as described in [Getting started](/guide/getting-started).

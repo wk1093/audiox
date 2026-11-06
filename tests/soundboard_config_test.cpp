@@ -575,6 +575,31 @@ int main() {
         close(response[0]);
         close(response[1]);
         storageReadFails = false;
+        auto historyRequest = [&](const char *method, const char *query) {
+            int sockets[2];
+            assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+            assert(handleSystemHistory(&http, sockets[0], method, query) == RET_OK);
+            char buffer[4096]{};
+            assert(read(sockets[1], buffer, sizeof(buffer) - 1) > 0);
+            close(sockets[0]);
+            close(sockets[1]);
+            return std::string(buffer);
+        };
+        assert(historyRequest("GET", "limit=1000").find("\"samples\":[]") != std::string::npos);
+        audiox::system::CpuTimes historyCpu{100, 50};
+        for (uint64_t i = 1; i <= 3; ++i) {
+            historyCpu.total += 100;
+            audiox::system::systemHistory.add(i * 1000, 55, &historyCpu, i, 1);
+        }
+        const auto recent = historyRequest("GET", "limit=2");
+        assert(recent.find("200 OK") != std::string::npos);
+        assert(recent.find("\"id\":1,") == std::string::npos);
+        assert(recent.find("\"id\":2,") != std::string::npos);
+        assert(recent.find("\"id\":3,") != std::string::npos);
+        assert(audiox::system::systemHistory.size() == 3);
+        for (const char *invalid : {"limit=0", "limit=1001", "limit=-1", "limit=1.5", "limit=abc", "limit=2&limit=3", "foo=3"})
+            assert(historyRequest("GET", invalid).find("400 Bad Request") != std::string::npos);
+        assert(historyRequest("POST", "limit=2").find("405 Method Not Allowed") != std::string::npos);
         assert(socketpair(AF_UNIX, SOCK_STREAM, 0, response) == 0);
         assert(handleApiDeleteRootfs(&http, response[0], "/api/rootfs/sfx/remove.wav") == 0);
         char reply[512] = {};

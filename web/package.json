@@ -1,0 +1,12 @@
+{
+  "name": "audiox-web-assets",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "stage": "node stage-assets.js"
+  },
+  "dependencies": {
+    "@fontsource/space-grotesk": "5.2.10",
+    "litegraph.js": "0.7.18"
+  }
+}

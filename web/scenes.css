@@ -1,0 +1,11 @@
+.scene-controls { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+.scene-controls input[type="text"] { flex: 1; min-width: 10rem; }
+.scene-controls input[type="number"] { width: 5rem; }
+.scene-list { display: grid; gap: .65rem; margin-top: .75rem; }
+.scene-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; border-top: 1px solid var(--border, #444); padding-top: .65rem; }
+.scene-description { flex: 1; min-width: 12rem; }
+.scene-description strong, .scene-description small { display: block; }
+.scene-row[data-active="true"] strong::before { content: "● "; color: var(--accent, #68dcbe); }
+.scenes-menu { padding: 10px 14px; border-top: 1px solid var(--line); background: var(--bg-0); max-height: 40vh; overflow: auto; flex-shrink: 0; }
+.scenes-menu[open] > summary { margin-bottom: 12px; }
+.graph-shell.expanded .scenes-menu, .graph-shell:fullscreen .scenes-menu { display: none; }

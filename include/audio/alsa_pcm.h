@@ -130,7 +130,8 @@ static inline int audio_pcm_configure_hw_handle(snd_pcm_t *pcm,
                                                 snd_pcm_uframes_t *bufferFramesOut,
                                                 size_t *frameBytesOut,
                                                 int configureTiming,
-                                                int logFail) {
+                                                int logFail,
+                                                unsigned int *rateOut = nullptr) {
     if (!pcm) {
         return -EINVAL;
     }
@@ -191,6 +192,8 @@ static inline int audio_pcm_configure_hw_handle(snd_pcm_t *pcm,
     if (rc >= 0) {
         rc = snd_pcm_hw_params_get_buffer_size(hw, &actualBufferFrames);
     }
+    unsigned int actualRate = rate;
+    if (rc >= 0 && rateOut) rc = snd_pcm_hw_params_get_rate(hw, &actualRate, nullptr);
 
     snd_pcm_hw_params_free(hw);
 
@@ -200,6 +203,7 @@ static inline int audio_pcm_configure_hw_handle(snd_pcm_t *pcm,
         }
         return rc;
     }
+    if (rateOut) *rateOut = actualRate;
 
     rc = snd_pcm_prepare(pcm);
     if (rc < 0) {
@@ -264,7 +268,8 @@ static inline int audio_pcm_open_configured(snd_pcm_t **pcmOut,
                                             snd_pcm_uframes_t *bufferFramesOut,
                                             size_t *frameBytesOut,
                                             int configureTiming,
-                                            int logFail) {
+                                            int logFail,
+                                            unsigned int *rateOut = nullptr) {
     if (!pcmOut || !name || !access) {
         return -EINVAL;
     }
@@ -298,7 +303,8 @@ static inline int audio_pcm_open_configured(snd_pcm_t **pcmOut,
                                            bufferFramesOut,
                                            frameBytesOut,
                                            configureTiming,
-                                           logFail);
+                                           logFail,
+                                           rateOut);
         if (rc >= 0) {
             *pcmOut = pcm;
             *access = alternatives[i];

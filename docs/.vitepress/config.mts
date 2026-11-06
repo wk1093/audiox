@@ -37,6 +37,7 @@ export default defineConfig({
         text: 'Audio and controls',
         items: [
           { text: 'Routing', link: '/guide/routing' },
+          { text: 'Setup scenes', link: '/scenes' },
           { text: 'Bluetooth', link: '/guide/bluetooth' },
           { text: 'Effects', link: '/guide/effects' },
           { text: 'Native plugins', link: '/plugins' },

@@ -575,7 +575,7 @@ int AudioContext::buildDevicesJson(char *out, size_t out_sz) const {
         n = snprintf(
             out + used,
             out_sz - used,
-            "%s{\"handle\":%u,\"generation\":%u,\"card\":%u,\"device\":%u,\"playback\":%u,\"capture\":%u,\"playbackChannels\":%u,\"captureChannels\":%u,\"usb\":%u,\"node\":\"%s\",\"path\":\"%s\",\"name\":\"%s\",\"stableCardId\":\"%s\"}",
+            "%s{\"handle\":%u,\"generation\":%u,\"card\":%u,\"device\":%u,\"playback\":%u,\"capture\":%u,\"playbackChannels\":%u,\"captureChannels\":%u,\"usb\":%u,\"gadget\":%u,\"node\":\"%s\",\"path\":\"%s\",\"name\":\"%s\",\"stableCardId\":\"%s\"}",
             (idx == 0) ? "" : ",",
             (unsigned)d.handle,
             (unsigned)d.generation,
@@ -586,6 +586,7 @@ int AudioContext::buildDevicesJson(char *out, size_t out_sz) const {
             (unsigned)d.playbackChannels,
             (unsigned)d.captureChannels,
             (unsigned)d.isUsb,
+            (unsigned)d.isGadget,
             audiox::json::escape(d.nodeName).c_str(),
             audiox::json::escape(d.devPath).c_str(),
             audiox::json::escape(d.displayName).c_str(),

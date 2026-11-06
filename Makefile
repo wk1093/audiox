@@ -101,7 +101,7 @@ RUNTIME_LIBS += $(LUA_STATIC_LIB) -lm
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 15
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.5
+AUDIOX_VERSION_PRERELEASE ?= beta.6
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
 $(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
@@ -600,7 +600,15 @@ $(LUA_STAGED_LICENSE): $(LUA_LICENSE)
 	@mkdir -p "$(dir $@)"
 	install -m 0644 "$<" "$@"
 
-rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(ROOTFS_DIR)/sbin/audiox-plugin-worker $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB) $(LUA_STAGED_LICENSE) $(DNSMASQ_BIN) check_dnsmasq_conf
+.PHONY: web_assets
+web_assets: $(CURDIR)/web/node_modules/.audiox-assets-installed
+	node "$(CURDIR)/web/stage-assets.js" "$(OUT_DIR)/web-vendor"
+
+$(CURDIR)/web/node_modules/.audiox-assets-installed: $(CURDIR)/web/package.json $(CURDIR)/web/package-lock.json
+	npm ci --prefix "$(CURDIR)/web" --ignore-scripts --no-audit --no-fund
+	touch "$@"
+
+rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(ROOTFS_DIR)/sbin/audiox-plugin-worker $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB) $(LUA_STAGED_LICENSE) $(DNSMASQ_BIN) check_dnsmasq_conf web_assets
 	@echo "Creating runtime rootfs structure..."
 	mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/sbin $(ROOTFS_DIR)/etc
 	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev
@@ -651,10 +659,12 @@ rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(ROOTFS_DIR)/sbin/aud
 	fi
 	@if [ -d "$(CURDIR)/web" ]; then \
 		echo "Staging web assets from $(CURDIR)/web/..."; \
-		cp -a "$(CURDIR)/web/." "$(ROOTFS_DIR)/etc/www/"; \
+		find "$(CURDIR)/web" -maxdepth 1 -type f \( -name '*.html' -o -name '*.css' -o -name '*.js' -o -name '*.svg' -o -name '*.png' \) ! -name 'stage-assets.js' -exec cp -t "$(ROOTFS_DIR)/etc/www/" {} +; \
 	else \
 		echo "Warning: web assets directory not found at $(CURDIR)/web"; \
 	fi
+	mkdir -p "$(ROOTFS_DIR)/etc/www/vendor"
+	cp -a "$(OUT_DIR)/web-vendor/." "$(ROOTFS_DIR)/etc/www/vendor/"
 	@if [ -f "$(WEB_LOGO_SVG)" ]; then \
 		echo "Staging web logo svg from $(WEB_LOGO_SVG)..."; \
 		cp "$(WEB_LOGO_SVG)" "$(ROOTFS_DIR)/etc/www/logo.svg"; \

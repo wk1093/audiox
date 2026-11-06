@@ -1,3 +1,32 @@
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/vendor/space-grotesk-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/vendor/space-grotesk-500.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/vendor/space-grotesk-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/vendor/space-grotesk-700.woff2') format('woff2');
+}
+
 :root {
   color-scheme: dark;
   --bg-0: #08131d;
@@ -24,6 +53,14 @@
 * {
   box-sizing: border-box;
 }
+
+.system-history { width: 100%; color: var(--muted); font-size: 12px; }
+.history-legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; }
+.history-legend span:nth-child(1) { color: #ff9d82; }
+.history-legend span:nth-child(2) { color: #7fd1ff; }
+.history-legend span:nth-child(3) { color: #b9ff96; }
+.tab-btn[data-unsaved]::after { content: ' *'; color: var(--warn); }
+#system-hardware-health[data-warning="true"] { border-color: var(--warn); }
 
 @media (forced-colors: none) {
   * {
@@ -1262,7 +1299,12 @@ details > summary:focus-visible {
   align-items: start;
 }
 
-.system-info { grid-column: 1; grid-row: 1; }
+.system-info { grid-column: 1; grid-row: 1 / span 2; }
+#update-card { grid-column: 2; grid-row: 2; }
+.system-advanced { grid-column: 1 / -1; grid-row: 3; }
+.system-advanced > summary, .scenes-menu > summary { cursor: pointer; font-weight: 600; }
+.system-health-layout { display: grid; gap: 24px; padding-top: 20px; }
+.system-health-layout > section { border-top: 1px solid var(--line); padding-top: 16px; }
 .resource-meter {
   position: relative;
   width: 100%;
@@ -1295,7 +1337,6 @@ details > summary:focus-visible {
 }
 .metric-action { flex: 0 0 auto; padding: 3px 7px; font-size: 11px; }
 .system-actions { grid-column: 2; grid-row: 1; }
-.system-logs { grid-column: 1; grid-row: 2; }
 
 .fan-dialog {
   width: min(1120px, calc(100vw - 32px));
@@ -1859,7 +1900,8 @@ details > summary:focus-visible {
 
   .system-info,
   .system-actions,
-  .system-logs {
+  .system-advanced,
+  #update-card {
     grid-column: auto;
     grid-row: auto;
   }

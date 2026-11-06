@@ -33,6 +33,52 @@ The card shows:
 
 System refreshes while the tab is active and visible. A runtime-only watchdog restart does not reset kernel uptime; a full reboot does. Record the version/kernel/model alongside logs when reporting a fault.
 
+### Recent health and audio devices
+
+Open **Health and Logs** for telemetry, diagnostics, stress tests, and logs.
+Device information, actions, and firmware updates remain on the main page.
+
+**Power and Cooling** distinguishes current undervoltage/throttling flags from
+events recorded since boot. The combined throttling/thermal-limit flag does
+not prove temperature was the cause; undervoltage can also throttle a Pi.
+Unavailable telemetry is not treated as healthy. On Pi 5 the fan status shows
+RPM, the current cooling step, and whether the saved custom curve matches the
+booted device tree. The fan dialog shows saved and active thresholds separately.
+A stall warning requires a sustained cooling request with zero RPM; stopping
+below the first threshold is normal.
+
+**Recent Health** is sampled once per second by the device's main loop, even
+without a browser connected. A fixed 1,000-entry ring buffer retains about
+16 minutes of readings and overwrites the oldest entry in constant time.
+Temperature (degrees C) and CPU utilization (%) use the left axis;
+X-runs between consecutive samples use the independently scaled right axis.
+Missing readings and interrupted sampling are gaps, not interpolated
+measurements. History resets when the runtime restarts; counter resets invalidate
+only the corresponding interval.
+
+`GET /api/system/history?limit=1000` returns the latest 1–1,000 samples in
+chronological order (default 1,000). The response contains `runtime_id`,
+`sample_interval_ms`, `capacity`, `now_ms`, and `samples`. Each sample contains
+`id`, monotonic `now` (milliseconds), `temperature`, `cpu`, and interval `xruns`;
+unavailable values are `null`. Requests never add samples. The browser fills the
+chart with 1,000 readings on opening, then merges the latest 50 by sample ID.
+After a long gap it refills history; a new runtime ID discards old browser data.
+
+**Audio Device Health** shows detected ALSA devices and routed stream state,
+the actual negotiated sample rate, MMAP or RW transfer mode, period/buffer
+sizes, and per-stream X-runs since stream setup. Stream telemetry is published
+without audio-thread locks every half second; graph rebuilds recreate stream
+counters. Devices seen and then disconnected remain listed for the browser
+session. A connected device without a routed stream is not reported as broken.
+
+**Download Diagnostic Summary** exports system metrics and bounded log
+classification counts (at most 128 lines and 64 KiB per stdout/stderr source).
+It intentionally omits raw log messages, device identifiers/names, configuration,
+pairing records/keys, scripts, and audio files rather than attempting unreliable
+redaction of arbitrary log text. Missing logs are marked unavailable. Use the
+normal log viewer separately when you need details, and review private logs
+before sharing them.
+
 ### Fan curve
 
 Open **Fan curve** in the CPU Temperature card to configure the four automatic speed steps. Drag the graph points or focus one and use the arrow keys (Shift + arrow adjusts speed more finely); temperature thresholds must increase and stay farther apart than the hysteresis. A fan must be connected to the Pi 5 fan header; this does not control USB, GPIO, or case-specific fans.

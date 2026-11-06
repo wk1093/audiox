@@ -57,7 +57,11 @@ You also need Git to obtain the repository/dependencies. Image creation uses Lin
 Additional tools depend on the workflow:
 
 - Host audio tests: host ALSA development headers/library (Debian/Ubuntu: `libasound2-dev`).
-- JavaScript regressions: Node.js with the built-in `node --test` runner.
+- Firmware WebUI assets and JavaScript regressions: Node.js/npm. `make web_assets`
+  installs the pinned `web/package-lock.json` packages with lifecycle scripts
+  disabled, stages the graph library/fonts and their licenses in `out/web-vendor`,
+  and `rootfs` copies them to the device. Once dependencies are cached, device
+  operation requires no CDN or Google Fonts connection.
 - Documentation: Node.js/npm and the pinned `docs/package-lock.json`.
 - QEMU: `qemu-system-aarch64`, `mtools`, `dosfstools`, `e2fsprogs`, `util-linux` (`sfdisk`), `binutils` (`ar`), and `xz`.
 - USB/IP attachment: host `usbip`, a usable `vhci-hcd` kernel module, and sudo permission.

@@ -60,7 +60,7 @@ test('clicking a graph wire still removes it and marks routing unsaved without a
     edges: [{ src: 'soundboard_out', dst: 'usb_gadget_out', srcChannel: 0, dstChannel: 0 }] };
   const context = vm.createContext({ state, linkDistance: () => 4,
     AudioxUI: { setUnsaved: (...args) => unsaved.push(args) },
-    syncEdgesFromGraph: () => redraws++, setStatus: (...args) => notices.push(args) });
+    syncEdgesFromGraph: () => redraws++, recordRoutingHistory: () => {}, setStatus: (...args) => notices.push(args) });
   vm.runInContext(source.slice(source.indexOf('function removeNearestLinkAt('),
     source.indexOf('function removeEdgeByIndex(')), context);
   assert.equal(context.removeNearestLinkAt(100, 100), true);
@@ -393,6 +393,8 @@ test('saving routing preserves capacity warnings instead of overwriting them wit
   let graph = { ok: true, skippedEdges: 16, status: 'routing helper capacity: 128 active paths, 16 skipped path(s)' };
   const context = vm.createContext({
     routingPath: '/routing.txt',
+    state: { edges: [], dormantEdges: [] },
+    routingHistory: { saved: () => unsaved.push(['routing', false]) },
     formatRoutingText: () => 'saved wires',
     setStatus: (...args) => notices.push(args),
     AudioxUI: { setUnsaved: (...args) => unsaved.push(args) },

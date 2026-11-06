@@ -6,6 +6,8 @@
 #include <string.h>
 #include <vector>
 #include <string>
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace {
 
@@ -261,4 +263,25 @@ bool RouterConfig::hasRoutingHelper() const {
 
 void RouterConfig::setRoutingHelper(bool enabled) {
     (void)saveRoutingHelper(enabled);
+}
+
+int RouterConfig::replaceSceneRoutes(const std::vector<std::string> &routes, bool helper) {
+    if (routes.size() > ROUTE_COUNT_MAX) return RET_ERR;
+    const auto schema = checkConfigTextFileSchema(ROUTING_REAL_FILE_PATH,
+        ROUTING_SCHEMA_HEADER, ROUTING_SCHEMA_VERSION);
+    if (schema == ConfigTextSchemaStatus::Unsupported || schema == ConfigTextSchemaStatus::Invalid ||
+        schema == ConfigTextSchemaStatus::IoError) return RET_ERR;
+    const std::string pending = std::string(ROUTING_REAL_FILE_PATH) + ".scene-pending";
+    int fd = open(pending.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
+    if (fd < 0) return RET_ERR;
+    FILE *fp = fdopen(fd, "w");
+    if (!fp) { close(fd); unlink(pending.c_str()); return RET_ERR; }
+    fprintf(fp, "# audiox routing v%u\n", ROUTING_SCHEMA_VERSION);
+    if (helper) fprintf(fp, "node=routing_helper\n");
+    for (const auto &route : routes) fprintf(fp, "edge=%s\n", route.c_str());
+    bool ok = fflush(fp) == 0 && fsync(fd) == 0;
+    if (fclose(fp) != 0) ok = false;
+    if (ok) ok = rename(pending.c_str(), ROUTING_REAL_FILE_PATH) == 0;
+    if (!ok) unlink(pending.c_str());
+    return ok ? RET_OK : RET_ERR;
 }

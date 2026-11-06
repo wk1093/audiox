@@ -29,6 +29,23 @@ restored when AudioX restarts.
 5. Choose **Save Routing**. AudioX writes the connections and reloads the graph;
    the new routing is live without a reboot.
 
+Use **Undo** / **Redo** (Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z, or Ctrl+Y) to reverse
+wire edits before saving. The toolbar indicates whether the current wires
+match the last successful save. History retains up to 100 versions in the
+browser session; loading routing or recalling a scene starts a new history.
+It does not undo effect creation/deletion, effect parameters, volumes, or node
+positions. Save again to apply an undone edit to live audio. Leaving Routing
+with pending wire edits asks for confirmation; leaving does not discard them.
+Browser close/reload protection also remains enabled.
+
+Open the collapsed **Scenes** menu below the graph to capture and recall named routing, effect inventories/settings,
+and gains; see [Setup scenes](../scenes). Scenes are hidden in graph fullscreen.
+If MIDI recalls a scene while you have
+wire edits, automatic topology/effect refresh pauses to preserve the draft.
+**Download Wire Draft** retains a copy; **Load Active Routing** asks before
+discarding edits and loads the current device setup. Saving a stale draft is
+blocked until you load the active setup.
+
 Routing uses the full-width graph, without an overview or technical route-list
 sidebar. For advanced inspection, read `/api/rootfs/routing.txt` or use
 `config.read("routing.txt")` inside a script callback. Long files may need to

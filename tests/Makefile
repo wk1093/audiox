@@ -1,5 +1,5 @@
 # Included by the root Makefile; invoke targets from the repository root.
-.PHONY: test test-native test-web test-release test-audio-graph test-audio-graph-mailbox test-audio-graph-tsan test-build-dependencies test-storage-expand
+.PHONY: test test-native test-web test-release test-audio-graph test-audio-graph-mailbox test-audio-graph-tsan test-build-dependencies test-storage-expand test-hardware-telemetry test-hardware-power-button
 test: test-native test-web test-release
 
 .PHONY: test-midi-script test-midi-script-storage test-midi-docs
@@ -8,13 +8,42 @@ test-midi-script-storage: test-script-storage
 test-midi-docs: test-script-docs
 
 test-native: test-audio-runtime test-builtin-effects test-audio-meters test-audio-graph test-audio-graph-mailbox \
+    test-scenes \
 	test-plugin-package test-plugin-host test-plugin-integration \
 	test-audio-pcm-recover test-audio-stress test-bluetooth-hci test-bluetooth-a2dp test-display-hotplug test-soundboard-config \
 	test-boot-recovery test-config-backup test-system-logs test-system test-gadget-setup test-mdns \
-	test-gadget-volume test-diagnostics test-midi-usb test-script test-script-storage test-script-docs test-watchdog test-resolve-modules test-build-dependencies test-storage-expand
+	test-gadget-volume test-diagnostics test-midi-usb test-script test-script-storage test-script-docs test-watchdog test-resolve-modules test-build-dependencies test-storage-expand test-device-health test-hardware-telemetry test-hardware-power-button
 
 test-storage-expand: $(OUT_DIR)/host/audiox-storage-expand-test
 	@"$<"
+
+test-hardware-telemetry: $(OUT_DIR)/host/audiox-hardware-telemetry-test $(OUT_DIR)/host/audiox-hardware-firmware-test
+	@"$(OUT_DIR)/host/audiox-hardware-telemetry-test"
+	@"$(OUT_DIR)/host/audiox-hardware-firmware-test"
+
+$(OUT_DIR)/host/audiox-hardware-firmware-test: tests/hardware_firmware_test.cpp src/system/hardware_telemetry.cpp include/hardware_telemetry.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" "$<"
+
+.PHONY: test-system-history
+test-native: test-system-history
+test-system-history: $(OUT_DIR)/host/audiox-system-history-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-system-history-test: tests/system_history_test.cpp include/system_history.hpp include/audio/health.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" "$<"
+
+test-hardware-power-button: $(OUT_DIR)/host/audiox-hardware-power-button-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-hardware-telemetry-test: tests/hardware_telemetry_test.cpp src/system/hardware_telemetry.cpp src/init/power_button.cpp include/hardware_telemetry.hpp include/hardware_power_button.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/hardware_telemetry_test.cpp src/system/hardware_telemetry.cpp src/init/power_button.cpp
+
+$(OUT_DIR)/host/audiox-hardware-power-button-test: tests/hardware_power_button_test.cpp src/init/power_button.cpp include/hardware_power_button.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/hardware_power_button_test.cpp
 
 $(OUT_DIR)/host/audiox-storage-expand-test: tests/storage_expand_test.cpp src/init/storage.cpp include/storage_expand.hpp include/watchdog_heartbeat.hpp
 	@mkdir -p "$(dir $@)"
@@ -23,6 +52,19 @@ $(OUT_DIR)/host/audiox-storage-expand-test: tests/storage_expand_test.cpp src/in
 
 test-build-dependencies:
 	bash tests/build_dependencies_test.sh
+
+.PHONY: test-device-health
+test-device-health: $(OUT_DIR)/host/audiox-device-health-test $(OUT_DIR)/host/audiox-pcm-rate-test
+	@"$(OUT_DIR)/host/audiox-device-health-test"
+	@"$(OUT_DIR)/host/audiox-pcm-rate-test"
+
+$(OUT_DIR)/host/audiox-device-health-test: tests/device_health_test.cpp include/audio/device_health.hpp include/http/diagnostic_summary.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" "$<" -pthread
+
+$(OUT_DIR)/host/audiox-pcm-rate-test: tests/pcm_rate_test.cpp include/audio/alsa_pcm.h include/audio/health.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-parameter -Iinclude -o "$@" "$<" -lasound -pthread
 
 test-web:
 	node --test tests/*.js
@@ -205,10 +247,23 @@ test-soundboard-config: $(OUT_DIR)/host/audiox-soundboard-config-test
 	@"$<"
 
 SOUNDBOARD_CONFIG_TEST_SRCS = tests/soundboard_config_test.cpp src/context.cpp \
+    src/config/scenes.cpp src/http/scenes.cpp src/system/hardware_telemetry.cpp \
 	src/config/basic.cpp src/config/midi_map.cpp src/config/backup.cpp \
 	src/midi/midi.cpp src/scripting/runtime.cpp src/midi/usb.cpp src/scripting/keyboard.cpp src/scripting/script.cpp src/scripting/storage.cpp src/scripting/utilities.cpp src/audio/setup.cpp src/audio/plugins.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp \
 	src/http/server.cpp src/http/logs.cpp src/init/recovery.cpp src/touch/touch.cpp src/bluetooth/hci.cpp \
 	$(AUDIO_EFFECT_SRCS)
+
+.PHONY: test-scenes
+test-scenes: $(OUT_DIR)/host/audiox-scenes-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-scenes-test: tests/scenes_test.cpp $(filter-out tests/soundboard_config_test.cpp,$(SOUNDBOARD_CONFIG_TEST_SRCS)) src/audio/graph.cpp src/audio/hotplug.cpp src/config/router.cpp include/http/scenes.hpp $(wildcard include/config/*.hpp include/audio/*.hpp include/audio/effects/*.hpp include/midi/*.hpp) $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-format-truncation -Wno-unused-parameter -Iinclude -I$(HOST_LUA_INCLUDE_DIR) \
+		-DROOT_MOUNT_POINT='"."' -ffunction-sections -fdata-sections -Wl,--gc-sections -Wl,--wrap=fsync \
+		-o "$@" tests/scenes_test.cpp $(filter-out tests/soundboard_config_test.cpp,$(SOUNDBOARD_CONFIG_TEST_SRCS)) \
+		src/audio/graph.cpp src/audio/hotplug.cpp src/config/router.cpp \
+		$(HOST_LUA_STATIC_LIB) $(shell pkg-config --cflags --libs alsa) -pthread -lm
 
 test-audio-graph: $(OUT_DIR)/host/audiox-audio-graph-test
 	@"$<"
@@ -242,11 +297,11 @@ test-config-backup: $(OUT_DIR)/host/audiox-config-backup-test $(OUT_DIR)/host/au
 	@"$(OUT_DIR)/host/audiox-config-backup-test"
 	@"$(OUT_DIR)/host/audiox-config-backup-http-test"
 
-$(OUT_DIR)/host/audiox-config-backup-test: tests/config_backup_test.cpp src/config/backup.cpp include/config/backup.hpp include/update_archive.hpp include/watchdog_heartbeat.hpp
+$(OUT_DIR)/host/audiox-config-backup-test: tests/config_backup_test.cpp src/config/backup.cpp include/config/backup.hpp include/config/scene_schema.hpp include/update_archive.hpp include/watchdog_heartbeat.hpp
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/config_backup_test.cpp src/config/backup.cpp
 
-$(OUT_DIR)/host/audiox-config-backup-http-test: tests/config_backup_http_test.cpp src/config/backup.cpp src/http/server.cpp src/http/api.cpp include/config/backup.hpp include/http/context.hpp include/json.hpp include/update_archive.hpp include/watchdog_heartbeat.hpp $(wildcard include/midi/*.hpp include/scripting/*.hpp)
+$(OUT_DIR)/host/audiox-config-backup-http-test: tests/config_backup_http_test.cpp src/config/backup.cpp src/http/server.cpp src/http/api.cpp include/config/backup.hpp include/config/scene_schema.hpp include/http/context.hpp include/json.hpp include/update_archive.hpp include/watchdog_heartbeat.hpp $(wildcard include/midi/*.hpp include/scripting/*.hpp)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-format-truncation -Wno-unused-parameter -Iinclude \
 		-DROOT_MOUNT_POINT='"."' -ffunction-sections -fdata-sections -Wl,--gc-sections \

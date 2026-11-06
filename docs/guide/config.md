@@ -91,6 +91,7 @@ in the newly opened download tab.
 - MIDI sound/action mappings, controller lighting, sampler settings, and named
   script definitions.
 - Saved effect settings and volumes.
+- Named [setup scenes](../scenes), including their complete effect inventories and MIDI recall bindings.
 - Bluetooth pairing data.
 - Soundboard audio and its saved order.
 

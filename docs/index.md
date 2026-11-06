@@ -21,6 +21,7 @@ installation, connection, and a first audio route.
 | Task | Guide |
 | --- | --- |
 | Connect sources, processing, and outputs | [Routing](./guide/routing) |
+| Recall named routing, gain, and effect inventories | [Setup scenes](./scenes) |
 | Pair a phone or Bluetooth output | [Bluetooth](./guide/bluetooth) |
 | Add gain, distortion, gate, pitch, reverb, or cut | [Effects](./guide/effects) |
 | Set node gain or map a MIDI controller | [Volume](./guide/volume) |

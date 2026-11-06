@@ -1,5 +1,6 @@
 #include "config/backup.hpp"
 #include "config/schema.hpp"
+#include "config/scene_schema.hpp"
 #include "update_archive.hpp"
 #include "watchdog_heartbeat.hpp"
 
@@ -22,7 +23,7 @@ namespace {
 // CRC32 covers every preceding byte, including the header and paths.
 const char *const roots[] = {
     "config.txt", "config.staging.txt", "routing.txt", "midi_map.txt",
-    "fx_params.txt", "volumes.txt", "bluetooth", "sfx",
+    "fx_params.txt", "volumes.txt", "bluetooth", "sfx", "scenes",
 };
 constexpr size_t rootCount = sizeof(roots) / sizeof(roots[0]);
 constexpr uint64_t configMax = 1024 * 1024;
@@ -65,6 +66,16 @@ int validateConfigVersion(const char *root, const char *name, Error &error) {
     if (!S_ISREG(st.st_mode)) return 0;
     FILE *file = fopen(path, "r");
     if (!file) return error.io("open backed-up configuration");
+
+    if (!strncmp(name, "scenes/", 7)) {
+        char header[64]{};
+        bool valid = fgets(header, sizeof(header), file) &&
+            !strcmp(header, audiox::scenes::SCHEMA_HEADER) &&
+            st.st_size <= static_cast<off_t>(audiox::scenes::MAX_FILE_SIZE);
+        bool failed = fclose(file) != 0;
+        if (!valid || failed) return error.fail("Backup has an invalid or unsupported scene schema in %s", name);
+        return 0;
+    }
 
     if (!strcmp(name, "config.txt") || !strcmp(name, "config.staging.txt")) {
         char line[512];
@@ -227,6 +238,11 @@ bool validPath(const char *path) {
         if (!*p) break;
     }
     int index = entryRoot(path);
+    if (index == 8 && strcmp(path, "scenes")) {
+        const std::string file(path + 7);
+        if (file.size() <= 6 || file.substr(file.size() - 6) != ".scene" ||
+            !audiox::scenes::validId(file.substr(0, file.size() - 6))) return false;
+    }
     return index >= 0 && (index != 6 || !strcmp(path, "bluetooth") || !strcmp(path, "bluetooth/paired.txt"));
 }
 
@@ -259,7 +275,7 @@ struct Writer {
         bool missingDirectory = false;
         if (lstat(path, &st) < 0) {
             if (errno != ENOENT) return error.io("inspect backup file");
-            if (!strcmp(relative, "sfx") || !strcmp(relative, "bluetooth")) {
+            if (!strcmp(relative, "sfx") || !strcmp(relative, "bluetooth") || !strcmp(relative, "scenes")) {
                 st = {};
                 st.st_mode = S_IFDIR;
                 missingDirectory = true;
@@ -273,10 +289,11 @@ struct Writer {
         if (!directory && !S_ISREG(st.st_mode)) return error.fail("Backup refuses links or special files: %s", relative);
         int index = entryRoot(relative);
         bool top = !strcmp(relative, roots[index]);
-        if ((directory && (index < 6 || (index == 6 && !top))) || (!directory && index >= 6 && top)) {
+        if ((directory && (index < 6 || ((index == 6 || index == 8) && !top))) || (!directory && index >= 6 && top)) {
             return error.fail("Unexpected file type: %s", relative);
         }
         uint64_t size = directory ? 0 : (uint64_t)st.st_size;
+        if (index == 8 && !top && validateConfigVersion(root, relative, error) < 0) return -1;
         if (index < 7 && size > configMax) return error.fail("Configuration file exceeds 1 MiB: %s", relative);
         size_t len = strlen(relative);
         if (++count > maxEntries || total + 20 + len > maxArchiveSize ||
@@ -314,6 +331,7 @@ struct Writer {
         DIR *dir = opendir(path);
         if (!dir) return error.io("open sound directory");
         int rc = 0;
+        size_t sceneCount = 0;
         for (;;) {
             errno = 0;
             dirent *entry = readdir(dir);
@@ -322,6 +340,14 @@ struct Writer {
                 break;
             }
             if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+            if (index == 8) {
+                const std::string name(entry->d_name);
+                if (name.size() <= 6 || name.substr(name.size() - 6) != ".scene") continue;
+                if (++sceneCount > audiox::scenes::MAX_SCENES) {
+                    rc = error.fail("Backup exceeds scene capacity");
+                    break;
+                }
+            }
             char child[maxPath];
             if (!pathJoin(child, relative, entry->d_name)) { rc = error.io("sound path"); break; }
             if (add(root, child) < 0) { rc = -1; break; }
@@ -411,6 +437,7 @@ int stage(const char *root, int fd, uint64_t size, char *text, size_t textSize) 
     if (!pathJoin(fresh, temp.path, "new") || mkdir(fresh, 0700) < 0) return error.io("create restore directory");
     uint64_t pos = 16;
     uint32_t mask = 0;
+    size_t sceneCount = 0;
     for (uint32_t i = 0; i < count; ++i) {
         audioxWatchdogHeartbeat();
         if (pos > size - 4 || size - 4 - pos < 16) return error.fail("Truncated backup entry");
@@ -431,7 +458,10 @@ int stage(const char *root, int fd, uint64_t size, char *text, size_t textSize) 
         bool top = !strcmp(name, roots[index]);
         if ((index < 6 && (type != 1 || bytes > configMax)) ||
             (index == 6 && !top && (type != 1 || bytes > configMax)) ||
+            (index == 8 && !top && (type != 1 || bytes > audiox::scenes::MAX_FILE_SIZE)) ||
             (index >= 6 && top && type != 2)) return error.fail("Invalid configuration entry type or size");
+        if (index == 8 && !top && ++sceneCount > audiox::scenes::MAX_SCENES)
+            return error.fail("Backup exceeds scene capacity");
         char path[maxPath];
         if (!pathJoin(path, fresh, name)) return error.io("restore file path");
         if (type == 2) {
@@ -448,6 +478,7 @@ int stage(const char *root, int fd, uint64_t size, char *text, size_t textSize) 
                 copied += n;
             }
             if (fsync(out.value) < 0) return error.io("sync restored file");
+            if (index == 8 && validateConfigVersion(fresh, name, error) < 0) return -1;
         }
         if (top) mask |= 1u << index;
         pos += bytes;

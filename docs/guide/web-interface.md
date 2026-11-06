@@ -9,6 +9,11 @@ guide in a new tab without leaving your current
 controls or discarding unsaved edits. The documentation is hosted online, so
 your browser needs internet access to open it.
 
+The device interface itself works without internet: its graph library and
+fonts are shipped locally. The online manual and optional update checks still
+need internet. For a local development preview, run `npm ci --prefix web`
+and `node web/stage-assets.js` before serving the `web` directory.
+
 The interface is designed for both a desktop browser and a phone or tablet.
 On a narrow screen, scroll the navigation tabs horizontally to reach every page.
 Only one page is visible at a time; switching pages does not stop audio.
@@ -28,7 +33,7 @@ remains beside the editor.
 
 | Page | Use it for | Guide |
 | --- | --- | --- |
-| Routing | Connect audio channels, insert processing, and inspect node/route details | [Routing](./routing) |
+| Routing | Connect audio channels, insert processing, and capture/recall setup scenes | [Routing](./routing), [Scenes](../scenes) |
 | Bluetooth | Discover, pair, connect, disconnect, or forget audio devices | [Bluetooth](./bluetooth) |
 | Effects | Adjust effect parameters, MIDI controls, bypass mappings, and lights | [Effects](./effects) |
 | Volume | Monitor per-channel meters, set node gain, and assign MIDI knobs | [Volume](./volume) |

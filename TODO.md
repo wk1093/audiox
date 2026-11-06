@@ -198,7 +198,25 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Fix Pi 5 2GB specific boot issue (missing overlay)
   - [x] Add temperature data on webui
   - [x] Add Pi 5 fan curve editor on webui
-  - [ ] Validate fan curve editor
+  - [x] Validate fan curve editor
+  - [ ] litegraph looks weird (low resolution) on a 4k display.
+
+## Quality of life
+- [x] Show current and since-boot undervoltage/thermal-throttling warnings.
+- [x] Show Pi 5 fan RPM, cooling state, driver availability, and saved versus active curve; detect a stalled fan only when cooling is requested.
+- [x] Handle the Pi 5 physical power button with graceful shutdown and a clear screen indication.
+- [x] Chart recent temperature, CPU utilization, and X-runs together.
+- [x] Bundle WebUI graph assets and fonts for operation without internet.
+- [x] Add named routing/effects/volume scenes with WebUI and MIDI recall and gain fades, including each scene's complete active effect inventory.
+- [x] Show per-device audio health, connection state, negotiated sample rates, transfer mode, and X-runs.
+- [x] Download a sanitized, bounded diagnostic report without pairing keys, scripts, or audio files.
+- [x] Add routing undo/redo, an unsaved-changes indicator, and navigation protection.
+- [x] Collapse health/log tools and scene controls; hide scenes in graph fullscreen.
+- [x] Sample recent health on-device with a bounded 1,000-entry buffer and batched history endpoint.
+- [x] Correct the firmware throttling mailbox tag for Pi 4 and Pi 5.
+- [ ] Validate power/throttling telemetry on physical Pi 4 and Pi 5 hardware, and Pi 5 fan RPM/stall feedback and onboard power-button shutdown.
+- [ ] Validate live WebUI/MIDI scene recall with different effect inventories, audible transition quality, and recall latency on hardware.
+- [ ] Validate audio-device disconnect/reconnect health and the offline WebUI on the deployed appliance.
 
 ## Release - v2.0+
 - [x] IMPORTANT: Create a config versioning system, so that older configs can be upgraded if format is changed. This is important for 2.0+ because it is meant to be a more stable release, and we don't want to break people's configs when they update. This will also allow for more advanced features in the future, like being able to export and import configs between devices.

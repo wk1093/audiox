@@ -78,7 +78,7 @@ sides of an effect) is drawn through browser-only **Split Channels** and
 input. AudioX adds these automatically when it loads such routes.
 
 To build a custom channel route yourself, right-click empty graph space and add
-**Split Channels** or **Merge Channels**. Connect a stereo wire from the source
+**Split Channels** or **Merge Channels** from the **utility** category. Connect a stereo wire from the source
 to the split (or from the merge to the destination) first, then wire its
 **Left**/**Right** sockets. Each source can have one split and each destination
 one merge. Removing a split/merge node, or the stereo wire attached to it,
@@ -171,7 +171,7 @@ edge=routing_helper,fx_1,0,0
 edge=fx_1,usb_gadget_out,0,0
 ```
 
-Create a helper by adding **Audio Mixer** from the graph's Add menu. Saving
+Create a helper by adding **Audio Mixer** from the **utility** category of the graph's Add menu. Saving
 the graph saves both its enabled state and its edges. Removing the helper
 removes the node; review and save any remaining routes that you want to keep.
 
@@ -207,7 +207,7 @@ connections and helper presence; it does not save node positions.
 
 ## Effects, limits, and rejected connections
 
-Add built-in effects or installed plugins from the graph Add menu.
+Add built-in effects (**effects** category) or installed plugins (**plugin** category) from the graph Add menu.
 The effect is created as an `fx_N` node; connect it like any other
 channel-preserving processing node. Effect parameters and bypass are managed
 on its node and on **Effects**. See [Effects](./effects.md).

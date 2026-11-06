@@ -117,13 +117,13 @@ test('display density changes resize the graph and rearm the resolution listener
 
 test('advanced effect templates remain registered when the Cut template already exists', () => {
   const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
-  const registered = { 'audiox/effect_cut': function () {} };
+  const registered = { 'effects/cut': function () {} };
   const context = apiContext({ window: { LiteGraph: { registered_node_types: registered,
     registerNodeType: (key, node) => { registered[key] = node; } } } });
   vm.runInContext(source.slice(source.indexOf('  const advancedEffects ='),
     source.indexOf('  state.graphCanvas.background_image =')), context);
   for (const type of ['compressor', 'limiter', 'eq', 'multiband', 'noise_reduction']) {
-    const Node = registered[`audiox/effect_${type}`];
+    const Node = registered[`effects/${type}`];
     assert.equal(typeof Node, 'function');
     const node = Object.create(Node.prototype);
     const inputs = [], outputs = [];

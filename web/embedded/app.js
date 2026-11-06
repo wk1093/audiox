@@ -1099,7 +1099,7 @@ function setRoutingAdvanced(advanced) {
   const toggle = document.getElementById('routing-advanced');
   if (toggle) toggle.checked = state.advancedRouting;
   for (const kind of Object.keys(VIRTUAL_NODE_TITLES)) {
-    const ctor = window.LiteGraph?.registered_node_types?.[`audiox/${kind}_channels`];
+    const ctor = window.LiteGraph?.registered_node_types?.[`utility/${kind}_channels`];
     if (ctor) ctor.filter = state.advancedRouting ? 'audiox-internal' : 'audiox';
   }
   state.virtuals = [];
@@ -1299,7 +1299,7 @@ function ensureRoutingGraph() {
     thingCtor.filter = 'audiox-internal';
   }
 
-  if (!window.LiteGraph.registered_node_types['audiox/effect_gain']) {
+  if (!window.LiteGraph.registered_node_types['effects/gain']) {
     function AudioxEffectGainNode() {
       this.size = [220, 80];
       this.properties = { effectTypeTemplate: 'gain', nodeKind: 'template' };
@@ -1311,10 +1311,10 @@ function ensureRoutingGraph() {
     }
     AudioxEffectGainNode.title = 'Gain Effect';
     AudioxEffectGainNode.filter = 'audiox';
-    window.LiteGraph.registerNodeType('audiox/effect_gain', AudioxEffectGainNode);
+    window.LiteGraph.registerNodeType('effects/gain', AudioxEffectGainNode);
   }
 
-  if (!window.LiteGraph.registered_node_types['audiox/routing_helper']) {
+  if (!window.LiteGraph.registered_node_types['utility/mixer']) {
     function AudioxRoutingHelperNode() {
       this.size = [220, 80];
       this.properties = { routingHelperTemplate: true, nodeKind: 'template' };
@@ -1326,10 +1326,10 @@ function ensureRoutingGraph() {
     }
     AudioxRoutingHelperNode.title = 'Audio Mixer';
     AudioxRoutingHelperNode.filter = 'audiox';
-    window.LiteGraph.registerNodeType('audiox/routing_helper', AudioxRoutingHelperNode);
+    window.LiteGraph.registerNodeType('utility/mixer', AudioxRoutingHelperNode);
   }
 
-  if (!window.LiteGraph.registered_node_types['audiox/effect_distortion']) {
+  if (!window.LiteGraph.registered_node_types['effects/distortion']) {
     function AudioxEffectDistortionNode() {
       this.size = [220, 80];
       this.properties = { effectTypeTemplate: 'distortion', nodeKind: 'template' };
@@ -1341,10 +1341,10 @@ function ensureRoutingGraph() {
     }
     AudioxEffectDistortionNode.title = 'Distortion Effect';
     AudioxEffectDistortionNode.filter = 'audiox';
-    window.LiteGraph.registerNodeType('audiox/effect_distortion', AudioxEffectDistortionNode);
+    window.LiteGraph.registerNodeType('effects/distortion', AudioxEffectDistortionNode);
   }
 
-  if (!window.LiteGraph.registered_node_types['audiox/effect_pitch']) {
+  if (!window.LiteGraph.registered_node_types['effects/pitch']) {
     function AudioxEffectPitchNode() {
       this.size = [220, 80];
       this.properties = { effectTypeTemplate: 'pitch', nodeKind: 'template' };
@@ -1356,10 +1356,10 @@ function ensureRoutingGraph() {
     }
     AudioxEffectPitchNode.title = 'Pitch Effect';
     AudioxEffectPitchNode.filter = 'audiox';
-    window.LiteGraph.registerNodeType('audiox/effect_pitch', AudioxEffectPitchNode);
+    window.LiteGraph.registerNodeType('effects/pitch', AudioxEffectPitchNode);
   }
 
-  if (!window.LiteGraph.registered_node_types['audiox/effect_reverb']) {
+  if (!window.LiteGraph.registered_node_types['effects/reverb']) {
     function AudioxEffectReverbNode() {
       this.size = [220, 80];
       this.properties = { effectTypeTemplate: 'reverb', nodeKind: 'template' };
@@ -1371,10 +1371,10 @@ function ensureRoutingGraph() {
     }
     AudioxEffectReverbNode.title = 'Reverb Effect';
     AudioxEffectReverbNode.filter = 'audiox';
-    window.LiteGraph.registerNodeType('audiox/effect_reverb', AudioxEffectReverbNode);
+    window.LiteGraph.registerNodeType('effects/reverb', AudioxEffectReverbNode);
   }
 
-  if (!window.LiteGraph.registered_node_types['audiox/effect_gate']) {
+  if (!window.LiteGraph.registered_node_types['effects/gate']) {
     function AudioxEffectGateNode() {
       this.size = [220, 80];
       this.properties = { effectTypeTemplate: 'gate', nodeKind: 'template' };
@@ -1386,10 +1386,10 @@ function ensureRoutingGraph() {
     }
     AudioxEffectGateNode.title = 'Noise Gate Effect';
     AudioxEffectGateNode.filter = 'audiox';
-    window.LiteGraph.registerNodeType('audiox/effect_gate', AudioxEffectGateNode);
+    window.LiteGraph.registerNodeType('effects/gate', AudioxEffectGateNode);
   }
 
-  if (!window.LiteGraph.registered_node_types['audiox/effect_cut']) {
+  if (!window.LiteGraph.registered_node_types['effects/cut']) {
     function AudioxEffectCutNode() {
       this.size = [220, 80];
       this.properties = { effectTypeTemplate: 'cut', nodeKind: 'template' };
@@ -1401,14 +1401,14 @@ function ensureRoutingGraph() {
     }
     AudioxEffectCutNode.title = 'Mute (Cut)';
     AudioxEffectCutNode.filter = 'audiox';
-    window.LiteGraph.registerNodeType('audiox/effect_cut', AudioxEffectCutNode);
+    window.LiteGraph.registerNodeType('effects/cut', AudioxEffectCutNode);
   }
   const advancedEffects = {
     compressor: 'Compressor', limiter: 'Limiter', eq: 'Parametric EQ',
     multiband: 'Multiband Compressor', noise_reduction: 'Noise Reduction',
   };
   for (const [type, label] of Object.entries(advancedEffects)) {
-    if (window.LiteGraph.registered_node_types[`audiox/effect_${type}`]) continue;
+    if (window.LiteGraph.registered_node_types[`effects/${type}`]) continue;
     function AdvancedEffectNode() {
       this.size = [220, 80];
       this.properties = { effectTypeTemplate: type, nodeKind: 'template' };
@@ -1420,7 +1420,7 @@ function ensureRoutingGraph() {
     }
     AdvancedEffectNode.title = `${label} Effect`;
     AdvancedEffectNode.filter = 'audiox';
-    window.LiteGraph.registerNodeType(`audiox/effect_${type}`, AdvancedEffectNode);
+    window.LiteGraph.registerNodeType(`effects/${type}`, AdvancedEffectNode);
   }
   state.graphCanvas.background_image = null;
   window.LiteGraph.NODE_DEFAULT_COLOR = '#1f4a62';
@@ -1431,7 +1431,7 @@ function ensureRoutingGraph() {
   window.LiteGraph.EVENT_LINK_COLOR = '#79c8ff';
   state.graphCanvas.default_link_color = '#79c8ff';
   for (const [kind, label] of Object.entries(VIRTUAL_NODE_TITLES)) {
-    const key = `audiox/${kind}_channels`;
+    const key = `utility/${kind}_channels`;
     if (!window.LiteGraph.registered_node_types[key]) {
       function VirtualChannelsNode() {
         this.size = [190, 60];

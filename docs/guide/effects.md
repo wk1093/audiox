@@ -40,7 +40,7 @@ The Volume card's **Advanced** disclosure also shows its scripting/routing ID.
 
 ## Add, connect, and edit an effect
 
-1. On **Routing**, open the graph Add menu and choose the effect type.
+1. On **Routing**, right-click empty graph space, open **Add Node** → **effects**, and choose the effect type.
 2. Connect the incoming route to the effect's input channel and the outgoing
    route from its matching output channel. Effects preserve channel positions;
    connect channel 0 to channel 0, channel 1 to channel 1, and so on.

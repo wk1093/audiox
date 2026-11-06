@@ -141,7 +141,8 @@ The Pi firmware loads both initramfs files; the bootloader enters the runtime wi
 
 ### Module changes
 
-Use `bootmod.txt` only for the bootloader's storage/filesystem requirements. Use `depmod.txt` for runtime seeds:
+Use `bootmod.txt` for the bootloader's storage/filesystem requirements and Pi 5
+cooling during updates/recovery. Use `depmod.txt` for runtime seeds:
 
 ```text
 base: drivers/example/early-driver

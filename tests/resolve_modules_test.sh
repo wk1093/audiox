@@ -88,4 +88,42 @@ expect_list module-load.normal.list drivers/qemuonly drivers/both
 [[ ! -e "$WORK/out/modules_staging/$KV/kernel/drivers/pi4only.ko" ]]
 grep -q '^Board: qemu$' "$WORK/out/module-load.summary.txt"
 
+# Exercise the shipped seeds, not just board-filter syntax. Model the supplied
+# Pi kernel's built-in RP1 PWM provider and compressed fan module.
+FAN_ROOT="$WORK/fan-modules"
+while IFS= read -r MOD; do
+    [[ "$MOD" == drivers/pwm/pwm-rp1 ]] && continue
+    mkdir -p "$FAN_ROOT/$KV/kernel/$(dirname "$MOD")"
+    printf 'fake module\n' > "$FAN_ROOT/$KV/kernel/$MOD.ko"
+done < <(sed -E 's/#.*//; s/^(base|normal)(\([^)]*\))?:[[:space:]]*//; /^[[:space:]]*$/d' \
+    "$ROOT/bootmod.txt" "$ROOT/depmod.txt" | sort -u)
+printf 'kernel/drivers/pwm/pwm-rp1.ko\n' > "$FAN_ROOT/$KV/modules.builtin"
+xz "$FAN_ROOT/$KV/kernel/drivers/hwmon/pwm-fan.ko"
+
+for SEEDS in bootmod depmod; do
+    for BOARD in pi4 pi5 qemu; do
+        bash "$ROOT/scripts/resolve_modules.sh" "$KV" "$WORK/out" "$ROOT/$SEEDS.txt" \
+            module-load modules_staging "$BOARD" "$FAN_ROOT" >/dev/null
+        FAN_PATH="/lib/modules/$KV/kernel/drivers/hwmon/pwm-fan.ko"
+        if [[ "$BOARD" == pi5 ]]; then
+            grep -Fxq "$FAN_PATH" "$WORK/out/module-load.base.list"
+            [[ "$(cat "$WORK/out/modules_staging/$KV/kernel/drivers/hwmon/pwm-fan.ko")" == "fake module" ]]
+        else
+            ! grep -Fq "$FAN_PATH" "$WORK/out/module-load.list"
+            [[ ! -e "$WORK/out/modules_staging/$KV/kernel/drivers/hwmon/pwm-fan.ko" ]]
+        fi
+        ! grep -Fq '/drivers/pwm/pwm-rp1.ko' "$WORK/out/module-load.list"
+    done
+done
+
+rm "$FAN_ROOT/$KV/kernel/drivers/hwmon/pwm-fan.ko.xz"
+for SEEDS in bootmod depmod; do
+    if bash "$ROOT/scripts/resolve_modules.sh" "$KV" "$WORK/out" "$ROOT/$SEEDS.txt" \
+        module-load modules_staging pi5 "$FAN_ROOT" >"$WORK/missing-fan.log" 2>&1; then
+        echo "FAIL: $SEEDS accepted a Pi 5 image without the fan driver" >&2
+        exit 1
+    fi
+    grep -Fq 'module not found for drivers/hwmon/pwm-fan' "$WORK/missing-fan.log"
+done
+
 echo "resolve_modules tests passed"

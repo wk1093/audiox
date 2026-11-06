@@ -1,6 +1,10 @@
 # Seed modules for the tiny bootloader initramfs.
-# Keep this list focused on storage and filesystems needed to promote staged runtime updates.
+# Keep this list focused on storage, filesystems, and cooling during runtime updates.
 # Same syntax as depmod.txt, including board filters such as 'base(pi5): drivers/foo'.
+
+# Keep Pi 5 cooling available before the runtime starts, including recovery.
+base(pi5): drivers/pwm/pwm-rp1
+base(pi5): drivers/hwmon/pwm-fan
 
 # MMC / SD card host drivers commonly used on Raspberry Pi boards
 base(!qemu): drivers/mmc/host/sdhci

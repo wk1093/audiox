@@ -39,6 +39,16 @@ Open **Fan curve** in the CPU Temperature card to configure the four automatic s
 
 On a Pi 5, the graph edits thresholds (40–80 °C), PWM speeds (1–255), and shared hysteresis (1–15 °C). Saving writes a managed `dtparam=fan_tempN` block to boot `config.txt`; firmware applies it after restart. Disabling the custom curve removes only AudioX's managed block and leaves other boot settings intact.
 
+Pi 5 images include the `pwm-fan` kernel driver in both bootloader and runtime
+initramfs files; the RP1 PWM controller is built into the supplied kernel.
+The board device tree already defines the header fan and thermal trips, so
+no additional overlay is needed. Firmware detects a connected fan at boot.
+After installing an image with these drivers, save the curve and **Restart
+Device** (not just the runtime). Below the first threshold the fan can remain
+stopped. If it still does not respond above that threshold, check the header
+connection and kernel logs for `pwm-fan` probe errors; with the debug shell,
+check for a `pwmfan` entry in `/sys/class/hwmon/hwmon*/name`.
+
 On Pi 4, the dialog displays a **preview-only warning** and the graph remains interactive for UI testing, but saving is disabled because Pi 4 does not have the Pi 5 fan connector/firmware fan-curve control.
 
 After five X-runs within 30 seconds, AudioX temporarily increases the target

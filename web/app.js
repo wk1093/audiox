@@ -53,6 +53,7 @@ const state = {
   sfxFiles: [],
   graph: null,
   graphCanvas: null,
+  canvasResolution: null,
   nodeByThingId: new Map(),
   suspendGraphSync: false,
   internalGraphMutation: false,
@@ -603,7 +604,8 @@ function setRoutingZoom(nextScale) {
   }
 
   const clamped = Math.max(0.01, Math.min(2.8, nextScale));
-  const center = [graphCanvasEl.width * 0.5, graphCanvasEl.height * 0.5];
+  const [width, height] = state.canvasResolution.size();
+  const center = [width * 0.5, height * 0.5];
   state.graphCanvas.setZoom(clamped, center);
   state.graphCanvas.setDirty(true, true);
   updateZoomLabel();
@@ -981,15 +983,16 @@ function getViewCenterGraphCoords() {
   }
 
   const area = state.graphCanvas.visible_area;
-  if (Array.isArray(area) && area.length >= 4) {
+  if (area && area.length >= 4) {
     return [area[0] + (area[2] * 0.5), area[1] + (area[3] * 0.5)];
   }
 
   const scale = state.graphCanvas.ds.scale;
   const offset = state.graphCanvas.ds.offset;
+  const [width, height] = state.canvasResolution.size();
   return [
-    ((graphCanvasEl.width * 0.5) - offset[0]) / scale,
-    ((graphCanvasEl.height * 0.5) - offset[1]) / scale,
+    width * 0.5 / scale - offset[0],
+    height * 0.5 / scale - offset[1],
   ];
 }
 
@@ -1002,29 +1005,7 @@ function resizeRoutingCanvas() {
   const w = Math.max(1, Math.floor(rect.width));
   const h = Math.max(1, Math.floor(rect.height));
 
-  // Keep canvas backing store and CSS size in lockstep to avoid pointer offset drift.
-  if (graphCanvasEl.width !== w) {
-    graphCanvasEl.width = w;
-  }
-  if (graphCanvasEl.height !== h) {
-    graphCanvasEl.height = h;
-  }
-  graphCanvasEl.style.width = `${w}px`;
-  graphCanvasEl.style.height = `${h}px`;
-
-  if (state.graphCanvas.bgcanvas) {
-    if (state.graphCanvas.bgcanvas.width !== w) {
-      state.graphCanvas.bgcanvas.width = w;
-    }
-    if (state.graphCanvas.bgcanvas.height !== h) {
-      state.graphCanvas.bgcanvas.height = h;
-    }
-    state.graphCanvas.bgcanvas.style.width = `${w}px`;
-    state.graphCanvas.bgcanvas.style.height = `${h}px`;
-  }
-
-  state.graphCanvas.resize(w, h);
-  state.graphCanvas.setDirty(true, true);
+  state.canvasResolution.resize(w, h, window.devicePixelRatio);
 }
 
 let routingWireCacheKey = '';
@@ -1170,6 +1151,7 @@ function ensureRoutingGraph() {
     graphRemove(node);
   };
   state.graphCanvas = new window.LGraphCanvas(graphCanvasEl, state.graph, { autoresize: false });
+  state.canvasResolution = AudioxRouting.createCanvasResolution(state.graphCanvas);
 
   if (!window.LiteGraph.registered_node_types['audiox/thing']) {
     function AudioxThingNode() {
@@ -1503,7 +1485,8 @@ function routingNodeBoxes() {
 function fitRoutingGraph() {
   if (!state.graphCanvas) return;
   resizeRoutingCanvas();
-  const view = AudioxRouting.fitNodes(routingNodeBoxes(), graphCanvasEl.width, graphCanvasEl.height);
+  const [width, height] = state.canvasResolution.size();
+  const view = AudioxRouting.fitNodes(routingNodeBoxes(), width, height);
   if (!view) return;
   state.graphCanvas.ds.scale = view.scale;
   state.graphCanvas.ds.offset[0] = view.offset[0];
@@ -4461,6 +4444,15 @@ window.addEventListener('resize', () => {
     updateZoomLabel();
   }
 });
+
+function watchRoutingPixelRatio() {
+  const query = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+  query.addEventListener('change', () => {
+    resizeRoutingCanvas();
+    watchRoutingPixelRatio();
+  }, { once: true });
+}
+watchRoutingPixelRatio();
 
 if (typeof ResizeObserver === 'function') {
   const ro = new ResizeObserver(() => {

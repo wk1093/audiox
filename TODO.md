@@ -199,7 +199,7 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Add temperature data on webui
   - [x] Add Pi 5 fan curve editor on webui
   - [x] Validate fan curve editor
-  - [ ] litegraph looks weird (low resolution) on a 4k display.
+  - [x] Render LiteGraph at display pixel density on high-DPI/4K displays.
 
 ## Quality of life
 - [x] Show current and since-boot undervoltage/thermal-throttling warnings.

@@ -5,6 +5,57 @@
   const verticalGap = 50;
   const patchGap = 70;
 
+  function createCanvasResolution(graphCanvas) {
+    let width = 1, height = 1, scaleX = 1, scaleY = 1;
+    // LiteGraph 0.7 renders in CSS pixels and copies its background at native size.
+    // Keep its viewport/input coordinates logical, but rasterize both layers at display density.
+    for (const [method, contextKey, canvasKey] of [
+      ['drawBackCanvas', 'bgctx', 'bgcanvas'], ['drawFrontCanvas', 'ctx', 'canvas'],
+    ]) {
+      const draw = graphCanvas[method];
+      graphCanvas[method] = function (...args) {
+        const ctx = this[contextKey] || this[canvasKey].getContext('2d');
+        this[contextKey] = ctx;
+        ctx.save();
+        ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
+        const drawImage = ctx.drawImage;
+        if (method === 'drawFrontCanvas') {
+          ctx.drawImage = function (image, ...coordinates) {
+            if (image === graphCanvas.bgcanvas && coordinates.length === 2)
+              return drawImage.call(this, image, coordinates[0], coordinates[1], width, height);
+            return drawImage.call(this, image, ...coordinates);
+          };
+        }
+        try { return draw.apply(this, args); }
+        finally {
+          if (method === 'drawFrontCanvas') ctx.drawImage = drawImage;
+          ctx.restore();
+        }
+      };
+    }
+    return {
+      resize(cssWidth, cssHeight, pixelRatio = 1) {
+        width = Math.max(1, Math.floor(cssWidth));
+        height = Math.max(1, Math.floor(cssHeight));
+        const ratio = Number.isFinite(pixelRatio) && pixelRatio > 0 ? pixelRatio : 1;
+        const backingWidth = Math.max(1, Math.round(width * ratio));
+        const backingHeight = Math.max(1, Math.round(height * ratio));
+        graphCanvas.resize(backingWidth, backingHeight);
+        for (const canvas of [graphCanvas.canvas, graphCanvas.bgcanvas]) {
+          canvas.style.width = `${width}px`;
+          canvas.style.height = `${height}px`;
+        }
+        scaleX = backingWidth / width;
+        scaleY = backingHeight / height;
+        graphCanvas.viewport = [0, 0, width, height];
+        graphCanvas.ds.viewport = graphCanvas.viewport;
+        graphCanvas.ds.computeVisibleArea(graphCanvas.viewport);
+        graphCanvas.setDirty(true, true);
+      },
+      size() { return [width, height]; },
+    };
+  }
+
   function columnForNode(node) {
     if (node.kind === 'routing_helper') return 1;
     if (node.kind === 'effect') return 2;
@@ -267,7 +318,7 @@
     return `Channel ${channel + 1}`;
   }
 
-  const exported = { columnForNode, layoutNodes, wireCurve, wirePath, fitNodes, channelLabel };
+  const exported = { createCanvasResolution, columnForNode, layoutNodes, wireCurve, wirePath, fitNodes, channelLabel };
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
   else root.AudioxRouting = exported;
 })(globalThis);

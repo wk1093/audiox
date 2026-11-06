@@ -12,6 +12,84 @@ const nodes = [
   { id: 'input2', kind: 'device', inputs: 2, outputs: 2, width: 280, height: 300 },
 ];
 
+function canvasFixture() {
+  const calls = [];
+  const canvas = () => {
+    const ctx = { save: () => calls.push(['save']), restore: () => calls.push(['restore']),
+      setTransform: (...args) => calls.push(['transform', ...args]),
+      drawImage: (...args) => calls.push(['image', ...args]) };
+    return { width: 0, height: 0, style: {}, getContext: () => ctx };
+  };
+  const graphCanvas = { canvas: canvas(), bgcanvas: canvas(), ds: { scale: 1, offset: [0, 0],
+    computeVisibleArea: (viewport) => calls.push(['viewport', ...viewport]) },
+    resize(w, h) { this.canvas.width = this.bgcanvas.width = w; this.canvas.height = this.bgcanvas.height = h; },
+    setDirty: (...args) => calls.push(['dirty', ...args]),
+    drawBackCanvas() { calls.push(['back']); },
+    drawFrontCanvas() { this.ctx.drawImage(this.bgcanvas, 0, 0); },
+  };
+  return { graphCanvas, calls };
+}
+
+test('high-DPI graph renders both layers at display density while keeping logical viewport and zoom', () => {
+  for (const ratio of [1, 1.25, 1.5, 2, 3]) {
+    const { graphCanvas, calls } = canvasFixture();
+    const resolution = routing.createCanvasResolution(graphCanvas);
+    graphCanvas.ds.scale = 0.75;
+    graphCanvas.ds.offset = [40, 20];
+    resolution.resize(801, 451, ratio);
+    assert.equal(graphCanvas.canvas.width, Math.round(801 * ratio));
+    assert.equal(graphCanvas.bgcanvas.height, Math.round(451 * ratio));
+    assert.deepEqual(resolution.size(), [801, 451]);
+    assert.equal(graphCanvas.canvas.style.width, '801px');
+    assert.deepEqual(graphCanvas.viewport, [0, 0, 801, 451]);
+    assert.equal(graphCanvas.ds.scale, 0.75);
+    assert.deepEqual(graphCanvas.ds.offset, [40, 20]);
+    graphCanvas.drawBackCanvas();
+    graphCanvas.drawFrontCanvas();
+    const transforms = calls.filter(([method]) => method === 'transform');
+    assert.equal(transforms.length, 2);
+    assert.equal(transforms[0][1], Math.round(801 * ratio) / 801);
+    assert.equal(transforms[1][4], Math.round(451 * ratio) / 451);
+    const copy = calls.find(([method]) => method === 'image');
+    assert.deepEqual(copy.slice(2), [0, 0, 801, 451]);
+    assert.equal(calls.filter(([method]) => method === 'save').length, 2);
+    assert.equal(calls.filter(([method]) => method === 'restore').length, 2);
+    resolution.resize(3840, 2160, ratio);
+    assert.equal(graphCanvas.canvas.width, Math.round(3840 * ratio));
+    resolution.resize(801, 451, 1);
+    assert.equal(graphCanvas.canvas.width, 801);
+  }
+});
+
+test('high-DPI rendering restores context and background-copy override after an error', () => {
+  const { graphCanvas, calls } = canvasFixture();
+  graphCanvas.drawFrontCanvas = function () { throw new Error('render failed'); };
+  const original = graphCanvas.canvas.getContext('2d').drawImage;
+  const resolution = routing.createCanvasResolution(graphCanvas);
+  resolution.resize(800, 450, 2);
+  assert.throws(() => graphCanvas.drawFrontCanvas(), /render failed/);
+  assert.equal(graphCanvas.ctx.drawImage, original);
+  assert.equal(calls.at(-1)[0], 'restore');
+});
+
+test('display density changes resize the graph and rearm the resolution listener', () => {
+  const source = fs.readFileSync(require.resolve('../web/app.js'), 'utf8');
+  const queries = [];
+  let resized = 0;
+  const context = vm.createContext({ window: { devicePixelRatio: 1,
+    matchMedia(query) { const entry = { query }; queries.push(entry); return {
+      addEventListener(type, callback, options) { Object.assign(entry, { type, callback, options }); },
+    }; } }, resizeRoutingCanvas: () => resized++ });
+  vm.runInContext(source.slice(source.indexOf('function watchRoutingPixelRatio()'),
+    source.indexOf("if (typeof ResizeObserver === 'function')")), context);
+  assert.equal(queries[0].query, '(resolution: 1dppx)');
+  context.window.devicePixelRatio = 2;
+  queries[0].callback();
+  assert.equal(resized, 1);
+  assert.equal(queries[1].query, '(resolution: 2dppx)');
+  assert.equal(queries[1].options.once, true);
+});
+
 test('advanced effect templates remain registered when the Cut template already exists', () => {
   const source = fs.readFileSync(require.resolve('../web/app.js'), 'utf8');
   const registered = { 'audiox/effect_cut': function () {} };

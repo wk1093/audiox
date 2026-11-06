@@ -38,6 +38,10 @@ positions. Save again to apply an undone edit to live audio. Leaving Routing
 with pending wire edits asks for confirmation; leaving does not discard them.
 Browser close/reload protection also remains enabled.
 
+The graph renders at the display's pixel density, including browser zoom and
+moving between monitors. Graph zoom and pointer coordinates remain in CSS
+pixels, so higher rendering resolution does not change node sizes or dragging.
+
 Open the collapsed **Scenes** menu below the graph to capture and recall named routing, effect inventories/settings,
 and gains; see [Setup scenes](../scenes). Scenes are hidden in graph fullscreen.
 If MIDI recalls a scene while you have

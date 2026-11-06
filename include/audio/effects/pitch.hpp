@@ -17,6 +17,7 @@ void processPitch(const char *effectId,
                   float mix,
                   float outputGain,
                   float noiseFloorRatio,
-                  float wetLpfHz);
+                  float wetLpfHz,
+                  uint8_t quality = 0);
 
 } // namespace audiox::effects

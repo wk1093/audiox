@@ -52,6 +52,28 @@ test('device history merges overlapping batches, remains bounded and resets on r
   assert.throws(() => history.merge(data([3, 2], '2')), /Invalid/);
 });
 
+test('browser history expires at ten minutes even with sparse or empty updates and fixes the time axis', () => {
+  const history = monitor.createHistory();
+  const sample = (id, now) => ({ id, now, temperature: 55, cpu: 50, xruns: 1 });
+  const data = (samples, now_ms) => ({ runtime_id: '1', samples, now_ms });
+  const samples = Array.from({ length: 1000 }, (_, i) => sample(i + 1, (i + 1) * 1000));
+  const retained = history.merge(data(samples, 1000000));
+  assert.equal(retained.length, 600);
+  assert.equal(retained[0].now, 401000);
+  assert.match(monitor.historySvg(retained, 1000000), /10 minutes ago/);
+  assert.match(monitor.historySvg([sample(1, 1000)], 1000), /10 minutes ago/);
+  assert.equal(history.merge(data([], 1599999)).length, 1);
+  assert.equal(history.merge(data([], 1600000)).length, 0);
+  const sparse = history.merge(data([sample(1001, 1700000), sample(1002, 2299999)], 2299999));
+  assert.equal(sparse.length, 2);
+  assert.equal(history.merge(data([sample(1003, 2300000)], 2300000)).length, 2);
+  assert.equal(history.lastId(), 1003);
+  assert.equal(monitor.historySvg(sparse, 2900000), '');
+  const svg = monitor.historySvg([sample(1004, 3000000)], 3100000);
+  assert.match(svg, /10 minutes ago/);
+  assert.doesNotMatch(svg, /M755\.0 /);
+});
+
 test('collapsed health tools defer requests; opening fills device history, then polls small batches', async () => {
   const nodes = new Map();
   const node = (id) => {
@@ -83,7 +105,7 @@ test('collapsed health tools defer requests; opening fills device history, then 
   node('system-advanced').open = true;
   node('system-advanced').listeners.toggle();
   await flush();
-  assert.equal(calls.filter((url) => url.includes('/history')).at(-1), '/api/system/history?limit=1000');
+  assert.equal(calls.filter((url) => url.includes('/history')).at(-1), '/api/system/history?limit=600');
   assert.equal(node('system-history-status').hidden, true);
   last = 1003;
   context.AudioxSystemMonitor.update({});
@@ -93,7 +115,7 @@ test('collapsed health tools defer requests; opening fills device history, then 
   context.AudioxSystemMonitor.update({});
   await flush();
   assert.deepEqual(calls.filter((url) => url.includes('/history')).slice(-2),
-    ['/api/system/history?limit=50', '/api/system/history?limit=1000']);
+    ['/api/system/history?limit=50', '/api/system/history?limit=600']);
   runtime = '2'; last = 3;
   context.AudioxSystemMonitor.update({});
   await flush();

@@ -4695,15 +4695,18 @@ static int handleSystemHistory(HttpServer *server, int cfd, const char *method, 
 			valid = input[i] >= '0' && input[i] <= '9';
 			if (valid) limit = limit * 10 + (input[i] - '0');
 		}
-		if (!valid || limit < 1 || limit > audiox::system::SystemHistory::kCapacity) {
+		if (!valid || limit < 1 || limit > 1000) {
 			static const char error[] = "{\"error\":\"limit must be an integer from 1 to 1000\"}";
 			return server->sendResponse(cfd, "400 Bad Request", "application/json", error, sizeof(error) - 1);
 		}
 	}
-	const auto &history = audiox::system::systemHistory;
+	auto &history = audiox::system::systemHistory;
+	const uint64_t now = audiox::healthMonotonicMs();
+	history.prune(now);
 	std::string response = "{\"runtime_id\":\"" + std::to_string(history.runtime())
-		+ "\",\"sample_interval_ms\":1000,\"capacity\":1000,\"now_ms\":"
-		+ std::to_string(audiox::healthMonotonicMs()) + ",\"samples\":[";
+		+ "\",\"sample_interval_ms\":1000,\"capacity\":" + std::to_string(history.kCapacity)
+		+ ",\"retention_ms\":" + std::to_string(history.kRetentionMs) + ",\"now_ms\":"
+		+ std::to_string(now) + ",\"samples\":[";
 	const size_t first = history.size() - std::min(limit, history.size());
 	for (size_t i = first; i < history.size(); ++i) {
 		const auto &sample = history.at(i);

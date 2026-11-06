@@ -575,6 +575,10 @@ int main() {
         close(response[0]);
         close(response[1]);
         storageReadFails = false;
+        const bool beforeHistoryClock = testClockEnabled;
+        const uint64_t beforeHistoryTime = testNowMs;
+        testClockEnabled = true;
+        testNowMs = 3000;
         auto historyRequest = [&](const char *method, const char *query) {
             int sockets[2];
             assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
@@ -596,10 +600,19 @@ int main() {
         assert(recent.find("\"id\":1,") == std::string::npos);
         assert(recent.find("\"id\":2,") != std::string::npos);
         assert(recent.find("\"id\":3,") != std::string::npos);
+        assert(recent.find("\"capacity\":600,\"retention_ms\":600000") != std::string::npos);
         assert(audiox::system::systemHistory.size() == 3);
         for (const char *invalid : {"limit=0", "limit=1001", "limit=-1", "limit=1.5", "limit=abc", "limit=2&limit=3", "foo=3"})
             assert(historyRequest("GET", invalid).find("400 Bad Request") != std::string::npos);
         assert(historyRequest("POST", "limit=2").find("405 Method Not Allowed") != std::string::npos);
+        testNowMs = 602999;
+        const auto expiring = historyRequest("GET", "limit=1000");
+        assert(expiring.find("\"id\":2,") == std::string::npos);
+        assert(expiring.find("\"id\":3,") != std::string::npos);
+        testNowMs = 603000;
+        assert(historyRequest("GET", "limit=600").find("\"samples\":[]") != std::string::npos);
+        testNowMs = beforeHistoryTime;
+        testClockEnabled = beforeHistoryClock;
         assert(socketpair(AF_UNIX, SOCK_STREAM, 0, response) == 0);
         assert(handleApiDeleteRootfs(&http, response[0], "/api/rootfs/sfx/remove.wav") == 0);
         char reply[512] = {};
@@ -689,7 +702,7 @@ int main() {
             return response;
         };
         const auto savedBeforeBuiltinCount = config.readMidiMapFile().effectStateCount;
-        for (const char *type : {"compressor", "limiter", "eq", "multiband", "noise_reduction"}) {
+        for (const char *type : {"pitch", "compressor", "limiter", "eq", "multiband", "noise_reduction"}) {
             const auto created = pluginRequest("POST", "/api/effect/create", std::string("type=") + type);
             assert(created.find("200 OK") != std::string::npos);
             saved = config.readMidiMapFile();
@@ -710,7 +723,7 @@ int main() {
             assert(restored.type == spec->type && restored.enabled);
             const auto metadata = pluginRequest("GET", "/api/effects", "");
             assert(metadata.find(std::string("\"type\":\"") + type + "\"") != std::string::npos);
-            const char *label = !strcmp(type, "compressor") ? "Compressor" :
+            const char *label = !strcmp(type, "pitch") ? "Pitch Shift" : !strcmp(type, "compressor") ? "Compressor" :
                 !strcmp(type, "limiter") ? "Limiter" : !strcmp(type, "eq") ? "Parametric EQ" :
                 !strcmp(type, "multiband") ? "Multiband Compressor" : "Noise Reduction";
             assert(metadata.find(std::string("\"name\":\"") + label + " " + effectId.substr(3) +
@@ -718,7 +731,7 @@ int main() {
             for (uint8_t index = 0; index < spec->paramCount; ++index) {
                 const auto &param = spec->params[index];
                 const float value = param.minValue + (param.maxValue - param.minValue) * .25f;
-                assert(fabsf(restored.values[index] - value) < 1e-4f);
+                assert(fabsf(restored.values[index] - (!strcmp(param.name, "quality") ? roundf(value) : value)) < 1e-4f);
                 assert(metadata.find(std::string("\"name\":\"") + param.name + "\"") != std::string::npos);
                 assert(audio.setEffectParamNormalized(effectId.c_str(), param.name, 1) == RET_OK);
                 audiox::effects::SlotParams midiControlled{};

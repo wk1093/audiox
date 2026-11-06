@@ -165,6 +165,7 @@
       mix: ['Effect mix', '', 'Blends dry and processed sound. 0 is dry; 1 is fully processed. Delayed effects align their dry signal internally.'],
       noise_floor: ['Noise floor', '', 'Suppresses very quiet input in the pitch shifter. Increase to reduce low-level artifacts.'],
       wet_lpf_hz: ['Wet tone cutoff', 'Hz', 'Low-pass filter on the shifted signal. Lower values make it darker.'],
+      quality: ['Quality', '', 'High: 8× overlap. Balanced: 4×. Economy: 2×. Lower modes use less CPU but may add artifacts. Changing mode clears the audio history.'],
       feedback: ['Reverb length', '', 'Higher feedback makes the reverb tail last longer.'],
       damping: ['High-frequency damping', '', 'Higher values absorb more high frequencies for a darker reverb tail.'],
       wet_mix: ['Reverb mix', '', 'Blends the reverb with the original sound. 0 is dry; 1 is wet.'],
@@ -198,9 +199,10 @@
     return {
       ...(help ? { label: help[0], unit: help[1], description: help[2] } : { unit: '', description: '' }),
       ...bandHelp,
-      step: name === 'channels' || name.endsWith('_hz') ? 1 :
+      ...(type === 'pitch' && name === 'quality' ? { options: ['High', 'Balanced', 'Economy'] } : {}),
+      step: (type === 'pitch' && name === 'quality') || name === 'channels' || name.endsWith('_hz') ? 1 :
         name === 'noise_floor' ? 0.0001 : name.endsWith('_ms') || name.endsWith('_db') ? 0.1 : 0.01,
-      precision: name === 'channels' || name.endsWith('_hz') ? 0 :
+      precision: (type === 'pitch' && name === 'quality') || name === 'channels' || name.endsWith('_hz') ? 0 :
         name === 'noise_floor' ? 4 : name.endsWith('_ms') || name.endsWith('_db') ? 1 : 2,
     };
   }
@@ -244,7 +246,7 @@
       this.catalogSignature = signature;
       this.pluginCatalog = next;
       if (this.panelEl?.contains(document.activeElement) &&
-          ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) {
+          ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) {
         this.effectsSignature = '';
         return;
       }
@@ -428,7 +430,7 @@
       if (!view) return;
       if (document.activeElement !== view.number) view.number.value = String(value);
       if (document.activeElement !== view.slider) view.slider.value = String(value);
-      if (view.meta) view.meta.textContent = `${view.row.label}: ${toNumber(value, 0).toFixed(view.row.precision)}`;
+      if (view.meta) view.meta.textContent = `${view.row.label}: ${view.row.options?.[Math.round(value)] || toNumber(value, 0).toFixed(view.row.precision)}`;
     }
 
     mountPanel(panelEl, statusEl) {
@@ -489,8 +491,15 @@
       const slider = document.createElement('input');
       slider.type = 'range';
       slider.setAttribute('aria-label', `${row.label} slider for ${effectName(fx)}`);
-      const number = document.createElement('input');
-      number.type = 'number';
+      const number = document.createElement(row.options ? 'select' : 'input');
+      if (row.options) {
+        row.options.forEach((name, value) => {
+          const option = document.createElement('option');
+          option.value = String(value);
+          option.textContent = name;
+          number.appendChild(option);
+        });
+      } else number.type = 'number';
       number.id = inputId;
       for (const input of [slider, number]) {
         input.min = String(row.min);
@@ -509,7 +518,7 @@
       number.addEventListener('change', () => {
         const value = Number(number.value);
         if (!number.value.trim() || !Number.isFinite(value) || value < row.min || value > row.max ||
-          (row.name === 'channels' && !Number.isInteger(value))) {
+          ((row.name === 'channels' || row.options) && !Number.isInteger(value))) {
           this.setPanelStatus(`${row.label} must be ${row.name === 'channels' ? 'a whole number ' : ''}between ${row.min} and ${row.max}.`, 'warn');
           return;
         }
@@ -522,7 +531,8 @@
       reset.title = `Factory default: ${row.defaultValue}${row.unit ? ` ${row.unit}` : ''}`;
       reset.disabled = !Number.isFinite(row.defaultValue);
       reset.addEventListener('click', () => save(row.defaultValue));
-      inputs.append(slider, number, reset);
+      if (row.options) inputs.append(number, reset);
+      else inputs.append(slider, number, reset);
       control.appendChild(inputs);
       parent.appendChild(control);
       this.paramViews.set(`${fx.id}\n${row.name}`, { slider, number, row, meta: null });
@@ -644,7 +654,7 @@
 
           const left = document.createElement('div');
           left.className = 'fx-map-meta';
-          left.textContent = `${row.label}: ${toNumber(row.value, 0).toFixed(row.precision)}`;
+          left.textContent = `${row.label}: ${row.options?.[Math.round(row.value)] || toNumber(row.value, 0).toFixed(row.precision)}`;
           const view = this.paramViews.get(`${fx.id}\n${row.name}`);
           if (view) view.meta = left;
 
@@ -842,7 +852,7 @@
 
     async loadEffects() {
       if (!this.mutationInFlight && this.panelEl?.contains(document.activeElement) &&
-          ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
+          ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
       const myEpoch = this.loadEpoch;
       const res = await fetch('/api/effects', { method: 'GET' });
       const txt = await res.text();
@@ -1276,9 +1286,15 @@
       }
 
       for (const p of paramList) {
-        node.addWidget('slider', p.label, toNumber(params[p.name], p.value), (v) => {
-          this.queueParamUpdate(effectId, p.name, v);
-        }, { min: p.min, max: p.max, step: p.step, precision: p.precision });
+        if (p.options) {
+          node.addWidget('combo', p.label, p.options[Math.round(toNumber(params[p.name], p.value))], (value) => {
+            this.queueParamUpdate(effectId, p.name, p.options.indexOf(value));
+          }, { values: p.options });
+        } else {
+          node.addWidget('slider', p.label, toNumber(params[p.name], p.value), (v) => {
+            this.queueParamUpdate(effectId, p.name, v);
+          }, { min: p.min, max: p.max, step: p.step, precision: p.precision });
+        }
       }
 
       node.addWidget('button', 'Edit effect and MIDI controls', null, () => {

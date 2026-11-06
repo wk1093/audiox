@@ -40,8 +40,9 @@ inline double readCpuTemperature() {
 
 class SystemHistory {
 public:
-    static constexpr size_t kCapacity = 1000;
+    static constexpr size_t kCapacity = 600;
     static constexpr uint64_t kIntervalMs = 1000;
+    static constexpr uint64_t kRetentionMs = 600000;
     struct Sample {
         uint64_t id{0}, now{0};
         double temperature{0}, cpu{0};
@@ -58,6 +59,7 @@ public:
     void add(uint64_t now, double temperature, const CpuTimes *cpu,
              uint64_t xruns, uint64_t audioRuntime) {
         if (!due(now)) return;
+        prune(now);
         Sample sample;
         sample.id = ++sequence_;
         sample.now = now;
@@ -82,6 +84,9 @@ public:
     }
 
     size_t size() const { return size_; }
+    void prune(uint64_t now) {
+        while (size_ && now >= at(0).now && now - at(0).now >= kRetentionMs) --size_;
+    }
     uint64_t runtime() const { return runtime_; }
     const Sample &at(size_t index) const { return samples_[(next_ + kCapacity - size_ + index) % kCapacity]; }
     const Sample &latest() const { return at(size_ - 1); }

@@ -88,6 +88,7 @@ increments; the backend accepts the listed ranges.
 |  | Output Gain | 0–4 | 1 |
 |  | Noise Floor | 0.0001–0.02 | 0.001 |
 |  | Wet LPF Hz | 1,000–18,000 | 12,000 |
+|  | Quality | High / Balanced / Economy | High |
 | **Reverb** | Input Gain | 0–4 | 1 |
 |  | Feedback | 0.05–0.95 | 0.64 |
 |  | Damping | 0–1 | 0.48 |
@@ -149,7 +150,16 @@ longer exist. A newly created Cut is in its passing (not muted) state.
   Set the starting floor below quiet speech; excessive reduction can introduce
   watery/musical artifacts. Adaptation 0 freezes the estimate. Its phase-preserving
   spectral processor adds **256 frames** (5.33 ms at 48 kHz), including dry mix.
-- **Pitch** uses a 1024-sample phase vocoder with a 128-sample hop. Shifted audio
+- **Pitch** uses a 1024-sample phase vocoder. **High** uses 8x overlap (128-frame
+  hop), **Balanced** uses 4x (256-frame hop), and **Economy** uses 2x (512-frame
+  hop). Balanced halves the FFT frame rate; Economy quarters it, with more
+  modulation, weaker separation of nearby tones, and possible level loss.
+  Economy follows local spectral-peak frequencies to limit phase-unwrapping
+  artifacts at its larger hop. These are CPU/quality tradeoffs, not guarantees
+  against X-runs: an FFT frame still runs in a single processing block.
+  High remains the default for existing configurations and scenes.
+  Changing Quality clears the effect's history and can briefly interrupt audio.
+  Shifted audio
   and its internal dry mix have **1024 frames** of delay (21.33 ms at 48 kHz).
   Zero semitones or Mix 0 are immediate, transparent apart from input/output
   gain and peak clamping. Switching between these and shifted processing clears
@@ -245,7 +255,7 @@ connections. Use these parameter keys with the ranges above:
 | --- | --- |
 | Gain | `level` |
 | Distortion | `input_gain`, `drive`, `clip`, `output_gain` |
-| Pitch | `input_gain`, `semitones`, `mix`, `output_gain`, `noise_floor`, `wet_lpf_hz` |
+| Pitch | `input_gain`, `semitones`, `mix`, `output_gain`, `noise_floor`, `wet_lpf_hz`, `quality` (0 High, 1 Balanced, 2 Economy) |
 | Reverb | `input_gain`, `feedback`, `damping`, `wet_mix` |
 | Noise Gate | `threshold_db`, `attack_ms`, `release_ms`, `range_db` |
 | Cut | `channels` |

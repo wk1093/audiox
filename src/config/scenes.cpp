@@ -190,6 +190,8 @@ bool validate(const Scene &scene, std::string &error, bool requireAvailable) {
             size_t count = 0;
             for (const auto &parameter : scene.params)
                 if (!strcmp(parameter.effectId, e.effectId) && !strcmp(parameter.param, spec->params[p].name)) ++count;
+            if (count == 0 && type == effects::EFFECT_PITCH &&
+                !strcmp(spec->params[p].name, "quality")) continue;
             if (count != 1) return fail(error, "missing or duplicate scene parameter");
         }
     }

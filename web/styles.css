@@ -960,6 +960,7 @@ a { color: var(--accent); text-underline-offset: 3px; }
 }
 
 .fx-param-inputs { gap: 6px; }
+.fx-param-inputs select { flex: 1; padding: 6px 8px; }
 .fx-param-inputs input[type="number"] { width: 80px; padding: 6px 8px; }
 .fx-param-inputs button { padding: 6px 8px; font-size: 11px; }
 .fx-param-inputs input[type="range"] {

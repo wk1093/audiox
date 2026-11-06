@@ -140,6 +140,30 @@ int main() {
         audio.processingThreadRun.store(0);
         assert(!audio.sceneMuted.load() && read("config.txt") == oldConfig);
 
+        char pitchId[64];
+        assert(audio.createEffect("pitch", pitchId, sizeof(pitchId)) == RET_OK);
+        assert(audio.setEffectParam(pitchId, "quality", 1.6f) == RET_OK);
+        Scene pitchScene;
+        pitchScene.id = "pitch-quality";
+        pitchScene.name = "Pitch quality";
+        assert(capture(&app, pitchScene, error));
+        auto quality = std::find_if(pitchScene.params.begin(), pitchScene.params.end(), [&](const auto &p) {
+            return !strcmp(p.effectId, pitchId) && !strcmp(p.param, "quality");
+        });
+        assert(quality != pitchScene.params.end() && quality->value == 2);
+        assert(store.save(pitchScene, error));
+        assert(store.read(pitchScene.id, loaded, error));
+        assert(recall(&app, loaded, error));
+        audiox::effects::SlotParams pitchParams{};
+        assert(audio.getEffectParams(pitchId, &pitchParams) == RET_OK && pitchParams.values[6] == 2);
+        pitchScene.params.erase(quality);
+        assert(store.save(pitchScene, error));
+        assert(store.read(pitchScene.id, loaded, error));
+        assert(recall(&app, loaded, error));
+        assert(audio.getEffectParams(pitchId, &pitchParams) == RET_OK && pitchParams.values[6] == 0);
+        assert(recall(&app, clean, error));
+        assert(store.remove(pitchScene.id, error));
+
         char secondId[64];
         assert(audio.createEffect("distortion", secondId, sizeof(secondId)) == RET_OK);
         assert(audio.setEffectParam(secondId, "drive", 4.0f) == RET_OK);

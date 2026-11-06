@@ -1,7 +1,10 @@
 (function (root) {
   'use strict';
 
-  function createHistory(limit = 1000) {
+  const historyRetentionMs = 600000;
+  const historyCapacity = 600;
+
+  function createHistory(limit = historyCapacity) {
     let samples = [], runtime = null;
     return {
       merge(data) {
@@ -15,7 +18,11 @@
         runtime = data.runtime_id;
         const merged = new Map(samples.map((sample) => [sample.id, sample]));
         for (const sample of data.samples) merged.set(sample.id, { ...sample });
-        samples = [...merged.values()].sort((a, b) => a.id - b.id).slice(-limit);
+        const now = Number.isFinite(data.now_ms) ? data.now_ms
+          : Math.max(0, ...[...merged.values()].map((sample) => sample.now));
+        samples = [...merged.values()].filter((sample) =>
+          sample.now <= now && now - sample.now < historyRetentionMs)
+          .sort((a, b) => a.id - b.id).slice(-Math.min(limit, historyCapacity));
         return samples;
       },
       lastId() { return samples.at(-1)?.id || 0; },
@@ -23,10 +30,11 @@
     };
   }
 
-  function historySvg(samples) {
+  function historySvg(samples, now = samples.at(-1)?.now) {
+    samples = samples.filter((sample) => sample.now <= now && now - sample.now < historyRetentionMs);
     if (!samples.length) return '';
-    const end = samples.at(-1).now;
-    const duration = Math.max(300000, end - samples[0].now);
+    const end = now;
+    const duration = historyRetentionMs;
     const start = end - duration;
     const x = (now) => 45 + (now - start) / duration * 710;
     const maxXruns = Math.max(1, ...samples.map((sample) => sample.xruns || 0));
@@ -126,12 +134,12 @@
         return response.json();
       };
       try {
-        let data = await request(historyNeedsFull ? 1000 : 50);
+        let data = await request(historyNeedsFull ? historyCapacity : 50);
         if (!historyNeedsFull && history.runtime() === data.runtime_id && history.lastId()
-            && data.samples?.[0]?.id > history.lastId() + 1) data = await request(1000);
+            && data.samples?.[0]?.id > history.lastId() + 1) data = await request(historyCapacity);
         const samples = history.merge(data);
         historyNeedsFull = false;
-        document.getElementById('system-history').innerHTML = historySvg(samples);
+        document.getElementById('system-history').innerHTML = historySvg(samples, data.now_ms);
         const stale = samples.length && data.now_ms - samples.at(-1).now > 5000;
         status.textContent = !samples.length ? 'No samples yet.' : stale ? 'History is stale.' : '';
         status.hidden = samples.length > 0 && !stale;

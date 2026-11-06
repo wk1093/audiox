@@ -48,20 +48,23 @@ A stall warning requires a sustained cooling request with zero RPM; stopping
 below the first threshold is normal.
 
 **Recent Health** is sampled once per second by the device's main loop, even
-without a browser connected. A fixed 1,000-entry ring buffer retains about
-16 minutes of readings and overwrites the oldest entry in constant time.
+without a browser connected. A fixed 600-entry ring buffer retains the last
+10 minutes of readings and overwrites the oldest entry in constant time.
+Both the device and browser discard samples aged 10 minutes or older, including
+across sampling gaps. The chart's time axis stays fixed at 10 minutes.
 Temperature (degrees C) and CPU utilization (%) use the left axis;
 X-runs between consecutive samples use the independently scaled right axis.
 Missing readings and interrupted sampling are gaps, not interpolated
 measurements. History resets when the runtime restarts; counter resets invalidate
 only the corresponding interval.
 
-`GET /api/system/history?limit=1000` returns the latest 1–1,000 samples in
-chronological order (default 1,000). The response contains `runtime_id`,
-`sample_interval_ms`, `capacity`, `now_ms`, and `samples`. Each sample contains
+`GET /api/system/history?limit=600` returns recent samples in chronological
+order (default 600). Limits of 1–1,000 remain accepted for compatibility, but
+no more than 600 samples are retained. The response contains `runtime_id`,
+`sample_interval_ms`, `capacity`, `retention_ms`, `now_ms`, and `samples`. Each sample contains
 `id`, monotonic `now` (milliseconds), `temperature`, `cpu`, and interval `xruns`;
 unavailable values are `null`. Requests never add samples. The browser fills the
-chart with 1,000 readings on opening, then merges the latest 50 by sample ID.
+chart with up to 600 readings on opening, then merges the latest 50 by sample ID.
 After a long gap it refills history; a new runtime ID discards old browser data.
 
 **Audio Device Health** shows detected ALSA devices and routed stream state,

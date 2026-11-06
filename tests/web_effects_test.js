@@ -66,6 +66,42 @@ const gain = {
   params: { level: 1 }, param_meta: [{ name: 'level', label: 'Level', min: 0, max: 4, default: 1 }],
 };
 
+test('pitch quality uses a named dropdown, supports reset and synchronizes MIDI changes', async () => {
+  const f = fixture();
+  const pitch = { ...gain, type: 'pitch', params: { quality: 0 },
+    param_meta: [{ name: 'quality', label: 'Quality', min: 0, max: 2, default: 0 }] };
+  f.setEffects([pitch]);
+  await f.manager.loadEffects();
+  const control = find(f.panel, el => el.className === 'fx-parameter');
+  const select = find(control, el => el.tagName === 'SELECT');
+  assert.deepEqual(select.children.map(el => el.textContent), ['High', 'Balanced', 'Economy']);
+  assert.equal(find(control, el => el.type === 'range'), undefined);
+  select.value = '1';
+  select.listeners.change();
+  await f.flush();
+  let fields = new URLSearchParams(f.calls.find(call => call.url === '/api/effect/set').body);
+  assert.equal(fields.get('param'), 'quality');
+  assert.equal(fields.get('value'), '1');
+  f.manager.syncParamView('fx_7', 'quality', 2);
+  assert.equal(select.value, '2');
+  assert.equal(find(f.panel, el => el.className === 'fx-map-meta' && el.textContent === 'Quality: Economy').textContent, 'Quality: Economy');
+  find(control, el => el.textContent === 'Reset').listeners.click();
+  await f.flush();
+  fields = new URLSearchParams(f.calls.filter(call => call.url === '/api/effect/set').at(-1).body);
+  assert.equal(fields.get('value'), '0');
+  const node = { properties: { thingId: 'fx_7' }, addWidget(...args) { this.widgets.push(args); } };
+  f.manager.applyWidgets(node, pitch);
+  const combo = node.widgets.find(widget => widget[0] === 'combo');
+  assert.equal(combo[2], 'High');
+  combo[3]('Economy');
+  await f.flush();
+  fields = new URLSearchParams(f.calls.filter(call => call.url === '/api/effect/set').at(-1).body);
+  assert.equal(fields.get('value'), '2');
+  f.document.activeElement = select;
+  const before = f.panel.children[0];
+  await f.manager.loadEffects();
+  assert.equal(f.panel.children[0], before);
+});
 test('advanced builtins have names, dynamic sliders and type-specific help, not plugin UI', async () => {
   const names = { compressor: 'Compressor', limiter: 'Limiter', eq: 'Parametric EQ',
     multiband: 'Multiband Compressor', noise_reduction: 'Noise Reduction' };

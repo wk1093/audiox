@@ -34,7 +34,7 @@ constexpr EffectParamSpec kDistortionParams[kDistortionParamCount] = {
     {"output_gain", "Output Gain", 0.0f, 4.0f, 1.0f},
 };
 
-constexpr uint8_t kPitchParamCount = 6;
+constexpr uint8_t kPitchParamCount = 7;
 constexpr EffectParamSpec kPitchParams[kPitchParamCount] = {
     {"input_gain", "Input Gain", 0.0f, 4.0f, 1.0f},
     {"semitones", "Semitones", -12.0f, 12.0f, 0.0f},
@@ -42,6 +42,7 @@ constexpr EffectParamSpec kPitchParams[kPitchParamCount] = {
     {"output_gain", "Output Gain", 0.0f, 4.0f, 1.0f},
     {"noise_floor", "Noise Floor", 0.0001f, 0.02f, 0.0010f},
     {"wet_lpf_hz", "Wet LPF Hz", 1000.0f, 18000.0f, 12000.0f},
+    {"quality", "Quality", 0.0f, 2.0f, 0.0f},
 };
 
 constexpr uint8_t kReverbParamCount = 4;
@@ -314,7 +315,8 @@ int setSlotParamValue(SlotParams *params, const char *paramName, float value) {
     }
 
     params->values[index] = clampValue(value, spec->minValue, spec->maxValue);
-    if (params->type == EFFECT_CUT && index == 0) {
+    if ((params->type == EFFECT_CUT && index == 0) ||
+        (params->type == EFFECT_PITCH && index == 6)) {
         params->values[index] = roundf(params->values[index]);
     }
     return RET_OK;
@@ -333,7 +335,8 @@ int setSlotParamNormalized(SlotParams *params, const char *paramName, float norm
 
     normalized = clampValue(normalized, 0.0f, 1.0f);
     const float value = spec->minValue + (spec->maxValue - spec->minValue) * normalized;
-    params->values[index] = (params->type == EFFECT_CUT && index == 0) ? roundf(value) : value;
+    params->values[index] = ((params->type == EFFECT_CUT && index == 0) ||
+                            (params->type == EFFECT_PITCH && index == 6)) ? roundf(value) : value;
     return RET_OK;
 }
 
@@ -348,7 +351,8 @@ int getSlotParamValue(const SlotParams &params, const char *paramName, float *ou
         return RET_ERR;
     }
 
-    *outValue = clampValue(params.values[index], spec->minValue, spec->maxValue);
+    const float value = clampValue(params.values[index], spec->minValue, spec->maxValue);
+    *outValue = (params.type == EFFECT_PITCH && index == 6) ? roundf(value) : value;
     return RET_OK;
 }
 
@@ -388,6 +392,7 @@ void clampSlotParams(SlotParams *params) {
     if (params->type == EFFECT_CUT) {
         params->values[0] = roundf(params->values[0]);
     }
+    if (params->type == EFFECT_PITCH) params->values[6] = roundf(params->values[6]);
     for (uint8_t i = limit; i < EFFECT_PARAM_MAX; ++i) {
         params->values[i] = 0.0f;
     }
@@ -569,7 +574,8 @@ void processSlot(const char *effectId, uint8_t channel, const SlotParams &params
         return;
     case EFFECT_PITCH:
         processPitch(effectId, channel, in, out, frames, clamped.values[0], clamped.values[1],
-                     clamped.values[2], clamped.values[3], clamped.values[4], clamped.values[5]);
+                     clamped.values[2], clamped.values[3], clamped.values[4], clamped.values[5],
+                     static_cast<uint8_t>(clamped.values[6]));
         return;
     case EFFECT_REVERB:
         processReverb(in, out, frames, clamped.values[0], clamped.values[1], clamped.values[2],

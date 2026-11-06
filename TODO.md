@@ -202,6 +202,8 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Render LiteGraph at display pixel density on high-DPI/4K displays.
 
 ## Quality of life
+- [x] Optimize pitch FFT/window work without changing High quality; add High/Balanced/Economy overlap settings.
+- [ ] Validate pitch quality modes and worst-block X-run behavior with real audio on Pi hardware.
 - [x] Show current and since-boot undervoltage/thermal-throttling warnings.
 - [x] Show Pi 5 fan RPM, cooling state, driver availability, and saved versus active curve; detect a stalled fan only when cooling is requested.
 - [x] Handle the Pi 5 physical power button with graceful shutdown and a clear screen indication.
@@ -212,7 +214,7 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Download a sanitized, bounded diagnostic report without pairing keys, scripts, or audio files.
 - [x] Add routing undo/redo, an unsaved-changes indicator, and navigation protection.
 - [x] Collapse health/log tools and scene controls; hide scenes in graph fullscreen.
-- [x] Sample recent health on-device with a bounded 1,000-entry buffer and batched history endpoint.
+- [x] Sample recent health on-device with a bounded 600-entry / 10-minute buffer and batched history endpoint; expire browser samples and keep the chart time axis fixed.
 - [x] Correct the firmware throttling mailbox tag for Pi 4 and Pi 5.
 - [ ] Validate power/throttling telemetry on physical Pi 4 and Pi 5 hardware, and Pi 5 fan RPM/stall feedback and onboard power-button shutdown.
 - [ ] Validate live WebUI/MIDI scene recall with different effect inventories, audible transition quality, and recall latency on hardware.

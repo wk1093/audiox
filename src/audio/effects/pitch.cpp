@@ -7,12 +7,6 @@
 #include <cstring>
 
 #define AUDIOX_PITCH_VOCODER_FFT_SIZE 1024U
-#define AUDIOX_PITCH_VOCODER_OVERLAP_NUM 7U
-#define AUDIOX_PITCH_VOCODER_OVERLAP_DEN 8U
-#define AUDIOX_PITCH_VOCODER_HOP_SIZE                                                              \
-    ((AUDIOX_PITCH_VOCODER_FFT_SIZE *                                                              \
-      (AUDIOX_PITCH_VOCODER_OVERLAP_DEN - AUDIOX_PITCH_VOCODER_OVERLAP_NUM)) /                     \
-     AUDIOX_PITCH_VOCODER_OVERLAP_DEN)
 #define AUDIOX_PITCH_VOCODER_MAX_SEMITONES 12.0f
 
 namespace audiox::effects {
@@ -21,14 +15,11 @@ namespace {
 
 struct PitchState {
     static constexpr uint32_t FFT_SIZE = AUDIOX_PITCH_VOCODER_FFT_SIZE;
-    static constexpr uint32_t HOP_SIZE = AUDIOX_PITCH_VOCODER_HOP_SIZE;
-    static constexpr uint32_t OSAMP = FFT_SIZE / HOP_SIZE;
     static constexpr uint32_t HALF_BINS = FFT_SIZE / 2U + 1U;
 
     float inFifo[FFT_SIZE];
     float outFifo[FFT_SIZE];
     float fftWork[FFT_SIZE * 2U];
-    float window[FFT_SIZE];
     float outputAccum[FFT_SIZE];
     float dryDelay[FFT_SIZE];
     uint32_t dryIndex;
@@ -43,29 +34,47 @@ struct PitchState {
     uint32_t rover;
     float wetLpfZ;
     bool inited;
+    uint8_t quality;
+    float cachedShift, pitchRatio, cachedLpfHz, wetLpfAlpha;
 };
 
 static_assert((PitchState::FFT_SIZE & (PitchState::FFT_SIZE - 1U)) == 0U,
               "AUDIOX_PITCH_VOCODER_FFT_SIZE must be a power of two");
-static_assert(PitchState::HOP_SIZE > 0U, "AUDIOX_PITCH_VOCODER_HOP_SIZE must be > 0");
-static_assert(PitchState::FFT_SIZE % PitchState::HOP_SIZE == 0U,
-              "AUDIOX_PITCH_VOCODER_HOP_SIZE must divide AUDIOX_PITCH_VOCODER_FFT_SIZE");
 
 constexpr float kPi = 3.14159265358979323846f;
 
+struct PitchPlan {
+    FftPlan<PitchState::FFT_SIZE> fft;
+    float window[PitchState::FFT_SIZE]{};
+    float synthesis[3][PitchState::FFT_SIZE]{};
+    PitchPlan() {
+        for (uint32_t i = 0; i < PitchState::FFT_SIZE; ++i) {
+            window[i] = .5f - .5f * cosf(2 * kPi * i / PitchState::FFT_SIZE);
+        }
+        for (uint32_t quality = 0; quality < 3; ++quality) {
+            const uint32_t overlap = 8U >> quality;
+            for (uint32_t i = 0; i < PitchState::FFT_SIZE; ++i) {
+                const float scale = 8.0f / (3.0f * PitchState::FFT_SIZE * overlap);
+                synthesis[quality][i] = window[i] * scale;
+            }
+        }
+    }
+};
+const PitchPlan pitchPlan;
+
 inline void processFrame(PitchState *s, float pitchRatio, float noiseFloorRatio) {
     const uint32_t fftSize = PitchState::FFT_SIZE;
-    const uint32_t hop = PitchState::HOP_SIZE;
+    const uint32_t hop = fftSize / (8U >> s->quality);
     const uint32_t halfBins = PitchState::HALF_BINS;
-    const float osampF = (float)PitchState::OSAMP;
+    const float osampF = (float)(8U >> s->quality);
     const float expectedPhaseAdvance = 2.0f * kPi * (float)hop / (float)fftSize;
 
     for (uint32_t i = 0U; i < fftSize; ++i) {
-        s->fftWork[i * 2U] = s->inFifo[i] * s->window[i];
+        s->fftWork[i * 2U] = s->inFifo[i] * pitchPlan.window[i];
         s->fftWork[i * 2U + 1U] = 0.0f;
     }
 
-    fftComplex(s->fftWork, fftSize, false);
+    pitchPlan.fft.transform(s->fftWork, false);
 
     float maxAnaMag = 0.0f;
 
@@ -105,14 +114,29 @@ inline void processFrame(PitchState *s, float pitchRatio, float noiseFloorRatio)
         const uint32_t bin = static_cast<uint32_t>(k * pitchRatio);
         if (bin >= halfBins)
             continue;
+        uint32_t frequencyBin = k;
+        // At 2x overlap phase unwrapping cannot resolve the Hann main lobe's
+        // outer bins. Use the local spectral peak's frequency for those bins.
+        if (s->quality == 2) {
+            const uint32_t first = k > 2 ? k - 2 : 0;
+            const uint32_t last = std::min(k + 2, halfBins - 1);
+            for (uint32_t neighbor = first; neighbor <= last; ++neighbor)
+                if (s->anaMag[neighbor] > s->anaMag[frequencyBin]) frequencyBin = neighbor;
+        }
         s->synMag[bin] += s->anaMag[k];
-        s->synFreqAcc[bin] += s->anaFreq[k] * pitchRatio * s->anaMag[k];
+        s->synFreqAcc[bin] += s->anaFreq[frequencyBin] * pitchRatio * s->anaMag[k];
     }
     for (uint32_t k = 0; k < halfBins; ++k) {
         const float frequency = s->synMag[k] > 0 ? s->synFreqAcc[k] / s->synMag[k] : k;
         s->sumPhase[k] = remainderf(s->sumPhase[k] + frequency * expectedPhaseAdvance, 2 * kPi);
-        s->fftWork[k * 2] = s->synMag[k] * cosf(s->sumPhase[k]);
-        s->fftWork[k * 2 + 1] = s->synMag[k] * sinf(s->sumPhase[k]);
+        if (s->synMag[k] == 0) {
+            s->fftWork[k * 2] = s->fftWork[k * 2 + 1] = 0;
+        } else {
+            float sine, cosine;
+            sincosf(s->sumPhase[k], &sine, &cosine);
+            s->fftWork[k * 2] = s->synMag[k] * cosine;
+            s->fftWork[k * 2 + 1] = s->synMag[k] * sine;
+        }
     }
 
     s->fftWork[1U] = 0.0f;
@@ -125,12 +149,10 @@ inline void processFrame(PitchState *s, float pitchRatio, float noiseFloorRatio)
         s->fftWork[mirror * 2U + 1U] = -s->fftWork[k * 2U + 1U];
     }
 
-    fftComplex(s->fftWork, fftSize, true);
+    pitchPlan.fft.transform(s->fftWork, true);
 
-    // Hann analysis/synthesis windows sum to 3 * overlap / 8.
-    const float scale = 8.0f / (3.0f * (float)fftSize * osampF);
     for (uint32_t i = 0U; i < fftSize; ++i) {
-        s->outputAccum[i] += s->window[i] * s->fftWork[i * 2U] * scale;
+        s->outputAccum[i] += pitchPlan.synthesis[s->quality][i] * s->fftWork[i * 2U];
     }
 
     for (uint32_t i = 0U; i < hop; ++i) {
@@ -172,7 +194,7 @@ void resetPitch(const char *effectId, uint8_t channel) {
 
 void processPitch(const char *effectId, uint8_t channel, const float *in, float *out,
                   uint32_t frames, float inputGain, float semitoneShift, float mix,
-                  float outputGain, float noiseFloorRatio, float wetLpfHz) {
+                  float outputGain, float noiseFloorRatio, float wetLpfHz, uint8_t quality) {
     if (!in || !out || frames == 0) {
         return;
     }
@@ -215,6 +237,8 @@ void processPitch(const char *effectId, uint8_t channel, const float *in, float 
         wetLpfHz = 18000.0f;
 
     PitchState *s = getStateFor(effectId, channel);
+    if (quality > 2) quality = 0;
+    const uint32_t hop = PitchState::FFT_SIZE / (8U >> quality);
 
     if (fabsf(semitoneShift) < 1.0e-6f || mix == 0.0f) {
         memset(s, 0, sizeof(*s));
@@ -224,19 +248,25 @@ void processPitch(const char *effectId, uint8_t channel, const float *in, float 
                          : 0.0f;
         return;
     }
-    if (!s->inited) {
+    if (!s->inited || s->quality != quality) {
         memset(s, 0, sizeof(*s));
-        for (uint32_t i = 0U; i < PitchState::FFT_SIZE; ++i) {
-            s->window[i] =
-                0.5f - 0.5f * cosf((2.0f * kPi * (float)i) / (float)PitchState::FFT_SIZE);
-        }
-        s->rover = PitchState::FFT_SIZE - PitchState::HOP_SIZE;
+        s->quality = quality;
+        s->cachedShift = s->cachedLpfHz = NAN;
+        s->rover = PitchState::FFT_SIZE - hop;
         s->inited = true;
     }
 
-    const float pitchRatio = powf(2.0f, semitoneShift / 12.0f);
-    const uint32_t inFifoLatency = PitchState::FFT_SIZE - PitchState::HOP_SIZE;
-    const float wetLpfAlpha = expf(-2.0f * kPi * wetLpfHz / (float)SAMPLE_RATE);
+    if (s->cachedShift != semitoneShift) {
+        s->cachedShift = semitoneShift;
+        s->pitchRatio = powf(2.0f, semitoneShift / 12.0f);
+    }
+    if (s->cachedLpfHz != wetLpfHz) {
+        s->cachedLpfHz = wetLpfHz;
+        s->wetLpfAlpha = expf(-2.0f * kPi * wetLpfHz / (float)SAMPLE_RATE);
+    }
+    const float pitchRatio = s->pitchRatio;
+    const uint32_t inFifoLatency = PitchState::FFT_SIZE - hop;
+    const float wetLpfAlpha = s->wetLpfAlpha;
 
     for (uint32_t i = 0; i < frames; ++i) {
         const float input = std::isfinite(in[i]) ? in[i] * inputGain : 0.0f;

@@ -136,7 +136,7 @@ $(OUT_DIR)/host/audiox-plugin-worker: src/plugin_worker/main.cpp include/audio/p
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" "$<" -ldl -lm
 
-PLUGIN_FIXTURES := $(addprefix $(OUT_DIR)/host/plugins/plugin-fixture-,$(addsuffix .so,0 1 2 3 4 5 6 7 8 9 10))
+PLUGIN_FIXTURES := $(addprefix $(OUT_DIR)/host/plugins/plugin-fixture-,$(addsuffix .so,0 1 2 3 4 5 6 7 8 9 10 12))
 
 $(OUT_DIR)/host/plugins/plugin-fixture-%.so: tests/plugin_host_test.cpp include/audio/plugin_api.h
 	@mkdir -p "$(dir $@)"
@@ -144,6 +144,31 @@ $(OUT_DIR)/host/plugins/plugin-fixture-%.so: tests/plugin_host_test.cpp include/
 
 test-plugin-host: $(OUT_DIR)/host/plugin-host-test $(OUT_DIR)/host/audiox-plugin-worker $(PLUGIN_FIXTURES) $(OUT_DIR)/host/plugins/softclip.so
 	@"$<" "$(OUT_DIR)/host/audiox-plugin-worker" "$(OUT_DIR)/host/plugins"
+
+.PHONY: test-plugin-namespace
+PLUGIN_NAMESPACE_DIR = $(OUT_DIR)/plugin-namespace-test/runtime
+PLUGIN_NAMESPACE_FIXTURES := $(addprefix $(PLUGIN_NAMESPACE_DIR)/plugins/plugin-fixture-,$(addsuffix .so,0 1 2 3 4 5 6 7 8 9 10 11 12))
+
+$(PLUGIN_NAMESPACE_DIR)/plugins/plugin-fixture-%.so: tests/plugin_host_test.cpp include/audio/plugin_api.h
+	@mkdir -p "$(dir $@)"
+	$(CXX) $(filter-out -static,$(CXXFLAGS)) -fPIC -shared -DAUDIOX_PLUGIN_TEST_FIXTURE=$* -o "$@" "$<"
+
+$(PLUGIN_NAMESPACE_DIR)/init: tests/plugin_host_test.cpp src/audio/plugin_host.cpp src/audio/plugin_package.cpp include/audio/plugin_host.hpp include/audio/plugin_ipc.hpp include/audio/plugin_api.h
+	@mkdir -p "$(dir $@)"
+	$(CXX) $(CXXFLAGS) -DAUDIOX_PLUGIN_NAMESPACE_TEST -o "$@" tests/plugin_host_test.cpp src/audio/plugin_host.cpp src/audio/plugin_package.cpp -pthread -lm
+
+test-plugin-namespace: $(PLUGIN_NAMESPACE_DIR)/init $(PLUGIN_NAMESPACE_FIXTURES) rootfs plugin-examples qemu_kernel
+	mkdir -p "$(PLUGIN_NAMESPACE_DIR)/dev" "$(PLUGIN_NAMESPACE_DIR)/proc" "$(PLUGIN_NAMESPACE_DIR)/tmp" "$(PLUGIN_NAMESPACE_DIR)/sbin" "$(PLUGIN_NAMESPACE_DIR)/lib"
+	cp "$(ROOTFS_DIR)/sbin/audiox-plugin-worker" "$(PLUGIN_NAMESPACE_DIR)/sbin/"
+	cp "$(ROOTFS_DIR)"/lib/*.so* "$(PLUGIN_NAMESPACE_DIR)/lib/"
+	cp "$(OUT_DIR)/plugins/softclip.so" "$(PLUGIN_NAMESPACE_DIR)/plugins/"
+	cp "$(PLUGIN_NAMESPACE_DIR)/init" "$(PLUGIN_NAMESPACE_DIR)/../init"
+	bash -o pipefail -c 'cd "$(PLUGIN_NAMESPACE_DIR)/.." && find init runtime -print0 | cpio --null -o -H newc --owner=0:0 | gzip > "$(OUT_DIR)/plugin-namespace-test.cpio.gz"'
+	@timeout 90 qemu-system-aarch64 -M virt -cpu max -m 256 -smp 2 -display none -monitor none -serial stdio -no-reboot \
+		-kernel "$(QEMU_KERNEL_IMAGE)" -initrd "$(OUT_DIR)/plugin-namespace-test.cpio.gz" \
+		-append "console=ttyAMA0 rdinit=/init panic=1 lsm=capability,yama" > "$(OUT_DIR)/plugin-namespace-test.log" 2>&1 || { tail -n 30 "$(OUT_DIR)/plugin-namespace-test.log"; exit 1; }
+	@grep -q '^plugin_namespace_test: ok' "$(OUT_DIR)/plugin-namespace-test.log" || { tail -n 30 "$(OUT_DIR)/plugin-namespace-test.log"; exit 1; }
+	@echo "plugin_namespace_test: ok (AArch64 guest without Landlock)"
 
 $(OUT_DIR)/host/plugin-host-test: tests/plugin_host_test.cpp src/audio/plugin_host.cpp src/audio/plugin_package.cpp include/audio/plugin_host.hpp include/audio/plugin_ipc.hpp include/audio/plugin_api.h
 	@mkdir -p "$(dir $@)"

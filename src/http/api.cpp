@@ -2540,6 +2540,38 @@ static int handleMidiCcVolumeDelete(HttpServer *server,
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", outBuf, (size_t)n);
 }
 
+static std::string pluginControlJson(const audiox::plugin::ParameterSpec& param) {
+    char step[64];
+    snprintf(step, sizeof(step), "%.9g", param.step);
+    std::string out = ",\"type\":\"" + audiox::json::escape(param.type) +
+        "\",\"unit\":\"" + audiox::json::escape(param.unit) +
+        "\",\"description\":\"" + audiox::json::escape(param.description) +
+        "\",\"step\":" + step + ",\"options\":[";
+    const std::string options = param.options;
+    size_t start = 0;
+    while (start < options.size()) {
+        const auto end = options.find('~', start);
+        if (start) out += ',';
+        out += "\"" + audiox::json::escape(options.substr(start, end == std::string::npos ? end : end - start).c_str()) + "\"";
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return out + "]";
+}
+
+static std::string pluginTextsJson(const audiox::plugin::PackageMetadata* metadata) {
+    std::string out = ",\"text_controls\":[";
+    for (unsigned i = 0; metadata && i < metadata->textCount; ++i) {
+        const auto& text = metadata->texts[i];
+        if (i) out += ',';
+        out += "{\"name\":\"" + audiox::json::escape(text.name) +
+            "\",\"label\":\"" + audiox::json::escape(text.label) +
+            "\",\"default\":\"" + audiox::json::escape(text.defaultValue) +
+            "\",\"description\":\"" + audiox::json::escape(text.description) + "\"}";
+    }
+    return out + "]";
+}
+
 static int handleEffects(HttpServer *server,
 						 int cfd,
 						 const char *method,
@@ -2682,13 +2714,15 @@ static int handleEffects(HttpServer *server,
 		for (uint8_t p = 0; p < paramCount; ++p) {
 			n = snprintf(out + off,
 						 sizeof(out) - off,
-						 "%s{\"name\":\"%s\",\"label\":\"%s\",\"min\":%.9g,\"max\":%.9g,\"default\":%.9g}",
+						 "%s{\"name\":\"%s\",\"label\":\"%s\",\"min\":%.9g,\"max\":%.9g,\"default\":%.9g%s}",
 						 (p == 0U) ? "" : ",",
 						 typeSpec->params[p].name,
 						 audiox::json::escape(typeSpec->params[p].label).c_str(),
 						 (double)typeSpec->params[p].minValue,
 						 (double)typeSpec->params[p].maxValue,
-						 (double)typeSpec->params[p].defaultValue);
+						 (double)typeSpec->params[p].defaultValue,
+                         audiox::plugin::metadataFor(params.type) ?
+                         pluginControlJson(audiox::plugin::metadataFor(params.type)->params[p]).c_str() : "");
 			if (n <= 0 || (size_t)n >= sizeof(out) - off) {
 				off = sizeof(out);
 				break;
@@ -2699,7 +2733,8 @@ static int handleEffects(HttpServer *server,
 			break;
 		}
 
-		n = snprintf(out + off, sizeof(out) - off, "],\"midi\":{\"toggle_note\":%d,\"cc\":{", toggleNote);
+		n = snprintf(out + off, sizeof(out) - off, "]%s,\"midi\":{\"toggle_note\":%d,\"cc\":{",
+                     pluginTextsJson(audiox::plugin::metadataFor(params.type)).c_str(), toggleNote);
 		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
 			break;
 		}
@@ -5373,13 +5408,13 @@ static int handlePlugins(HttpServer *server, int cfd, const char *method, const 
             for (unsigned p = 0; p < plugin.paramCount; ++p) {
                 const auto &param = plugin.params[p];
                 char numbers[128];
-                snprintf(numbers, sizeof(numbers), "\",\"min\":%.9g,\"max\":%.9g,\"default\":%.9g}",
+                snprintf(numbers, sizeof(numbers), "\",\"min\":%.9g,\"max\":%.9g,\"default\":%.9g",
                          param.min, param.max, param.defaultValue);
                 if (p) out += ',';
                 out += "{\"name\":\"" + audiox::json::escape(param.name) + "\",\"label\":\"" +
-                    audiox::json::escape(param.label) + numbers;
+                    audiox::json::escape(param.label) + numbers + pluginControlJson(param) + "}";
             }
-            out += "]}";
+            out += "]" + pluginTextsJson(&plugin) + "}";
         }
         return reply("200 OK", out + "]}\n", "application/json; charset=utf-8");
     }

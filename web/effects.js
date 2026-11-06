@@ -100,12 +100,20 @@
         label: String(raw?.label || name),
         min: Number.isFinite(Number(raw?.min)) ? Number(raw.min) : 0,
         max: Number.isFinite(Number(raw?.max)) ? Number(raw.max) : 1,
-        ...parameterHelp(name, fx?.type),
+        ...(normalizePluginId(fx?.type) ? {
+          unit: String(raw.unit || ''),
+          description: String(raw.description || ''),
+          type: raw.type || 'float',
+          step: Number(raw.step) > 0 ? Number(raw.step) : 0.01,
+          precision: raw.type && raw.type !== 'float' ? 0 : 6,
+          ...(raw.type === 'boolean' ? { options: ['Off', 'On'] } :
+            raw.type === 'enum' && Array.isArray(raw.options) ? { options: raw.options } : {}),
+        } : parameterHelp(name, fx?.type)),
         defaultValue: Number(raw.default),
         value: toNumber(params[name], Number(raw?.default) || 0),
       });
     }
-    if (out.length) {
+    if (out.length || normalizePluginId(fx?.type)) {
       return out;
     }
 
@@ -150,7 +158,7 @@
   }
 
   function effectName(fx) {
-    return fx?.name || `${effectTypes[fx?.type] || 'Effect'} ${String(fx?.id || '').replace(/^fx_/, '')}`.trim();
+    return fx?.name || `${effectTypes[fx?.type] || (normalizePluginId(fx?.type) ? fx.type : 'Effect')} ${String(fx?.id || '').replace(/^fx_/, '')}`.trim();
   }
 
   function parameterHelp(name, type) {
@@ -213,6 +221,7 @@
       this.onLayoutChange = onLayoutChange;
       this.effectsById = new Map();
       this.nodeById = new Map();
+      this.textValues = new Map();
       this.panelEl = null;
       this.panelStatusEl = null;
       this.ccPoll = null;
@@ -378,7 +387,7 @@
       for (const raw of Array.isArray(fx?.param_meta) ? fx.param_meta : []) {
         const name = typeof raw?.name === 'string' ? raw.name : '';
         if (!name) continue;
-        const row = { name, label: String(raw.label || name), min: toNumber(raw.min, 0), max: toNumber(raw.max, 1),
+        const row = { ...raw, name, label: String(raw.label || name), min: toNumber(raw.min, 0), max: toNumber(raw.max, 1),
           default: toNumber(raw.default, toNumber(raw.min, 0)) };
         meta.push(row);
         params[name] = toNumber(fx.params?.[name], row.default);
@@ -418,7 +427,8 @@
       const min = Number(meta?.min);
       const max = Number(meta?.max);
       if (!meta || typeof value !== 'number' || !Number.isFinite(value) || !Number.isFinite(min) ||
-          !Number.isFinite(max) || value < min || value > max) {
+          !Number.isFinite(max) || value < min || value > max ||
+          (meta.type && meta.type !== 'float' && !Number.isInteger(value))) {
         this.setPanelStatus(`${effectName(fx)} custom UI sent an invalid parameter change; it was ignored.`, 'warn');
         return;
       }
@@ -474,7 +484,8 @@
       const help = document.createElement('p');
       help.className = 'small fx-param-help';
       help.id = `${inputId}-help`;
-      help.textContent = row.description || `Adjust ${row.label.toLowerCase()} between ${row.min} and ${row.max}.`;
+      help.textContent = row.description || (this.isPluginEffect(fx) ? '' :
+        `Adjust ${row.label.toLowerCase()} between ${row.min} and ${row.max}.`);
       infoToggle.title = help.textContent;
       info.addEventListener('keydown', event => {
         if (event.key === 'Escape') {
@@ -484,7 +495,7 @@
         }
       });
       info.append(infoToggle, help);
-      heading.appendChild(info);
+      if (row.description || !this.isPluginEffect(fx)) heading.appendChild(info);
       control.appendChild(heading);
       const inputs = document.createElement('div');
       inputs.className = 'fx-param-inputs';
@@ -518,7 +529,7 @@
       number.addEventListener('change', () => {
         const value = Number(number.value);
         if (!number.value.trim() || !Number.isFinite(value) || value < row.min || value > row.max ||
-          ((row.name === 'channels' || row.options) && !Number.isInteger(value))) {
+          ((row.type === 'integer' || row.name === 'channels' || row.options) && !Number.isInteger(value))) {
           this.setPanelStatus(`${row.label} must be ${row.name === 'channels' ? 'a whole number ' : ''}between ${row.min} and ${row.max}.`, 'warn');
           return;
         }
@@ -536,6 +547,37 @@
       control.appendChild(inputs);
       parent.appendChild(control);
       this.paramViews.set(`${fx.id}\n${row.name}`, { slider, number, row, meta: null });
+    }
+
+    appendTextControls(parent, fx) {
+      for (const text of Array.isArray(fx.text_controls) ? fx.text_controls : []) {
+        const control = document.createElement('div');
+        control.className = 'fx-parameter';
+        const label = document.createElement('label');
+        const input = document.createElement('input');
+        const key = `${fx.id}\n${text.name}`;
+        input.id = `${fx.id}-${text.name}-text`;
+        input.type = 'text';
+        input.maxLength = 255;
+        input.value = this.textValues.get(key) ?? String(text.default || '');
+        input.title = String(text.description || '');
+        label.htmlFor = input.id;
+        label.textContent = String(text.label || text.name);
+        input.addEventListener('input', () => {
+          this.textValues.set(key, input.value);
+          this.refreshAllNodes();
+        });
+        const reset = document.createElement('button');
+        reset.className = 'flat';
+        reset.textContent = 'Reset';
+        reset.addEventListener('click', () => {
+          input.value = String(text.default || '');
+          this.textValues.set(key, input.value);
+          this.refreshAllNodes();
+        });
+        control.append(label, input, reset);
+        parent.appendChild(control);
+      }
     }
 
     rememberSection(section, key) {
@@ -699,6 +741,7 @@
           line.appendChild(clearBtn);
           mapping.appendChild(line);
         }
+        if (this.isPluginEffect(fx)) this.appendTextControls(card, fx);
 
         const bypassRow = document.createElement('div');
         bypassRow.className = 'fx-map-row';
@@ -871,6 +914,11 @@
         if (!id) continue;
         this.effectsById.set(id, fx);
       }
+      for (const key of this.textValues.keys()) {
+        const [id, name] = key.split('\n');
+        if (!this.effectsById.get(id)?.text_controls?.some(text => text.name === name))
+          this.textValues.delete(key);
+      }
       const nextSig = this.buildEffectsSignature();
       if (nextSig === this.effectsSignature) {
         return;
@@ -1011,7 +1059,8 @@
         const midi = fx?.midi || {};
         const cc = midi?.cc || {};
         const light = midi?.light || {};
-        const paramSig = paramList.map((p) => `${p.name}:${p.min}:${p.max}:${toNumber(params[p.name], p.value)}`).join(';');
+        const paramSig = paramList.map((p) => `${JSON.stringify(p)}:${toNumber(params[p.name], p.value)}`).join(';') +
+          JSON.stringify(fx.text_controls || []);
         const ccSig = paramList.map((p) => `${p.name}:${toNumber(cc[p.name], -1)}`).join(';');
         rows.push([
           id,
@@ -1292,9 +1341,18 @@
           }, { values: p.options });
         } else {
           node.addWidget('slider', p.label, toNumber(params[p.name], p.value), (v) => {
-            this.queueParamUpdate(effectId, p.name, v);
+            this.queueParamUpdate(effectId, p.name, p.type === 'integer' ? Math.round(v) : v);
           }, { min: p.min, max: p.max, step: p.step, precision: p.precision });
         }
+      }
+      for (const text of Array.isArray(fx.text_controls) ? fx.text_controls : []) {
+        const key = `${fx.id}\n${text.name}`;
+        node.addWidget('text', text.label || text.name,
+          this.textValues.get(key) ?? String(text.default || ''),
+          value => {
+            this.textValues.set(key, String(value).slice(0, 255));
+            this.renderPanel();
+          });
       }
 
       node.addWidget('button', 'Edit effect and MIDI controls', null, () => {

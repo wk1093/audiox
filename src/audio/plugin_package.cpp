@@ -354,7 +354,7 @@ bool parseMetadata(const std::string &text, PackageMetadata &metadata, std::stri
     for (unsigned char c : text)
         if (c != '\n' && (c < 32 || c > 126)) return fail(error, "metadata must be printable ASCII and LF");
     PackageMetadata result;
-    std::set<std::string> keys, params;
+    std::set<std::string> keys, params, controls;
     size_t pos = 0;
     while (pos < text.size()) {
         size_t end = text.find('\n', pos);
@@ -364,7 +364,8 @@ bool parseMetadata(const std::string &text, PackageMetadata &metadata, std::stri
         const size_t equal = line.find('=');
         if (equal == std::string::npos) return fail(error, "metadata line requires key=value");
         std::string key = line.substr(0, equal), value = line.substr(equal + 1);
-        if (key != "param" && !keys.insert(key).second) return fail(error, "duplicate metadata key");
+        if (key != "param" && key != "control" && key != "text" &&
+            !keys.insert(key).second) return fail(error, "duplicate metadata key");
         if (key == "id") {
             if (!validId(value)) return fail(error, "invalid plugin id");
             std::memcpy(result.id, value.c_str(), value.size() + 1);
@@ -377,7 +378,7 @@ bool parseMetadata(const std::string &text, PackageMetadata &metadata, std::stri
         } else if (key == "api") {
             if (value != "1") return fail(error, "unsupported plugin API");
         } else if (key == "param") {
-            if (result.paramCount == AUDIOX_PLUGIN_MAX_PARAMS) return fail(error, "too many plugin parameters");
+            if (result.paramCount + result.textCount == AUDIOX_PLUGIN_MAX_PARAMS) return fail(error, "too many plugin controls");
             std::array<std::string, 5> fields;
             size_t start = 0;
             for (size_t i = 0; i < fields.size(); ++i) {
@@ -396,6 +397,58 @@ bool parseMetadata(const std::string &text, PackageMetadata &metadata, std::stri
             std::memcpy(param.name, fields[0].c_str(), fields[0].size() + 1);
             std::memcpy(param.label, fields[1].c_str(), fields[1].size() + 1);
             ++result.paramCount;
+        } else if (key == "control" || key == "text") {
+            const size_t count = key == "control" ? 6 : 4;
+            std::vector<std::string> fields;
+            size_t start = 0;
+            for (;;) {
+                const size_t split = value.find('|', start);
+                fields.push_back(value.substr(start, split == std::string::npos ? split : split - start));
+                if (split == std::string::npos) break;
+                start = split + 1;
+            }
+            if (fields.size() != count) return fail(error, "invalid control field count");
+            if (!identifier(fields[0], 23)) return fail(error, "invalid control name");
+            if (key == "text") {
+                if (result.paramCount + result.textCount == AUDIOX_PLUGIN_MAX_PARAMS ||
+                    !params.insert(fields[0]).second || !printable(fields[1], 63) ||
+                    fields[2].size() > 255 || fields[3].size() > 255)
+                    return fail(error, "invalid text control");
+                auto& textControl = result.texts[result.textCount++];
+                std::strcpy(textControl.name, fields[0].c_str());
+                std::strcpy(textControl.label, fields[1].c_str());
+                std::strcpy(textControl.defaultValue, fields[2].c_str());
+                std::strcpy(textControl.description, fields[3].c_str());
+                continue;
+            }
+            ParameterSpec* param = nullptr;
+            for (uint32_t i = 0; i < result.paramCount; ++i)
+                if (fields[0] == result.params[i].name) param = &result.params[i];
+            if (!param || !controls.insert(fields[0]).second ||
+                (fields[1] != "float" && fields[1] != "integer" &&
+                 fields[1] != "boolean" && fields[1] != "enum") ||
+                fields[2].size() > 23 || fields[4].size() > 255 || fields[5].size() > 255 ||
+                !floatValue(fields[3], param->step) || param->step <= 0)
+                return fail(error, "invalid numeric control");
+            const bool discrete = fields[1] != "float";
+            if (discrete && (param->step != 1 || std::floor(param->min) != param->min ||
+                             std::floor(param->max) != param->max ||
+                             std::floor(param->defaultValue) != param->defaultValue ||
+                             std::fabs(param->min) > 16777216 || std::fabs(param->max) > 16777216))
+                return fail(error, "discrete controls require exact integer bounds, defaults and step 1");
+            if (fields[1] == "boolean" && (param->min != 0 || param->max != 1))
+                return fail(error, "boolean controls require bounds 0 and 1");
+            if (fields[1] == "enum") {
+                const size_t choices = 1 + std::count(fields[5].begin(), fields[5].end(), '~');
+                if (fields[5].empty() || fields[5].front() == '~' || fields[5].back() == '~' ||
+                    fields[5].find("~~") != std::string::npos || param->min != 0 ||
+                    param->max != choices - 1 || choices > 32)
+                    return fail(error, "enum choices must match zero-based bounds");
+            } else if (!fields[5].empty()) return fail(error, "choices require enum type");
+            std::strcpy(param->type, fields[1].c_str());
+            std::strcpy(param->unit, fields[2].c_str());
+            std::strcpy(param->description, fields[4].c_str());
+            std::strcpy(param->options, fields[5].c_str());
         } else return fail(error, "unknown metadata key");
     }
     if (keys != std::set<std::string>{"id", "name", "version", "api"})

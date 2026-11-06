@@ -1326,7 +1326,11 @@ void midiEffectDisplayName(const MidiMapData &map, const char *id, const char *t
             return;
         }
     }
-    const char *label = !strcmp(type, "gate") ? "Noise Gate" :
+    const uint8_t pluginType = audiox::plugin::findType(type);
+    const auto* pluginMetadata = audiox::plugin::metadataFor(pluginType);
+    const char *label = audiox::plugin::validTypeName(type)
+                        ? (pluginMetadata ? pluginMetadata->name : type) :
+                        !strcmp(type, "gate") ? "Noise Gate" :
                         !strcmp(type, "cut") ? "Mute" :
                         !strcmp(type, "distortion") ? "Distortion" :
                         !strcmp(type, "pitch") ? "Pitch Shift" :

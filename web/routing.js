@@ -7,8 +7,17 @@
 
   function createCanvasResolution(graphCanvas) {
     let width = 1, height = 1, scaleX = 1, scaleY = 1;
+    let viewport = [0, 0, width, height];
+    graphCanvas.viewport = null;
+    graphCanvas.ds.viewport = null;
+    graphCanvas.render_canvas_border = false;
+    const computeVisibleArea = graphCanvas.ds.computeVisibleArea;
+    graphCanvas.ds.computeVisibleArea = function (area) {
+      return computeVisibleArea.call(this, area || viewport);
+    };
     // LiteGraph 0.7 renders in CSS pixels and copies its background at native size.
-    // Keep its viewport/input coordinates logical, but rasterize both layers at display density.
+    // A persistent viewport makes LiteGraph compare client coordinates to canvas-local bounds.
+    // Use logical bounds only during rendering, and rasterize both layers at display density.
     for (const [method, contextKey, canvasKey] of [
       ['drawBackCanvas', 'bgctx', 'bgcanvas'], ['drawFrontCanvas', 'ctx', 'canvas'],
     ]) {
@@ -19,6 +28,8 @@
         ctx.save();
         ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
         const drawImage = ctx.drawImage;
+        const previousViewport = this.viewport;
+        this.viewport = viewport;
         if (method === 'drawFrontCanvas') {
           ctx.drawImage = function (image, ...coordinates) {
             if (image === graphCanvas.bgcanvas && coordinates.length === 2)
@@ -28,6 +39,7 @@
         }
         try { return draw.apply(this, args); }
         finally {
+          this.viewport = previousViewport;
           if (method === 'drawFrontCanvas') ctx.drawImage = drawImage;
           ctx.restore();
         }
@@ -47,9 +59,8 @@
         }
         scaleX = backingWidth / width;
         scaleY = backingHeight / height;
-        graphCanvas.viewport = [0, 0, width, height];
-        graphCanvas.ds.viewport = graphCanvas.viewport;
-        graphCanvas.ds.computeVisibleArea(graphCanvas.viewport);
+        viewport = [0, 0, width, height];
+        graphCanvas.ds.computeVisibleArea();
         graphCanvas.setDirty(true, true);
       },
       size() { return [width, height]; },

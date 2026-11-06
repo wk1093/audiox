@@ -69,19 +69,29 @@ bool readSmallFile(const char *path, char *out, size_t outSize, size_t *length =
 	if (fd < 0) return false;
 	size_t used = 0;
 	while (used < outSize - 1) {
-		ssize_t count = read(fd, out + used, outSize - 1 - used);
+		const size_t remaining = outSize - 1 - used;
+		ssize_t count = read(fd, out + used, remaining);
 		if (count < 0 && errno == EINTR) continue;
 		if (count < 0) {
 			close(fd);
 			return false;
 		}
 		if (count == 0) break;
+		if ((size_t)count > remaining) {
+			close(fd);
+			return false;
+		}
 		used += (size_t)count;
 	}
 	char extra = 0;
-	ssize_t extraCount = used == outSize - 1 ? read(fd, &extra, 1) : 0;
+	ssize_t extraCount = 0;
+	if (used == outSize - 1) {
+		do {
+			extraCount = read(fd, &extra, 1);
+		} while (extraCount < 0 && errno == EINTR);
+	}
 	close(fd);
-	if (extraCount != 0) return false;
+	if (extraCount != 0 || used >= outSize) return false;
 	out[used] = '\0';
 	if (length) *length = used;
 	return used > 0;

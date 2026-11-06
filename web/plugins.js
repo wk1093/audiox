@@ -20,6 +20,7 @@
       const name = typeof raw?.name === 'string' ? raw.name.trim() : '';
       if (!name) continue;
       out.push({
+        ...raw,
         name,
         label: typeof raw.label === 'string' && raw.label.trim() ? raw.label : name,
         min: finite(raw.min, 0),
@@ -43,6 +44,7 @@
         name: typeof raw.name === 'string' && raw.name.trim() ? raw.name : id,
         version: typeof raw.version === 'string' ? raw.version : String(raw.version ?? ''),
         params: normalizeParams(raw.params),
+        text_controls: Array.isArray(raw.text_controls) ? raw.text_controls.map(text => ({ ...text })) : [],
         ui: raw.ui === true,
       });
     }

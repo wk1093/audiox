@@ -316,7 +316,9 @@ int setSlotParamValue(SlotParams *params, const char *paramName, float value) {
 
     params->values[index] = clampValue(value, spec->minValue, spec->maxValue);
     if ((params->type == EFFECT_CUT && index == 0) ||
-        (params->type == EFFECT_PITCH && index == 6)) {
+        (params->type == EFFECT_PITCH && index == 6) ||
+        (audiox::plugin::metadataFor(params->type) &&
+         strcmp(audiox::plugin::metadataFor(params->type)->params[index].type, "float"))) {
         params->values[index] = roundf(params->values[index]);
     }
     return RET_OK;
@@ -335,9 +337,7 @@ int setSlotParamNormalized(SlotParams *params, const char *paramName, float norm
 
     normalized = clampValue(normalized, 0.0f, 1.0f);
     const float value = spec->minValue + (spec->maxValue - spec->minValue) * normalized;
-    params->values[index] = ((params->type == EFFECT_CUT && index == 0) ||
-                            (params->type == EFFECT_PITCH && index == 6)) ? roundf(value) : value;
-    return RET_OK;
+    return setSlotParamValue(params, paramName, value);
 }
 
 int getSlotParamValue(const SlotParams &params, const char *paramName, float *outValue) {
@@ -352,7 +352,9 @@ int getSlotParamValue(const SlotParams &params, const char *paramName, float *ou
     }
 
     const float value = clampValue(params.values[index], spec->minValue, spec->maxValue);
-    *outValue = (params.type == EFFECT_PITCH && index == 6) ? roundf(value) : value;
+    const auto* metadata = audiox::plugin::metadataFor(params.type);
+    *outValue = (params.type == EFFECT_PITCH && index == 6) ||
+               (metadata && strcmp(metadata->params[index].type, "float")) ? roundf(value) : value;
     return RET_OK;
 }
 
@@ -393,6 +395,12 @@ void clampSlotParams(SlotParams *params) {
         params->values[0] = roundf(params->values[0]);
     }
     if (params->type == EFFECT_PITCH) params->values[6] = roundf(params->values[6]);
+    const auto* metadata = audiox::plugin::metadataFor(params->type);
+    if (metadata) {
+        for (uint8_t i = 0; i < limit; ++i)
+            if (strcmp(metadata->params[i].type, "float"))
+                params->values[i] = roundf(params->values[i]);
+    }
     for (uint8_t i = limit; i < EFFECT_PARAM_MAX; ++i) {
         params->values[i] = 0.0f;
     }

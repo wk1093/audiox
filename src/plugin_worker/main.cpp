@@ -17,6 +17,7 @@
 #include <sched.h>
 #include <stddef.h>
 #include <sys/mman.h>
+#include <sys/mount.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -40,10 +41,7 @@ bool allowPath(int ruleset, const char* path, uint64_t rights, bool optional = f
     close(fd);
     return ok;
 }
-bool filesystemSandbox(const char* module) {
-    const int abi = static_cast<int>(syscall(SYS_landlock_create_ruleset, nullptr, 0,
-                                            LANDLOCK_CREATE_RULESET_VERSION));
-    if (abi < 1) return false;
+bool filesystemSandbox(const char* module, int abi) {
     landlock_ruleset_attr rules{};
     rules.handled_access_fs =
         LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE |
@@ -71,6 +69,69 @@ bool filesystemSandbox(const char* module) {
                     syscall(SYS_landlock_restrict_self, fd, 0) == 0;
     close(fd);
     return ok;
+}
+bool namespaceSandbox(const char* module, const char*& operation) {
+    operation = "create private mount namespace";
+    if (unshare(CLONE_NEWNS)) return false;
+    operation = "create worker mount directory";
+    if (mkdir("/tmp", 0755) && errno != EEXIST) return false;
+    struct stat directory{};
+    if (lstat("/tmp", &directory)) return false;
+    if (!S_ISDIR(directory.st_mode)) {
+        errno = ENOTDIR;
+        return false;
+    }
+    // The bootloader chroots into a directory, not a mount point.
+    operation = "bind worker runtime root";
+    if (mount("/", "/tmp", nullptr, MS_BIND | MS_REC, nullptr)) return false;
+    operation = "enter worker runtime mount";
+    if (chroot("/tmp") || chdir("/")) return false;
+    operation = "isolate mount propagation";
+    if (mount(nullptr, "/", nullptr, MS_REC | MS_PRIVATE, nullptr)) return false;
+    // Bind sources must be pinned in this namespace, before /tmp is hidden.
+    operation = "open sandbox module";
+    const int module_fd = open(module, O_PATH | O_CLOEXEC);
+    if (module_fd < 0) return false;
+    const char* libraries[] = {"/lib", "/lib64", "/usr/lib", "/usr/lib64"};
+    int library_fds[4];
+    for (unsigned i = 0; i < 4; ++i) {
+        operation = "open sandbox libraries";
+        library_fds[i] = open(libraries[i], O_PATH | O_DIRECTORY | O_CLOEXEC);
+        if (library_fds[i] < 0 && errno != ENOENT) return false;
+    }
+    // All staging lives on a namespace-private tmpfs, never on the host disk.
+    operation = "mount sandbox root";
+    if (mount("tmpfs", "/tmp", "tmpfs", MS_NOSUID | MS_NODEV,
+              "size=1m,mode=0755")) return false;
+    operation = "create sandbox paths";
+    if (mkdir("/tmp/usr", 0755)) return false;
+    const int placeholder = open("/tmp/module.so", O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+    if (placeholder < 0) return false;
+    close(placeholder);
+    const auto bindReadOnly = [&](int source, const char* target) {
+        char path[64];
+        std::snprintf(path, sizeof(path), "/proc/self/fd/%d", source);
+        operation = "bind sandbox path";
+        if (mount(path, target, nullptr, MS_BIND, nullptr)) return false;
+        operation = "make sandbox path read-only";
+        return mount(nullptr, target, nullptr,
+                     MS_REMOUNT | MS_BIND | MS_RDONLY | MS_NOSUID | MS_NODEV, nullptr) == 0;
+    };
+    if (!bindReadOnly(module_fd, "/tmp/module.so")) return false;
+    close(module_fd);
+    for (unsigned i = 0; i < 4; ++i) {
+        if (library_fds[i] < 0) continue;
+        char target[64];
+        std::snprintf(target, sizeof(target), "/tmp%s", libraries[i]);
+        operation = "create sandbox library directory";
+        if (mkdir(target, 0755) || !bindReadOnly(library_fds[i], target)) return false;
+        close(library_fds[i]);
+    }
+    operation = "make sandbox root read-only";
+    if (mount(nullptr, "/tmp", nullptr, MS_REMOUNT | MS_RDONLY | MS_NOSUID | MS_NODEV, nullptr))
+        return false;
+    operation = "enter sandbox root";
+    return chroot("/tmp") == 0 && chdir("/") == 0;
 }
 bool syscallSandbox(bool loading) {
     sock_filter code[160];
@@ -130,6 +191,13 @@ int fail(Mailbox* box, const char* message) {
     box->state.store(static_cast<uint32_t>(WorkerState::Fault), std::memory_order_release);
     return 1;
 }
+int failSystem(Mailbox* box, const char* operation) {
+    const int code = errno;
+    char message[sizeof(box->error)];
+    std::snprintf(message, sizeof(message), "Cannot %s: %s (errno %d)",
+                  operation, std::strerror(code), code);
+    return fail(box, message);
+}
 bool textMatches(const char* value, const char* expected, size_t size) {
     return value && std::strncmp(value, expected, size) == 0 &&
            ::strnlen(expected, size) < size;
@@ -165,14 +233,27 @@ int main(int argc, char** argv) {
     if (!limit(RLIMIT_AS, 64 * 1024 * 1024) || !limit(RLIMIT_CORE, 0) ||
         !limit(RLIMIT_NOFILE, 32))
         return fail(box, "Cannot apply worker resource limits");
+    const int landlock_abi = static_cast<int>(syscall(SYS_landlock_create_ruleset, nullptr, 0,
+                                                    LANDLOCK_CREATE_RULESET_VERSION));
+    const bool use_namespace = landlock_abi < 0 && (errno == ENOSYS || errno == EOPNOTSUPP);
+    if (landlock_abi < 1 && !use_namespace)
+        return failSystem(box, "query Landlock sandbox");
+    const char* module_path = argv[2];
+    if (use_namespace) {
+        const char* operation = "create filesystem sandbox";
+        if (!namespaceSandbox(module_path, operation)) return failSystem(box, operation);
+        module_path = "/module.so";
+    }
     if (geteuid() == 0 && (setgroups(0, nullptr) || setgid(65534) || setuid(65534)))
         return fail(box, "Cannot drop worker privileges");
-    if (prctl(PR_SET_PDEATHSIG, SIGKILL) || getppid() != parent ||
-        prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) ||
-        !filesystemSandbox(argv[2]) || !syscallSandbox(true))
-        return fail(box, "Required plugin sandbox unavailable");
+    if (prctl(PR_SET_PDEATHSIG, SIGKILL)) return failSystem(box, "set worker parent-death signal");
+    if (getppid() != parent) return fail(box, "Plugin parent exited during startup");
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) return failSystem(box, "set no-new-privileges");
+    if (!use_namespace && !filesystemSandbox(module_path, landlock_abi))
+        return failSystem(box, "apply Landlock filesystem sandbox");
+    if (!syscallSandbox(true)) return failSystem(box, "apply loading seccomp sandbox");
     // Sandbox is active even for module constructors and the ABI entrypoint.
-    void* module = dlopen(argv[2], RTLD_NOW | RTLD_LOCAL);
+    void* module = dlopen(module_path, RTLD_NOW | RTLD_LOCAL);
     if (!module) return fail(box, "Cannot load plugin module in sandbox");
     auto entry = reinterpret_cast<AudioxPluginEntryV1>(dlsym(module, "audiox_plugin_v1"));
     if (!entry) return fail(box, "Missing audiox_plugin_v1 export");
@@ -195,7 +276,7 @@ int main(int argc, char** argv) {
         instances[c] = api->create(box->sample_rate, box->max_frames);
         if (!instances[c]) return fail(box, "Plugin instance initialization failed");
     }
-    if (!syscallSandbox(false)) return fail(box, "Cannot tighten plugin sandbox");
+    if (!syscallSandbox(false)) return failSystem(box, "tighten plugin seccomp sandbox");
     uint32_t completed = 0, generation = box->generation.load(std::memory_order_acquire);
     box->state.store(static_cast<uint32_t>(WorkerState::Ready), std::memory_order_release);
     for (;;) {

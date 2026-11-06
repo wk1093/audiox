@@ -3,3 +3,4 @@ name=Example Gain
 version=1.0.0
 api=1
 param=gain|Gain|0|2|1
+control=gain|float|x|0.01|Multiplies the signal level. 1 leaves it unchanged; 0 silences it.|

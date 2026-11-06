@@ -3,3 +3,4 @@ name=Example Soft Clip
 version=1.0.0
 api=1
 param=drive|Drive|0.1|10|1
+control=drive|float|x|0.01|Input drive applied before soft clipping. Higher values increase saturation.|

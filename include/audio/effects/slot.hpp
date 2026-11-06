@@ -8,7 +8,7 @@ class PluginHost;
 
 namespace audiox::effects {
 
-constexpr uint8_t EFFECT_PARAM_MAX = 8;
+constexpr uint8_t EFFECT_PARAM_MAX = 32;
 
 struct EffectParamSpec {
     const char *name;

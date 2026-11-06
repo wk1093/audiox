@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <cstring>
+#include <cstdlib>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -10,11 +11,11 @@ namespace {
 bool failIoctl = false, malformed = false;
 uint32_t firmwareFlags = 0;
 int firmwareOpen(const char *path, int flags) {
-    assert(strcmp(path, "/dev/vcio") == 0);
+    if (strcmp(path, "/dev/vcio") != 0) return ::open(path, flags);
     assert((flags & O_RDWR) != 0);
     return 123;
 }
-int firmwareClose(int fd) { assert(fd == 123); return 0; }
+int firmwareClose(int fd) { return fd == 123 ? 0 : ::close(fd); }
 int firmwareIoctl(int fd, unsigned long command, void *buffer) {
     assert(fd == 123 && command == _IOWR(100, 0, char *));
     auto *message = static_cast<uint32_t *>(buffer);
@@ -38,6 +39,21 @@ int firmwareIoctl(int fd, unsigned long command, void *buffer) {
 
 int main() {
     using namespace audiox::system;
+    char path[] = "/tmp/audiox-small-file-XXXXXX";
+    const int fd = mkstemp(path);
+    assert(fd >= 0);
+    char buffer[4]{};
+    size_t length = 99;
+    assert(!readSmallFile(path, buffer, sizeof(buffer), &length));
+    assert(length == 0 && buffer[0] == '\0');
+    assert(write(fd, "abc", 3) == 3);
+    assert(readSmallFile(path, buffer, sizeof(buffer), &length));
+    assert(length == 3 && !strcmp(buffer, "abc"));
+    assert(write(fd, "d", 1) == 1);
+    assert(!readSmallFile(path, buffer, sizeof(buffer), &length));
+    assert(!readSmallFile(path, buffer, 1));
+    assert(!readSmallFile(path, buffer, 0));
+    assert(::close(fd) == 0 && unlink(path) == 0);
     uint32_t flags = 99;
     assert(readFirmwareThrottleFlags(&flags) && flags == 0);
     firmwareFlags = (1U << 0) | (1U << 18);

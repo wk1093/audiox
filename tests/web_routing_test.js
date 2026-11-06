@@ -24,8 +24,8 @@ function canvasFixture() {
     computeVisibleArea: (viewport) => calls.push(['viewport', ...viewport]) },
     resize(w, h) { this.canvas.width = this.bgcanvas.width = w; this.canvas.height = this.bgcanvas.height = h; },
     setDirty: (...args) => calls.push(['dirty', ...args]),
-    drawBackCanvas() { calls.push(['back']); },
-    drawFrontCanvas() { this.ctx.drawImage(this.bgcanvas, 0, 0); },
+    drawBackCanvas() { calls.push(['back', this.viewport]); },
+    drawFrontCanvas() { calls.push(['front', this.viewport]); this.ctx.drawImage(this.bgcanvas, 0, 0); },
   };
   return { graphCanvas, calls };
 }
@@ -41,11 +41,16 @@ test('high-DPI graph renders both layers at display density while keeping logica
     assert.equal(graphCanvas.bgcanvas.height, Math.round(451 * ratio));
     assert.deepEqual(resolution.size(), [801, 451]);
     assert.equal(graphCanvas.canvas.style.width, '801px');
-    assert.deepEqual(graphCanvas.viewport, [0, 0, 801, 451]);
+    assert.equal(graphCanvas.viewport, null);
+    assert.equal(graphCanvas.ds.viewport, null);
+    assert.equal(graphCanvas.render_canvas_border, false);
     assert.equal(graphCanvas.ds.scale, 0.75);
     assert.deepEqual(graphCanvas.ds.offset, [40, 20]);
     graphCanvas.drawBackCanvas();
     graphCanvas.drawFrontCanvas();
+    assert.deepEqual(calls.find(([method]) => method === 'back')[1], [0, 0, 801, 451]);
+    assert.deepEqual(calls.find(([method]) => method === 'front')[1], [0, 0, 801, 451]);
+    assert.equal(graphCanvas.viewport, null);
     const transforms = calls.filter(([method]) => method === 'transform');
     assert.equal(transforms.length, 2);
     assert.equal(transforms[0][1], Math.round(801 * ratio) / 801);
@@ -69,7 +74,26 @@ test('high-DPI rendering restores context and background-copy override after an 
   resolution.resize(800, 450, 2);
   assert.throws(() => graphCanvas.drawFrontCanvas(), /render failed/);
   assert.equal(graphCanvas.ctx.drawImage, original);
+  assert.equal(graphCanvas.viewport, null);
   assert.equal(calls.at(-1)[0], 'restore');
+});
+
+test('panning and resizing retain logical visible bounds without constraining pointer events', () => {
+  const { graphCanvas, calls } = canvasFixture();
+  const resolution = routing.createCanvasResolution(graphCanvas);
+  resolution.resize(800, 400, 2);
+  graphCanvas.ds.offset = [0, -600];
+  graphCanvas.ds.computeVisibleArea();
+  assert.deepEqual(calls.at(-1), ['viewport', 0, 0, 800, 400]);
+  graphCanvas.drawBackCanvas();
+  graphCanvas.drawFrontCanvas();
+  assert.equal(graphCanvas.viewport, null);
+  assert.equal(graphCanvas.ds.viewport, null);
+  resolution.resize(500, 300, 1.25);
+  graphCanvas.ds.computeVisibleArea();
+  assert.deepEqual(calls.at(-1), ['viewport', 0, 0, 500, 300]);
+  assert.deepEqual(graphCanvas.ds.offset, [0, -600]);
+  assert.equal(graphCanvas.viewport, null);
 });
 
 test('display density changes resize the graph and rearm the resolution listener', () => {

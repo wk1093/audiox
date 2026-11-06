@@ -54,6 +54,37 @@ int main() {
     Package package;
     PackageMetadata metadata;
     std::string error;
+    const std::string header = "id=plugin_controls\nname=Controls\nversion=1\napi=1\n";
+    const std::string controls = header +
+        "param=drive|Custom drive|0|2|1\ncontrol=drive|float|x|0.01|Custom saturation help.|\n"
+        "param=count|Count|1|10|3\ncontrol=count|integer||1|Number of stages.|\n"
+        "param=active|Active|0|1|1\ncontrol=active|boolean||1|Enable processing.|\n"
+        "param=mode|Mode|0|2|1\ncontrol=mode|enum||1|Select mode.|Clean~Warm~Hot\n"
+        "text=note|Note|My preset|UI-only note.\n";
+    assert(parseMetadata(controls, metadata, error));
+    assert(metadata.paramCount == 4 && metadata.textCount == 1);
+    assert(!strcmp(metadata.params[0].description, "Custom saturation help."));
+    assert(!strcmp(metadata.params[1].type, "integer"));
+    assert(!strcmp(metadata.params[3].options, "Clean~Warm~Hot"));
+    assert(!strcmp(metadata.texts[0].defaultValue, "My preset"));
+    for (const auto& suffix : {
+        "control=absent|float||0.1|Help|\n",
+        "param=x|X|0|1|0\ncontrol=x|string||1||\n",
+        "param=x|X|0|2|0\ncontrol=x|boolean||1||\n",
+        "param=x|X|0|2|0\ncontrol=x|enum||1||A~B\n",
+        "param=x|X|0|2|0.5\ncontrol=x|integer||1||\n",
+        "param=x|X|0|2|0\ncontrol=x|float||0||\n",
+        "param=x|X|0|1|0\ntext=x|X||\n"})
+        assert(!parseMetadata(header + suffix, metadata, error));
+    std::string many = header;
+    for (unsigned i = 0; i < 32; ++i) many += "param=p" + std::to_string(i) + "|P|0|1|0\n";
+    assert(parseMetadata(many, metadata, error) && metadata.paramCount == 32);
+    assert(!parseMetadata(many + "param=extra|Extra|0|1|0\n", metadata, error));
+    assert(!parseMetadata(many + "text=extra|Extra||\n", metadata, error));
+    std::string textOnly = header;
+    for (unsigned i = 0; i < 32; ++i) textOnly += "text=t" + std::to_string(i) + "|Text||\n";
+    assert(parseMetadata(textOnly, metadata, error) && metadata.paramCount == 0 && metadata.textCount == 32);
+    assert(!parseMetadata(textOnly + "text=extra|Text||\n", metadata, error));
     auto source = entries();
     auto bytes = encode(source);
     assert(parsePackage(bytes.data(), bytes.size(), package, error, true));

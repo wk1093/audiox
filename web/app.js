@@ -218,7 +218,7 @@ const builtinEffectTypes = ['gain', 'distortion', 'pitch', 'reverb', 'gate', 'cu
 const pluginTemplateIds = new Set();
 
 function pluginTemplateNodeType(id) {
-  return `audiox/plugin_${id}`;
+  return `plugin/${id}`;
 }
 
 function registerPluginTemplates(plugins) {

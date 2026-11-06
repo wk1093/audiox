@@ -41,6 +41,8 @@ Browser close/reload protection also remains enabled.
 The graph renders at the display's pixel density, including browser zoom and
 moving between monitors. Graph zoom and pointer coordinates remain in CSS
 pixels, so higher rendering resolution does not change node sizes or dragging.
+Nodes outside the initial view remain editable after panning or using **Fit**;
+the canvas has no LiteGraph debug border.
 
 Open the collapsed **Scenes** menu below the graph to capture and recall named routing, effect inventories/settings,
 and gains; see [Setup scenes](../scenes). Scenes are hidden in graph fullscreen.

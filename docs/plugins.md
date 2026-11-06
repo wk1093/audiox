@@ -8,7 +8,9 @@ data and checks ELF headers; it does not load or execute its module.
 ## Install and use
 
 On **Effects**, choose an `.axm` in **Plugins** and select **Install plugin**.
-The Routing Add menu then offers its stereo effect. Parameters use the existing
+The Routing **Add → plugin** menu then offers its stereo effect. Unnamed instances
+use the package's declared name and instance number; custom names override it.
+Parameters use the existing
 sliders, MIDI mappings, and Lua effect API, with stable `fx_N` instance IDs.
 WebUI numeric parameter updates preserve native float precision; values are not
 quantized to four decimal places. Custom controls are optional and open only when
@@ -84,7 +86,7 @@ The immutable descriptor has fields in this order:
 | `abi_version` | `AUDIOX_PLUGIN_ABI_VERSION` (1) |
 | `struct_size` | `sizeof(AudioxPluginV1)` |
 | `id` | Full package ID, e.g. `plugin_gain` |
-| `param_count` | 0–8 |
+| `param_count` | 0–32 |
 | `params` | Ordered `AudioxParameterV1[]`: `name`, `label`, `min`, `max`, `default_value` |
 | `create(sample_rate, max_frames)` | Return a new independent instance, or NULL on failure |
 | `destroy(instance)` | Release instance resources |
@@ -111,19 +113,31 @@ without acknowledgement the host faults and stays in delayed dry bypass until
 explicit reload. Control-side polling also detects exited workers. Reset discards
 pending wet/dry history and tails; its next output block is silence.
 
-The worker requires Landlock, seccomp, pidfds, and `close_range`; unsupported
-systems fail closed. Before loading module code, root workers drop to UID/GID
-65534. Landlock allows read-only module and system library access; the initial
+The worker requires seccomp, pidfds, `close_range`, and filesystem isolation;
+unsupported systems fail closed. Landlock allows read-only module and system
+library access. On stock Pi kernels without Landlock, the root worker instead
+creates a private mount namespace and a read-only tmpfs root containing only
+the module and system libraries, then enters it with `chroot`. No host temporary
+files, devices, or `/proc` remain inside this root. This path requires mount
+namespaces, tmpfs, and a mounted `/proc` during setup; Landlock is built into the
+kernel, not a loadable module. Before loading module code, root workers drop to
+UID/GID 65534. Both filesystem isolation paths retain seccomp; the initial
 syscall policy denies network access, filesystem writes, and process creation
 even in constructors. A tighter policy applies after initialization, with a
 64 MiB address-space cap. Startup handshake time is bounded (1750 ms, plus bounded
-cleanup). Package files and their parent directories must be readable/traversable
-by the unprivileged worker. Native plugins remain untrusted: CRC32 is corruption
+cleanup). Module and library files must be readable by the unprivileged worker;
+with Landlock, their parent directories must also be traversable.
+Native plugins remain untrusted: CRC32 is corruption
 detection, not a signature or guarantee of plugin safety.
 
 The dynamic helper is built/staged separately from the static AudioX runtime,
 along with its glibc/libstdc++ dependencies. `make plugin-examples` creates
 AArch64 packages under `out/plugins/`; `make axm-pack` builds the host packer.
+`make test-plugin-namespace` runs the worker regression suite in an AArch64 QEMU
+guest with Landlock disabled and the bootloader's directory chroot layout,
+including a missing `/tmp`, filesystem escape and mount cleanup checks.
+The runtime image stages `/tmp`; the worker also creates it when absent for
+compatibility with older runtime layouts, rejecting non-directory paths.
 
 ## Metadata
 
@@ -144,7 +158,8 @@ param=gain|Gain|0|2|1
 * `name` and parameter labels are nonempty printable ASCII, at most 63 bytes.
 * `version` is nonempty printable ASCII, at most 31 bytes.
 * `api` must be exactly `1`.
-* Up to eight `param=name|label|min|max|default` lines are allowed.
+* Up to 32 controls in total (`param` plus `text`) are allowed, including zero.
+  DSP parameters use `param=name|label|min|max|default`.
   Parameter names are unique, match `[a-z][a-z0-9_]*`, and are at most 23 bytes.
   The slug grammar is the only identifier restriction: JavaScript keywords and
   inherited-property names are not additionally reserved (for example,
@@ -152,10 +167,40 @@ param=gain|Gain|0|2|1
   Values are finite decimal floats (scientific notation is allowed), with
   `min < max` and `min <= default <= max`. NaN, infinity, hex, and whitespace
   in numbers are rejected.
+* An optional `control=name|type|unit|step|description|choices` line after its
+  `param` defines the WebUI control. Types are `float`, `integer`, `boolean`,
+  and `enum`. Units are at most 23 bytes; descriptions and choices are at most
+  255 bytes. Float controls require a positive step. Discrete controls require
+  step 1 and integer bounds/defaults representable exactly as floats.
+  Booleans have bounds 0–1. Enums use zero-based values and `~`-separated labels;
+  their bounds must match the choices (at most 32). Non-enums leave choices empty.
+  Without a `control` line, a parameter is a float with step 0.01 and no help.
+  Plugin help and units never fall back to built-in parameter-name guesses.
+* `text=name|label|default|description` adds a UI-only string (at most 255
+  characters). Names are unique across numeric and text controls. Text values
+  live only until the page is reloaded, survive panel/graph refreshes, and are not
+  sent to DSP or saved in device configuration, MIDI mappings, or scenes.
+
+```text
+param=mode|Mode|0|2|1
+control=mode|enum||1|Choose the clipping curve.|Clean~Warm~Hot
+param=enabled|Active|0|1|1
+control=enabled|boolean||1|Enable clipping.|
+param=stages|Stages|1|8|2
+control=stages|integer||1|Number of clipping stages.|
+text=note|Note|My preset|Session-only note.
+```
+
+Numeric values still use the ABI's float array in `param` order; integer,
+boolean, and enum values are rounded/clamped by the host, including MIDI and
+scene recall. Text controls occupy no DSP array entries. There are no
+audio-thread allocations for parameter updates. Rebuild modules using the
+updated header when using more than eight DSP parameters.
 
 Runtime metadata uses only fixed-size fields: `PackageMetadata.id[24]`,
-`name[64]`, `version[32]`, `api`, `paramCount`, and `params[8]`. Each parameter
-contains `name[24]`, `label[64]`, `min`, `max`, and `defaultValue`. This C++ metadata
+`name[64]`, `version[32]`, `api`, `paramCount`, and `params[32]`, with separately
+bounded text controls. Each parameter includes numeric bounds/defaults plus
+control type, unit, step, description, and choices. This C++ metadata
 is not a disk format or a cross-process ABI; do not serialize its raw memory.
 
 ## Binary archive format
@@ -186,7 +231,7 @@ Limits:
 | Item | Limit |
 | --- | --- |
 | Entire archive, including headers and names | 12 MiB |
-| Metadata | 4 KiB |
+| Metadata | 16 KiB |
 | Native module | 8 MiB |
 | Assets | 16 |
 | Each asset | 256 KiB |

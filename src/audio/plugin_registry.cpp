@@ -68,6 +68,11 @@ uint8_t reserveType(const char *name) {
 
 bool registerPackage(const PackageMetadata &metadata, std::string &error,
                      bool ui) {
+    if (metadata.paramCount > AUDIOX_PLUGIN_MAX_PARAMS ||
+        metadata.textCount > AUDIOX_PLUGIN_MAX_PARAMS - metadata.paramCount) {
+        error = "Plugin control count exceeds 32";
+        return false;
+    }
     const uint8_t index = reserveType(metadata.id);
     if (index == TYPE_INVALID) {
         error = "Plugin type registry is full or ID is invalid";
@@ -78,12 +83,21 @@ bool registerPackage(const PackageMetadata &metadata, std::string &error,
     if (type.defined.load(std::memory_order_acquire)) {
         bool same = !strcmp(type.metadata.version, metadata.version) &&
                     !strcmp(type.metadata.name, metadata.name) &&
-                    type.metadata.paramCount == metadata.paramCount;
+                    type.metadata.paramCount == metadata.paramCount &&
+                    type.metadata.textCount == metadata.textCount;
         for (unsigned i = 0; same && i < metadata.paramCount; ++i) {
             const auto &a = type.metadata.params[i], &b = metadata.params[i];
             same = !strcmp(a.name, b.name) && !strcmp(a.label, b.label) &&
                    a.min == b.min && a.max == b.max &&
-                   a.defaultValue == b.defaultValue;
+                   a.defaultValue == b.defaultValue && a.step == b.step &&
+                   !strcmp(a.type, b.type) && !strcmp(a.unit, b.unit) &&
+                   !strcmp(a.description, b.description) && !strcmp(a.options, b.options);
+        }
+        for (unsigned i = 0; same && i < metadata.textCount; ++i) {
+            const auto& a = type.metadata.texts[i];
+            const auto& b = metadata.texts[i];
+            same = !strcmp(a.name, b.name) && !strcmp(a.label, b.label) &&
+                   !strcmp(a.defaultValue, b.defaultValue) && !strcmp(a.description, b.description);
         }
         if (!same) {
             error =

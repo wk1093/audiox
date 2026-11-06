@@ -353,10 +353,12 @@ int main() {
             assert(fcntl(leds[0], F_SETFL, 0) == 0);
             return std::string(reply);
         };
-        MidiMapData beforeLayout = config.readMidiMapFile();
+        auto beforeLayoutStorage = std::make_unique<MidiMapData>(config.readMidiMapFile());
+        auto& beforeLayout = *beforeLayoutStorage;
         layoutRequest("GET", "", "\"mode\":\"normal\"");
         layoutRequest("POST", "mode=grid&rows=2&columns=2", "\"mode\":\"grid\"");
-        MidiMapData grid = config.readMidiMapFile();
+        auto gridStorage = std::make_unique<MidiMapData>(config.readMidiMapFile());
+        auto& grid = *gridStorage;
         assert(grid.soundboardLayout == SOUNDBOARD_LAYOUT_GRID);
         assert(grid.gridRows == 2 && grid.gridColumns == 2);
         assert(grid.mappingCount == beforeLayout.mappingCount);
@@ -438,7 +440,8 @@ int main() {
         assert(grid.gridCornerMask == 0 && grid.gridCellCount == 0 && grid.mappingCount == 0);
         layoutRequest("POST", "mode=normal", "\"mode\":\"normal\"");
         assert(config.readMidiMapFile().soundboardLayout == SOUNDBOARD_LAYOUT_NORMAL);
-        MidiMapData actionGrid = beforeLayout;
+        auto actionGridStorage = std::make_unique<MidiMapData>(beforeLayout);
+        auto& actionGrid = *actionGridStorage;
         actionGrid.soundboardLayout = SOUNDBOARD_LAYOUT_GRID;
         actionGrid.gridInitialized = 1;
         actionGrid.gridRows = actionGrid.gridColumns = 2;
@@ -507,7 +510,8 @@ int main() {
         app.midi = nullptr;
         samplerRequest("POST", "503 Service Unavailable");
         app.midi = &midi;
-        MidiMapData freshGrid = beforeLayout;
+        auto freshGridStorage = std::make_unique<MidiMapData>(beforeLayout);
+        auto& freshGrid = *freshGridStorage;
         freshGrid.gridInitialized = 0;
         freshGrid.gridCellCount = 0;
         assert(config.writeMidiMapFile(&freshGrid) == RET_OK);
@@ -520,7 +524,8 @@ int main() {
             snprintf(capacityFiles[i], MIDI_SFX_PATH_MAX, "sound-%u.wav", i);
         strcpy(capacityFiles[SOUNDBOARD_GRID_CELLS_MAX], SOUNDBOARD_GRID_STOP_ALL_ID);
         strcpy(capacityFiles[SOUNDBOARD_GRID_CELLS_MAX + 1], SOUNDBOARD_GRID_SAMPLER_TOGGLE_ID);
-        MidiMapData capacityGrid{};
+        auto capacityGridStorage = std::make_unique<MidiMapData>();
+        auto& capacityGrid = *capacityGridStorage;
         capacityGrid.gridRows = capacityGrid.gridColumns = 8;
         SoundboardGridCell capacityCells[SOUNDBOARD_GRID_CELLS_MAX]{};
         uint32_t capacityCount = 0;
@@ -680,23 +685,26 @@ int main() {
         auto pluginRequest = [&](const char *method, const char *path, const std::string &body) {
             int sockets[2];
             assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
-            int result;
-            if (!strncmp(path, "/api/plugins", 12))
-                result = handlePlugins(&http, sockets[0], method, path, body.data(), body.size());
-            else if (!strcmp(path, "/api/effect/create"))
-                result = handleEffectCreate(&http, sockets[0], method, path, body.data(), body.size());
-            else if (!strcmp(path, "/api/effect/set"))
-                result = handleEffectSet(&http, sockets[0], method, path, body.data(), body.size());
-            else if (!strcmp(path, "/api/effect/delete"))
-                result = handleEffectDelete(&http, sockets[0], method, path, body.data(), body.size());
-            else result = handleEffects(&http, sockets[0], method, path);
-            assert(result == 0);
-            assert(shutdown(sockets[0], SHUT_WR) == 0);
+            std::thread request([&]() {
+                int result;
+                if (!strncmp(path, "/api/plugins", 12))
+                    result = handlePlugins(&http, sockets[0], method, path, body.data(), body.size());
+                else if (!strcmp(path, "/api/effect/create"))
+                    result = handleEffectCreate(&http, sockets[0], method, path, body.data(), body.size());
+                else if (!strcmp(path, "/api/effect/set"))
+                    result = handleEffectSet(&http, sockets[0], method, path, body.data(), body.size());
+                else if (!strcmp(path, "/api/effect/delete"))
+                    result = handleEffectDelete(&http, sockets[0], method, path, body.data(), body.size());
+                else result = handleEffects(&http, sockets[0], method, path);
+                assert(result == 0);
+                assert(shutdown(sockets[0], SHUT_WR) == 0);
+            });
             std::string response;
             char chunk[4096];
             ssize_t got;
             while ((got = read(sockets[1], chunk, sizeof(chunk))) > 0) response.append(chunk, got);
             assert(got == 0);
+            request.join();
             close(sockets[0]);
             close(sockets[1]);
             return response;
@@ -760,6 +768,50 @@ int main() {
                 packageBytes.size(), package, error));
             const std::string id = package.metadata.id;
             auto savedBefore = config.readMidiMapFile();
+            char displayName[64]{};
+            midiEffectDisplayName(savedBefore, "fx_99", "plugin_not_installed",
+                                  displayName, sizeof(displayName));
+            assert(!strcmp(displayName, "plugin_not_installed 99"));
+            auto softclipMetadata = package.metadata;
+            strcpy(softclipMetadata.id, "plugin_softclip");
+            strcpy(softclipMetadata.name, "Example Soft Clip");
+            assert(audiox::plugin::registerPackage(softclipMetadata, error));
+            midiEffectDisplayName(savedBefore, "fx_99", "plugin_softclip",
+                                  displayName, sizeof(displayName));
+            assert(!strcmp(displayName, "Example Soft Clip 99"));
+            auto typed = softclipMetadata;
+            strcpy(typed.id, "plugin_typed");
+            typed.paramCount = 3;
+            for (unsigned p = 0; p < typed.paramCount; ++p) {
+                auto& parameter = typed.params[p];
+                snprintf(parameter.name, sizeof(parameter.name), "p%u", p);
+                strcpy(parameter.label, "Typed");
+                strcpy(parameter.type, p == 0 ? "integer" : p == 1 ? "boolean" : "enum");
+                parameter.min = 0;
+                parameter.max = p == 0 ? 10 : p == 1 ? 1 : 2;
+                parameter.defaultValue = 0;
+                parameter.step = 1;
+            }
+            strcpy(typed.params[2].options, "A~B~C");
+            assert(audiox::plugin::registerPackage(typed, error));
+            audiox::effects::SlotParams typedSlot{};
+            typedSlot.type = audiox::plugin::findType(typed.id);
+            for (unsigned p = 0; p < 3; ++p) {
+                assert(audiox::effects::setSlotParamValue(&typedSlot, typed.params[p].name, 0.6f) == RET_OK);
+                assert(typedSlot.values[p] == 1);
+                assert(audiox::effects::setSlotParamNormalized(&typedSlot, typed.params[p].name, 0.6f) == RET_OK);
+                assert(typedSlot.values[p] == roundf(typed.params[p].max * 0.6f));
+            }
+            typedSlot.values[2] = 1.6f;
+            audiox::effects::clampSlotParams(&typedSlot);
+            assert(typedSlot.values[2] == 2);
+            auto namedPlugin = std::make_unique<MidiMapData>();
+            namedPlugin->effectStateCount = 1;
+            strcpy(namedPlugin->effectStates[0].effectId, "fx_99");
+            strcpy(namedPlugin->effectStates[0].name, "Custom clip");
+            midiEffectDisplayName(*namedPlugin, "fx_99", "plugin_softclip",
+                                  displayName, sizeof(displayName));
+            assert(!strcmp(displayName, "Custom clip"));
             auto withMissing = savedBefore;
             auto &missing = withMissing.effectStates[withMissing.effectStateCount++];
             missing = {};
@@ -783,6 +835,10 @@ int main() {
             assert(pluginRequest("PUT", "/api/plugins/install", packageBytes).find("409 Conflict") != std::string::npos);
             assert(audiox::plugin::available(audiox::plugin::findType(id.c_str())));
             assert(pluginRequest("GET", "/api/plugins", "").find(id) != std::string::npos);
+            const auto catalogResponse = pluginRequest("GET", "/api/plugins", "");
+            assert(catalogResponse.find("\"description\":\"" +
+                audiox::json::escape(package.metadata.params[0].description) + "\"") != std::string::npos);
+            assert(catalogResponse.find("\"type\":\"float\"") != std::string::npos);
             assert(pluginRequest("POST", "/api/plugins/reload", "id=" + id).find("200 OK") != std::string::npos);
             audiox::effects::SlotParams restored{};
             assert(audio.getEffectParams("fx_1234", &restored) == RET_OK);
@@ -797,7 +853,12 @@ int main() {
             const auto &effect = persisted.effectStates[persisted.effectStateCount - 1];
             assert(!strcmp(effect.type, id.c_str()));
             const std::string effectId = effect.effectId;
-            assert(pluginRequest("GET", "/api/effects", "").find("\"plugin_status\":\"ready\"") != std::string::npos);
+            const auto effectsResponse = pluginRequest("GET", "/api/effects", "");
+            assert(effectsResponse.find("\"plugin_status\":\"ready\"") != std::string::npos);
+            const std::string expectedName = std::string(package.metadata.name) + " " + effectId.substr(3);
+            assert(effectsResponse.find("\"name\":\"" + expectedName + "\"") != std::string::npos);
+            assert(effectsResponse.find("\"description\":\"" +
+                audiox::json::escape(package.metadata.params[0].description) + "\"") != std::string::npos);
             assert(pluginRequest("POST", "/api/plugins/remove", "id=" + id).find("409 Conflict") != std::string::npos);
             if (package.metadata.paramCount) {
                 const auto &parameter = package.metadata.params[0];
@@ -828,7 +889,7 @@ int main() {
             strcpy(wide.id, "plugin_wide");
             strcpy(wide.name, "Wide metadata");
             strcpy(wide.version, "1");
-            wide.paramCount = 8;
+            wide.paramCount = 32;
             for (unsigned i = 0; i < wide.paramCount; ++i) {
                 auto &parameter = wide.params[i];
                 snprintf(parameter.name, sizeof(parameter.name), "p%u", i);
@@ -837,6 +898,24 @@ int main() {
                 parameter.max = parameter.defaultValue = std::numeric_limits<float>::max();
             }
             assert(audiox::plugin::registerPackage(wide, error));
+            auto wideSaved = std::make_unique<MidiMapData>(savedBefore);
+            audiox::effects::SlotParams wideSlot{};
+            wideSlot.type = audiox::plugin::findType(wide.id);
+            audiox::effects::setSlotDefaultsForType(&wideSlot, wideSlot.type);
+            assert(audiox::effects::setSlotParamValue(&wideSlot, "p31", 0.123f) == RET_OK);
+            upsertEffectStateFromRuntime(wideSaved.get(), "fx_4000", wideSlot);
+            assert(config.writeMidiMapFile(wideSaved.get()) == RET_OK);
+            auto wideReloaded = std::make_unique<MidiMapData>(config.readMidiMapFile());
+            bool foundLast = false;
+            for (unsigned i = 0; i < wideReloaded->effectParamCount; ++i) {
+                const auto& p = wideReloaded->effectParams[i];
+                if (!strcmp(p.effectId, "fx_4000") && !strcmp(p.param, "p31")) {
+                    assert(fabsf(p.value - 0.123f) < 0.000001f);
+                    foundLast = true;
+                }
+            }
+            assert(foundLast);
+            assert(config.writeMidiMapFile(&savedBefore) == RET_OK);
             for (unsigned i = 0; i < 24; ++i) {
                 auto &effect = audio.effectStates["fx_" + std::to_string(2000 + i)];
                 effect.enabled = 1;

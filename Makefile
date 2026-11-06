@@ -101,7 +101,7 @@ RUNTIME_LIBS += $(LUA_STATIC_LIB) -lm
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 15
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.8
+AUDIOX_VERSION_PRERELEASE ?= beta.9
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
 $(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
@@ -611,7 +611,7 @@ $(CURDIR)/web/node_modules/.audiox-assets-installed: $(CURDIR)/web/package.json 
 rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(ROOTFS_DIR)/sbin/audiox-plugin-worker $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB) $(LUA_STAGED_LICENSE) $(DNSMASQ_BIN) check_dnsmasq_conf web_assets
 	@echo "Creating runtime rootfs structure..."
 	mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/sbin $(ROOTFS_DIR)/etc
-	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev
+	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev $(ROOTFS_DIR)/tmp
 	mkdir -p $(ROOTFS_DIR)/etc/www
 	mkdir -p $(ROOTFS_DIR)/lib/modules
 	mkdir -p $(ROOTFS_DIR)/lib/firmware/brcm

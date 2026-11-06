@@ -2,6 +2,8 @@
 #ifdef AUDIOX_PLUGIN_TEST_FIXTURE
 #include <cstdlib>
 #include <cstring>
+#include <array>
+#include <cstdio>
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/socket.h>
@@ -9,17 +11,39 @@
 #include <unistd.h>
 namespace {
 struct State { float previous[1024]; uint32_t frames; };
+constexpr uint32_t gainIndex = AUDIOX_PLUGIN_TEST_FIXTURE == 12 ? AUDIOX_PLUGIN_MAX_PARAMS - 1 : 0;
+#if AUDIOX_PLUGIN_TEST_FIXTURE == 12
+char parameterNames[AUDIOX_PLUGIN_MAX_PARAMS][24];
+const auto parameters = [] {
+    std::array<AudioxParameterV1, AUDIOX_PLUGIN_MAX_PARAMS> result{};
+    for (unsigned i = 0; i < result.size(); ++i) {
+        std::snprintf(parameterNames[i], sizeof(parameterNames[i]), "p%u", i);
+        result[i] = {parameterNames[i], "Parameter", -2, 2, 1};
+    }
+    return result;
+}();
+#else
 const AudioxParameterV1 parameters[] = {{"gain", "Gain", -2, 2, 1}};
+#endif
 [[maybe_unused]] bool forbidden_read = false;
 __attribute__((constructor)) void constructor() {
 #if AUDIOX_PLUGIN_TEST_FIXTURE == 1
     std::abort();
 #elif AUDIOX_PLUGIN_TEST_FIXTURE == 4
     (void)open("plugin-constructor-escape", O_CREAT | O_WRONLY, 0600);
-#elif AUDIOX_PLUGIN_TEST_FIXTURE == 7
-    const int fd = open("/etc/passwd", O_RDONLY);
-    forbidden_read = fd >= 0;
+#elif AUDIOX_PLUGIN_TEST_FIXTURE == 7 || AUDIOX_PLUGIN_TEST_FIXTURE == 11
+    const char* paths[] = {"/etc/passwd", "../../etc/passwd", "/proc/self/root/etc/passwd",
+                           "/dev/null", "/tmp/audiox-plugin-secret"};
+    for (const char* path : paths) {
+        const int fd = open(path, O_RDONLY);
+        forbidden_read |= fd >= 0;
+        if (fd >= 0) close(fd);
+    }
+#if AUDIOX_PLUGIN_TEST_FIXTURE == 11
+    const int fd = open("/module.so", O_RDONLY);
+    forbidden_read |= fd < 0;
     if (fd >= 0) close(fd);
+#endif
 #elif AUDIOX_PLUGIN_TEST_FIXTURE == 9
     for (;;) asm volatile("" ::: "memory");
 #elif AUDIOX_PLUGIN_TEST_FIXTURE == 10
@@ -48,7 +72,7 @@ void process(void* instance, const float* input, float* output, uint32_t frames,
 #endif
     auto* state = static_cast<State*>(instance);
     for (uint32_t i = 0; i < frames; ++i)
-        output[i] = input[i] * params[0] + state->previous[i] * 0.25f;
+        output[i] = input[i] * params[gainIndex] + state->previous[i] * 0.25f;
     std::memcpy(state->previous, input, frames * sizeof(float));
     state->frames = frames;
 }
@@ -59,13 +83,19 @@ int tail(void* instance, float threshold) {
     return 0;
 }
 const AudioxPluginV1 descriptor = {
+#if AUDIOX_PLUGIN_TEST_FIXTURE == 12
+    AUDIOX_PLUGIN_ABI_VERSION, sizeof(AudioxPluginV1), "plugin_fixture", AUDIOX_PLUGIN_MAX_PARAMS,
+    parameters.data(), create, destroy, reset, process, tail
+#else
     AUDIOX_PLUGIN_ABI_VERSION, sizeof(AudioxPluginV1), "plugin_fixture", 1,
     parameters, create, destroy, reset, process, tail
+#endif
 };
 }
 extern "C" const AudioxPluginV1* audiox_plugin_v1() { return &descriptor; }
 #else
 #include "audio/plugin_host.hpp"
+#include "audio/plugin_package.hpp"
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -76,6 +106,15 @@ extern "C" const AudioxPluginV1* audiox_plugin_v1() { return &descriptor; }
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#ifdef AUDIOX_PLUGIN_NAMESPACE_TEST
+#include <cerrno>
+#include <fcntl.h>
+#include <linux/landlock.h>
+#include <sys/mount.h>
+#include <sys/reboot.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#endif
 
 using audiox::plugin::PluginHost;
 namespace {
@@ -85,7 +124,7 @@ struct Audio {
     float in[2][frames]{}, out[2][frames]{};
     const float* inputs[2]{in[0], in[1]};
     float* outputs[2]{out[0], out[1]};
-    float params[8]{2};
+    float params[AUDIOX_PLUGIN_MAX_PARAMS]{2};
     void fill(float a, float b) {
         for (uint32_t i = 0; i < frames; ++i) { in[0][i] = a; in[1][i] = b; }
     }
@@ -99,16 +138,46 @@ struct Audio {
 };
 void settle() { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
 bool prepare(PluginHost& host, const char* worker, const std::string& module) {
-    return host.prepare(module.c_str(), "plugin_fixture", specs, 1, 48000, frames, 2, worker);
+    const bool ok = host.prepare(module.c_str(), "plugin_fixture", specs, 1,
+                                 48000, frames, 2, worker);
+    if (!ok) std::fprintf(stderr, "%s: %s\n", module.c_str(), host.error());
+    return ok;
 }
 }
 int main(int argc, char** argv) {
+#ifdef AUDIOX_PLUGIN_NAMESPACE_TEST
+    assert(getpid() == 1 && geteuid() == 0);
+    assert(chroot("/runtime") == 0 && chdir("/") == 0);
+    assert(mount("devtmpfs", "/dev", "devtmpfs", 0, nullptr) == 0);
+    const int console = open("/dev/console", O_RDWR);
+    assert(console >= 0);
+    for (int fd = 0; fd < 3; ++fd) assert(dup2(console, fd) == fd);
+    if (console > 2) close(console);
+    assert(mount("proc", "/proc", "proc", 0, nullptr) == 0);
+    assert(syscall(SYS_landlock_create_ruleset, nullptr, 0,
+                   LANDLOCK_CREATE_RULESET_VERSION) == -1);
+    assert(errno == ENOSYS || errno == EOPNOTSUPP);
+    struct stat original_namespace{};
+    assert(stat("/proc/self/ns/mnt", &original_namespace) == 0);
+    assert(rmdir("/tmp") == 0);
+    assert(access("/tmp", F_OK) == -1 && errno == ENOENT);
+    char program[] = "/init", worker[] = "/sbin/audiox-plugin-worker", fixtures[] = "/plugins";
+    char* arguments[] = {program, worker, fixtures, nullptr};
+    argc = 3;
+    argv = arguments;
+#endif
     assert(argc == 3 && "usage: plugin_host_test WORKER FIXTURE_DIRECTORY");
     const auto path = [&](unsigned kind) {
         return std::string(argv[2]) + "/plugin-fixture-" + std::to_string(kind) + ".so";
     };
     auto host = std::make_unique<PluginHost>();
     assert(prepare(*host, argv[1], path(0)));
+#ifdef AUDIOX_PLUGIN_NAMESPACE_TEST
+    const int secret = open("/tmp/audiox-plugin-secret", O_CREAT | O_EXCL | O_WRONLY, 0644);
+    assert(secret >= 0);
+    assert(write(secret, "private", 7) == 7);
+    close(secret);
+#endif
     Audio audio;
     audio.fill(0.1f, 0.3f); audio.run(*host); audio.check(0, 0);
     settle(); audio.fill(0.2f, 0.4f); audio.run(*host); audio.check(0.2f, 0.6f);
@@ -157,6 +226,27 @@ int main(int argc, char** argv) {
     assert(std::fabs(audio.in[0][0] - 0.4f) < 0.00001f);
     second->stop(); host->stop();
     {
+        audiox::plugin::PackageMetadata metadata{};
+        strcpy(metadata.id, "plugin_fixture");
+        metadata.paramCount = AUDIOX_PLUGIN_MAX_PARAMS;
+        for (unsigned i = 0; i < metadata.paramCount; ++i) {
+            auto& p = metadata.params[i];
+            snprintf(p.name, sizeof(p.name), "p%u", i);
+            strcpy(p.label, "Parameter");
+            p.min = -2; p.max = 2; p.defaultValue = 1;
+        }
+        std::string error;
+        assert(host->prepare(path(12).c_str(), metadata, 48000, frames, 2, error, argv[1]));
+        Audio wide;
+        wide.params[AUDIOX_PLUGIN_MAX_PARAMS - 1] = 0.5f;
+        wide.fill(0.2f, -0.2f);
+        wide.run(*host);
+        settle();
+        wide.run(*host);
+        wide.check(0.1f, -0.1f);
+        host->stop();
+    }
+    {
         constexpr uint32_t block = audiox::plugin::kMaxFrames;
         constexpr uint32_t channels = audiox::plugin::kMaxChannels;
         auto input = std::make_unique<float[]>(channels * block);
@@ -198,6 +288,10 @@ int main(int argc, char** argv) {
     assert(access("plugin-constructor-escape", F_OK) != 0);
     assert(prepare(*host, argv[1], path(7)));
     host->stop();
+#ifdef AUDIOX_PLUGIN_NAMESPACE_TEST
+    assert(prepare(*host, argv[1], path(11)));
+    host->stop();
+#endif
     assert(!prepare(*host, argv[1], path(8)));
     const auto startup = std::chrono::steady_clock::now();
     assert(!prepare(*host, argv[1], path(9)));
@@ -231,5 +325,27 @@ int main(int argc, char** argv) {
     int status;
     assert(waitpid(-1, &status, WNOHANG) == -1 && "all workers must be reaped");
     std::puts("plugin_host_test: ok");
+#ifdef AUDIOX_PLUGIN_NAMESPACE_TEST
+    struct stat current_namespace{};
+    assert(stat("/proc/self/ns/mnt", &current_namespace) == 0);
+    assert(current_namespace.st_ino == original_namespace.st_ino);
+    assert(access("/tmp/audiox-plugin-secret", R_OK) == 0);
+    assert(access("/tmp/module.so", F_OK) == -1);
+    assert(umount("/proc") == 0);
+    auto unsupported = std::make_unique<PluginHost>();
+    assert(!prepare(*unsupported, argv[1], path(0)));
+    assert(std::strstr(unsupported->error(), "Cannot bind sandbox path:") != nullptr);
+    unsupported->stop();
+    assert(mount("proc", "/proc", "proc", 0, nullptr) == 0);
+    assert(unlink("/tmp/audiox-plugin-secret") == 0 && rmdir("/tmp") == 0);
+    assert(symlink("/lib", "/tmp") == 0);
+    assert(!prepare(*unsupported, argv[1], path(0)));
+    assert(std::strstr(unsupported->error(), "Cannot create worker mount directory:") != nullptr);
+    unsupported->stop();
+    assert(unlink("/tmp") == 0 && mkdir("/tmp", 0755) == 0);
+    std::puts("plugin_namespace_test: ok");
+    std::fflush(stdout);
+    assert(reboot(RB_POWER_OFF) == 0);
+#endif
 }
 #endif

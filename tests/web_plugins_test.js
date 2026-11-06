@@ -117,6 +117,85 @@ const pluginFx = {
   plugin_ui: true, plugin_status: 'ready',
 };
 
+test('plugin templates use a separate category and retain creation and catalog lifecycle', () => {
+  const registered = {};
+  const window = { LiteGraph: { registered_node_types: registered,
+    registerNodeType(type, ctor) { registered[type] = ctor; } },
+    AudioxPlugins: { normalizePluginId: id => /^plugin_[a-z0-9_]+$/.test(id) ? id : '' } };
+  const context = vm.createContext({ window });
+  vm.runInContext(app.slice(app.indexOf('const builtinEffectTypes ='),
+    app.indexOf('function isCreatableEffectType(')), context);
+  context.registerPluginTemplates([{ id: 'plugin_softclip', name: 'Example Soft Clip' }]);
+  assert.deepEqual(Object.keys(registered), ['plugin/plugin_softclip']);
+  const Node = registered['plugin/plugin_softclip'];
+  assert.equal(Node.filter, 'audiox');
+  assert.equal(Node.title, 'Example Soft Clip (plugin)');
+  const node = { addInput() {}, addOutput() {} };
+  Node.call(node);
+  assert.equal(node.properties.effectTypeTemplate, 'plugin_softclip');
+  assert.equal(node.properties.pluginTemplate, true);
+  context.registerPluginTemplates([]);
+  assert.equal(Node.filter, 'audiox-internal');
+  context.registerPluginTemplates([{ id: 'plugin_softclip', name: 'Soft Clip' }]);
+  assert.equal(Node.filter, 'audiox');
+  assert.equal(Node.title, 'Soft Clip (plugin)');
+});
+
+test('plugin names are consistent across panel and graph and custom names take precedence', async () => {
+  const fx = { ...pluginFx, type: 'plugin_softclip', name: 'Example Soft Clip 3', custom_name: '' };
+  const f = fixture({ plugins: [{ ...catalogEntry, id: fx.type, name: 'Example Soft Clip' }],
+    effects: [fx] });
+  await f.plugins.load();
+  await f.effects.loadEffects();
+  assert.equal(f.effects.displayName('fx_3'), 'Example Soft Clip 3');
+  assert.ok(find(f.panel, el => el.textContent === 'Example Soft Clip 3'));
+  const node = { properties: { thingId: 'fx_3' }, addWidget() {} };
+  f.effects.applyWidgets(node, fx);
+  assert.equal(node.title, 'Example Soft Clip 3');
+  f.effects.applyWidgets(node, { ...fx, name: 'Custom Clip', custom_name: 'Custom Clip' });
+  assert.equal(node.title, 'Custom Clip');
+  f.effects.effectsById.set('fx_3', { id: 'fx_3', type: fx.type });
+  assert.equal(f.effects.displayName('fx_3'), 'plugin_softclip 3');
+});
+
+test('plugin help and typed controls use metadata only; text controls never send DSP updates', async () => {
+  const fx = { ...pluginFx, params: { drive: 1, count: 2, active: 1, mode: 0 },
+    param_meta: [
+      { name: 'drive', label: 'Custom Drive', min: 0, max: 2, default: 1, type: 'float',
+        step: 0.001, unit: 'x', description: 'Plugin-specific saturation.' },
+      { name: 'count', label: 'Stages', min: 1, max: 5, default: 2, type: 'integer', step: 1 },
+      { name: 'active', label: 'Active', min: 0, max: 1, default: 1, type: 'boolean', step: 1 },
+      { name: 'mode', label: 'Mode', min: 0, max: 1, default: 0, type: 'enum', step: 1,
+        options: ['Clean', 'Warm'] },
+    ], text_controls: [{ name: 'note', label: 'Note', default: 'Preset note', description: 'UI only' }] };
+  const f = fixture({ plugins: [catalogEntry], effects: [fx] });
+  await f.plugins.load();
+  await f.effects.loadEffects();
+  const help = findAll(f.panel, el => el.className === 'small fx-param-help');
+  assert.deepEqual(help.map(el => el.textContent), ['Plugin-specific saturation.']);
+  assert.ok(find(f.panel, el => el.tagName === 'LABEL' && el.textContent === 'Custom Drive (x)'));
+  const integer = find(f.panel, el => el.id === 'fx_3-count-value');
+  integer.value = '2.5';
+  integer.listeners.change();
+  assert.match(f.notices.at(-1)[0], /between/);
+  assert.equal(f.calls.filter(call => call.url === '/api/effect/set').length, 0);
+  const selects = findAll(f.panel, el => el.tagName === 'SELECT');
+  assert.ok(selects.some(el => el.children.map(option => option.textContent).join(',') === 'Off,On'));
+  assert.ok(selects.some(el => el.children.map(option => option.textContent).join(',') === 'Clean,Warm'));
+  const text = find(f.panel, el => el.id === 'fx_3-note-text');
+  text.value = 'New note';
+  text.listeners.input();
+  f.effects.renderPanel();
+  assert.equal(find(f.panel, el => el.id === 'fx_3-note-text').value, 'New note');
+  assert.equal(f.calls.filter(call => call.url === '/api/effect/set').length, 0);
+  const widgets = [];
+  const node = { properties: { thingId: fx.id }, addWidget: (...args) => widgets.push(args) };
+  f.effects.applyWidgets(node, fx);
+  assert.equal(widgets.filter(args => args[0] === 'text').length, 1);
+  assert.equal(widgets.find(args => args[0] === 'text')[2], 'New note');
+  assert.equal(widgets.filter(args => args[0] === 'combo').length, 2);
+});
+
 test('catalog lists metadata as text and rejects unsafe IDs', async () => {
   const f = fixture({ plugins: [catalogEntry, { id: '../x', name: 'bad' }, { id: 'gain', name: 'shadow' }] });
   const catalog = await f.plugins.load();

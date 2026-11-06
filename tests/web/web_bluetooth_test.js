@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { apiContext } = require('./support/api-context.js');
 const { test } = require('node:test');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -36,7 +37,7 @@ function fixture(devices) {
   let fetches = 0;
   const requests = [];
   const notices = [];
-  const context = vm.createContext({
+  const context = apiContext({
     document: {
       getElementById: id => elements.get(id),
       createElement: tag => Object.assign(new Element(), { tag }),
@@ -191,7 +192,7 @@ function routingFixture(thingIds) {
   const nodeByThingId = new Map(thingIds.map(([id, inputs, outputs]) => [id, {
     inputs: Array.from({ length: inputs }), outputs: Array.from({ length: outputs }),
   }]));
-  const context = vm.createContext({
+  const context = apiContext({
     state: {
       graph: {}, nodes: [], edges: [], dormantEdges: [], selectedEdgeIdx: -1, nodeByThingId,
       graphCanvas: { setDirty() {} },

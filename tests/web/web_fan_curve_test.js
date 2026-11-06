@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { apiContext } = require('./support/api-context.js');
 const { test } = require('node:test');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -36,7 +37,7 @@ function fixture({ pi5 = true, loaded = true } = {}) {
   ]) makeElement(id);
   const focusedPoint = makeElement('focused-point');
   const dirtyStates = [];
-  const context = vm.createContext({
+  const context = apiContext({
     document: {
       getElementById: (id) => elements.get(id),
       createElement: (name) => makeElement(name),

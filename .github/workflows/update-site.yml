@@ -9,8 +9,8 @@ on:
       - 'web/public/**'
       - 'docs/**'
       - 'tools/release/mirror-updates.sh'
-      - 'web/embedded/styles.css'
-      - 'web/embedded/releases.js'
+      - 'tools/release/stage-site.sh'
+      - 'web/embedded/**'
       - 'assets/branding/**'
       - '.github/workflows/update-site.yml'
 
@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   deploy:
-    name: Deploy site, docs, and update mirror
+    name: Deploy site, docs, live demo, and update mirror
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -48,23 +48,18 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: docs/package-lock.json
+          cache-dependency-path: |
+            docs/package-lock.json
+            web/embedded/package-lock.json
 
-      - name: Build VitePress documentation
-        run: |
-          npm ci --prefix docs
-          npm run docs:build --prefix docs
+      - name: Build site, VitePress documentation, and Live Demo
+        run: bash tools/release/stage-site.sh out/update-pages
 
       - name: Prepare latest stable and nightly update archives
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: bash tools/release/mirror-updates.sh out/update-pages
-
-      - name: Add documentation to Pages artifact
-        run: |
-          mkdir -p out/update-pages/docs
-          cp -R docs/.vitepress/dist/. out/update-pages/docs/
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5

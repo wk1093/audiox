@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+require('../../web/embedded/api.js');
 const { test } = require('node:test');
 const { create, createHealthNotifier } = require('../../web/embedded/logs.js');
 

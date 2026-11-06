@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { apiContext } = require('./support/api-context.js');
 
 class Element {
   constructor() { this.children = []; this.events = {}; this.dataset = {}; this.value = ''; }
@@ -60,7 +61,7 @@ async function fixture() {
       return { ok: true, json: async () => structuredClone(url === '/api/scenes' ? data : { ok: true }) };
     },
   };
-  vm.runInNewContext(fs.readFileSync('web/embedded/scenes.js', 'utf8'), context);
+  vm.runInContext(fs.readFileSync('web/embedded/scenes.js', 'utf8'), apiContext(context));
   await tick();
   return { controls, data, calls, events, poll: () => poll(), fail: () => { failure = true; }, window,
     dirty: (value) => { dirty = value; }, deviceBusy: (value) => { deviceBusy = value; },

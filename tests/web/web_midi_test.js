@@ -1,11 +1,12 @@
 const assert = require('node:assert/strict');
+const { apiContext } = require('./support/api-context.js');
 const { test } = require('node:test');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
 
 test('USB keyboard settings remain backwards compatible', () => {
-  const context = vm.createContext({});
+  const context = apiContext({});
   vm.runInContext(source.slice(source.indexOf('function parseConfigText('),
     source.indexOf('function parseRoutingText(')), context);
   assert.equal(context.parseConfigText('').keyboard_macros, 0);
@@ -40,7 +41,7 @@ function fixture() {
   const state = { activeTab: 'scripts', mappingAssignTarget: null, mappingPollTimer: null };
   const document = { getElementById: get, createElement: element, hidden: false,
     addEventListener(name, callback) { this[name] = callback; }, querySelectorAll: () => [] };
-  const context = vm.createContext({
+  const context = apiContext({
     document, window: {}, state, TextEncoder, TextDecoder,
     AudioxLuaEditor: require('../../web/embedded/lua-editor.js'),
     AudioxUI: {

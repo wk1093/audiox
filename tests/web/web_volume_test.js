@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { apiContext } = require('./support/api-context.js');
 const { test } = require('node:test');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -19,7 +20,7 @@ function fixture(gain = 1, volumes = [{ id: 'phone', name: 'Phone', gain }]) {
   const grid = new Element();
   const summary = new Element();
   const saves = [];
-  const context = vm.createContext({
+  const context = apiContext({
     volGridEl: grid,
     state: { volumes, ccVolumes: [], volShowEffects: false },
     volumeMeters: new Map(),
@@ -150,7 +151,7 @@ test('a failed unity reset restores the saved level rather than pretending it wa
 
 test('volume save reports actual percentages and friendly names, and explicitly reports failures', async () => {
   const messages = [];
-  const context = vm.createContext({
+  const context = apiContext({
     state: { volumes: [{ id: 'phone', name: 'My phone', gain: 1 }] },
     gainToPercent: gain => Math.round(gain * 100),
     setStatus: (...args) => messages.push(args),

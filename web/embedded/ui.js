@@ -172,7 +172,7 @@
     }
   }
 
-  async function probeDevice(fetcher = fetch, signal) {
+  async function probeDevice(fetcher = apiFetch, signal) {
     const timeout = AbortSignal.timeout(10000);
     let response;
     try {
@@ -195,7 +195,7 @@
   }
 
   async function waitForRestart(before, {
-    signal, startedAt = performance.now(), fetcher = fetch,
+    signal, startedAt = performance.now(), fetcher = apiFetch,
     now = () => performance.now(), pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     onProgress = () => {},
   } = {}) {

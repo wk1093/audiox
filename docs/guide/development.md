@@ -66,9 +66,11 @@ Additional tools depend on the workflow:
 - Host audio tests: host ALSA development headers/library (Debian/Ubuntu: `libasound2-dev`).
 - Firmware WebUI assets and JavaScript regressions: Node.js/npm. `make web_assets`
   installs the pinned `web/embedded/package-lock.json` packages with lifecycle scripts
-  disabled, stages the graph library/fonts and their licenses in `out/web-vendor`,
-  and `rootfs` copies them to the device. Once dependencies are cached, device
-  operation requires no CDN or Google Fonts connection.
+  disabled and compiles the device target of the web UI (scripts and styles minified
+  with esbuild, plus the graph library/fonts and their licenses) into `out/web-device`;
+  `rootfs` copies that build to the device. Set `WEB_MINIFY=0` to keep readable
+  scripts for debugging. Once dependencies are cached, device operation requires no
+  CDN or Google Fonts connection.
 - Documentation: Node.js/npm and the pinned `docs/package-lock.json`.
 - QEMU: `qemu-system-aarch64`, `mtools`, `dosfstools`, `e2fsprogs`, `util-linux` (`sfdisk`), `binutils` (`ar`), and `xz`.
 - USB/IP attachment: host `usbip`, a usable `vhci-hcd` kernel module, and sudo permission.
@@ -135,7 +137,7 @@ make initramfs
 - ALSA is built from source into `out/alsa-sysroot`; static ALSA is the supported build strategy.
 - SBC, Lua, dnsmasq, and Bluetooth firmware are prepared by their build dependencies. Lua/dnsmasq and configured firmware downloads use the checks specified in the build scripts/Makefile.
 - Module dependencies are resolved and copied into the appropriate rootfs.
-- Web assets from `web/embedded/` are copied into the runtime image.
+- The compiled device web UI from `out/web-device` is copied into the runtime image.
 
 Outputs:
 
@@ -344,10 +346,37 @@ Keep development and preview servers bound to loopback. Production publishes
 static output, not the development server. VitePress is pinned by the docs
 manifest and lockfile.
 
+### Web UI build targets and the Live Demo
+
+`web/embedded/build.js` compiles one set of pages, scripts and styles into two
+targets:
+
+- `device` talks to the firmware through `api.js`. Every UI request goes through
+  `apiFetch()` (or `AudioxApi.upload`/`AudioxApi.download`), never `fetch('/api/…')`
+  directly.
+- `demo` replaces `api.js` with `demo/mock-api.js`, a stateful in-browser
+  simulation seeded by `demo/mock-data.js`, and rewrites root-relative URLs so the
+  UI works below `/audiox/demo/` on the public site.
+
+```bash
+node web/embedded/build.js --target device --out out/web-device [--no-minify]
+node web/embedded/build.js --target demo --out /tmp/audiox-demo
+```
+
+When you add or change an API endpoint, update the matching route in
+`demo/mock-api.js` so the Live Demo keeps working.
+
+`make site` stages the complete public website the same way the Pages workflow
+does (download page, VitePress docs, and Live Demo) into `out/site/audiox`,
+without the release-archive mirror. `make site-serve` builds it and serves it
+with `python3 -m http.server` at `http://127.0.0.1:8000/audiox/`
+(`SITE_PORT` changes the port).
+
 Release tooling builds Pi 4 and Pi 5 images, checksums, manifests, and
 board-matched AXU archives. `tools/release/package-imager.sh`,
 `tools/release/publish-imager.sh`, and `tools/release/mirror-updates.sh` handle packaging,
-catalogs, and browser-update mirrors. Firmware publication and mirror
+catalogs, and browser-update mirrors; `tools/release/stage-site.sh` stages the
+public site, docs, and Live Demo. Firmware publication and mirror
 deployment are separate workflows.
 
 Forks must review repository/mirror URLs in `web/embedded/updates.js`, Imager catalogs, and site links before publishing. Do not change upstream URLs just to perform a local firmware build.

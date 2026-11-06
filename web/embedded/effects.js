@@ -897,7 +897,7 @@
       if (!this.mutationInFlight && this.panelEl?.contains(document.activeElement) &&
           ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
       const myEpoch = this.loadEpoch;
-      const res = await fetch('/api/effects', { method: 'GET' });
+      const res = await apiFetch('/api/effects', { method: 'GET' });
       const txt = await res.text();
       if (!res.ok) {
         throw new Error(`effects load failed: ${res.status} ${txt.trim()}`);
@@ -955,7 +955,7 @@
     }
 
     async postSet(body) {
-      const res = await fetch('/api/effect/set', {
+      const res = await apiFetch('/api/effect/set', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
         body: formBody(body),
@@ -975,7 +975,7 @@
       this.loadEpoch++;
       this.mutationInFlight++;
       try {
-        const res = await fetch('/api/effect/name', { method: 'POST',
+        const res = await apiFetch('/api/effect/name', { method: 'POST',
           headers: { 'Content-Type': 'text/plain' }, body: `id=${effectId}&name_hex=${nameHex}` });
         if (!res.ok) throw new Error(`Could not save effect name: ${res.status} ${await res.text()}`);
         this.nameDrafts.delete(effectId);
@@ -1098,7 +1098,7 @@
     }
 
     async setEffectCc(effectId, param, cc) {
-      const res = await fetch('/api/effect/midi_cc/set', {
+      const res = await apiFetch('/api/effect/midi_cc/set', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
         body: formBody({ id: effectId, param, cc }),
@@ -1112,7 +1112,7 @@
     }
 
     async deleteEffectCc(cc) {
-      const res = await fetch('/api/effect/midi_cc/delete', {
+      const res = await apiFetch('/api/effect/midi_cc/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
         body: formBody({ cc }),
@@ -1126,7 +1126,7 @@
     }
 
     async setEffectToggle(effectId, note) {
-      const res = await fetch('/api/effect/midi_toggle/set', {
+      const res = await apiFetch('/api/effect/midi_toggle/set', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
         body: formBody({ id: effectId, note }),
@@ -1140,7 +1140,7 @@
     }
 
     async deleteEffectToggle(note) {
-      const res = await fetch('/api/effect/midi_toggle/delete', {
+      const res = await apiFetch('/api/effect/midi_toggle/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
         body: formBody({ note }),
@@ -1154,7 +1154,7 @@
     }
 
     async setEffectLight(effectId, enabledVel, bypassedVel) {
-      const res = await fetch('/api/effect/midi_light/set', {
+      const res = await apiFetch('/api/effect/midi_light/set', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
         body: formBody({ id: effectId, enabled_vel: enabledVel, bypassed_vel: bypassedVel }),
@@ -1168,7 +1168,7 @@
     }
 
     async deleteEffectLight(effectId) {
-      const res = await fetch('/api/effect/midi_light/delete', {
+      const res = await apiFetch('/api/effect/midi_light/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
         body: formBody({ id: effectId }),
@@ -1183,7 +1183,7 @@
 
     async deleteEffect(effectId) {
       const name = this.displayName(effectId);
-      const res = await fetch('/api/effect/delete', {
+      const res = await apiFetch('/api/effect/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
         body: formBody({ id: effectId }),
@@ -1199,7 +1199,7 @@
 
     async beginCcCapture(effectId, param) {
       try {
-        const snap = await fetch('/api/midi/last_cc', { method: 'GET' });
+        const snap = await apiFetch('/api/midi/last_cc', { method: 'GET' });
         if (snap.ok) {
           const d = parseJson(await snap.text()) || {};
           this.lastCcSeq = toNumber(d.last_seq, 0);
@@ -1226,7 +1226,7 @@
       }
 
       try {
-        const res = await fetch('/api/midi/last_cc', { method: 'GET' });
+        const res = await apiFetch('/api/midi/last_cc', { method: 'GET' });
         const txt = await res.text();
         if (!res.ok) return;
         const data = parseJson(txt) || {};
@@ -1250,7 +1250,7 @@
 
     async beginNoteCapture(effectId) {
       try {
-        const snap = await fetch('/api/midi/last_note', { method: 'GET' });
+        const snap = await apiFetch('/api/midi/last_note', { method: 'GET' });
         if (snap.ok) {
           const d = parseJson(await snap.text()) || {};
           this.lastNoteSeq = toNumber(d.last_seq, 0);
@@ -1278,7 +1278,7 @@
       }
 
       try {
-        const res = await fetch('/api/midi/last_note', { method: 'GET' });
+        const res = await apiFetch('/api/midi/last_note', { method: 'GET' });
         const txt = await res.text();
         if (!res.ok) return;
         const data = parseJson(txt) || {};

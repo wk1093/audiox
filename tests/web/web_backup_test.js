@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+require('../../web/embedded/api.js');
 const { test } = require('node:test');
 const backup = require('../../web/embedded/backup.js');
 const ui = require('../../web/embedded/ui.js');
@@ -26,7 +27,8 @@ function controller() {
   };
   const downloads = [], uploads = [];
   const popup = { ...ui, confirm: async () => true, runTask: async (_title, action) => action() };
-  global.window = { open: (...args) => downloads.push(args) };
+  global.open = (...args) => downloads.push(args);
+  global.window = { open: global.open };
   let mode = 'success';
   const checks = [];
   global.fetch = async (url, options) => {

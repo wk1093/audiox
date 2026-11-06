@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { apiContext } = require('./support/api-context.js');
 const { test } = require('node:test');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -16,7 +17,7 @@ function fixture(initiallyDimmed = false) {
   let dimmed = initiallyDimmed;
   let failure = false;
   const calls = [], notices = [];
-  const context = vm.createContext({
+  const context = apiContext({
     document: { getElementById: (id) => {
       assert.equal(id, 'btn-light-dim');
       return button;

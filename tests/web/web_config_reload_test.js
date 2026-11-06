@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { apiContext } = require('./support/api-context.js');
 const { readFileSync } = require('node:fs');
 const { test } = require('node:test');
 const vm = require('node:vm');
@@ -15,7 +16,7 @@ test('USB reload warns before execution; cancel does nothing and acceptance pres
   for (const accepted of [false, true, 'alternate']) {
     let click;
     const calls = [];
-    const context = vm.createContext({
+    const context = apiContext({
       document: { getElementById(id) {
         assert.equal(id, 'btn-reload');
         return { addEventListener(event, callback) {

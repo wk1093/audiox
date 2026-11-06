@@ -4,7 +4,7 @@
   async function request(path, values = null, method = 'POST') {
     const query = values ? `?${new URLSearchParams(values)}` : '';
     const send = async () => {
-      const response = await fetch(`/api/scenes${path}${query}`, { method: values ? method : 'GET', cache: 'no-store' });
+      const response = await apiFetch(`/api/scenes${path}${query}`, { method: values ? method : 'GET', cache: 'no-store' });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `Scene request failed (${response.status})`);
       return data;

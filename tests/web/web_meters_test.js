@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { apiContext } = require('./support/api-context.js');
 const { test } = require('node:test');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -27,7 +28,7 @@ function fixture() {
   let now = 0;
   let frameId = 0;
   const motion = { matches: false };
-  const context = vm.createContext({
+  const context = apiContext({
     window: { matchMedia: () => motion },
     performance: { now: () => now },
     requestAnimationFrame: callback => { frames.set(++frameId, callback); return frameId; },

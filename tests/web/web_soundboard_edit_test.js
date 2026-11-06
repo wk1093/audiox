@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { apiContext } = require('./support/api-context.js');
 const { test } = require('node:test');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -24,7 +25,7 @@ function fixture() {
   }
   const document = { createElement: (tag) => new Element(tag) };
   const state = { soundboardOpenSettings: new Set() };
-  const context = vm.createContext({ document, state });
+  const context = apiContext({ document, state });
   vm.runInContext(source.slice(source.indexOf('function groupSoundboardTileSettings('),
     source.indexOf('function renderSoundboardGrid(')), context);
   const actions = new Element('div');

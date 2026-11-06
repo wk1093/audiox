@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { apiContext } = require('./support/api-context.js');
 const { test } = require('node:test');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -24,7 +25,7 @@ function fixture() {
   const notices = [], calls = [], timers = new Map();
   let effects = [], failure = false, timerId = 0;
   const ui = { formatMessage: text => text, resolve() {}, confirm: async () => true };
-  const context = vm.createContext({ document, window: { AudioxUI: ui }, AudioxUI: ui,
+  const context = apiContext({ document, window: { AudioxUI: ui }, AudioxUI: ui,
     URLSearchParams, TextEncoder, setInterval() {}, clearInterval() {},
     setTimeout: fn => { timers.set(++timerId, fn); return timerId; },
     clearTimeout: id => timers.delete(id),

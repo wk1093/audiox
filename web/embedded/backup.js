@@ -28,8 +28,7 @@
     }
     backup.addEventListener('click', () => {
       if (busy) return;
-      // Native downloads stream to disk instead of buffering gigabytes in JavaScript.
-      window.open('/api/config/backup', '_blank', 'noopener,noreferrer');
+      root.AudioxApi.download('/api/config/backup');
       message('Backup download requested. Wait for your browser to finish audiox-backup.axb before reflashing. Server errors appear in the download tab.');
     });
     restore.addEventListener('click', async () => {
@@ -47,7 +46,7 @@
         })) return;
         await ui.runTask('Restoring configuration', async () => {
           message('Checking available restore storage...');
-          const check = await fetch(`/api/config/restore/check?size=${archive.size}`, { cache: 'no-store' });
+          const check = await apiFetch(`/api/config/restore/check?size=${archive.size}`, { cache: 'no-store' });
           if (!check.ok) {
             const details = (await check.text()).trim();
             throw new Error(`Restore preflight rejected (${check.status}): ${details || 'no response details'}`);
@@ -55,32 +54,26 @@
           progress.hidden = false;
           progress.value = 0;
           message('Uploading backup. Keep this page open until validation finishes...');
-          await new Promise((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open('PUT', '/api/config/restore');
-            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-            xhr.upload.addEventListener('progress', (event) => {
-              if (event.lengthComputable) {
-                progress.value = Math.round(event.loaded / event.total * 100);
+          let result;
+          try {
+            result = await root.AudioxApi.upload('/api/config/restore', archive, {
+              onProgress(loaded, total) {
+                progress.value = Math.round(loaded / total * 100);
                 message(`Uploading backup: ${progress.value}%`);
-              }
+              },
+              onSent() {
+                progress.value = 100;
+                message('Upload complete. Validating and staging settings and sound files...');
+              },
             });
-            xhr.upload.addEventListener('load', () => {
-              progress.value = 100;
-              message('Upload complete. Validating and staging settings and sound files...');
-            });
-            xhr.addEventListener('load', () => {
-              if (xhr.status === 202) {
-                message('Backup validated and staged. Waiting for the device to restart...');
-                resolve();
-              } else {
-                reject(new Error(`Restore rejected (${xhr.status}): ${xhr.responseText.trim() || 'no response details'}`));
-              }
-            });
-            xhr.addEventListener('error', () => reject(new Error('Connection lost. The restore may already be staged; check the device and reboot before retrying.')));
-            xhr.addEventListener('abort', () => reject(new Error('Restore upload aborted.')));
-            xhr.send(archive);
-          });
+          } catch (error) {
+            throw new Error(error.reason === 'abort' ? 'Restore upload aborted.'
+              : 'Connection lost. The restore may already be staged; check the device and reboot before retrying.');
+          }
+          if (result.status !== 202) {
+            throw new Error(`Restore rejected (${result.status}): ${result.text.trim() || 'no response details'}`);
+          }
+          message('Backup validated and staged. Waiting for the device to restart...');
         }, { restart: true });
         success = true;
       } catch (error) {

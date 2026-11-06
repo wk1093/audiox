@@ -2,8 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const destination = path.resolve(process.argv[2] || path.join(__dirname, 'vendor'));
-fs.mkdirSync(destination, { recursive: true });
+
 const files = [
   ['litegraph.js/build/litegraph.js', 'litegraph.js'],
   ['litegraph.js/css/litegraph.css', 'litegraph.css'],
@@ -14,6 +13,16 @@ const files = [
     `space-grotesk-${weight}.woff2`,
   ]),
 ];
-for (const [source, target] of files) {
-  fs.copyFileSync(path.join(__dirname, 'node_modules', source), path.join(destination, target));
+
+function stageVendor(destination) {
+  fs.mkdirSync(destination, { recursive: true });
+  for (const [source, target] of files) {
+    fs.copyFileSync(path.join(__dirname, 'node_modules', source), path.join(destination, target));
+  }
 }
+
+if (require.main === module) {
+  stageVendor(path.resolve(process.argv[2] || path.join(__dirname, 'vendor')));
+}
+
+module.exports = { stageVendor };

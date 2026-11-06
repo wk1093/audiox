@@ -521,7 +521,7 @@ async function loadBluetoothDevices() {
   }
   bluetoothLoadInFlight = true;
   try {
-    const res = await fetch('/api/bluetooth/devices', { method: 'GET', signal: AbortSignal.timeout(10000) });
+    const res = await apiFetch('/api/bluetooth/devices', { method: 'GET', signal: AbortSignal.timeout(10000) });
     const data = await res.json();
     if (!res.ok || !data.ok) {
       throw new Error(data.error || `request failed: ${res.status}`);
@@ -558,7 +558,7 @@ async function bluetoothRequest(path, body) {
   bluetoothDevicesEl.querySelectorAll('button').forEach((button) => { button.disabled = true; });
   bluetoothStatusEl.textContent = 'Applying Bluetooth request...';
   try {
-    const res = await fetch(path, { method: 'POST', body });
+    const res = await apiFetch(path, { method: 'POST', body });
     const data = await res.json();
     if (!res.ok || !data.ok) {
       throw new Error(data.error || `request failed: ${res.status}`);
@@ -784,7 +784,7 @@ function isRoutingHelperNode(node) {
 }
 
 async function createRoutingHelper() {
-  const res = await fetch('/api/routing/helper/create', { method: 'POST' });
+  const res = await apiFetch('/api/routing/helper/create', { method: 'POST' });
   const txt = await res.text();
   if (!res.ok) {
     throw new Error(`Audio Mixer creation failed: ${res.status} ${txt.trim()}`);
@@ -792,7 +792,7 @@ async function createRoutingHelper() {
 }
 
 async function deleteRoutingHelper() {
-  const res = await fetch('/api/routing/helper/delete', { method: 'POST' });
+  const res = await apiFetch('/api/routing/helper/delete', { method: 'POST' });
   const txt = await res.text();
   if (!res.ok) {
     throw new Error(`Audio Mixer deletion failed: ${res.status} ${txt.trim()}`);
@@ -805,7 +805,7 @@ async function createEffectFromTemplate(type) {
     throw new Error(`effect create failed: plugin ${requested} is not installed`);
   }
   const safeType = requested || 'gain';
-  const res = await fetch('/api/effect/create', {
+  const res = await apiFetch('/api/effect/create', {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain' },
     body: `type=${encodeURIComponent(safeType)}`,
@@ -1623,7 +1623,7 @@ async function loadRoutingThingsWithOptions(options = {}) {
   const force = !!options.force;
 
   try {
-    const res = await fetch('/api/routing/things', { method: 'GET' });
+    const res = await apiFetch('/api/routing/things', { method: 'GET' });
     const txt = await res.text();
     if (!res.ok) {
       if (!silent) {
@@ -1715,7 +1715,7 @@ async function pollEffectsIfNeeded() {
 async function loadRoutingFile() {
   setStatus('loading routing...');
   try {
-    const res = await fetch(routingPath, { method: 'GET' });
+    const res = await apiFetch(routingPath, { method: 'GET' });
     const txt = await res.text();
     if (!res.ok) {
       state.edges = [];
@@ -1745,7 +1745,7 @@ window.loadRoutingThingsWithOptions = loadRoutingThingsWithOptions;
 
 async function reloadRoutingFast(successMessage = null) {
   try {
-    const res = await fetch('/api/routing/reload', { method: 'POST' });
+    const res = await apiFetch('/api/routing/reload', { method: 'POST' });
     const txt = await res.text();
     if (!res.ok) {
       setStatus(`routing reload failed: ${res.status} ${txt.trim()}`, 'warn');
@@ -1772,7 +1772,7 @@ async function saveRouting() {
   setStatus('saving routing...');
   try {
     const savedEdges = [...state.edges, ...state.dormantEdges].map((edge) => ({ ...edge }));
-    const res = await fetch(routingPath, {
+    const res = await apiFetch(routingPath, {
       method: 'PUT',
       headers: { 'Content-Type': 'text/plain' },
       body: formatRoutingText(),
@@ -1798,7 +1798,7 @@ async function saveRouting() {
 
 async function loadVersion() {
   try {
-    const res = await fetch('/api/version', { method: 'GET' });
+    const res = await apiFetch('/api/version', { method: 'GET' });
     const txt = (await res.text()).trim();
     if (!res.ok || !txt) {
       return;
@@ -2165,7 +2165,7 @@ async function loadPi5FanSettings() {
   status.textContent = 'Loading saved fan curve…';
   renderPi5FanCurve();
   try {
-    const response = await fetch('/api/system/fan', { cache: 'no-store' });
+    const response = await apiFetch('/api/system/fan', { cache: 'no-store' });
     const text = (await response.text()).trim();
     if (!response.ok) throw new Error(`${response.status} ${text}`);
     const settings = JSON.parse(text);
@@ -2209,10 +2209,10 @@ function openPi5FanDialog() {
 async function loadConfig() {
   setStatus('loading config...');
   try {
-    let res = await fetch(configPath, { method: 'GET' });
+    let res = await apiFetch(configPath, { method: 'GET' });
     let txt = await res.text();
     if (!res.ok) {
-      res = await fetch(realConfigPath, { method: 'GET' });
+      res = await apiFetch(realConfigPath, { method: 'GET' });
       txt = await res.text();
       if (!res.ok) {
         setStatus(`config load failed: ${res.status} ${txt.trim()}`, 'warn');
@@ -2240,7 +2240,7 @@ function renderFramebufferView() {
 
 async function loadFramebufferView() {
   try {
-    const res = await fetch('/api/framebuffer/view');
+    const res = await apiFetch('/api/framebuffer/view');
     if (!res.ok) throw new Error(`${res.status}`);
     const data = await res.json();
     state.framebufferView = data.view === 'soundboard' ? 'soundboard' : 'meters';
@@ -2255,7 +2255,7 @@ async function toggleFramebufferView() {
   const button = document.getElementById('btn-fb-view');
   button.disabled = true;
   try {
-    const res = await fetch('/api/framebuffer/view', {
+    const res = await apiFetch('/api/framebuffer/view', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: `view=${view}`,
@@ -2277,7 +2277,7 @@ async function saveConfig() {
   setStatus('saving config...');
 
   try {
-    const res = await fetch(configPath, {
+    const res = await apiFetch(configPath, {
       method: 'PUT',
       headers: { 'Content-Type': 'text/plain' },
       body: payload,
@@ -2310,7 +2310,7 @@ function scriptListReloadSafe(preserveEditor) {
 async function loadMidiChords({ preserveEditor = false } = {}) {
   if (!scriptListReloadSafe(preserveEditor)) return;
   try {
-    const res = await fetch('/api/scripts', { cache: 'no-store' });
+    const res = await apiFetch('/api/scripts', { cache: 'no-store' });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
     const data = await res.json();
     if (scriptListReloadSafe(preserveEditor)) renderMidiChords(data.scripts);
@@ -2450,7 +2450,7 @@ async function saveScriptControl(id, control) {
     }
     const body = `id=${id}&key_hex=${chordHexEncode(descriptor.key)}` +
       (descriptor.type === 'button' ? '' : `&value_hex=${chordHexEncode(String(value))}`);
-    const res = await fetch('/api/scripts/control', {
+    const res = await apiFetch('/api/scripts/control', {
       method: 'POST', headers: { 'Content-Type': 'text/plain' }, body,
     });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
@@ -2492,7 +2492,7 @@ async function saveMidiChord(method, chord, button) {
       `&idle_velocity=${chord.idle_velocity ?? 0}&pressed_velocity=${chord.pressed_velocity ?? 0}` +
       `&config_write_ack=${configurationScript ? 1 : 0}` +
       `&script_hex=${chord.script_hex || ''}`;
-    const res = await fetch('/api/scripts', {
+    const res = await apiFetch('/api/scripts', {
       method, headers: { 'Content-Type': 'text/plain' }, body: payload,
     });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
@@ -2510,7 +2510,7 @@ async function runMacro(id, button) {
   if (button.disabled) return;
   button.disabled = true;
   try {
-    const res = await fetch('/api/scripts/run', {
+    const res = await apiFetch('/api/scripts/run', {
       method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: `id=${id}`,
     });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
@@ -2585,7 +2585,7 @@ document.getElementById('btn-chord-learn').addEventListener('click', async () =>
   if (state.mappingPollTimer) clearInterval(state.mappingPollTimer);
   state.mappingPollTimer = null;
   try {
-    const res = await fetch('/api/midi/last_note', { cache: 'no-store' });
+    const res = await apiFetch('/api/midi/last_note', { cache: 'no-store' });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
     const data = await res.json();
     if (state.activeTab !== 'scripts' || document.hidden ||
@@ -2641,7 +2641,7 @@ document.getElementById('btn-chord-save').addEventListener('click', () => {
 async function reloadConfig() {
   setStatus('reloading config...');
   try {
-    const res = await fetch('/api/config/reload', { method: 'POST' });
+    const res = await apiFetch('/api/config/reload', { method: 'POST' });
     const txt = await res.text();
     if (!res.ok) {
       setStatus(`reload failed: ${res.status} ${txt.trim()}`, 'warn');
@@ -2670,7 +2670,7 @@ async function triggerSfx(fileName, action = 'trigger') {
       : (action === 'release')
         ? `/api/soundboard/release/${target}`
         : `/api/soundboard/trigger/${target}`;
-    const res = await fetch(endpoint, { method: 'POST' });
+    const res = await apiFetch(endpoint, { method: 'POST' });
     const txt = await res.text();
     if (!res.ok) {
       setStatus(`error: ${res.status} ${txt.trim()}`, 'warn');
@@ -2689,7 +2689,7 @@ async function triggerSfx(fileName, action = 'trigger') {
 async function triggerStopAll() {
   setStatus('stopping all clips...');
   try {
-    const res = await fetch('/api/soundboard/stop_all', { method: 'POST' });
+    const res = await apiFetch('/api/soundboard/stop_all', { method: 'POST' });
     const txt = await res.text();
     if (!res.ok) {
       setStatus(`error: ${res.status} ${txt.trim()}`, 'warn');
@@ -2703,7 +2703,7 @@ async function triggerStopAll() {
 
 async function triggerSamplerToggle() {
   try {
-    const res = await fetch('/api/midi/sampler_mode', { method: 'POST' });
+    const res = await apiFetch('/api/midi/sampler_mode', { method: 'POST' });
     const text = await res.text();
     if (!res.ok) throw new Error(`${res.status} ${text.trim()}`);
     const data = JSON.parse(text);
@@ -2733,7 +2733,7 @@ function renderSamplerToggleMidiStatus() {
 
 async function loadSoundboardModes() {
   try {
-    const res = await fetch('/api/soundboard/modes', { method: 'GET' });
+    const res = await apiFetch('/api/soundboard/modes', { method: 'GET' });
     const txt = await res.text();
     if (!res.ok) {
       return;
@@ -2790,7 +2790,7 @@ function updateSoundboardLayoutState(data) {
 
 async function loadSoundboardLayout() {
   try {
-    const res = await fetch('/api/soundboard/layout', { method: 'GET' });
+    const res = await apiFetch('/api/soundboard/layout', { method: 'GET' });
     const txt = await res.text();
     if (!res.ok) {
       if (res.status === 404) {
@@ -2826,7 +2826,7 @@ function renderSoundboardCellSelectors() {
 
 async function saveSoundboardLayout(fields, statusLabel = 'Soundboard layout saved.') {
   try {
-    const res = await fetch('/api/soundboard/layout', {
+    const res = await apiFetch('/api/soundboard/layout', {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body: new URLSearchParams(fields).toString(),
@@ -2878,7 +2878,7 @@ async function beginSoundboardGridLearn(corner) {
     return;
   }
   try {
-    const response = await fetch('/api/midi/last_note', { method: 'GET' });
+    const response = await apiFetch('/api/midi/last_note', { method: 'GET' });
     const text = await response.text();
     if (!response.ok) throw new Error(`${response.status} ${text.trim()}`);
     const data = JSON.parse(text);
@@ -2906,7 +2906,7 @@ async function saveSoundboardModeForSfx(sfx, mode) {
   const normalizedMode = (mode === 'hold') ? 'hold' : 'play';
   setStatus(`saving mode for ${sfx}...`);
   try {
-    const res = await fetch('/api/soundboard/mode/set', {
+    const res = await apiFetch('/api/soundboard/mode/set', {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body: `sfx=${encodeURIComponent(sfx)}&mode=${normalizedMode}`,
@@ -2936,7 +2936,7 @@ async function runSystemAction(path, label) {
       AudioxUI.taskProgress(`${label} in progress...`);
       let res;
       try {
-        res = await fetch(path, { method: 'POST', signal: AbortSignal.timeout(15000) });
+        res = await apiFetch(path, { method: 'POST', signal: AbortSignal.timeout(15000) });
       } catch (error) {
         if (label !== 'restart' || !(error instanceof TypeError || error.name === 'TimeoutError')) throw error;
         AudioxUI.taskProgress('Connection interrupted after the restart request. Checking whether AudioX restarts...');
@@ -2978,11 +2978,11 @@ function sanitizeSfxName(name) {
 
 async function listSfxFiles() {
   try {
-    let res = await fetch('/api/soundboard/order', { method: 'GET' });
+    let res = await apiFetch('/api/soundboard/order', { method: 'GET' });
     state.soundboardOrderSupported = res.status !== 404;
     if (!state.soundboardOrderSupported) {
       setStatus('Shared sound ordering is unavailable on this firmware. The file list remains playable.', 'warn', 'soundboard-order-support');
-      res = await fetch('/api/rootfs/sfx/', { method: 'GET' });
+      res = await apiFetch('/api/rootfs/sfx/', { method: 'GET' });
     } else {
       AudioxUI.resolve('soundboard-order-support');
     }
@@ -3021,7 +3021,7 @@ async function saveSoundboardOrder(files, file) {
   renderSoundboardGrid();
   try {
     await AudioxUI.runTask('Saving sound order', async () => {
-      const res = await fetch('/api/soundboard/order', {
+      const res = await apiFetch('/api/soundboard/order', {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain' },
         body: `${files.join('\n')}\n`,
@@ -3048,7 +3048,7 @@ async function saveSoundboardOrder(files, file) {
 
 async function reloadSoundboardBank() {
   try {
-    const res = await fetch('/api/soundboard/reload', { method: 'POST' });
+    const res = await apiFetch('/api/soundboard/reload', { method: 'POST' });
     const txt = await res.text();
     if (!res.ok) {
       setStatus(`soundboard reload failed: ${res.status} ${txt.trim()}`, 'warn');
@@ -3316,7 +3316,7 @@ function renderSoundboardGrid() {
       } else {
         // Snapshot the current seq so only presses AFTER this click are captured.
         try {
-          const r = await fetch('/api/midi/last_note', { method: 'GET' });
+          const r = await apiFetch('/api/midi/last_note', { method: 'GET' });
           if (r.ok) {
             const d = JSON.parse(await r.text());
             state.mappingLastSeq = Number(d.last_seq || 0);
@@ -3400,7 +3400,7 @@ async function deleteSfxFile(filename) {
   })) return;
   setStatus(`deleting ${filename}...`);
   try {
-    const res = await fetch(`/api/rootfs/sfx/${encodeURIComponent(filename)}`, {
+    const res = await apiFetch(`/api/rootfs/sfx/${encodeURIComponent(filename)}`, {
       method: 'DELETE',
     });
     const txt = (await res.text()).trim();
@@ -3425,7 +3425,7 @@ async function replaceSfxFile(filename, fileObj) {
   setStatus(`replacing ${filename}...`);
   try {
     const buf = await fileObj.arrayBuffer();
-    const res = await fetch(`/api/rootfs/sfx/${encodeURIComponent(filename)}`, {
+    const res = await apiFetch(`/api/rootfs/sfx/${encodeURIComponent(filename)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/octet-stream' },
       body: buf,
@@ -3462,7 +3462,7 @@ async function uploadSfxFile() {
   setStatus(`uploading ${targetName} (streaming)...`);
   try {
     const buf = await file.arrayBuffer();
-    const res = await fetch(`/api/rootfs/sfx/${targetName}`, {
+    const res = await apiFetch(`/api/rootfs/sfx/${targetName}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/octet-stream' },
       body: buf,
@@ -3492,7 +3492,7 @@ async function uploadSfxFile() {
 
 async function loadMappings() {
   try {
-    const res = await fetch('/api/midi/mappings', { method: 'GET' });
+    const res = await apiFetch('/api/midi/mappings', { method: 'GET' });
     const txt = await res.text();
     if (!res.ok) return;
 
@@ -3512,7 +3512,7 @@ async function loadMappings() {
 
 async function loadMidiActions() {
   try {
-    const res = await fetch('/api/midi/actions', { method: 'GET' });
+    const res = await apiFetch('/api/midi/actions', { method: 'GET' });
     const txt = await res.text();
     if (!res.ok) {
       throw new Error(`${res.status} ${txt.trim()}`);
@@ -3558,7 +3558,7 @@ async function saveActionMapping(note, actionName) {
 
   try {
     const body = `note=${note}&action=${actionName}`;
-    const res = await fetch('/api/midi/action/set', {
+    const res = await apiFetch('/api/midi/action/set', {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body,
@@ -3595,7 +3595,7 @@ async function deleteStopAllActionMapping() {
   })) return;
 
   try {
-    const res = await fetch('/api/midi/action/delete', {
+    const res = await apiFetch('/api/midi/action/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body: `note=${state.stopAllMidiNote}`,
@@ -3623,7 +3623,7 @@ async function deleteSamplerToggleActionMapping() {
   })) return;
 
   try {
-    const res = await fetch('/api/midi/action/delete', {
+    const res = await apiFetch('/api/midi/action/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body: `note=${state.samplerToggleMidiNote}`,
@@ -3653,7 +3653,7 @@ async function saveMapping(note, sfx) {
 
   try {
     const body = `note=${note}&sfx=${sfx}`;
-    const res = await fetch('/api/midi/mapping/set', {
+    const res = await apiFetch('/api/midi/mapping/set', {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body,
@@ -3681,7 +3681,7 @@ async function deleteMapping(note) {
   })) return;
 
   try {
-    const res = await fetch('/api/midi/mapping/delete', {
+    const res = await apiFetch('/api/midi/mapping/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body: `note=${note}`,
@@ -3710,7 +3710,7 @@ async function pollMappingCapture() {
 
   const targetAtStart = state.mappingAssignTarget;
   try {
-    const res = await fetch('/api/midi/last_note', { method: 'GET' });
+    const res = await apiFetch('/api/midi/last_note', { method: 'GET' });
     const txt = await res.text();
     if (!res.ok) {
       if (targetAtStart === '__macro__' || String(targetAtStart).startsWith('__grid_'))
@@ -3782,7 +3782,7 @@ async function pollMappingCapture() {
 
 async function loadSamplerConfig() {
   try {
-    const res = await fetch('/api/midi/sampler_config', { method: 'GET' });
+    const res = await apiFetch('/api/midi/sampler_config', { method: 'GET' });
     const txt = await res.text();
     if (!res.ok) {
       return;
@@ -3819,7 +3819,7 @@ async function saveSamplerConfig() {
 
   try {
     const body = `keyboard_enabled=${enabled}&keyboard_channel=${Math.trunc(channel)}&root_note=${Math.trunc(rootNote)}`;
-    const res = await fetch('/api/midi/sampler_config', {
+    const res = await apiFetch('/api/midi/sampler_config', {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body,
@@ -3985,7 +3985,7 @@ async function pollMeters() {
   meterPollBusy = true;
   const status = document.getElementById('vol-meter-status');
   try {
-    const res = await fetch('/api/audio/meters', { cache: 'no-store', signal: AbortSignal.timeout(2000) });
+    const res = await apiFetch('/api/audio/meters', { cache: 'no-store', signal: AbortSignal.timeout(2000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (!Array.isArray(data.meters) || data.meters.some(meter =>
@@ -4025,8 +4025,8 @@ async function pollMeters() {
 async function loadVolumes() {
   try {
     const [vRes, ccRes] = await Promise.all([
-      fetch('/api/audio/volumes', { method: 'GET' }),
-      fetch('/api/midi/cc_volumes', { method: 'GET' }),
+      apiFetch('/api/audio/volumes', { method: 'GET' }),
+      apiFetch('/api/midi/cc_volumes', { method: 'GET' }),
     ]);
     if (!vRes.ok || !ccRes.ok) {
       throw new Error(`Volume data load failed (${!vRes.ok ? vRes.status : ccRes.status}). Try refreshing the Volume page.`);
@@ -4181,7 +4181,7 @@ function renderVolGrid() {
         return;
       }
       try {
-        const r = await fetch('/api/midi/last_cc', { method: 'GET' });
+        const r = await apiFetch('/api/midi/last_cc', { method: 'GET' });
         if (r.ok) {
           const d = JSON.parse(await r.text());
           state.volCcLastSeq = Number(d.last_seq || 0);
@@ -4227,7 +4227,7 @@ function renderVolGrid() {
 
 async function setVolumeGain(thingId, gain) {
   try {
-    const res = await fetch('/api/audio/volume/set', {
+    const res = await apiFetch('/api/audio/volume/set', {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body: `id=${encodeURIComponent(thingId)}&gain=${gain.toFixed(4)}`,
@@ -4254,7 +4254,7 @@ async function pollVolCcCapture() {
     return;
   }
   try {
-    const res = await fetch('/api/midi/last_cc', { method: 'GET' });
+    const res = await apiFetch('/api/midi/last_cc', { method: 'GET' });
     if (!res.ok) return;
     const data = JSON.parse(await res.text());
     const seq = Number(data.last_seq || 0);
@@ -4278,7 +4278,7 @@ async function pollVolCcCapture() {
 
 async function setCcVolumeMapping(cc, thingId) {
   try {
-    const res = await fetch('/api/midi/cc_volume/set', {
+    const res = await apiFetch('/api/midi/cc_volume/set', {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body: `cc=${cc}&id=${encodeURIComponent(thingId)}`,
@@ -4303,7 +4303,7 @@ async function deleteCcVolumeMapping(cc) {
     title: 'Remove MIDI mapping?', label: 'Remove mapping',
   })) return;
   try {
-    const res = await fetch('/api/midi/cc_volume/delete', {
+    const res = await apiFetch('/api/midi/cc_volume/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body: `cc=${cc}`,
@@ -4479,7 +4479,7 @@ async function loadActiveRouting() {
     'Discard pending wire edits and load the active setup? Download the wire draft first if you want to keep it.', {
       title: 'Load active routing?', label: 'Discard draft and load',
     })) return;
-  const response = await fetch(routingPath, { cache: 'no-store' });
+  const response = await apiFetch(routingPath, { cache: 'no-store' });
   if (!response.ok) throw new Error(`Could not read active routing (${response.status}). Draft retained.`);
   const activeEdges = parseRoutingText(await response.text());
   const loaded = await loadRoutingThingsWithOptions({ silent: false, force: true });
@@ -4662,7 +4662,7 @@ document.getElementById('btn-sb-assign-stop-all').addEventListener('click', asyn
     return;
   }
   try {
-    const r = await fetch('/api/midi/last_note', { method: 'GET' });
+    const r = await apiFetch('/api/midi/last_note', { method: 'GET' });
     if (r.ok) { const d = JSON.parse(await r.text()); state.mappingLastSeq = Number(d.last_seq || 0); }
   } catch (_) {}
   state.mappingAssignTarget = '__action_stop_all__';
@@ -4684,7 +4684,7 @@ document.getElementById('btn-sb-assign-sampler-toggle').addEventListener('click'
     return;
   }
   try {
-    const r = await fetch('/api/midi/last_note', { method: 'GET' });
+    const r = await apiFetch('/api/midi/last_note', { method: 'GET' });
     if (r.ok) { const d = JSON.parse(await r.text()); state.mappingLastSeq = Number(d.last_seq || 0); }
   } catch (_) {}
   state.mappingAssignTarget = '__action_sampler_toggle__';
@@ -4778,7 +4778,7 @@ document.getElementById('btn-pi5-fan-save').addEventListener('click', async () =
   }
   settings.hysteresis = curve.hysteresis;
   try {
-    const response = await fetch('/api/system/fan', {
+    const response = await apiFetch('/api/system/fan', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams(settings).toString(),
@@ -4831,7 +4831,7 @@ async function requestAudioStress(mode) {
   if (mode !== 'stop') fields.duration_secs = String(duration);
   if (mode === 'audio') fields.work_ms = String(workMs);
   try {
-    const response = await fetch('/api/system/audio-stress', {
+    const response = await apiFetch('/api/system/audio-stress', {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body: new URLSearchParams(fields).toString(),
@@ -4870,7 +4870,7 @@ function renderLightDim(dimmed) {
 }
 
 async function requestLightDim(dimmed) {
-  const res = await fetch('/api/midi/light_dim', dimmed === undefined
+  const res = await apiFetch('/api/midi/light_dim', dimmed === undefined
     ? { cache: 'no-store', signal: AbortSignal.timeout(10000) }
     : {
       method: 'POST',
@@ -4919,7 +4919,7 @@ lightDimButton.addEventListener('click', async () => {
 
 async function loadLightConfig() {
   try {
-    const res = await fetch('/api/midi/light_config', { method: 'GET' });
+    const res = await apiFetch('/api/midi/light_config', { method: 'GET' });
     if (!res.ok) return;
     const data = JSON.parse(await res.text());
     document.getElementById('light_channel').value = String(data.channel ?? 0);
@@ -4939,7 +4939,7 @@ async function saveLightConfig() {
   setStatus('saving lighting config...');
   try {
     const body = `channel=${channel}&mapped_vel=${mappedVel}&playing_vel=${playingVel}&stop_all_vel=${stopAllVel}`;
-    const res = await fetch('/api/midi/light_config', {
+    const res = await apiFetch('/api/midi/light_config', {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body,
@@ -4961,7 +4961,7 @@ document.getElementById('btn-light-save').addEventListener('click', saveLightCon
 document.getElementById('btn-light-refresh').addEventListener('click', async () => {
   setStatus('refreshing LEDs...');
   try {
-    const res = await fetch('/api/midi/light_refresh', { method: 'POST' });
+    const res = await apiFetch('/api/midi/light_refresh', { method: 'POST' });
     const txt = (await res.text()).trim();
     if (!res.ok) {
       setStatus(`LED refresh failed: ${res.status} ${txt}`, 'warn');
@@ -4976,7 +4976,7 @@ document.getElementById('btn-light-refresh').addEventListener('click', async () 
 async function loadBootFailure() {
   const bannerEl = document.getElementById('boot-failure-banner');
   try {
-    const res = await fetch('/api/system/boot-failure', { cache: 'no-store' });
+    const res = await apiFetch('/api/system/boot-failure', { cache: 'no-store' });
     if (res.status !== 200) {
       bannerEl.hidden = true;
       return;
@@ -5009,7 +5009,7 @@ document.getElementById('btn-boot-failure-view').addEventListener('click', () =>
 
 document.getElementById('btn-boot-failure-dismiss').addEventListener('click', async () => {
   try {
-    const res = await fetch('/api/system/boot-failure', { method: 'DELETE' });
+    const res = await apiFetch('/api/system/boot-failure', { method: 'DELETE' });
     const txt = (await res.text()).trim();
     if (!res.ok) {
       setStatus(`dismiss failed: ${res.status} ${txt}`, 'warn');

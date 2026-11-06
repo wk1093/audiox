@@ -242,7 +242,7 @@
       summary.textContent = 'No release checked yet.';
     }
     async function systemInfo() {
-      const response = await fetch('/api/system/info', { cache: 'no-store' });
+      const response = await apiFetch('/api/system/info', { cache: 'no-store' });
       if (!response.ok) throw new Error(`Cannot identify device (${response.status}).`);
       const info = await response.json();
       if (typeof info.version !== 'string' || !info.version) {
@@ -291,7 +291,7 @@
     }
     async function loadNoticePreference() {
       try {
-        const response = await fetch('/api/updates/notifications', { cache: 'no-store' });
+        const response = await apiFetch('/api/updates/notifications', { cache: 'no-store' });
         if (response.ok) notifications.checked = (await response.json()).enabled !== false;
       } catch (_) {
         // Older firmware lacks the endpoint; notifications stay enabled.
@@ -303,39 +303,32 @@
       progress.hidden = false;
       progress.value = 0;
       message(`Uploading ${name} to the Pi...`);
-      await new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('PUT', '/api/update');
-        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-        xhr.upload.addEventListener('progress', (event) => {
-          if (event.lengthComputable) {
-            progress.value = Math.round(event.loaded / event.total * 100);
+      let result;
+      try {
+        result = await root.AudioxApi.upload('/api/update', blob, {
+          onProgress(loaded, total) {
+            progress.value = Math.round(loaded / total * 100);
             message(`Uploading ${name} to the Pi: ${progress.value}%`);
-          }
+          },
+          onSent() {
+            progress.value = 100;
+            message('Upload complete; validating and installing...');
+          },
         });
-        xhr.upload.addEventListener('load', () => {
-          progress.value = 100;
-          message('Upload complete; validating and installing...');
-        });
-        xhr.addEventListener('load', () => {
-          const text = (xhr.responseText || '').trim();
-          if (xhr.status >= 200 && xhr.status < 300) {
-            message('Update installed. Waiting for the device to restart...');
-            resolve();
-          } else {
-            reject(new Error(`Update failed: ${xhr.status} ${text}`));
-          }
-        });
-        xhr.addEventListener('error', () => reject(new Error('Update request failed; the device may be rebooting or unreachable. Check its version before retrying.')));
-        xhr.addEventListener('abort', () => reject(new Error('Update upload was aborted.')));
-        xhr.send(blob);
-      });
+      } catch (error) {
+        throw new Error(error.reason === 'abort' ? 'Update upload was aborted.'
+          : 'Update request failed; the device may be rebooting or unreachable. Check its version before retrying.');
+      }
+      if (result.status < 200 || result.status >= 300) {
+        throw new Error(`Update failed: ${result.status} ${result.text.trim()}`);
+      }
+      message('Update installed. Waiting for the device to restart...');
     }
 
     let channelChosen = false;
     let savedChannel = null;
     async function deviceChannel(options) {
-      const response = await fetch('/api/updates/channel', { cache: 'no-store', ...options });
+      const response = await apiFetch('/api/updates/channel', { cache: 'no-store', ...options });
       if (!response.ok) throw new Error(`${response.status} ${(await response.text()).trim()}`);
       const result = await response.json();
       if (result.channel !== 'stable' && result.channel !== 'nightly') {
@@ -386,7 +379,7 @@
         const enabled = notifications.checked;
         notifications.disabled = true;
         try {
-          const response = await fetch('/api/updates/notifications', {
+          const response = await apiFetch('/api/updates/notifications', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: `enabled=${enabled ? 1 : 0}`,

@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { apiContext } = require('./support/api-context.js');
 const { test } = require('node:test');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -97,7 +98,7 @@ test('collapsed health tools defer requests; opening fills device history, then 
     },
   };
   context.window = context;
-  vm.runInNewContext(fs.readFileSync(require.resolve('../../web/embedded/system-monitor.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(require.resolve('../../web/embedded/system-monitor.js'), 'utf8'), apiContext(context));
   const flush = () => new Promise(setImmediate);
   context.AudioxSystemMonitor.update({});
   await flush();
@@ -185,7 +186,7 @@ test('active routing refresh retains drafts on failed reads and resets history o
   const state = { edges: draft, dormantEdges: [], sceneRoutingConflict: true };
   let reset = null, rebuilt = 0;
   const controls = new Map(['scene-routing-conflict', 'btn-route-draft'].map((id) => [id, { hidden: false }]));
-  const context = vm.createContext({
+  const context = apiContext({
     state, routingPath: '/routing', AudioxUI: { hasUnsavedChanges: () => false },
     fetch: async () => ({ ok: false, status: 503 }),
     parseRoutingText: () => active,
@@ -212,7 +213,7 @@ test('active routing refresh retains drafts on failed reads and resets history o
 test('external scene conflicts pause graph polling and block stale routing saves', async () => {
   const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
   const notices = [];
-  const context = vm.createContext({ state: { sceneRoutingConflict: true },
+  const context = apiContext({ state: { sceneRoutingConflict: true },
     setStatus: (...args) => notices.push(args) });
   vm.runInContext(source.slice(source.indexOf('async function pollRoutingThingsIfNeeded()'),
     source.indexOf('function startRoutingThingsPolling()')), context);

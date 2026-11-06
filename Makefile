@@ -101,7 +101,7 @@ RUNTIME_LIBS += $(LUA_STATIC_LIB) -lm
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 15
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.10
+AUDIOX_VERSION_PRERELEASE ?= beta.11
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
 $(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
@@ -600,9 +600,28 @@ $(LUA_STAGED_LICENSE): $(LUA_LICENSE)
 	@mkdir -p "$(dir $@)"
 	install -m 0644 "$<" "$@"
 
+# The device web UI is compiled from web/embedded (see web/embedded/build.js).
+# WEB_MINIFY=0 keeps readable scripts for on-device debugging.
+WEB_MINIFY ?= 1
+WEB_BUILD_FLAGS := $(if $(filter 0,$(WEB_MINIFY)),--no-minify,)
+
 .PHONY: web_assets
 web_assets: $(CURDIR)/web/embedded/node_modules/.audiox-assets-installed
-	node "$(CURDIR)/web/embedded/stage-assets.js" "$(OUT_DIR)/web-vendor"
+	node "$(CURDIR)/web/embedded/build.js" --target device --out "$(OUT_DIR)/web-device" $(WEB_BUILD_FLAGS)
+
+# Public website (download page, docs and Live Demo), staged like the Pages
+# workflow minus the release-archive mirror. Served at http://127.0.0.1:$(SITE_PORT)/audiox/
+SITE_DIR ?= $(OUT_DIR)/site
+SITE_PORT ?= 8000
+
+.PHONY: site site-serve
+site:
+	rm -rf "$(SITE_DIR)"
+	bash "$(CURDIR)/tools/release/stage-site.sh" "$(SITE_DIR)/audiox"
+
+site-serve: site
+	@echo "Serving AudioX site at http://127.0.0.1:$(SITE_PORT)/audiox/ (Live Demo: /audiox/demo/)"
+	cd "$(SITE_DIR)" && python3 -m http.server "$(SITE_PORT)" --bind 127.0.0.1
 
 $(CURDIR)/web/embedded/node_modules/.audiox-assets-installed: $(CURDIR)/web/embedded/package.json $(CURDIR)/web/embedded/package-lock.json
 	npm ci --prefix "$(CURDIR)/web/embedded" --ignore-scripts --no-audit --no-fund
@@ -651,20 +670,17 @@ rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(ROOTFS_DIR)/sbin/aud
 	else \
 		echo "Warning: boot logo file not found at $(BOOT_LOGO_PPM)"; \
 	fi
-	@if [ -f "$(WEB_INDEX_HTML)" ]; then \
-		echo "Staging web index from $(WEB_INDEX_HTML)..."; \
-		cp "$(WEB_INDEX_HTML)" "$(ROOTFS_DIR)/etc/www/index.html"; \
-	else \
-		echo "Warning: web index file not found at $(WEB_INDEX_HTML)"; \
+	@echo "Staging compiled web UI from $(OUT_DIR)/web-device/..."
+	mkdir -p "$(ROOTFS_DIR)/etc/www"
+	cp -a "$(OUT_DIR)/web-device/." "$(ROOTFS_DIR)/etc/www/"
+	@if [ "$(WEB_INDEX_HTML)" != "$(CURDIR)/web/embedded/index.html" ]; then \
+		if [ -f "$(WEB_INDEX_HTML)" ]; then \
+			echo "Staging web index override from $(WEB_INDEX_HTML)..."; \
+			cp "$(WEB_INDEX_HTML)" "$(ROOTFS_DIR)/etc/www/index.html"; \
+		else \
+			echo "Warning: web index file not found at $(WEB_INDEX_HTML)"; \
+		fi; \
 	fi
-	@if [ -d "$(CURDIR)/web/embedded" ]; then \
-		echo "Staging web assets from $(CURDIR)/web/embedded/..."; \
-		find "$(CURDIR)/web/embedded" -maxdepth 1 -type f \( -name '*.html' -o -name '*.css' -o -name '*.js' -o -name '*.svg' -o -name '*.png' \) ! -name 'stage-assets.js' -exec cp -t "$(ROOTFS_DIR)/etc/www/" {} +; \
-	else \
-		echo "Warning: web assets directory not found at $(CURDIR)/web/embedded"; \
-	fi
-	mkdir -p "$(ROOTFS_DIR)/etc/www/vendor"
-	cp -a "$(OUT_DIR)/web-vendor/." "$(ROOTFS_DIR)/etc/www/vendor/"
 	@if [ -f "$(WEB_LOGO_SVG)" ]; then \
 		echo "Staging web logo svg from $(WEB_LOGO_SVG)..."; \
 		cp "$(WEB_LOGO_SVG)" "$(ROOTFS_DIR)/etc/www/logo.svg"; \

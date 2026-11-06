@@ -129,7 +129,7 @@
       historyLoading = true;
       const status = document.getElementById('system-history-status');
       const request = async (limit) => {
-        const response = await fetch(`/api/system/history?limit=${limit}`, { cache: 'no-store', signal: AbortSignal.timeout(10000) });
+        const response = await apiFetch(`/api/system/history?limit=${limit}`, { cache: 'no-store', signal: AbortSignal.timeout(10000) });
         if (!response.ok) throw new Error(`History request failed (${response.status}).`);
         return response.json();
       };
@@ -154,7 +154,7 @@
       if (loading) return;
       loading = true;
       try {
-        const response = await fetch('/api/system/audio-devices', { cache: 'no-store', signal: AbortSignal.timeout(10000) });
+        const response = await apiFetch('/api/system/audio-devices', { cache: 'no-store', signal: AbortSignal.timeout(10000) });
         if (!response.ok) throw new Error(`Audio health request failed (${response.status}).`);
         const data = await response.json();
         const rows = deviceRows(data, remembered);
@@ -195,7 +195,7 @@
     });
     document.getElementById('btn-system-diagnostics').addEventListener('click', async () => {
       try {
-        const response = await fetch('/api/system/diagnostics', { cache: 'no-store', signal: AbortSignal.timeout(10000) });
+        const response = await apiFetch('/api/system/diagnostics', { cache: 'no-store', signal: AbortSignal.timeout(10000) });
         if (!response.ok) throw new Error(`Diagnostics request failed (${response.status}).`);
         const report = await response.json();
         if (report.format !== 'audiox-diagnostics-v1') throw new Error('Invalid diagnostic report.');

@@ -11,8 +11,12 @@ your browser needs internet access to open it.
 
 The device interface itself works without internet: its graph library and
 fonts are shipped locally. The online manual and optional update checks still
-need internet. For a local development preview, run `npm ci --prefix web`
-and `node web/embedded/stage-assets.js` before serving the `web` directory.
+need internet. For a local development preview, run
+`npm ci --prefix web/embedded` and
+`node web/embedded/build.js --target device --out out/web-device`, then serve
+`out/web-device`. To try the interface without a device, open the
+[Live Demo](https://wklab.net/audiox/demo/), which runs the same interface on
+simulated data, or build it locally with `make site-serve`.
 
 The interface is designed for both a desktop browser and a phone or tablet.
 On a narrow screen, scroll the navigation tabs horizontally to reach every page.

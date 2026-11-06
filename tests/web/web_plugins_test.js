@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { apiContext } = require('./support/api-context.js');
 const { test } = require('node:test');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -62,7 +63,7 @@ function fixture({ plugins: pluginRows = [], effects: effectRows = [] } = {}) {
     addEventListener(name, fn) { (windowListeners[name] ||= []).push(fn); },
     removeEventListener(name, fn) { windowListeners[name] = (windowListeners[name] || []).filter(f => f !== fn); },
   };
-  const context = vm.createContext({
+  const context = apiContext({
     document, window, AudioxUI: ui, URLSearchParams, TextEncoder, setInterval() {}, clearInterval() {},
     setTimeout: fn => { timers.set(++timerId, fn); return timerId; },
     clearTimeout: id => timers.delete(id),
@@ -122,7 +123,7 @@ test('plugin templates use a separate category and retain creation and catalog l
   const window = { LiteGraph: { registered_node_types: registered,
     registerNodeType(type, ctor) { registered[type] = ctor; } },
     AudioxPlugins: { normalizePluginId: id => /^plugin_[a-z0-9_]+$/.test(id) ? id : '' } };
-  const context = vm.createContext({ window });
+  const context = apiContext({ window });
   vm.runInContext(app.slice(app.indexOf('const builtinEffectTypes ='),
     app.indexOf('function isCreatableEffectType(')), context);
   context.registerPluginTemplates([{ id: 'plugin_softclip', name: 'Example Soft Clip' }]);

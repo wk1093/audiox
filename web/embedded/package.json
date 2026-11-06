@@ -3,10 +3,15 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "stage": "node stage-assets.js"
+    "stage": "node stage-assets.js",
+    "build": "node build.js --target device --out ../../out/web-device",
+    "build:demo": "node build.js --target demo --out ../../out/web-demo"
   },
   "dependencies": {
     "@fontsource/space-grotesk": "5.2.10",
     "litegraph.js": "0.7.18"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   }
 }

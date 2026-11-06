@@ -105,7 +105,7 @@
     }
 
     async load() {
-      const res = await fetch('/api/plugins', { method: 'GET', cache: 'no-store' });
+      const res = await apiFetch('/api/plugins', { method: 'GET', cache: 'no-store' });
       if (!res.ok) throw await responseError('Plugin list load', res);
       let data;
       try {
@@ -158,7 +158,7 @@
           title: 'Install native code plugin?', label: 'Install plugin',
         })) return false;
       return this.mutate(`Uploading ${file.name}...`, async () => {
-        const res = await fetch('/api/plugins/install', {
+        const res = await apiFetch('/api/plugins/install', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/octet-stream' },
           body: file,
@@ -185,7 +185,7 @@
           title: 'Remove plugin?', label: 'Remove plugin',
         })) return false;
       return this.mutate(`Removing ${plugin.name}...`, async () => {
-        const res = await fetch('/api/plugins/remove', {
+        const res = await apiFetch('/api/plugins/remove', {
           method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: `id=${plugin.id}`,
         });
         if (!res.ok) throw await responseError('Plugin remove', res);
@@ -200,7 +200,7 @@
           title: 'Reload native code plugin?', label: 'Reload plugin',
         })) return false;
       return this.mutate(`Reloading ${plugin.name}...`, async () => {
-        const res = await fetch('/api/plugins/reload', {
+        const res = await apiFetch('/api/plugins/reload', {
           method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: `id=${plugin.id}`,
         });
         if (!res.ok) throw await responseError('Plugin reload', res);

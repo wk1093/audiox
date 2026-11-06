@@ -5,8 +5,7 @@ OUTPUT="${1:?usage: mirror-updates.sh <output_directory>}"
 : "${GH_REPO:?}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 mkdir -p "$OUTPUT/updates"
-cp "$ROOT/web/public/index.html" "$ROOT/web/public/downloads.js" "$ROOT/web/public/downloads.css" \
-    "$ROOT/web/embedded/styles.css" "$ROOT/web/embedded/releases.js" "$ROOT/assets/branding/logo.svg" "$ROOT/assets/branding/logo_small.png" "$OUTPUT/"
+bash "$ROOT/tools/release/stage-site.sh" --static "$OUTPUT"
 WORK="$(mktemp -d)"
 trap 'rm -r "$WORK"' EXIT
 

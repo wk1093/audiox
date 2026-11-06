@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { apiContext } = require('./support/api-context.js');
 const { test } = require('node:test');
 const routing = require('../../web/embedded/routing.js');
 const fs = require('node:fs');
@@ -100,7 +101,7 @@ test('display density changes resize the graph and rearm the resolution listener
   const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
   const queries = [];
   let resized = 0;
-  const context = vm.createContext({ window: { devicePixelRatio: 1,
+  const context = apiContext({ window: { devicePixelRatio: 1,
     matchMedia(query) { const entry = { query }; queries.push(entry); return {
       addEventListener(type, callback, options) { Object.assign(entry, { type, callback, options }); },
     }; } }, resizeRoutingCanvas: () => resized++ });
@@ -117,7 +118,7 @@ test('display density changes resize the graph and rearm the resolution listener
 test('advanced effect templates remain registered when the Cut template already exists', () => {
   const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
   const registered = { 'audiox/effect_cut': function () {} };
-  const context = vm.createContext({ window: { LiteGraph: { registered_node_types: registered,
+  const context = apiContext({ window: { LiteGraph: { registered_node_types: registered,
     registerNodeType: (key, node) => { registered[key] = node; } } } });
   vm.runInContext(source.slice(source.indexOf('  const advancedEffects ='),
     source.indexOf('  state.graphCanvas.background_image =')), context);
@@ -160,7 +161,7 @@ test('clicking a graph wire still removes it and marks routing unsaved without a
   let redraws = 0;
   const state = { graph: { getNodeOnPos: () => null }, graphCanvas: { ds: { scale: 1 } },
     edges: [{ src: 'soundboard_out', dst: 'usb_gadget_out', srcChannel: 0, dstChannel: 0 }] };
-  const context = vm.createContext({ state, linkDistance: () => 4,
+  const context = apiContext({ state, linkDistance: () => 4,
     AudioxUI: { setUnsaved: (...args) => unsaved.push(args) },
     syncEdgesFromGraph: () => redraws++, recordRoutingHistory: () => {}, setStatus: (...args) => notices.push(args) });
   vm.runInContext(source.slice(source.indexOf('function removeNearestLinkAt('),
@@ -259,7 +260,7 @@ test('wire paths stay stable when unrelated panels move and refresh when sockets
     ['dst', { getConnectionPos: () => destination }],
   ]) };
   let calls = 0;
-  const context = vm.createContext({ state, routingNodeBoxes: () => boxes,
+  const context = apiContext({ state, routingNodeBoxes: () => boxes,
     edgeKey: edge => `${edge.src}:${edge.dst}`,
     AudioxRouting: { wirePath: (...args) => { calls++; return routing.wirePath(...args); } } });
   vm.runInContext(source.slice(source.indexOf("let routingWireCacheKey ="),
@@ -287,7 +288,7 @@ test('curved routes highlight selected node connections and restore canvas state
   const state = { edges: routes, selectedEdgeIdx: 4, graphCanvas: {} };
   const key = edge => `${edge.src}:${edge.srcChannel}:${edge.dst}:${edge.dstChannel}`;
   const paths = new Map(routes.map(route => [key(route), routing.wirePath([300, 75], [600, 275])]));
-  const context = vm.createContext({ state, edgeKey: key, AudioxRouting: routing,
+  const context = apiContext({ state, edgeKey: key, AudioxRouting: routing,
     normalizeThingId: value => String(value || '').trim(),
     routingWirePaths: () => paths });
   vm.runInContext(source.slice(source.indexOf('  state.graphCanvas.onDrawForeground ='),
@@ -421,7 +422,7 @@ test('Arrange uses current unsaved routes without overwriting manually positione
   const state = { nodeByThingId: graphNodes, edges: [edge('b', 'a')], autoArrange: true,
     positions: {}, activeTab: 'routing' };
   let fitted = 0;
-  const context = vm.createContext({ state, AudioxRouting: routing,
+  const context = apiContext({ state, AudioxRouting: routing,
     routingNodeBoxes: () => [...graphNodes.keys()].map(id => box(id)),
     fitRoutingGraph: () => fitted++ });
   vm.runInContext(source.slice(source.indexOf('function arrangeRoutingGraph()'),
@@ -493,7 +494,7 @@ test('saving routing preserves capacity warnings instead of overwriting them wit
   const notices = [];
   const unsaved = [];
   let graph = { ok: true, skippedEdges: 16, status: 'routing helper capacity: 128 active paths, 16 skipped path(s)' };
-  const context = vm.createContext({
+  const context = apiContext({
     routingPath: '/routing.txt',
     state: { edges: [], dormantEdges: [] },
     routingHistory: { saved: () => unsaved.push(['routing', false]) },

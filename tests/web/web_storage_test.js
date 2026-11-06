@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { apiContext } = require('./support/api-context.js');
 const { test } = require('node:test');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -18,7 +19,7 @@ function fixture() {
   );
   elements['sysinfo-storage-meter'] = meter();
   elements['sysinfo-temperature-meter'] = meter();
-  const context = vm.createContext({ document: { getElementById: (id) => elements[id] } });
+  const context = apiContext({ document: { getElementById: (id) => elements[id] } });
   vm.runInContext(source.slice(source.indexOf('function renderResourceMeter('),
     source.indexOf('async function loadSystemInfo(')), context);
   return {

@@ -2,7 +2,7 @@
   'use strict';
 
   function create({ view, summary, source, level, text, limit, follow, refresh, clear,
-    notify, resolve, fetcher = (...args) => fetch(...args) }) {
+    notify, resolve, fetcher = (...args) => apiFetch(...args) }) {
     let following = true;
     let selecting = false;
     let pending = null;

@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { apiContext } = require('./support/api-context.js');
 const { readFileSync } = require('node:fs');
 const { test } = require('node:test');
 const vm = require('node:vm');
@@ -42,7 +43,7 @@ function site(hash = '', status = 200, catalog = {}) {
     location: { hash },
     addEventListener(name, callback) { listeners[name] = callback; },
   };
-  const context = vm.createContext({
+  const context = apiContext({
     document, window,
     fetch: async () => ({ ok: status === 200, status, json: async () => catalog }),
   });
@@ -161,5 +162,6 @@ test('website and device load shared release selection before their download scr
     assert.ok(html.indexOf('releases.js') < html.indexOf(script));
   }
   const workflow = readFileSync(require.resolve('../../.github/workflows/update-site.yml'), 'utf8');
-  assert.match(workflow, /- 'web\/embedded\/releases\.js'/);
+  // The site ships releases.js and the Live Demo build of the whole device UI.
+  assert.match(workflow, /- 'web\/embedded\/\*\*'/);
 });

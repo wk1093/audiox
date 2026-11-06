@@ -72,20 +72,31 @@
     ['fx_4', 'pitch', 'Robot Voice', false, { semitones: -5, mix: 0.85, quality: 1 }],
     ['fx_5', 'distortion', 'Guitar Drive', true, { drive: 5.6, clip: 0.42, output_gain: 0.8 }],
     ['fx_6', 'tape_echo', 'Tape Echo', true, { time_ms: 375, feedback: 0.38, mix: 0.28, head: 1 }],
-    ['fx_7', 'limiter', 'Master Limiter', true, { ceiling_db: -1, lookahead_ms: 4 }],
+    ['fx_7', 'limiter', 'Stream Limiter', true, { ceiling_db: -1, lookahead_ms: 4 }],
+    // Enabled cut = muted; bypass it to hear the processed mic in the headphones.
+    ['fx_8', 'cut', 'Mic Monitor Mute', true, { channels: 2 }],
   ].map(([id, type, name, enabled, params]) => ({ id, type, name, enabled, params }));
 
   const S = `alsa_${SCARLETT}_dev0`;
   const JBL_OUT = btThing(JBL.address, 'out');
   const stereo = (src, dst) => [[src, dst, 0, 0], [src, dst, 1, 1]];
   const mono = (src, ch, dst) => [[src, dst, ch, 0], [src, dst, ch, 1]];
+  const HEADPHONES = `${S}_out`;
+  // Two independent lines. Stream send: mic, guitar and soundboard fan into the limiter, then the
+  // computer. Monitor bus: the Audio Mixer combines computer playback, soundboard, guitar and a
+  // mutable mic monitor, then feeds every listening device (Scarlett headphones and the JBL), so
+  // another output only needs one more stereo wire. Computer playback never reaches the computer.
   const micChain = [...mono(`${S}_in`, 0, 'fx_1'), ...stereo('fx_1', 'fx_2'), ...stereo('fx_2', 'fx_3')];
-  const guitarChain = [...mono(`${S}_in`, 1, 'fx_5'), ...stereo('fx_5', 'fx_6'), ...stereo('fx_6', 'routing_helper')];
-  const beds = [...stereo('usb_gadget_in', 'routing_helper'), ...stereo('soundboard_out', 'routing_helper')];
-  const master = [...stereo('routing_helper', 'fx_7'), ...stereo('fx_7', `${S}_out`), ...stereo('fx_7', 'usb_gadget_out')];
+  const guitarChain = [...mono(`${S}_in`, 1, 'fx_5'), ...stereo('fx_5', 'fx_6')];
+  const streamSend = (...sources) => [...sources.flatMap((src) => stereo(src, 'fx_7')),
+    ...stereo('fx_7', 'usb_gadget_out')];
+  const micMonitor = (from) => [...stereo(from, 'fx_8'), ...stereo('fx_8', 'routing_helper')];
+  const monitorBus = (...sources) => [...sources.flatMap((src) => stereo(src, 'routing_helper')),
+    ...stereo('routing_helper', HEADPHONES), ...stereo('routing_helper', JBL_OUT)];
   const edges = [
-    ...micChain, ...stereo('fx_3', 'fx_4'), ...stereo('fx_4', 'routing_helper'),
-    ...guitarChain, ...beds, ...master, ...stereo('fx_7', JBL_OUT),
+    ...micChain, ...stereo('fx_3', 'fx_4'), ...guitarChain,
+    ...streamSend('fx_4', 'fx_6', 'soundboard_out'),
+    ...micMonitor('fx_4'), ...monitorBus('usb_gadget_in', 'soundboard_out', 'fx_6'),
   ];
 
   // Devices that exist independently of routing; effects and Bluetooth are added from state.
@@ -206,23 +217,28 @@ end)
       snapshot: { effects: copyEffects(effectList), gains: { ...baseGains }, routingText: routingText(edges) } },
     { id: 'scene-podcast', name: 'Podcast', channel: 9, note: 49,
       snapshot: {
-        effects: pickEffects(['fx_1', 'fx_2', 'fx_3', 'fx_7'], { fx_2: { params: { threshold_db: -26, ratio: 4.5, makeup_db: 6 } } }),
-        gains: { [`${S}_in`]: 1.15, usb_gadget_in: 0.3, soundboard_out: 0.7 },
-        routingText: routingText([...micChain, ...stereo('fx_3', 'routing_helper'), ...beds, ...master]),
+        effects: pickEffects(['fx_1', 'fx_2', 'fx_3', 'fx_7', 'fx_8'], {
+          fx_2: { params: { threshold_db: -26, ratio: 4.5, makeup_db: 6 } },
+          fx_8: { enabled: false },
+        }),
+        gains: { [`${S}_in`]: 1.15, usb_gadget_in: 0.8, soundboard_out: 0.7 },
+        routingText: routingText([...micChain, ...streamSend('fx_3', 'soundboard_out'),
+          ...micMonitor('fx_3'), ...monitorBus('usb_gadget_in', 'soundboard_out')]),
       } },
+    // Recording guitar to the computer while playing along to a backing track.
     { id: 'scene-guitar', name: 'Guitar Practice', channel: 9, note: 50,
       snapshot: {
         effects: pickEffects(['fx_5', 'fx_6', 'fx_7'], { fx_6: { params: { mix: 0.42, feedback: 0.5 } } }),
         gains: { [`${S}_in`]: 1, usb_gadget_in: 0.75, fx_6: 1 },
-        routingText: routingText([...guitarChain, ...stereo('usb_gadget_in', 'routing_helper'),
-          ...stereo('routing_helper', 'fx_7'), ...stereo('fx_7', `${S}_out`), ...stereo('fx_7', JBL_OUT)]),
+        routingText: routingText([...guitarChain, ...streamSend('fx_6'),
+          ...monitorBus('fx_6', 'usb_gadget_in')]),
       } },
     { id: 'scene-clean', name: 'Clean Bypass', channel: -1, note: -1,
       snapshot: {
         effects: [],
         gains: { usb_gadget_in: 0.6, soundboard_out: 0.8 },
-        routingText: routingText([...mono(`${S}_in`, 0, 'routing_helper'), ...beds,
-          ...stereo('routing_helper', `${S}_out`), ...stereo('routing_helper', 'usb_gadget_out')]),
+        routingText: routingText([...mono(`${S}_in`, 0, 'usb_gadget_out'), ...stereo('soundboard_out', 'usb_gadget_out'),
+          ...monitorBus('usb_gadget_in', 'soundboard_out')]),
       } },
   ];
 
@@ -237,8 +253,8 @@ end)
       gains: { ...baseGains },
       ccVolumes: [{ cc: 3, id: 'usb_gadget_in' }, { cc: 4, id: 'soundboard_out' }, { cc: 5, id: `${S}_in` }],
       effectCc: { fx_5: { drive: 8 }, fx_6: { feedback: 6 } },
-      effectToggle: { fx_4: 46 },
-      effectLights: { fx_4: [9, 3] },
+      effectToggle: { fx_4: 46, fx_8: 47 },
+      effectLights: { fx_4: [9, 3], fx_8: [1, 9] },
       sounds: sounds.map(([name, seconds]) => ({ name, seconds })),
       layout: { mode: 'grid', rows: 2, columns: 4, corners: [...corners], cells: cells.map((c) => ({ ...c })) },
       mappings: cells.filter((c) => !c.sfx.startsWith('__')).map((c) => ({ note: noteFor(c.row, c.column), sfx: c.sfx })),

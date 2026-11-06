@@ -439,6 +439,9 @@ a { color: var(--accent); text-underline-offset: 3px; }
   border-left: 1px solid var(--line);
 }
 
+.routing-mode-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.routing-mode-toggle input { width: auto; margin: 0; accent-color: var(--accent); }
+
 .graph-hint {
   color: var(--muted);
   font-size: 12px;

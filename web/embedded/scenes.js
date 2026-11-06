@@ -153,8 +153,12 @@
     }));
     host.querySelector('#scene-refresh').addEventListener('click', () => run(refresh));
     run(refresh);
-    window.setInterval(() => {
-      if (!busy && !AudioxUI.isBusy() && !document.hidden) run(refresh);
+    // Background polls must not go through run(): toggling every button's disabled state makes them flicker.
+    let polling = false;
+    window.setInterval(async () => {
+      if (polling || busy || AudioxUI.isBusy() || document.hidden) return;
+      polling = true;
+      try { await refresh(); } catch (error) { statusText(error.message); } finally { polling = false; }
     }, 2500);
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount);

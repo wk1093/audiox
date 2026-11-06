@@ -31,12 +31,25 @@ const defaultFanCurve = {
   hysteresis: 5,
 };
 
+const ROUTING_ADVANCED_KEY = 'audiox-routing-advanced';
+
+function readRoutingAdvanced() {
+  try { return window.localStorage?.getItem(ROUTING_ADVANCED_KEY) === '1'; } catch (_) { return false; }
+}
+
 const state = {
   nodes: [],
   edges: [],
   // Routes to Bluetooth devices that are not currently paired. They stay in
   // routing.txt untouched so the routing comes back when the device returns.
   dormantEdges: [],
+  // Simple routing mode collapses 2-channel sockets into stereo wires; advanced shows every channel.
+  advancedRouting: readRoutingAdvanced(),
+  // Browser-only split/merge nodes: { id, kind: 'split'|'merge', thing: bound thing ID or null }.
+  virtuals: [],
+  virtualSeq: 0,
+  virtualNodeById: new Map(),
+  routingView: null,
   positions: {},
   selectedEdgeIdx: -1,
   autoArrange: true,
@@ -860,19 +873,10 @@ function shortNodeTitle(label) {
   return `${txt.slice(0, 15)}...`;
 }
 
-function getInputChannelFromSlot(node, slot) {
-  const map = node?._inputChannelBySlot;
-  if (!Array.isArray(map)) {
-    return Number(slot);
-  }
-  const channel = Number(map[slot]);
-  if (Number.isFinite(channel) && channel >= 0) {
-    return channel;
-  }
-  return Number(slot);
-}
-
 function getOutputChannelCount(node) {
+  if (Number.isFinite(Number(node?._baseOutputCount))) {
+    return Number(node._baseOutputCount);
+  }
   return Array.isArray(node?.outputs) ? node.outputs.length : 0;
 }
 
@@ -950,31 +954,156 @@ function syncEdgesFromGraph() {
     state.selectedEdgeIdx = state.edges.length - 1;
   }
 
+  syncRoutingVirtualNodes();
   state.graphCanvas.setDirty(true, true);
 }
 
 function addEdgeFromConnection(srcNode, srcSlot, dstNode, dstSlot) {
-  const src = normalizeThingId(srcNode?.properties?.thingId);
-  const dst = normalizeThingId(dstNode?.properties?.thingId);
-  const srcChannel = Number(srcSlot);
-  const dstChannel = Number(getInputChannelFromSlot(dstNode, dstSlot));
-
-  if (!src || !dst || !Number.isFinite(srcChannel) || !Number.isFinite(dstChannel)) {
+  const result = AudioxRouting.resolveRoutingConnection(
+    { things: routingThingsForView(), virtuals: state.virtuals, advanced: state.advancedRouting },
+    { id: routingViewId(srcNode), slot: Number(srcSlot) },
+    { id: routingViewId(dstNode), slot: Number(dstSlot) });
+  if (result.error) {
+    setStatus(result.error, 'warn');
     return false;
   }
+  if (result.bind) {
+    state.virtuals = state.virtuals.map((v) => (v.id === result.bind.id ? { ...v, thing: result.bind.thing } : v));
+    syncEdgesFromGraph();
+    setStatus('stereo wire connected; now wire its Left/Right sockets', 'ok');
+    return true;
+  }
 
-  const edge = { src, dst, srcChannel, dstChannel };
-  if (findEdgeIndex(edge) >= 0) {
+  const fresh = result.edges.filter((edge) => findEdgeIndex(edge) < 0);
+  if (!fresh.length) {
     setStatus('route already exists', 'warn');
     return false;
   }
 
-  state.edges.push(edge);
+  state.edges.push(...fresh);
   AudioxUI.setUnsaved('routing');
   syncEdgesFromGraph();
   recordRoutingHistory();
   setStatus('route added (not saved yet)', 'ok');
   return true;
+}
+
+const VIRTUAL_NODE_TITLES = { split: 'Split Channels', merge: 'Merge Channels' };
+const ROUTING_WIRE_COLORS = { stereo: '#c3a6ff', mono: '#79c8ff' };
+
+function routingViewId(node) {
+  return normalizeThingId(node?.properties?.thingId || node?.properties?.virtualId);
+}
+
+function isVirtualRoutingNode(node) {
+  return !!node?.properties?.virtualId;
+}
+
+function routingNodeById(id) {
+  return state.nodeByThingId.get(id) || state.virtualNodeById.get(id);
+}
+
+function routingThingsForView() {
+  return state.nodes.map(({ id, inputs, outputs }) => ({ id, inputs, outputs }));
+}
+
+function computeRoutingView() {
+  const view = AudioxRouting.buildRoutingView({
+    things: routingThingsForView(), edges: state.edges, virtuals: state.virtuals,
+    advanced: state.advancedRouting, nextId: (kind) => `virtual:${kind}:${++state.virtualSeq}`,
+  });
+  state.virtuals = view.virtuals;
+  state.routingView = view;
+  return view;
+}
+
+function routingWires() {
+  if (state.routingView) return state.routingView.wires;
+  return state.edges.map((edge) => ({ key: edgeKey(edge), type: 'mono', edges: [edge],
+    src: { id: edge.src, slot: Number(edge.srcChannel) }, dst: { id: edge.dst, slot: Number(edge.dstChannel) } }));
+}
+
+function addRoutingSlots(node, slots) {
+  for (const slot of slots?.inputs || []) node.addInput(slot.label, slot.type);
+  for (const slot of slots?.outputs || []) node.addOutput(slot.label, slot.type);
+}
+
+function routingConnectInput(inputIndex, _outputType, _outputSlot, outputNode, outputIndex) {
+  addEdgeFromConnection(outputNode, outputIndex, this, inputIndex);
+  return false;
+}
+
+function addVirtualGraphNode(virtual) {
+  const node = window.LiteGraph.createNode('audiox/thing');
+  if (!node) return;
+  node.title = VIRTUAL_NODE_TITLES[virtual.kind];
+  node.properties = { virtualId: virtual.id, nodeKind: virtual.kind };
+  node.color = '#3d3466';
+  node.bgcolor = '#1c1833';
+  addRoutingSlots(node, state.routingView?.slots.get(virtual.id));
+  node.size = [190, Math.max(60, node.size[1])];
+  const anchor = virtual.thing ? state.nodeByThingId.get(virtual.thing) : null;
+  const saved = state.positions[virtual.id];
+  if (saved) node.pos = [saved.x, saved.y];
+  else if (anchor) {
+    node.pos = virtual.kind === 'split' ? [anchor.pos[0] + anchor.size[0] + 50, anchor.pos[1]] :
+      [anchor.pos[0] - node.size[0] - 50, anchor.pos[1]];
+  } else {
+    const [x, y] = getViewCenterGraphCoords();
+    node.pos = [x - node.size[0] / 2, y];
+  }
+  node.onConnectInput = routingConnectInput;
+  state.graph.add(node);
+  state.virtualNodeById.set(virtual.id, node);
+}
+
+function syncRoutingVirtualNodes() {
+  const view = computeRoutingView();
+  if (!state.graph || state.suspendGraphSync) return view;
+  const wanted = new Set(view.virtuals.map((v) => v.id));
+  state.internalGraphMutation = true;
+  for (const [id, node] of state.virtualNodeById) {
+    if (wanted.has(id)) continue;
+    state.graph.remove(node);
+    state.virtualNodeById.delete(id);
+  }
+  state.internalGraphMutation = false;
+  for (const virtual of view.virtuals) {
+    if (!state.virtualNodeById.has(virtual.id)) addVirtualGraphNode(virtual);
+  }
+  return view;
+}
+
+function removeRoutingWire(wire) {
+  const keys = new Set(wire.edges.map(edgeKey));
+  state.edges = state.edges.filter((edge) => !keys.has(edgeKey(edge)));
+  if (wire.binding) {
+    state.virtuals = state.virtuals.map((v) => (v.id === wire.binding ? { ...v, thing: null } : v));
+  }
+  if (keys.size) AudioxUI.setUnsaved('routing');
+  syncEdgesFromGraph();
+  if (keys.size) recordRoutingHistory();
+  setStatus(keys.size ? 'route removed (not saved yet)' : 'stereo wire removed', 'ok');
+}
+
+function removeVirtualRoutingNode(id) {
+  const binding = routingWires().find((wire) => wire.binding === id);
+  state.virtuals = state.virtuals.filter((v) => v.id !== id);
+  if (binding) removeRoutingWire({ ...binding, binding: null });
+  else syncEdgesFromGraph();
+}
+
+function setRoutingAdvanced(advanced) {
+  state.advancedRouting = !!advanced;
+  try { window.localStorage?.setItem(ROUTING_ADVANCED_KEY, advanced ? '1' : '0'); } catch (_) {}
+  const toggle = document.getElementById('routing-advanced');
+  if (toggle) toggle.checked = state.advancedRouting;
+  for (const kind of Object.keys(VIRTUAL_NODE_TITLES)) {
+    const ctor = window.LiteGraph?.registered_node_types?.[`audiox/${kind}_channels`];
+    if (ctor) ctor.filter = state.advancedRouting ? 'audiox-internal' : 'audiox';
+  }
+  state.virtuals = [];
+  rebuildRoutingGraph();
 }
 
 function getViewCenterGraphCoords() {
@@ -1012,17 +1141,17 @@ let routingWireCacheKey = '';
 let routingWireCache = new Map();
 
 function routingWirePaths() {
-  const wires = state.edges.flatMap(edge => {
-    const src = state.nodeByThingId.get(edge.src), dst = state.nodeByThingId.get(edge.dst);
+  const wires = routingWires().flatMap(wire => {
+    const src = routingNodeById(wire.src.id), dst = routingNodeById(wire.dst.id);
     if (!src || !dst) return [];
-    const a = src.getConnectionPos(false, Number(edge.srcChannel));
-    const b = dst.getConnectionPos(true, Number(edge.dstChannel));
-    return a && b ? [{ edge, a: Array.from(a), b: Array.from(b) }] : [];
+    const a = src.getConnectionPos(false, Number(wire.src.slot));
+    const b = dst.getConnectionPos(true, Number(wire.dst.slot));
+    return a && b ? [{ key: wire.key, a: Array.from(a), b: Array.from(b) }] : [];
   });
   const key = JSON.stringify(wires);
   if (key !== routingWireCacheKey) {
-    routingWireCache = new Map(wires.map(({ edge, a, b }) => [
-      edgeKey(edge), AudioxRouting.wirePath(a, b),
+    routingWireCache = new Map(wires.map(({ key: wireKey, a, b }) => [
+      wireKey, AudioxRouting.wirePath(a, b),
     ]));
     routingWireCacheKey = key;
   }
@@ -1054,8 +1183,8 @@ function distToSegment(px, py, ax, ay, bx, by) {
   return Math.sqrt((dx * dx) + (dy * dy));
 }
 
-function linkDistance(link, x, y) {
-  const path = routingWirePaths().get(edgeKey(link));
+function linkDistance(wire, x, y) {
+  const path = routingWirePaths().get(wire.key);
   if (!path) return Number.POSITIVE_INFINITY;
   let best = Number.POSITIVE_INFINITY;
   let prev = path[0];
@@ -1081,11 +1210,12 @@ function removeNearestLinkAt(x, y) {
   }
 
   const threshold = 16 / Math.max(0.35, state.graphCanvas.ds.scale);
+  const wires = routingWires();
   let bestIdx = -1;
   let bestDist = Number.POSITIVE_INFINITY;
 
-  for (let i = 0; i < state.edges.length; i += 1) {
-    const d = linkDistance(state.edges[i], x, y);
+  for (let i = 0; i < wires.length; i += 1) {
+    const d = linkDistance(wires[i], x, y);
     if (d < bestDist) {
       bestDist = d;
       bestIdx = i;
@@ -1096,11 +1226,7 @@ function removeNearestLinkAt(x, y) {
     return false;
   }
 
-  state.edges.splice(bestIdx, 1);
-  AudioxUI.setUnsaved('routing');
-  syncEdgesFromGraph();
-  recordRoutingHistory();
-  setStatus('route removed (not saved yet)', 'ok');
+  removeRoutingWire(wires[bestIdx]);
   return true;
 }
 
@@ -1145,6 +1271,11 @@ function ensureRoutingGraph() {
 
     if (!state.internalGraphMutation && isEffectNode(node)) {
       setStatus('delete effects from the Effects page panel', 'warn');
+      return;
+    }
+
+    if (!state.internalGraphMutation && isVirtualRoutingNode(node)) {
+      removeVirtualRoutingNode(node.properties.virtualId);
       return;
     }
 
@@ -1299,6 +1430,24 @@ function ensureRoutingGraph() {
   window.LiteGraph.LINK_COLOR = '#79c8ff';
   window.LiteGraph.EVENT_LINK_COLOR = '#79c8ff';
   state.graphCanvas.default_link_color = '#79c8ff';
+  for (const [kind, label] of Object.entries(VIRTUAL_NODE_TITLES)) {
+    const key = `audiox/${kind}_channels`;
+    if (!window.LiteGraph.registered_node_types[key]) {
+      function VirtualChannelsNode() {
+        this.size = [190, 60];
+        this.properties = { virtualTemplate: kind, nodeKind: 'template' };
+        this.title = label;
+      }
+      VirtualChannelsNode.title = label;
+      window.LiteGraph.registerNodeType(key, VirtualChannelsNode);
+    }
+    window.LiteGraph.registered_node_types[key].filter = state.advancedRouting ? 'audiox-internal' : 'audiox';
+  }
+  // Typed sockets: LiteGraph only lets stereo connect to stereo and mono to mono.
+  window.LGraphCanvas.link_type_colors.stereo = ROUTING_WIRE_COLORS.stereo;
+  window.LGraphCanvas.link_type_colors.mono = ROUTING_WIRE_COLORS.mono;
+  state.graphCanvas.default_connection_color_byType = { ...ROUTING_WIRE_COLORS };
+  state.graphCanvas.default_connection_color_byTypeOff = { stereo: '#6f5f99', mono: '#47718f' };
   state.graphCanvas.clear_background = false;
   state.graphCanvas.canvas.style.background = '#0d1e2a';
   if (state.graphCanvas.bgcanvas) {
@@ -1354,12 +1503,11 @@ function ensureRoutingGraph() {
   };
 
   state.graphCanvas.onNodeMoved = (node) => {
-    const thingId = normalizeThingId(node?.properties?.thingId);
-    if (!thingId) {
+    if (!routingViewId(node)) {
       return;
     }
     state.autoArrange = false;
-    for (const [id, current] of state.nodeByThingId) {
+    for (const [id, current] of [...state.nodeByThingId, ...state.virtualNodeById]) {
       state.positions[id] = { x: Math.round(current.pos[0]), y: Math.round(current.pos[1]) };
     }
     state.graphCanvas.setDirty(true, true);
@@ -1370,6 +1518,25 @@ function ensureRoutingGraph() {
       return;
     }
 
+    const virtualKind = node.properties?.virtualTemplate;
+    if (virtualKind) {
+      const pos = Array.isArray(node.pos) ? { x: node.pos[0], y: node.pos[1] } : null;
+      state.internalGraphMutation = true;
+      state.graph.remove(node);
+      state.internalGraphMutation = false;
+      if (state.advancedRouting) {
+        setStatus('Split and merge nodes are only used in simple routing mode', 'warn');
+        return;
+      }
+      const id = `virtual:${virtualKind}:${++state.virtualSeq}`;
+      if (pos) state.positions[id] = pos;
+      state.virtuals = [...state.virtuals, { id, kind: virtualKind, thing: null }];
+      setTimeout(() => {
+        syncEdgesFromGraph();
+        setStatus(`${VIRTUAL_NODE_TITLES[virtualKind]} added; connect its stereo socket first`, 'ok');
+      }, 0);
+      return;
+    }
     const templateType = String(node.properties?.effectTypeTemplate || '').trim();
     if (node.properties?.routingHelperTemplate) {
       const pos = Array.isArray(node.pos) ? { x: node.pos[0], y: node.pos[1] } : null;
@@ -1425,24 +1592,25 @@ function ensureRoutingGraph() {
 
   state.graphCanvas.onDrawForeground = (ctx) => {
     const selected = new Set(Object.values(state.graphCanvas.selected_nodes || {})
-      .map(node => normalizeThingId(node.properties?.thingId)).filter(Boolean));
+      .map(node => routingViewId(node)).filter(Boolean));
 
     const paths = routingWirePaths();
     ctx.save();
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
-    for (const edge of state.edges) {
-      const path = paths.get(edgeKey(edge));
+    for (const wire of routingWires()) {
+      const path = paths.get(wire.key);
       if (!path) continue;
 
-      const isSelected = selected.has(edge.src) || selected.has(edge.dst);
+      const isSelected = selected.has(wire.src.id) || selected.has(wire.dst.id);
+      const stereo = wire.type === 'stereo';
       const [a, first, second, b] = AudioxRouting.wireCurve(path[0], path[path.length - 1]);
       ctx.beginPath();
       ctx.moveTo(a[0], a[1]);
       ctx.bezierCurveTo(first[0], first[1], second[0], second[1], b[0], b[1]);
-      ctx.strokeStyle = isSelected ? '#ffcf66' : '#79c8ff';
-      ctx.lineWidth = isSelected ? 4 : 3;
-      ctx.globalAlpha = isSelected ? 0.85 : 0.45;
+      ctx.strokeStyle = isSelected ? '#ffcf66' : ROUTING_WIRE_COLORS[wire.type] || ROUTING_WIRE_COLORS.mono;
+      ctx.lineWidth = (isSelected ? 4 : 3) + (stereo ? 1.5 : 0);
+      ctx.globalAlpha = isSelected ? 0.85 : stereo ? 0.6 : 0.45;
       ctx.stroke();
     }
     ctx.restore();
@@ -1474,8 +1642,12 @@ function ensureRoutingGraph() {
   resizeRoutingCanvas();
 }
 
+function routingGraphNodes() {
+  return [...state.nodeByThingId, ...(state.virtualNodeById || [])];
+}
+
 function routingNodeBoxes() {
-  return Array.from(state.nodeByThingId, ([id, node]) => ({
+  return routingGraphNodes().map(([id, node]) => ({
     id, kind: node.properties.nodeKind,
     inputs: node.inputs?.length || 0, outputs: node.outputs?.length || 0,
     width: node.size[0], height: node.size[1], x: node.pos[0], y: node.pos[1],
@@ -1497,13 +1669,18 @@ function fitRoutingGraph() {
 
 function arrangeRoutingGraph() {
   const boxes = routingNodeBoxes();
-  const positions = AudioxRouting.layoutNodes(boxes, state.edges);
+  const routes = state.routingView ?
+    state.routingView.wires.map((wire) => ({ src: wire.src.id, dst: wire.dst.id })) : state.edges;
+  const positions = AudioxRouting.layoutNodes(boxes, routes);
   let newNodeY = Math.max(60, ...boxes.filter((node) => state.positions[node.id])
     .map((node) => state.positions[node.id].y + node.height + 80));
-  for (const [id, node] of state.nodeByThingId) {
+  for (const [id, node] of routingGraphNodes()) {
     const pos = positions[id];
     if (state.autoArrange) {
       node.pos = [pos.x, pos.y];
+    } else if (!state.positions[id] && node.properties?.virtualId) {
+      // Already placed beside the stereo socket it was derived from.
+      state.positions[id] = { x: node.pos[0], y: node.pos[1] };
     } else if (!state.positions[id]) {
       node.pos = [40, newNodeY];
       state.positions[id] = { x: 40, y: newNodeY };
@@ -1525,6 +1702,8 @@ function rebuildRoutingGraph() {
   state.internalGraphMutation = true;
   state.graph.clear();
   state.nodeByThingId.clear();
+  state.virtualNodeById.clear();
+  const view = computeRoutingView();
   if (effectsManager) {
     effectsManager.nodeById.clear();
   }
@@ -1544,23 +1723,13 @@ function rebuildRoutingGraph() {
     };
     node.removable = isEffect || isHelper;
     node._baseInputCount = thing.inputs;
-    node._inputChannelBySlot = [];
-
-    for (let ch = 0; ch < thing.inputs; ch += 1) {
-      node.addInput(window.AudioxRouting.channelLabel(ch, thing.inputs), 'audio');
-      node._inputChannelBySlot.push(ch);
-    }
-    for (let ch = 0; ch < thing.outputs; ch += 1) {
-      node.addOutput(window.AudioxRouting.channelLabel(ch, thing.outputs), 'audio');
-    }
+    node._baseOutputCount = thing.outputs;
+    addRoutingSlots(node, view.slots.get(thing.id));
 
     const pos = state.positions[thing.id] || { x: 40, y: 60 };
     node.pos = [pos.x, pos.y];
 
-    node.onConnectInput = function(inputIndex, _outputType, _outputSlot, outputNode, outputIndex) {
-      addEdgeFromConnection(outputNode, outputIndex, this, inputIndex);
-      return false;
-    };
+    node.onConnectInput = routingConnectInput;
 
     node.onConnectionsChange = function() {
       if (!state.suspendGraphSync) {
@@ -1574,6 +1743,7 @@ function rebuildRoutingGraph() {
       effectsManager.registerNode(node);
     }
   });
+  view.virtuals.forEach(addVirtualGraphNode);
 
   state.internalGraphMutation = false;
   state.suspendGraphSync = false;
@@ -1585,7 +1755,7 @@ function rebuildRoutingGraph() {
 function buildNodesFromThings(things) {
   const previous = { ...state.positions };
   state.nodes = [];
-  state.positions = {};
+  state.positions = Object.fromEntries(Object.entries(previous).filter(([id]) => id.startsWith('virtual:')));
 
   const safeThings = Array.isArray(things) ? things : [];
   for (const raw of safeThings) {
@@ -1720,6 +1890,7 @@ async function loadRoutingFile() {
     if (!res.ok) {
       state.edges = [];
       state.dormantEdges = [];
+      state.virtuals = [];
       rebuildRoutingGraph();
       AudioxUI.setUnsaved('routing', false);
       routingHistory.reset([]);
@@ -1729,6 +1900,7 @@ async function loadRoutingFile() {
 
     state.edges = parseRoutingText(txt);
     state.dormantEdges = [];
+    state.virtuals = [];
     state.selectedEdgeIdx = -1;
     rebuildRoutingGraph();
     AudioxUI.setUnsaved('routing', false);
@@ -4370,6 +4542,12 @@ document.getElementById('btn-reload').addEventListener('click', async () => {
 });
 
 document.getElementById('btn-route-save').addEventListener('click', () => runLoadingTask('Saving routing', saveRouting));
+document.getElementById('routing-advanced').checked = state.advancedRouting;
+document.getElementById('routing-advanced').addEventListener('change', (ev) => {
+  setRoutingAdvanced(ev.target.checked);
+  setStatus(state.advancedRouting ? 'Advanced routing: every channel has its own socket' :
+    'Simple routing: stereo pairs share one wire', 'ok');
+});
 document.getElementById('btn-route-arrange').addEventListener('click', () => {
   state.autoArrange = true;
   state.positions = {};
@@ -4486,6 +4664,7 @@ async function loadActiveRouting() {
   if (!loaded) return;
   state.edges = activeEdges;
   state.dormantEdges = [];
+  state.virtuals = [];
   state.selectedEdgeIdx = -1;
   rebuildRoutingGraph();
   routingHistory.reset([...state.edges, ...state.dormantEdges]);

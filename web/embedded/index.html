@@ -68,6 +68,9 @@
               <button id="btn-route-reload" class="flat">Load Active Routing</button>
               <button id="btn-route-draft" class="flat" hidden>Download Wire Draft</button>
               <button id="btn-route-arrange" class="flat" title="Arrange inputs, helpers, effects, and outputs in rows">Arrange</button>
+              <label class="routing-mode-toggle" title="Show a separate socket and wire for every channel instead of combined stereo wires">
+                <input id="routing-advanced" type="checkbox" role="switch"> Advanced
+              </label>
               <div class="zoom-controls" role="group" aria-label="Graph zoom">
                 <button id="btn-zoom-out" aria-label="Zoom out">-</button>
                 <button id="btn-zoom-reset" aria-label="Reset zoom">100%</button>
@@ -77,7 +80,7 @@
               <span class="graph-hint" id="zoom-label" hidden>zoom 100%</span>
               <button id="btn-graph-fullscreen" class="flat" aria-pressed="false">Fullscreen</button>
             </div>
-            <div class="graph-hint">Drag output to input to connect. Click a wire to remove it. Drag headers to move nodes; scroll to zoom.</div>
+            <div class="graph-hint">Drag output to input to connect. Thick purple wires are stereo; right-click empty space to add effects, the mixer, or Split/Merge Channels. Click a wire to remove it. Scroll to zoom.</div>
           </div>
 
           <div class="graph-wrap" id="graph-wrap">

@@ -164,8 +164,11 @@ test('clicking a graph wire still removes it and marks routing unsaved without a
   const context = apiContext({ state, linkDistance: () => 4,
     AudioxUI: { setUnsaved: (...args) => unsaved.push(args) },
     syncEdgesFromGraph: () => redraws++, recordRoutingHistory: () => {}, setStatus: (...args) => notices.push(args) });
-  vm.runInContext(source.slice(source.indexOf('function removeNearestLinkAt('),
-    source.indexOf('function removeEdgeByIndex(')), context);
+  const slice = (start, end) => source.slice(source.indexOf(start), source.indexOf(end));
+  vm.runInContext([slice('function edgeKey(', 'function findEdgeIndex('),
+    slice('function routingWires(', 'function addRoutingSlots('),
+    slice('function removeRoutingWire(', 'function removeVirtualRoutingNode('),
+    slice('function removeNearestLinkAt(', 'function removeEdgeByIndex(')].join('\n'), context);
   assert.equal(context.removeNearestLinkAt(100, 100), true);
   assert.equal(state.edges.length, 0);
   assert.equal(redraws, 1);
@@ -260,22 +263,23 @@ test('wire paths stay stable when unrelated panels move and refresh when sockets
     ['dst', { getConnectionPos: () => destination }],
   ]) };
   let calls = 0;
+  const wire = { key: 'src:dst', type: 'mono', edges: state.edges, src: { id: 'src', slot: 0 }, dst: { id: 'dst', slot: 0 } };
   const context = apiContext({ state, routingNodeBoxes: () => boxes,
-    edgeKey: edge => `${edge.src}:${edge.dst}`,
+    routingWires: () => [wire], routingNodeById: id => state.nodeByThingId.get(id),
     AudioxRouting: { wirePath: (...args) => { calls++; return routing.wirePath(...args); } } });
   vm.runInContext(source.slice(source.indexOf("let routingWireCacheKey ="),
     source.indexOf('function removeNearestLinkAt(')), context);
-  assert.equal(context.linkDistance(state.edges[0], 450, 75), 0);
-  assert.equal(context.linkDistance(state.edges[0], 450, 75), 0);
+  assert.equal(context.linkDistance(wire, 450, 75), 0);
+  assert.equal(context.linkDistance(wire, 450, 75), 0);
   assert.equal(calls, 1);
   boxes.push({ ...box('obstacle', 160), x: 340, y: 60 });
-  assert.equal(context.linkDistance(state.edges[0], 450, 75), 0);
+  assert.equal(context.linkDistance(wire, 450, 75), 0);
   assert.equal(calls, 1);
   boxes[2].y = -100;
-  assert.equal(context.linkDistance(state.edges[0], 450, 75), 0);
+  assert.equal(context.linkDistance(wire, 450, 75), 0);
   assert.equal(calls, 1);
   destination[1] = 275;
-  assert.ok(context.linkDistance(state.edges[0], 450, 75) > 20);
+  assert.ok(context.linkDistance(wire, 450, 75) > 20);
   assert.equal(calls, 2);
   assert.match(source, /const paths = routingWirePaths\(\)/);
   assert.match(source, /ctx\.bezierCurveTo\(first\[0\], first\[1\], second\[0\], second\[1\], b\[0\], b\[1\]\)/);
@@ -288,9 +292,12 @@ test('curved routes highlight selected node connections and restore canvas state
   const state = { edges: routes, selectedEdgeIdx: 4, graphCanvas: {} };
   const key = edge => `${edge.src}:${edge.srcChannel}:${edge.dst}:${edge.dstChannel}`;
   const paths = new Map(routes.map(route => [key(route), routing.wirePath([300, 75], [600, 275])]));
-  const context = apiContext({ state, edgeKey: key, AudioxRouting: routing,
-    normalizeThingId: value => String(value || '').trim(),
-    routingWirePaths: () => paths });
+  const wires = routes.map(route => ({ key: key(route), type: 'mono', edges: [route],
+    src: { id: route.src, slot: route.srcChannel }, dst: { id: route.dst, slot: route.dstChannel } }));
+  const context = apiContext({ state, AudioxRouting: routing,
+    ROUTING_WIRE_COLORS: { stereo: '#c3a6ff', mono: '#79c8ff' },
+    routingViewId: node => String(node?.properties?.thingId || node?.properties?.virtualId || '').trim(),
+    routingWires: () => wires, routingWirePaths: () => paths });
   vm.runInContext(source.slice(source.indexOf('  state.graphCanvas.onDrawForeground ='),
     source.indexOf('  state.graphCanvas.onMouse =')), context);
   const strokes = [], curves = [];
@@ -322,6 +329,10 @@ test('curved routes highlight selected node connections and restore canvas state
     77: { properties: { thingId: 'unrelated' } } }), routes.map(() => highlighted));
   assert.deepEqual(drawWithSelection({}), routes.map(() => normal));
   assert.deepEqual(drawWithSelection({ 10: { properties: {} } }), routes.map(() => normal));
+  wires[0].type = 'stereo';
+  const strokesWithStereo = drawWithSelection({});
+  assert.deepEqual(strokesWithStereo[0], { alpha: 0.6, color: '#c3a6ff', width: 4.5 });
+  assert.deepEqual(strokesWithStereo[1], normal);
 });
 
 function assertNoOverlap(boxes, positions) {
@@ -423,6 +434,7 @@ test('Arrange uses current unsaved routes without overwriting manually positione
     positions: {}, activeTab: 'routing' };
   let fitted = 0;
   const context = apiContext({ state, AudioxRouting: routing,
+    routingGraphNodes: () => [...graphNodes],
     routingNodeBoxes: () => [...graphNodes.keys()].map(id => box(id)),
     fitRoutingGraph: () => fitted++ });
   vm.runInContext(source.slice(source.indexOf('function arrangeRoutingGraph()'),
@@ -514,4 +526,89 @@ test('saving routing preserves capacity warnings instead of overwriting them wit
   context.fetch = async () => ({ ok: true, text: async () => 'invalid JSON' });
   assert.equal(await context.reloadRoutingFast(), false);
   assert.match(notices.at(-1)[0], /routing reload error/);
+});
+
+const stereoThings = [
+  { id: 'mic', inputs: 0, outputs: 2 }, { id: 'fx', inputs: 2, outputs: 2 },
+  { id: 'out', inputs: 2, outputs: 0 }, { id: 'mono', inputs: 1, outputs: 1 },
+  { id: 'multi', inputs: 4, outputs: 4 },
+];
+const route = (src, dst, srcChannel, dstChannel) => ({ src, dst, srcChannel, dstChannel });
+const viewOf = (edges, extra = {}) => {
+  let seq = 0;
+  return routing.buildRoutingView({ things: stereoThings, edges, nextId: kind => `v:${kind}:${++seq}`, ...extra });
+};
+
+test('simple routing view pairs left/right edges into one stereo wire', () => {
+  const view = viewOf([route('mic', 'fx', 0, 0), route('mic', 'fx', 1, 1), route('fx', 'out', 0, 0), route('fx', 'out', 1, 1)]);
+  assert.deepEqual(view.wires.map(w => [w.type, w.src.id, w.dst.id, w.edges.length]),
+    [['stereo', 'mic', 'fx', 2], ['stereo', 'fx', 'out', 2]]);
+  assert.equal(view.virtuals.length, 0);
+  assert.deepEqual(view.slots.get('fx').inputs, [{ label: 'Stereo', type: 'stereo', channels: [0, 1] }]);
+  assert.deepEqual(view.slots.get('mono').inputs.map(s => s.type), ['mono']);
+  assert.deepEqual(view.slots.get('multi').outputs.map(s => s.type), ['mono', 'mono', 'mono', 'mono']);
+});
+
+test('non-pairwise stereo routes go through automatic split and merge nodes', () => {
+  const view = viewOf([route('mic', 'fx', 0, 0), route('mic', 'fx', 0, 1)]);
+  assert.deepEqual(view.virtuals.map(v => [v.kind, v.thing, v.auto]), [['split', 'mic', true], ['merge', 'fx', true]]);
+  const mono = view.wires.filter(w => w.type === 'mono');
+  assert.deepEqual(mono.map(w => [w.src, w.dst]), [
+    [{ id: 'v:split:1', slot: 0 }, { id: 'v:merge:2', slot: 0 }],
+    [{ id: 'v:split:1', slot: 0 }, { id: 'v:merge:2', slot: 1 }],
+  ]);
+  const bindings = view.wires.filter(w => w.binding);
+  assert.deepEqual(bindings.map(w => [w.src.id, w.dst.id, w.edges.length]),
+    [['mic', 'v:split:1', 2], ['v:merge:2', 'fx', 2]]);
+  assert.equal(view.slots.get('v:split:1').outputs.length, 2);
+});
+
+test('routes to mono and multichannel sockets stay per channel', () => {
+  const view = viewOf([route('mic', 'mono', 1, 0), route('multi', 'multi', 2, 3)]);
+  assert.deepEqual(view.wires.filter(w => !w.binding).map(w => [w.type, w.src, w.dst]), [
+    ['mono', { id: 'v:split:1', slot: 1 }, { id: 'mono', slot: 0 }],
+    ['mono', { id: 'multi', slot: 2 }, { id: 'multi', slot: 3 }],
+  ]);
+});
+
+test('advanced routing view keeps every channel separate and drops virtual nodes', () => {
+  const view = viewOf([route('mic', 'fx', 0, 0), route('mic', 'fx', 1, 1), route('mic', 'fx', 0, 1)],
+    { advanced: true, virtuals: [{ id: 'v:split:9', kind: 'split', thing: 'mic' }] });
+  assert.equal(view.virtuals.length, 0);
+  assert.ok(view.wires.every(w => w.type === 'mono' && !w.binding));
+  assert.equal(view.wires.length, 3);
+  assert.equal(view.slots.get('fx').inputs.length, 2);
+});
+
+test('duplicate or invalid split and merge nodes are left unbound', () => {
+  const view = viewOf([], { virtuals: [
+    { id: 'a', kind: 'split', thing: 'mic' }, { id: 'b', kind: 'split', thing: 'mic' },
+    { id: 'c', kind: 'merge', thing: 'mono' }, { id: 'd', kind: 'bogus', thing: 'mic' },
+  ] });
+  assert.deepEqual(view.virtuals.map(v => [v.id, v.thing]), [['a', 'mic'], ['b', null], ['c', null]]);
+  assert.deepEqual(view.wires.map(w => w.key), ['bind|a']);
+});
+
+test('stereo connections resolve to backend edges or split/merge bindings', () => {
+  const ctx = { things: stereoThings, virtuals: [
+    { id: 's', kind: 'split', thing: 'mic' }, { id: 'm', kind: 'merge', thing: null },
+    { id: 's2', kind: 'split', thing: null },
+  ] };
+  const resolve = (src, dst) => routing.resolveRoutingConnection(ctx, src, dst);
+  assert.deepEqual(resolve({ id: 'mic', slot: 0 }, { id: 'fx', slot: 0 }).edges,
+    [route('mic', 'fx', 0, 0), route('mic', 'fx', 1, 1)]);
+  assert.deepEqual(resolve({ id: 's', slot: 1 }, { id: 'mono', slot: 0 }).edges, [route('mic', 'mono', 1, 0)]);
+  assert.deepEqual(resolve({ id: 'm', slot: 0 }, { id: 'out', slot: 0 }), { bind: { id: 'm', thing: 'out' } });
+  assert.deepEqual(resolve({ id: 'fx', slot: 0 }, { id: 's2', slot: 0 }), { bind: { id: 's2', thing: 'fx' } });
+  assert.match(resolve({ id: 'mic', slot: 0 }, { id: 's2', slot: 0 }).error, /already has a split/);
+  assert.match(resolve({ id: 'mono', slot: 0 }, { id: 's2', slot: 0 }).error, /stereo socket/);
+  assert.match(resolve({ id: 's', slot: 0 }, { id: 'm', slot: 0 }).error, /stereo wire to this merge/);
+  assert.match(resolve({ id: 'm', slot: 0 }, { id: 's', slot: 0 }).error, /straight to its destination/);
+  const bound = { ...ctx, virtuals: [ctx.virtuals[0], { id: 'm', kind: 'merge', thing: 'fx' }] };
+  assert.deepEqual(routing.resolveRoutingConnection(bound, { id: 's', slot: 0 }, { id: 'm', slot: 1 }).edges,
+    [route('mic', 'fx', 0, 1)]);
+  assert.match(resolve({ id: 'mono', slot: 0 }, { id: 'm', slot: 1 }).error, /stereo wire to this merge/);
+  assert.match(resolve({ id: 'mono', slot: 0 }, { id: 'fx', slot: 0 }).error, /split or merge/);
+  assert.deepEqual(routing.resolveRoutingConnection({ ...ctx, advanced: true },
+    { id: 'mic', slot: 1 }, { id: 'fx', slot: 0 }).edges, [route('mic', 'fx', 1, 0)]);
 });

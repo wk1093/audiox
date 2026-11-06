@@ -20,12 +20,14 @@ restored when AudioX restarts.
    **To Headphones (Bluetooth)**. Other audio devices use **From [device]**
    and **To [device]**. Names describe the signal's direction relative to AudioX.
 3. Drag from an output socket on the source node to an input socket on the
-   destination. Stereo sockets use **Left** / **Right**;
-   single-channel nodes use **Mono**; larger devices use **Channel 1**, etc.
+   destination. Two-channel sockets appear as one **Stereo** socket, and a
+   stereo wire saves both the left and right routes (see
+   [Stereo wires and Advanced mode](#stereo-wires-and-advanced-mode)).
+   Single-channel nodes use **Mono**; larger devices use **Channel 1**, etc.
    Internal file channels remain zero-based.
 4. To remove a connection, click near its wire. Device nodes cannot be
-   deleted. Remove effects from **Effects**; remove a routing helper from its
-   node menu.
+   deleted. Remove effects from **Effects**; remove a routing helper or a
+   Split/Merge Channels node from its node menu.
 5. Choose **Save Routing**. AudioX writes the connections and reloads the graph;
    the new routing is live without a reboot.
 
@@ -59,6 +61,33 @@ be split into bounded log messages. The graph
 canvas itself does not show live per-node level meters. AudioX's device display
 has a separate meters view; its display mode can be switched from the
 Soundboard page.
+
+## Stereo wires and Advanced mode
+
+By default the graph combines a node's left and right channels into one
+**Stereo** socket. A thicker purple wire between two stereo sockets stands for
+the left-to-left and right-to-right pair of routes; thin blue wires carry a single
+channel. Sockets with one channel, or more than two, are always shown per
+channel.
+
+AudioX itself only stores single-channel routes, so any route that is not a
+matched left/right pair (for example, a mono microphone on channel 1 sent to both
+sides of an effect) is drawn through browser-only **Split Channels** and
+**Merge Channels** nodes. A split turns one stereo output into **Left** and
+**Right** outputs; a merge collects **Left** and **Right** inputs into one stereo
+input. AudioX adds these automatically when it loads such routes.
+
+To build a custom channel route yourself, right-click empty graph space and add
+**Split Channels** or **Merge Channels**. Connect a stereo wire from the source
+to the split (or from the merge to the destination) first, then wire its
+**Left**/**Right** sockets. Each source can have one split and each destination
+one merge. Removing a split/merge node, or the stereo wire attached to it,
+removes every channel route that passes through it. Split and merge nodes are not
+saved; an unconnected one disappears when the graph reloads.
+
+Turn on **Advanced** in the routing toolbar to show a separate socket and wire
+for every channel instead. The browser remembers this choice. Both modes save
+the same `edge=` lines.
 
 ## Channel paths and saved syntax
 
@@ -145,6 +174,14 @@ edge=fx_1,usb_gadget_out,0,0
 Create a helper by adding **Audio Mixer** from the graph's Add menu. Saving
 the graph saves both its enabled state and its edges. Removing the helper
 removes the node; review and save any remaining routes that you want to keep.
+
+The recommended use for the mixer is as an output bus. Wire everything you want
+to hear (computer playback, the soundboard, a mic monitor) into the mixer, then
+one stereo wire from the mixer to each listening device, such as your
+interface's headphones and a Bluetooth speaker. Adding another output then
+takes one more wire instead of re-routing every source. Keep the line that
+feeds **To computer (USB)** separate, so computer playback cannot loop back
+into the computer.
 
 ## Arrange and navigate the graph
 

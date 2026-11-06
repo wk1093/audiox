@@ -69,7 +69,7 @@
 
   function columnForNode(node) {
     if (node.kind === 'routing_helper') return 1;
-    if (node.kind === 'effect') return 2;
+    if (node.kind === 'effect' || node.kind === 'split' || node.kind === 'merge') return 2;
     return node.outputs > 0 ? 0 : 3;
   }
 
@@ -329,7 +329,130 @@
     return `Channel ${channel + 1}`;
   }
 
-  const exported = { createCanvasResolution, columnForNode, layoutNodes, wireCurve, wirePath, fitNodes, channelLabel };
+  // Simple mode shows 2-channel sides as one "stereo" socket. The backend only stores
+  // single-channel edges, so split/merge nodes are browser-only views of those edges.
+  const STEREO_PAIR = [[0, 0], [1, 1]];
+  const VIRTUAL_SLOTS = {
+    split: { inputs: [{ label: 'Stereo', type: 'stereo' }],
+      outputs: [{ label: 'Left', type: 'mono' }, { label: 'Right', type: 'mono' }] },
+    merge: { inputs: [{ label: 'Left', type: 'mono' }, { label: 'Right', type: 'mono' }],
+      outputs: [{ label: 'Stereo', type: 'stereo' }] },
+  };
+
+  function thingSlots(count, stereo) {
+    if (stereo) return [{ label: 'Stereo', type: 'stereo', channels: [0, 1] }];
+    return Array.from({ length: count }, (_, ch) => ({ label: channelLabel(ch, count), type: 'mono', channels: [ch] }));
+  }
+
+  function routingSides(things, advanced) {
+    const byId = new Map(things.map((thing) => [thing.id, thing]));
+    return {
+      byId,
+      stereoOut: (id) => !advanced && byId.get(id)?.outputs === 2,
+      stereoIn: (id) => !advanced && byId.get(id)?.inputs === 2,
+    };
+  }
+
+  function buildRoutingView({ things = [], edges = [], virtuals = [], advanced = false, nextId = () => '' }) {
+    const { byId, stereoOut, stereoIn } = routingSides(things, advanced);
+    const slots = new Map(things.map((thing) => [thing.id, {
+      inputs: thingSlots(thing.inputs, stereoIn(thing.id)),
+      outputs: thingSlots(thing.outputs, stereoOut(thing.id)),
+    }]));
+    const bound = new Set();
+    const nodes = [];
+    for (const raw of advanced ? [] : virtuals) {
+      if (!VIRTUAL_SLOTS[raw?.kind] || !raw.id) continue;
+      const valid = raw.kind === 'split' ? stereoOut(raw.thing) : stereoIn(raw.thing);
+      const key = `${raw.kind}|${raw.thing}`;
+      // One split per stereo source and one merge per stereo destination.
+      const thing = valid && !bound.has(key) ? raw.thing : null;
+      if (thing) bound.add(key);
+      nodes.push({ ...raw, thing });
+    }
+    const virtualFor = (kind, thing) => {
+      let node = nodes.find((v) => v.kind === kind && v.thing === thing);
+      if (!node) {
+        node = { id: nextId(kind), kind, thing, auto: true };
+        nodes.push(node);
+      }
+      return node;
+    };
+
+    const valid = edges.filter((edge) => byId.has(edge.src) && byId.has(edge.dst) &&
+      edge.srcChannel >= 0 && edge.srcChannel < byId.get(edge.src).outputs &&
+      edge.dstChannel >= 0 && edge.dstChannel < byId.get(edge.dst).inputs);
+    const has = (src, dst, s, d) => valid.find((edge) => edge.src === src && edge.dst === dst &&
+      edge.srcChannel === s && edge.dstChannel === d);
+    const wires = [];
+    const used = new Set();
+    for (const edge of valid) {
+      if (used.has(edge) || !stereoOut(edge.src) || !stereoIn(edge.dst)) continue;
+      const pair = STEREO_PAIR.map(([s, d]) => has(edge.src, edge.dst, s, d));
+      if (pair.some((member) => !member || used.has(member))) continue;
+      pair.forEach((member) => used.add(member));
+      wires.push({ key: `stereo|${edge.src}|${edge.dst}`, type: 'stereo', edges: pair,
+        src: { id: edge.src, slot: 0 }, dst: { id: edge.dst, slot: 0 } });
+    }
+    for (const edge of valid) {
+      if (used.has(edge)) continue;
+      const src = stereoOut(edge.src) ? { id: virtualFor('split', edge.src).id, slot: edge.srcChannel } :
+        { id: edge.src, slot: edge.srcChannel };
+      const dst = stereoIn(edge.dst) ? { id: virtualFor('merge', edge.dst).id, slot: edge.dstChannel } :
+        { id: edge.dst, slot: edge.dstChannel };
+      wires.push({ key: `mono|${edge.src}|${edge.dst}|${edge.srcChannel}|${edge.dstChannel}`,
+        type: 'mono', edges: [edge], src, dst });
+    }
+    // Binding wires carry every channel edge of their split/merge, so removing one removes the lot.
+    for (const node of nodes) {
+      if (!node.thing) continue;
+      const split = node.kind === 'split';
+      const members = wires.filter((wire) => (split ? wire.src.id : wire.dst.id) === node.id)
+        .flatMap((wire) => wire.edges);
+      wires.push({ key: `bind|${node.id}`, type: 'stereo', edges: members, binding: node.id,
+        src: split ? { id: node.thing, slot: 0 } : { id: node.id, slot: 0 },
+        dst: split ? { id: node.id, slot: 0 } : { id: node.thing, slot: 0 } });
+    }
+    for (const node of nodes) slots.set(node.id, VIRTUAL_SLOTS[node.kind]);
+    return { slots, virtuals: nodes, wires };
+  }
+
+  // Maps a socket-to-socket drag onto backend edges or a split/merge binding.
+  function resolveRoutingConnection({ things = [], virtuals = [], advanced = false }, src, dst) {
+    const { byId, stereoOut, stereoIn } = routingSides(things, advanced);
+    const virtual = (id) => virtuals.find((node) => node.id === id);
+    const srcV = virtual(src.id), dstV = virtual(dst.id);
+    if (srcV?.kind === 'merge' && dstV?.kind === 'split') return { error: 'Connect the merged stereo wire straight to its destination.' };
+    if (dstV?.kind === 'split' || srcV?.kind === 'merge') {
+      const node = dstV || srcV;
+      const thing = dstV ? src.id : dst.id;
+      if (!(dstV ? stereoOut(thing) : stereoIn(thing))) return { error: 'Split and merge nodes need a stereo socket.' };
+      if (node.thing) return { error: 'Remove the existing stereo wire from this node first.' };
+      if (virtuals.some((other) => other.kind === node.kind && other.thing === thing))
+        return { error: `That node already has a ${node.kind} node.` };
+      return { bind: { id: node.id, thing } };
+    }
+    const channels = (end, view, stereo, kind) => {
+      if (view) {
+        if (!view.thing) return { error: `Connect a stereo wire to this ${kind} node first.` };
+        return { id: view.thing, list: [end.slot] };
+      }
+      if (!byId.has(end.id)) return { error: 'Unknown routing node.' };
+      return { id: end.id, list: stereo(end.id) ? [0, 1] : [end.slot] };
+    };
+    const from = channels(src, srcV, stereoOut, 'split');
+    if (from.error) return from;
+    const to = channels(dst, dstV, stereoIn, 'merge');
+    if (to.error) return to;
+    if (from.list.length !== to.list.length)
+      return { error: 'Stereo and mono sockets need a split or merge node between them.' };
+    return { edges: from.list.map((srcChannel, i) => ({ src: from.id, dst: to.id, srcChannel, dstChannel: to.list[i] })) };
+  }
+
+  const exported = {
+    createCanvasResolution, columnForNode, layoutNodes, wireCurve, wirePath, fitNodes, channelLabel,
+    buildRoutingView, resolveRoutingConnection,
+  };
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
   else root.AudioxRouting = exported;
 })(globalThis);

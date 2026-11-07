@@ -5037,6 +5037,7 @@ AudioxUpdates.init({
   },
 });
 AudioxBackup.init({ setStatus, ui: AudioxUI });
+AudioxTelemetry.init();
 
 
 const lightDimButton = document.getElementById('btn-light-dim');

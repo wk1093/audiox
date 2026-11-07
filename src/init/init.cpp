@@ -27,6 +27,7 @@
 #include "diagnostics.hpp"
 #include "hardware_power_button.hpp"
 #include "system_history.hpp"
+#include "usage_telemetry.hpp"
 
 #define HANDLE_ERROR(func) \
     do { \
@@ -238,6 +239,7 @@ int main() {
             touch.suspend();
         }
         audiox::system::pollSystemHistory(nowMs);
+        audiox::telemetry::poll(mainContext, nowMs);
         http.poll();
         mdns.poll();
         audio.poll(); // no audio processing, only hotplug/talking to config for device/routing settings.

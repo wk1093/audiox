@@ -1,0 +1,39 @@
+:root { color-scheme: dark; font-family: system-ui, sans-serif; background: #08131d; color: #eaf5ff; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+header, main, footer { max-width: 1120px; margin: auto; padding: 28px; }
+header { padding-top: 32px; }
+nav { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; margin-bottom: 32px; }
+nav a { margin: 0; }
+h1 { font-size: clamp(28px, 4vw, 40px); line-height: 1.1; letter-spacing: -.03em; margin: 18px 0; }
+h2 { font-size: 20px; margin-top: 0; }
+p { color: #a9c5d5; line-height: 1.6; }
+.intro { max-width: 700px; font-size: 16px; }
+button { padding: 10px 18px; border: 1px solid #42667d; color: #eaf5ff; background: #142e3e; border-radius: 6px; cursor: pointer; }
+button:disabled { opacity: .5; }
+a { color: #7fd1ff; margin-right: 20px; }
+a:hover { color: #eaf5ff; }
+aside, #empty { padding: 20px; border: 1px solid #42667d; border-radius: 6px; line-height: 1.7; margin-bottom: 24px; color: #b8cbd7; }
+aside strong { color: #eaf5ff; }
+.stats { display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 24px; }
+.stat { flex: 1; min-width: 170px; padding: 22px; background: #102635; border-radius: 6px; }
+.stat strong { display: block; font-size: 30px; color: #b9ff96; margin-bottom: 8px; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+.card { background: #102635; padding: 24px; border-radius: 6px; border: 1px solid #28536b; min-width: 0; }
+.card > p { font-size: 13px; min-height: 42px; }
+.bars { display: grid; gap: 10px; }
+.bar-row { display: grid; grid-template-columns: minmax(88px, 1fr) minmax(40px, 2fr) 85px; align-items: center; gap: 10px; font-size: 12px; }
+progress { width: 100%; accent-color: #7fd1ff; height: 15px; }
+.bar-value { text-align: right; font-variant-numeric: tabular-nums; color: #b9ff96; }
+svg { width: 100%; height: auto; display: block; }
+.chart-label { fill: #a9c5d5; font: 11px system-ui, sans-serif; }
+.legend { font-size: 12px; color: #b9ff96; }
+details { margin-top: 24px; }
+summary { cursor: pointer; padding: 14px 0; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; white-space: nowrap; }
+th, td { padding: 10px; border-bottom: 1px solid #28536b; text-align: right; }
+th:first-child, td:first-child { text-align: left; }
+footer { font-size: 13px; padding-bottom: 48px; }
+#status[data-error] { color: #ff9d82; }
+@media (max-width: 720px) { .grid { grid-template-columns: 1fr; } header, main, footer { padding: 20px; } header { padding-top: 36px; } .card { padding: 18px; } }

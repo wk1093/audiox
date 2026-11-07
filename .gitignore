@@ -6,3 +6,5 @@ docs/.vitepress/cache/
 docs/.vitepress/dist/
 web/embedded/node_modules/
 web/embedded/vendor/
+tools/telemetry/node_modules/
+.wrangler/

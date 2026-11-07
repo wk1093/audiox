@@ -526,6 +526,15 @@ end)
           <button id="btn-system-shutdown" class="warn">Shutdown Device</button>
         </section>
 
+        <section class="card stack">
+          <h2>Optional development telemetry</h2>
+          <p id="telemetry-description" class="small"></p>
+          <label><input id="telemetry-enabled" type="checkbox"> Enable telemetry</label>
+          <div id="telemetry-status" class="small" role="status" aria-live="polite">Loading telemetry preference…</div>
+          <button id="btn-telemetry-preview" class="flat">Preview next upload (local only)</button>
+          <pre id="telemetry-preview" style="max-height: 20rem; overflow: auto; white-space: pre-wrap;"></pre>
+        </section>
+
         <section id="update-card" class="card stack">
           <h2>Firmware Update</h2>
           <div class="cfg-row">
@@ -695,6 +704,15 @@ end)
     <button id="loading-stop" class="flat" hidden>Stop waiting</button>
   </dialog>
 
+  <dialog id="telemetry-dialog" class="confirm-dialog" aria-labelledby="telemetry-title" aria-describedby="telemetry-dialog-description">
+    <h2 id="telemetry-title">Help improve AudioX?</h2>
+    <p id="telemetry-dialog-description"></p>
+    <div class="dialog-actions">
+      <button id="btn-telemetry-decline" class="flat" autofocus>No thanks</button>
+      <button id="btn-telemetry-accept">Enable telemetry</button>
+    </div>
+    <p class="small">Escape closes this prompt without making a choice; telemetry stays off.</p>
+  </dialog>
   <script src="/vendor/litegraph.js"></script>
   <script src="/api.js"></script>
   <script src="/routing-history.js"></script>
@@ -709,6 +727,7 @@ end)
   <script src="/effects.js"></script>
   <script src="/releases.js"></script>
   <script src="/updates.js"></script>
+  <script src="/telemetry.js"></script>
   <script src="/backup.js"></script>
   <script src="/lua-editor.js"></script>
   <script src="/app.js"></script>

@@ -28,6 +28,9 @@ They are not paths on the computer running your browser.
 | `bluetooth/paired.txt` | Saved Bluetooth pairing records, Auto-connect flags, and sensitive key material |
 | `sfx/` | Soundboard audio files |
 | `plugins/` | Installed native `.axm` modules, metadata, and sandboxed UI assets; excluded from normal backups |
+| `telemetry-consent-v3.txt` | Device-local opt-in decision (`0` or `1`) for linkable reports and public daily aggregates; excluded from backups |
+| `telemetry-queue-v3.txt` | Bounded pending 10-second usage reports with public-sharing consent; excluded from backups |
+| `telemetry-installation-id.txt` | Random 256-bit installation ID; deleted on opt-out; excluded from backups |
 
 Use the normal editors instead of hand-editing files where possible: edits can
 need validation, runtime reload, and corresponding LED/graph refresh. Backups
@@ -39,6 +42,26 @@ Raspberry Pi boot behavior, kernel selection, and overlays. Changing boot files
 can make the device unbootable.
 
 ## Request conventions
+
+### Optional telemetry
+
+See [Optional telemetry](./telemetry) for the privacy scope and user controls,
+and [Telemetry collector setup](../dev/telemetry) for deployment details.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/telemetry` | Consent (`unknown`, `disabled`, `enabled`), consent version, pending count, capacity, interval, batch size and error |
+| `POST /api/telemetry` | Exact text `enabled=0` or `enabled=1&consent_version=3`; opting out clears queued points and installation ID |
+| `GET /api/telemetry/batch` | Next 100-point batch, or `{}` below threshold/when disabled; non-2xx on a queue error |
+| `POST /api/telemetry/ack` | Exact 65-character `batch` token from a successfully uploaded batch; rejects stale tokens |
+
+These are local device endpoints. No GET request causes a cloud upload.
+The browser relays ready batches only after opt-in. Consent is not copied in
+configuration backups.
+
+Legacy consent/queue files ending in `v1.txt` or `v2.txt` are retired on a new consent
+decision. Legacy opt-ins become undecided and require renewed consent; legacy
+opt-outs stay disabled. Older pending points are not relabeled for public reporting.
 
 For plugin upload, catalog, reload/removal, and UI asset routes, see
 [Native plugin HTTP management](../plugins#install-and-use).

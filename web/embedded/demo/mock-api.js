@@ -458,6 +458,10 @@
   const on = (method, pattern, handler) => routes.push({ method, pattern, handler });
 
   on('GET', '/api/version', () => reply(`${S.version}\n`));
+  on('GET', '/api/telemetry', () => reply({ consent: 'disabled', pending: 0, capacity: 8640, interval_ms: 10000, error: '' }));
+  on('GET', '/api/telemetry/batch', () => reply({}));
+  on('POST', '/api/telemetry', () => reply({ error: 'Telemetry is disabled in the demo.' }, 403));
+  on('POST', '/api/telemetry/ack', () => reply({ error: 'Telemetry is disabled in the demo.' }, 403));
   on('GET', '/api/system/info', () => reply(systemInfo()));
   on('GET', '/api/system/history', ({ query }) => {
     const limit = clamp(Number(query.get('limit')) || 600, 1, 1000);

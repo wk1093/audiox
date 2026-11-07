@@ -73,6 +73,8 @@ extern "C" int __wrap_close(int fd) {
 
 #include "../script_device_stubs.hpp"
 size_t BluetoothContext::copyRoutingDevices(BluetoothRoutingDevice *, size_t) const { return 0; }
+int BluetoothContext::buildStatusJson(char *, size_t) { assert(false); return RET_ERR; }
+int reloadAudioGadget(void *) { assert(false); return RET_ERR; }
 
 int main() {
     int fanTemperatures[4] = {}, fanSpeeds[4] = {}, fanHysteresis = 0;
@@ -450,9 +452,87 @@ int main() {
         assert(config.readVolumesFile(&guardedVolume, &guardedCount, VOLUME_ENTRIES_MAX) == RET_ERR);
         assert(config.writeVolumesFile(&guardedVolume, 1) == RET_ERR);
         assert(readFile("volumes.txt") == futureVolumes);
+
+        auto midi = std::make_unique<MidiContext>(&app);
+        BluetoothContext bluetooth(&app);
+        const auto telemetryRequest = [&](const char *method, const char *path, const std::string &body = "") {
+            return request([&](int fd) {
+                return handleApiRequest(&http, fd, method, path, body.data(), body.size(), "");
+            });
+        };
+        assert(telemetryRequest("GET", "/api/telemetry").find("\"consent\":\"unknown\"") != std::string::npos);
+        audiox::telemetry::poll(app, 1000);
+        assert(audiox::telemetry::store.size() == 0);
+        assert(telemetryRequest("POST", "/api/telemetry", "enabled=yes").find("400 Bad Request") != std::string::npos);
+        assert(telemetryRequest("POST", "/api/telemetry", "enabled=1").find("400 Bad Request") != std::string::npos);
+        assert(telemetryRequest("POST", "/api/telemetry", "enabled=1&consent_version=2").find("400 Bad Request") != std::string::npos);
+        assert(telemetryRequest("POST", "/api/telemetry", "enabled=1&consent_version=3").find("\"consent\":\"enabled\"") != std::string::npos);
+        audiox::telemetry::poll(app, 2000);
+        for (unsigned i = 0; i < 99; ++i) {
+            audiox::telemetry::Point point;
+            point.version = "test";
+            assert(audiox::telemetry::store.append(std::move(point)));
+        }
+        assert(telemetryRequest("GET", "/api/telemetry/batch").find("\r\n\r\n{}") != std::string::npos);
+        audio->devices.clear();
+        AudioDeviceInfo usb{};
+        usb.cardIndex = 42; usb.hasCapture = 1; usb.isUsb = 1;
+        strcpy(usb.displayName, "PRIVATE123");
+        strcpy(usb.stableCardId, "PRIVATE123");
+        audio->devices[1] = usb;
+        usb.hasPlayback = 1;
+        audio->devices[2] = usb; // Same physical card, another PCM endpoint.
+        AudioDeviceInfo gadget{};
+        gadget.cardIndex = 43; gadget.isGadget = 1; gadget.hasPlayback = 1;
+        audio->devices[3] = gadget;
+        midi->connected = 1;
+        midi->samplerModeActive = 1;
+        midi->lastNoteSeq += 5;
+        midi->lastCcSeq += 2;
+        audio->sfxTriggerSeq.fetch_add(7);
+        audio->sceneRecallSeq.fetch_add(3);
+        audio->effectStates.clear();
+        audiox::effects::SlotParams reverb{};
+        reverb.type = audiox::effects::EFFECT_REVERB;
+        reverb.enabled = 1;
+        audio->effectStates["PRIVATE123"] = reverb;
+        reverb.enabled = 0;
+        audio->effectStates["PRIVATE456"] = reverb;
+        audiox::telemetry::poll(app, 11999);
+        assert(audiox::telemetry::store.size() == 99);
+        audiox::telemetry::poll(app, 12000);
+        assert(audiox::telemetry::store.size() == 100);
+        const auto batch = telemetryRequest("GET", "/api/telemetry/batch");
+        assert(batch.find("PRIVATE") == std::string::npos);
+        assert(batch.find("\"usb_audio\":1,\"gadget_audio\":1") != std::string::npos);
+        assert(batch.find("\"midi_connected\":1,\"input_devices\":1,\"output_devices\":2") != std::string::npos);
+        assert(batch.find("\"soundboard_triggers\":7,\"midi_notes\":5,\"midi_cc\":2,\"scene_recalls\":3") != std::string::npos);
+        assert(batch.find("\"effects\":[[0,0],[0,0],[0,0],[2,1]") != std::string::npos);
+        const std::string batchToken = batch.substr(batch.find("\"batch\":\"") + 9, 65);
+        assert(telemetryRequest("POST", "/api/telemetry/ack", batchToken).find("\"pending\":0") != std::string::npos);
+        assert(telemetryRequest("POST", "/api/telemetry/ack", batchToken).find("409 Conflict") != std::string::npos);
+        assert(telemetryRequest("PUT", "/api/telemetry").find("405 Method Not Allowed") != std::string::npos);
+        audio->nodeChannelLevels[0][0].store(0.1f);
+        audiox::telemetry::poll(app, 22000);
+        assert(audiox::telemetry::store.size() == 1);
+        audio->nodeChannelLevels[0][0].store(0);
+        audio->nodeChannelLevels[AUDIO_GRAPH_MAX_THINGS - 1][0].store(0.5f); // Stale unused meter must not keep idle rows.
+        audiox::telemetry::poll(app, 32000);
+        assert(audiox::telemetry::store.size() == 1); // No activity; previous counter deltas don't keep idle points.
+        audiox::telemetry::poll(app, 42000);
+        assert(audiox::telemetry::store.size() == 1);
+        audio->effectStatesSeq.fetch_add(1); // Parameter changes with identical inventory are retained.
+        audiox::telemetry::poll(app, 52000);
+        assert(audiox::telemetry::store.size() == 2);
+        audiox::telemetry::poll(app, 302001); // Long gap: reset baseline, do not manufacture intervals.
+        assert(audiox::telemetry::store.size() == 2);
+        assert(telemetryRequest("POST", "/api/telemetry", "enabled=0").find("\"pending\":0") != std::string::npos);
+        audiox::telemetry::poll(app, 362001);
+        assert(audiox::telemetry::store.size() == 0);
     }
-    for (const char *file : {"config.txt", "routing.txt", "volumes.txt", "midi_map.txt", "fx_params.txt"}) assert(unlink(file) == 0);
+    for (const char *file : {"config.txt", "routing.txt", "volumes.txt", "midi_map.txt", "fx_params.txt",
+                             "telemetry-consent-v3.txt", "telemetry-queue-v3.txt"}) assert(unlink(file) == 0);
     assert(chdir(original) == 0);
     assert(rmdir(directory) == 0);
-    puts("Graph hotplug, audio JSON, atomic volume persistence and numeric validation tests passed");
+    puts("Graph hotplug, audio JSON, volume persistence, numeric validation and usage telemetry tests passed");
 }

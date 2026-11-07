@@ -14,6 +14,10 @@ adding bridges, forwards, or other interfaces.
 
 ## Device Info
 
+For the optional consent prompt, background collection, upload preview and
+privacy details, see [Optional telemetry](./telemetry). Local health
+charts and diagnostic downloads do not require enabling remote telemetry.
+
 The card shows:
 
 | Field | Meaning |

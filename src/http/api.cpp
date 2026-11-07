@@ -5,6 +5,7 @@
 #include "http/scenes.hpp"
 #include "hardware_telemetry.hpp"
 #include "system_history.hpp"
+#include "usage_telemetry.hpp"
 #include "audio/context.hpp"
 #include "audio/health.hpp"
 #include "audio/stress_test.hpp"
@@ -5812,6 +5813,37 @@ int handleApiRequest(HttpServer *server,
 	if (strcmp(path, "/api/system/audio-devices") == 0) return handleAudioDeviceHealth(server, cfd, method);
 	if (strcmp(path, "/api/system/history") == 0) return handleSystemHistory(server, cfd, method, query);
 	if (strcmp(path, "/api/system/diagnostics") == 0) return handleDiagnosticSummary(server, cfd, method);
+	if (strcmp(path, "/api/telemetry") == 0 || strcmp(path, "/api/telemetry/batch") == 0 ||
+		strcmp(path, "/api/telemetry/ack") == 0) {
+		auto &telemetry = audiox::telemetry::store;
+		telemetry.load();
+		const char *status = "200 OK";
+		std::string response;
+		if (strcmp(path, "/api/telemetry") == 0 && strcmp(method, "GET") == 0) {
+			response = telemetry.status();
+		} else if (strcmp(path, "/api/telemetry") == 0 && strcmp(method, "POST") == 0) {
+			const std::string_view decision(body ? body : "", body_len);
+			if (decision != "enabled=1&consent_version=3" && decision != "enabled=0") {
+				status = "400 Bad Request";
+				response = "{\"error\":\"expected enabled=0 or enabled=1&consent_version=3; reload the WebUI before opting in\"}";
+			} else {
+				if (!telemetry.setConsent(decision == "enabled=1&consent_version=3")) status = "500 Internal Server Error";
+				response = telemetry.status();
+			}
+		} else if (strcmp(path, "/api/telemetry/batch") == 0 && strcmp(method, "GET") == 0) {
+			if (!telemetry.error().empty()) {
+				status = "503 Service Unavailable";
+				response = telemetry.status();
+			} else response = telemetry.batch();
+		} else if (strcmp(path, "/api/telemetry/ack") == 0 && strcmp(method, "POST") == 0) {
+			if (body_len != 65 || !body || !telemetry.acknowledge(std::string(body, body_len))) {
+				status = telemetry.error().empty() ? "409 Conflict" : "500 Internal Server Error";
+				response = "{\"error\":\"batch changed or could not be acknowledged\"}";
+			} else response = telemetry.status();
+		} else return sendMethodNotAllowed(server, cfd);
+		return server->sendResponseWithHeaders(cfd, status, "application/json", response.data(),
+											 response.size(), nullptr, "Cache-Control: no-store\r\n");
+	}
 
 	if (strncmp(path, HTTP_SOUNDBOARD_TRIGGER_PREFIX, strlen(HTTP_SOUNDBOARD_TRIGGER_PREFIX)) == 0) {
 		if (strcmp(method, "GET") != 0 && strcmp(method, "POST") != 0 && strcmp(method, "PUT") != 0) {

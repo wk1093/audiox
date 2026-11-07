@@ -599,14 +599,15 @@ $(GRAPH_LLVM_ROOT)/ready: tools/build/build_graph_llvm.sh
 
 $(GRAPH_COMPILER_BIN): tools/build/graph-compiler.cpp include/audio/graph_native.hpp include/audio/graph_block.hpp include/audio/effects/native.hpp $(GRAPH_LLVM_ROOT)/ready
 	@mkdir -p "$(dir $@)"
-	$(CXX) $(CXXFLAGS) -I"$(GRAPH_LLVM_ROOT)/source/llvm/include" \
-		-I"$(GRAPH_LLVM_ROOT)/build/include" -o "$@" "$<" \
+	$(CXX) $(CXXFLAGS) -isystem "$(GRAPH_LLVM_ROOT)/source/llvm/include" \
+		-isystem "$(GRAPH_LLVM_ROOT)/build/include" -o "$@" "$<" \
 		-Wl,--start-group $(wildcard $(GRAPH_LLVM_ROOT)/build/lib/libLLVM*.a) -Wl,--end-group $(LIBS) -ldl
 
 $(HOST_GRAPH_COMPILER): tools/build/graph-compiler.cpp include/audio/graph_native.hpp include/audio/graph_block.hpp include/audio/effects/native.hpp
 	@mkdir -p "$(dir $@)"
 	@command -v "$(HOST_LLVM_CONFIG)" >/dev/null || { echo "LLVM development files required for native graph tests"; exit 1; }
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude $$($(HOST_LLVM_CONFIG) --cflags) -std=c++17 -o "$@" "$<" \
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -isystem "$$($(HOST_LLVM_CONFIG) --includedir)" \
+		$$($(HOST_LLVM_CONFIG) --cflags) -std=c++17 -o "$@" "$<" \
 		$$($(HOST_LLVM_CONFIG) --ldflags --libs core nativecodegen object runtimedyld executionengine passes --system-libs)
 
 $(DSP_BITCODE_DIR)/%.bc: src/audio/effects/%.cpp $(wildcard include/audio/effects/*.hpp) include/audio/graph_block.hpp include/defs.hpp Makefile $(AUDIOX_CONFIG_FILE)

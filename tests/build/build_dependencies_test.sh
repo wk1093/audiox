@@ -29,6 +29,10 @@ grep -Fq 'watchdog_service_test.sh' "$WORK/targets"
 grep -Fq 'resolve_modules_test.sh' "$WORK/targets"
 grep -Fq -- '--test -C' "$WORK/targets"
 echo "PASS: host tests use the direct audio runtime through the root Makefile"
+grep -Fq -- '-isystem "$(GRAPH_LLVM_ROOT)/source/llvm/include"' Makefile
+grep -Fq -- '-isystem "$(GRAPH_LLVM_ROOT)/build/include"' Makefile
+grep -Fq -- '-isystem "$$($(HOST_LLVM_CONFIG) --includedir)"' Makefile
+echo "PASS: graph compiler builds treat LLVM headers as system headers"
 
 for test in audio_meters display_hotplug gadget_volume; do
     grep -E "tests/native/(audio|hardware)/${test}_test.cpp.*src/audio/plugin_host.cpp" "$WORK/targets" >/dev/null

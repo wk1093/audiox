@@ -68,6 +68,8 @@ Additional tools depend on the workflow:
 - Native graph tests: LLVM development headers/library, `llvm-config`, and
   matching Clang (Debian/Ubuntu: `llvm-dev clang`, LLVM 15 or newer).
   Override `HOST_LLVM_CONFIG` and `HOST_CLANGXX` for version-suffixed tools.
+  Graph compiler builds treat LLVM include directories as system headers so
+  upstream header warnings do not fail AudioX's warning-as-error builds.
 - Firmware DSP bitcode: **Clang 21**, matching the runtime LLVM 21 backend.
   Set `DSP_CLANGXX=/path/to/clang++-21` if it is not found through
   `llvm-config-21`. Ubuntu CI uses the signed [LLVM packages](https://apt.llvm.org/)

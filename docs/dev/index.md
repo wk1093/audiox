@@ -1,0 +1,198 @@
+# Developer workflows
+
+This section is for contributors changing AudioX itself. It complements the
+[build and development guide](../guide/development), which covers toolchain
+setup, board configuration, firmware builds, QEMU, and device installation.
+For contribution scope, coding expectations, and pull requests, see
+[CONTRIBUTING.md](https://github.com/wk1093/audiox/blob/main/CONTRIBUTING.md).
+
+## Start with the relevant workflow
+
+| If you are changing... | Start here |
+| --- | --- |
+| C++ runtime, boot, or build system | [Build and development guide](../guide/development) |
+| Device WebUI or its API | [WebUI workflow](#device-webui-and-api) |
+| Native audio plugins | [Native plugin development](../plugins) |
+| Scenes and their persisted format | [Scenes](../scenes) |
+| Lua scripting and its API | [Lua documentation](../lua/) |
+| Telemetry collector or report schema | [Telemetry collector development](./telemetry) |
+| Release publication and versioning | [Releases and publishing](../guide/publishing) |
+| User-visible behavior and operation | [Documentation home](../) |
+
+## System map
+
+AudioX is a custom C++ AArch64 initramfs system, not an application installed
+on Raspberry Pi OS. The main implementation areas are:
+
+| Path | Responsibility |
+| --- | --- |
+| `src/init/bootloader.cpp` | First-stage bootloader and recovery/update flow |
+| `src/init/init.cpp` | Main runtime startup and device-service coordination |
+| `src/init/watchdog.cpp` | PID 1 watchdog supervising the runtime |
+| `src/audio/`, `include/audio/` | Audio graph, PCM I/O, processing, effects, and audio health |
+| `src/http/`, `include/http/` | Device HTTP server and API handlers |
+| `src/config/`, `include/config/` | Persistent configuration and scene handling |
+| `src/midi/`, `include/midi/` | MIDI input, mappings, lighting, and transport |
+| `src/scripting/`, `include/scripting/` | Lua runtime, script API, and script storage |
+| `src/plugin_worker/`, `src/audio/` | Isolated native plugin worker and host integration |
+| `src/framebuffer/`, `src/touch/` | Local display and touch input |
+| `web/embedded/` | Device WebUI and public Live Demo sources |
+| `root/`, `config/` | Root filesystem seeds, Kconfig, board defaults, and module lists |
+| `tools/` | Build, configuration, QEMU, development, plugin, telemetry, and release tools |
+| `tests/` | Native, WebUI, build, and release regressions |
+| `docs/` | VitePress user and developer documentation |
+
+The root [Makefile](https://github.com/wk1093/audiox/blob/main/Makefile) is the
+entry point for firmware builds and test targets. Generated files and build
+dependencies belong under `out/`; do not edit generated output as a source
+change.
+
+## A reliable change workflow
+
+1. Reproduce the behavior and find its source, API, persisted data, and existing
+   tests before editing. Search nearby tests and subsystem documentation for
+   established patterns.
+2. Keep the change focused. Preserve existing file formats and API behavior
+   unless changing them is part of the task; update compatibility and backup
+   handling when persistent data changes.
+3. Add or update a regression test with the behavior change. Prefer the
+   narrowest target while iterating.
+4. Build the affected firmware or WebUI target. A host test is not a substitute
+   for a target build.
+5. Run the broader checks appropriate to the change, then record hardware
+   validation separately from host/QEMU results.
+6. Update the user guide, API reference, plugin/script guide, or this developer
+   section when the changed behavior affects it.
+
+The shared contribution guidelines call out audio-thread constraints, routing
+publication ownership, and expected pull request contents. In particular,
+audio processing must not introduce blocking I/O, locks, allocation, or retry
+loops on the realtime callback. See
+[CONTRIBUTING.md](https://github.com/wk1093/audiox/blob/main/CONTRIBUTING.md)
+before changing graph publication or realtime processing.
+
+## Device WebUI and API
+
+The source in `web/embedded/` builds two variants from the same UI:
+
+- The **device** variant uses `api.js` to communicate with the firmware.
+- The **demo** variant substitutes `demo/mock-api.js` and simulated state so
+  the public Live Demo can run without a device.
+
+When adding an API call, route it through the shared API gateway (`apiFetch`,
+`AudioxApi.upload`, or `AudioxApi.download`) rather than calling `fetch` from a
+feature module. Implement the corresponding behavior in `demo/mock-api.js`
+when the UI needs to work in the Live Demo. Keep request/response behavior and
+error states consistent between the two variants.
+
+Build the device assets with:
+
+```sh
+make web_assets
+```
+
+For readable local output, the build script also supports an unminified build:
+
+```sh
+node web/embedded/build.js --target device --out out/web-device --no-minify
+```
+
+Run focused browser regressions with Node's built-in test runner:
+
+```sh
+node --test tests/web/web_routing_test.js
+node --test tests/web/web_scenes_test.js
+```
+
+Choose the test matching the affected UI module; `make test-web` runs all
+WebUI tests and telemetry Worker tests. `make site` stages the public download
+site, documentation, and Live Demo locally; `make site-serve` serves that
+staged site on loopback. More details about both UI build targets are in the
+[build and development guide](../guide/development#web-ui-build-targets-and-the-live-demo).
+
+## Native runtime and persisted behavior
+
+For audio changes, start with the implementation under `src/audio/` and its
+headers/tests. The host audio-runtime tests exercise the same direct processing
+code with simulated device I/O; they do not prove physical USB timing, audio
+quality, or latency. Use focused tests such as:
+
+```sh
+make test-audio-runtime test-audio-graph test-audio-pcm-recover
+make test-audio-graph-tsan
+```
+
+For HTTP or stored configuration changes, trace the handler through the
+relevant subsystem and test both success and failure behavior. Configuration
+files and backup/archive formats are user data: validate before replacing
+files, keep writes recoverable, and document compatibility. Existing subsystem
+references include [Scenes](../scenes), [persistent files and HTTP API](../guide/reference),
+and [configuration and backups](../guide/config).
+
+Native plugins execute in an isolated worker and have their own ABI, package
+format, sandbox, and lifecycle rules. Read [Native plugin development](../plugins)
+before changing that boundary.
+
+## Tests and continuous integration
+
+Test targets live in `tests/Makefile`, included by the root Makefile:
+
+```sh
+# Full native, browser, and release-workflow regression suites
+make test
+
+# Graph publication race check (also run separately in CI)
+make test-audio-graph-tsan
+
+# Build dependency / incremental header dependency regressions
+make test-build-dependencies
+
+# Documentation source links and page behavior
+node --test tests/web/site_navigation_test.js tests/web/docs_site_test.js
+```
+
+`make test` includes native C++ and helper-script tests, WebUI tests, and local
+release-workflow tests. Release tests use mocks and do not publish anything.
+Individual test targets are listed in `tests/Makefile`; consult their recipes
+when a target needs extra tools or has hardware limitations.
+
+The `Build AudioX OS Image` workflow runs `make test`, the graph ThreadSanitizer
+test, and Pi 4/Pi 5 builds for relevant source changes and pull requests. The
+site workflow builds and deploys the documentation, Live Demo, and public
+website when its watched site/documentation files change. Workflow definitions
+are in `.github/workflows/`; local success does not replace checking the
+corresponding CI jobs.
+
+## Documentation changes
+
+Documentation lives in `docs/` and uses VitePress. Dependencies are pinned
+separately from the device WebUI:
+
+```sh
+npm ci --prefix docs
+npm run docs:dev --prefix docs
+npm run docs:build --prefix docs
+```
+
+The dev server is configured to bind to loopback. Add new pages to the
+navigation in `docs/.vitepress/config.mts`, and check links with
+`tests/web/site_navigation_test.js` and `tests/web/docs_site_test.js`. Keep
+device-operation instructions in `docs/guide/`, Lua references in `docs/lua/`,
+and contributor/deployment procedures in `docs/dev/`. The public telemetry
+operations guide is separate from the user-facing
+[optional telemetry guide](../guide/telemetry).
+
+## Hardware validation
+
+Host tests and QEMU are useful for deterministic behavior, API/UI development,
+and many boot flows, but they do not establish Raspberry Pi behavior. Changes
+to audio, USB, MIDI, display/touch, power, fan control, or boot/update paths
+need suitable checks on the target hardware. Record the board, connected
+devices, firmware/kernel version, exact steps, and what remains untested.
+
+Treat installation targets as destructive operations. `make dev` and
+`make upload_update` change a real device; export targets overwrite boot files
+on a mounted card. Confirm the destination, keep stable power, and have a
+known-good image and configuration backup. The
+[build and development guide](../guide/development) describes these targets
+and their recovery limitations.

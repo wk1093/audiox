@@ -19,7 +19,7 @@ export default defineConfig({
     nav: [
       { text: 'Getting started', link: '/guide/getting-started' },
       { text: 'Device guides', link: '/guide/web-interface' },
-      { text: 'Development', link: '/dev/telemetry' },
+      { text: 'Development', link: '/dev/' },
       { text: 'Lua scripts', link: '/lua/getting-started' },
       { text: 'AudioX on GitHub', link: 'https://github.com/wk1093/audiox' },
     ],
@@ -57,13 +57,14 @@ export default defineConfig({
           { text: 'Optional telemetry', link: '/guide/telemetry' },
           { text: 'Troubleshooting', link: '/guide/troubleshooting' },
           { text: 'Files and HTTP reference', link: '/guide/reference' },
-          { text: 'Building and development', link: '/guide/development' },
-          { text: 'Releases and publishing', link: '/guide/publishing' },
         ],
       },
       {
         text: 'Development',
         items: [
+          { text: 'Developer workflows', link: '/dev/' },
+          { text: 'Builds and testing', link: '/guide/development' },
+          { text: 'Release publishing', link: '/guide/publishing' },
           { text: 'Telemetry collector setup', link: '/dev/telemetry' },
         ],
       },

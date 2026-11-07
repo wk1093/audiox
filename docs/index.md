@@ -35,8 +35,13 @@ installation, connection, and a first audio route.
 - [System, logs, and updates](./guide/system)
 - [Troubleshooting](./guide/troubleshooting)
 - [Persistent files and HTTP API](./guide/reference)
+
+## Development
+
+- [Developer workflows](./dev/)
 - [Builds and tests](./guide/development)
 - [Release publishing](./guide/publishing)
+- [Telemetry collector setup](./dev/telemetry)
 
 ## Lua scripting
 

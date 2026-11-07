@@ -49,13 +49,14 @@ for source in init/init init/watchdog audio/setup; do
         "CONFIG_MENU_BIN=$WORK/menuconfig" RUNTIME_DEPS= SBC_STATIC_LIB= SBC_HEADER=
         KV=dependency-test -o "$WORK/config" -o "$WORK/menuconfig" -o "src/$source.cpp" "$object"
     )
-    make "${args[@]}" > "$WORK/before"
+    # Inherited -B would invalidate the up-to-date baseline being tested.
+    MAKEFLAGS= MFLAGS= make "${args[@]}" > "$WORK/before"
     if grep -Fq -- "-c -o $object " "$WORK/before"; then
         echo "FAIL: $source should start up to date" >&2
         exit 1
     fi
     touch -t 202201010000 "$header"
-    make "${args[@]}" > "$WORK/after"
+    MAKEFLAGS= MFLAGS= make "${args[@]}" > "$WORK/after"
     grep -Fq -- "-c -o $object " "$WORK/after"
 done
 echo "PASS: startup, watchdog and worker objects rebuild after header changes"

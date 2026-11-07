@@ -209,7 +209,7 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Bundle graph assets and fonts for offline use.
 
 ## Planned - v1.16
-- [ ] Expand the development documentation beyond telemetry setup, covering the key workflows and systems contributors need to build, test, and extend the project.
+- [x] Expand the development documentation beyond telemetry setup, covering the key workflows and systems contributors need to build, test, and extend the project.
 - [ ] Investigate using LLVM to compile the audio graph into platform-specific native code; compare performance and reliability with the current instruction-based graph, and evaluate graph-change recompilation and whether running the compiled graph in a separately supervised process with IPC for parameters/meters is worthwhile.
 
 ## Pre-2.0 validation

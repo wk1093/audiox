@@ -3,7 +3,8 @@
 AudioX builds a custom AArch64 initramfs system. Run these commands from the
 repository root on a Linux host. See
 [CONTRIBUTING.md](https://github.com/wk1093/audiox/blob/main/CONTRIBUTING.md)
-for workflow and validation expectations.
+for workflow and validation expectations, and [Developer workflows](../dev/)
+for a subsystem map and common change/test paths.
 
 Build targets such as `initramfs`, `image`, and `update_archive` create
 host-side artifacts. `make dev` and `make upload_update` install firmware on a
@@ -297,6 +298,20 @@ the real plugin-host lifecycle, even when they do not instantiate plugins.
 | MIDI, automation, embedded docs | `make test-midi-usb test-script test-script-docs` |
 
 Some targets use sanitizers, need host ALSA headers, or build host Lua. `test-dnsmasq-config` checks the target binary (through `qemu-aarch64` where available). Consult the rule when a dependency is missing rather than treating all failures as firmware regressions.
+
+### Interpreting test output
+
+Native regressions deliberately exercise failures such as short writes, full
+queues, invalid configuration versions, missing devices, and corrupted telemetry
+storage. These cases print the runtime's normal `[WARN]` and `[ERR]` diagnostics
+even when their assertions pass. Read the test's final result and command exit
+status rather than treating every runtime warning as a failed test; do not
+suppress stderr, which also carries genuine failures and sanitizer reports.
+
+Compiler warnings, assertion failures, sanitizer reports, and nonzero exits
+need investigation. Lua-based host tests also fetch the pinned, checksum-verified
+Lua source when its local cache is missing. A curl connection timeout during that
+step is a dependency-download failure, not an audio or scripting test failure.
 
 Browser behavior uses Node's built-in runner, for example:
 

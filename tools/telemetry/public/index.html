@@ -15,37 +15,29 @@
       <a href="https://github.com/wk1093/audiox">Source code</a>
     </nav>
     <h1>AudioX telemetry</h1>
-    <p class="intro">Usage and reliability statistics from installations with telemetry enabled.</p>
+    <p class="intro">Usage and reliability statistics over the last 30 days.</p>
     <p id="status" role="status" aria-live="polite">Loading the latest snapshot...</p>
     <button id="refresh" type="button">Refresh snapshot</button>
   </header>
   <main>
-    <aside>
-      <strong>About this data.</strong>
-      Last 30 UTC receipt dates; updated hourly. Offline reports can arrive later.
-      Idle intervals are skipped, so observations are not total uptime or exact audible duration.
-      No installation IDs, raw reports, exact version strings or per-installation filters are public.
-      With very few participants, even daily totals can reveal individual activity. No minimum population is enforced.
-    </aside>
     <div id="empty" hidden>No public reports yet. Only reports collected after accepting public-sharing consent appear here.</div>
     <section class="stats" aria-label="Summary" id="totals"></section>
     <div class="grid">
-      <section class="card"><h2>Retained observations</h2><p>Observed interval minutes by receipt day, not uptime.</p><div id="observations"></div></section>
-      <section class="card"><h2>Reliability</h2><p>X-run events summed from retained observations, not an error rate.</p><div id="xruns"></div></section>
-      <section class="card"><h2>CPU and temperature</h2><p>Daily means of available sampled values, not whole-day averages.</p><div id="health"></div></section>
-      <section class="card"><h2>Effect adoption</h2><p>Average configured / enabled instances per retained observation. Enabled does not mean audible.</p><div id="effects"></div></section>
-      <section class="card"><h2>Device categories</h2><p>Average connected/detected counts per retained observation, not unique devices.</p><div id="devices"></div></section>
-      <section class="card"><h2>Pi families</h2><p>Observation distribution, not installation counts.</p><div id="boards"></div></section>
-      <section class="card"><h2>Firmware families</h2><p>Broad version-string categories; exact versions remain private.</p><div id="firmware"></div></section>
-      <section class="card"><h2>Feature activity</h2><p>Recorded event counts over this window. These are not unique people or successful audible actions.</p><div id="features"></div></section>
+      <section class="card"><h2>Observed minutes per day</h2><div id="observations"></div></section>
+      <section class="card"><h2>X-runs per day</h2><div id="xruns"></div></section>
+      <section class="card"><h2>Average CPU and temperature</h2><div id="health"></div></section>
+      <section class="card"><h2>Average effects per observation</h2><div id="effects"></div></section>
+      <section class="card"><h2>Average devices per observation</h2><div id="devices"></div></section>
+      <section class="card"><h2>Observations by Pi model</h2><div id="boards"></div></section>
+      <section class="card"><h2>Observations by firmware type</h2><div id="firmware"></div></section>
+      <section class="card"><h2>Feature activity totals</h2><div id="features"></div></section>
     </div>
-    <details><summary>Daily data table (accessible chart alternative)</summary><div class="table-wrap" id="daily-table"></div></details>
+    <details><summary>Daily data</summary><div class="table-wrap" id="daily-table"></div></details>
   </main>
   <footer>
     <a href="https://wklab.net/audiox/docs/guide/telemetry">Privacy and consent</a>
     <a href="/api/public/summary">Aggregate JSON</a>
     <a href="https://github.com/wk1093/audiox">Source</a>
-    <p>Reports are voluntary and unauthenticated. They can be incomplete or fabricated; do not use them for billing or service guarantees.</p>
   </footer>
 </body>
 </html>

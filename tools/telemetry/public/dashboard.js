@@ -68,7 +68,8 @@ function chart(id, days, series) {
   }
   add('text', { x: 45, y: 200, class: 'chart-label' }, days[0].day);
   add('text', { x: 415, y: 200, class: 'chart-label' }, days.at(-1).day);
-  target.append(svg, element('p', series.map((line) => line.label).join(' / ')));
+  target.append(svg);
+  if (series.length > 1) target.append(element('p', series.map((line) => line.label).join(' / ')));
 }
 
 function render(snapshot) {
@@ -79,12 +80,12 @@ function render(snapshot) {
   document.getElementById('empty').hidden = count !== 0;
   const totals = document.getElementById('totals');
   totals.replaceChildren();
-  for (const [value, label] of [[count, 'Retained observations'], [count / 6, 'Observed interval minutes'],
+  for (const [value, label] of [[count, 'Observations'], [count / 6, 'Observed minutes'],
     [sum(days, 'xruns'), 'X-run events'], [sum(days, 'soundboard_triggers'), 'Soundboard triggers']]) {
     const card = element('div'); card.className = 'stat';
     card.append(element('strong', number(value)), element('span', label)); totals.append(card);
   }
-  chart('observations', days, [{ label: 'Observed interval minutes', color: '#7fd1ff', value: (day) => day.points / 6 }]);
+  chart('observations', days, [{ label: 'Observed minutes', color: '#7fd1ff', value: (day) => day.points / 6 }]);
   chart('xruns', days, [{ label: 'X-runs', color: '#ff9d82', value: (day) => day.xruns }]);
   chart('health', days, [
     { label: 'CPU (%) - blue', color: '#7fd1ff', value: (day) => day.cpu_percent },
@@ -106,7 +107,7 @@ function render(snapshot) {
     ['MIDI CC events', 'midi_cc'], ['Scene recalls', 'scene_recalls'], ['Audio-active intervals', 'audio_active']]
     .map(([label, key]) => [label, sum(days, key)]));
   const table = element('table'), head = element('thead'), heading = element('tr'), body = element('tbody');
-  for (const label of ['Receipt day', 'Points', 'Interval minutes', 'X-runs', 'CPU %', 'Temperature C', 'Soundboard', 'MIDI notes', 'MIDI CC', 'Scenes']) {
+  for (const label of ['Received date', 'Observations', 'Observed minutes', 'X-runs', 'CPU %', 'Temperature C', 'Soundboard', 'MIDI notes', 'MIDI CC', 'Scenes']) {
     const th = element('th', label); th.scope = 'col'; heading.append(th);
   }
   head.append(heading);

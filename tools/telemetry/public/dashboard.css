@@ -13,14 +13,12 @@ button { padding: 10px 18px; border: 1px solid #42667d; color: #eaf5ff; backgrou
 button:disabled { opacity: .5; }
 a { color: #7fd1ff; margin-right: 20px; }
 a:hover { color: #eaf5ff; }
-aside, #empty { padding: 20px; border: 1px solid #42667d; border-radius: 6px; line-height: 1.7; margin-bottom: 24px; color: #b8cbd7; }
-aside strong { color: #eaf5ff; }
+#empty { padding: 20px; border: 1px solid #42667d; border-radius: 6px; line-height: 1.7; margin-bottom: 24px; color: #b8cbd7; }
 .stats { display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 24px; }
 .stat { flex: 1; min-width: 170px; padding: 22px; background: #102635; border-radius: 6px; }
 .stat strong { display: block; font-size: 30px; color: #b9ff96; margin-bottom: 8px; }
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
 .card { background: #102635; padding: 24px; border-radius: 6px; border: 1px solid #28536b; min-width: 0; }
-.card > p { font-size: 13px; min-height: 42px; }
 .bars { display: grid; gap: 10px; }
 .bar-row { display: grid; grid-template-columns: minmax(88px, 1fr) minmax(40px, 2fr) 85px; align-items: center; gap: 10px; font-size: 12px; }
 progress { width: 100%; accent-color: #7fd1ff; height: 15px; }

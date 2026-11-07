@@ -281,9 +281,14 @@ bool readDeviceTreeCells(const char *path, int minimum, int maximum,
 	if (fd < 0) return false;
 	size_t offset = 0;
 	while (offset < byteCount) {
-		ssize_t count = read(fd, bytes + offset, byteCount - offset);
+		const size_t remaining = byteCount - offset;
+		if (offset >= sizeof(bytes) || remaining > sizeof(bytes) - offset) {
+			close(fd);
+			return false;
+		}
+		ssize_t count = read(fd, bytes + offset, remaining);
 		if (count < 0 && errno == EINTR) continue;
-		if (count <= 0) {
+		if (count <= 0 || (size_t)count > remaining) {
 			close(fd);
 			return false;
 		}

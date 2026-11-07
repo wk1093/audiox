@@ -17,13 +17,18 @@ test-native: test-audio-runtime test-builtin-effects test-audio-meters test-audi
 test-storage-expand: $(OUT_DIR)/host/audiox-storage-expand-test
 	@"$<"
 
-test-hardware-telemetry: $(OUT_DIR)/host/audiox-hardware-telemetry-test $(OUT_DIR)/host/audiox-hardware-firmware-test
+test-hardware-telemetry: $(OUT_DIR)/host/audiox-hardware-telemetry-test $(OUT_DIR)/host/audiox-hardware-firmware-test $(OUT_DIR)/host/audiox-hardware-firmware-fortified-test
 	@"$(OUT_DIR)/host/audiox-hardware-telemetry-test"
 	@"$(OUT_DIR)/host/audiox-hardware-firmware-test"
+	@"$(OUT_DIR)/host/audiox-hardware-firmware-fortified-test"
 
 $(OUT_DIR)/host/audiox-hardware-firmware-test: tests/native/hardware/hardware_firmware_test.cpp src/system/hardware_telemetry.cpp include/hardware_telemetry.hpp
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" "$<"
+
+$(OUT_DIR)/host/audiox-hardware-firmware-fortified-test: tests/native/hardware/hardware_firmware_test.cpp src/system/hardware_telemetry.cpp include/hardware_telemetry.hpp tests/Makefile
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -O3 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Iinclude -o "$@" "$<"
 
 .PHONY: test-system-history
 test-native: test-system-history

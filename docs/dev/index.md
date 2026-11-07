@@ -221,6 +221,8 @@ node --test tests/web/site_navigation_test.js tests/web/docs_site_test.js
 release-workflow tests. Release tests use mocks and do not publish anything.
 Individual test targets are listed in `tests/Makefile`; consult their recipes
 when a target needs extra tools or has hardware limitations.
+Hardware telemetry tests include an optimized `_FORTIFY_SOURCE=3` build of the
+firmware fixture to catch bounded-read regressions exposed by CI compilers.
 
 The `Build AudioX OS Image` workflow runs `make test`, the graph ThreadSanitizer
 test, and Pi 4/Pi 5 builds for relevant source changes and pull requests. The

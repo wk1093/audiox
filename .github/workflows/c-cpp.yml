@@ -104,9 +104,21 @@ jobs:
       - name: Check graph publication with ThreadSanitizer
         run: make test-audio-graph-tsan test-graph-native-tsan
 
+  llvm:
+    needs: [prepare, test]
+    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/llvm.yml
+    with:
+      ref: ${{ needs.prepare.outputs.commit }}
+
   build:
     name: Build AudioX (${{ matrix.board }})
-    needs: [prepare, test]
+    needs: [prepare, test, llvm]
+    if: >-
+      always() && needs.prepare.result == 'success' && needs.test.result == 'success' &&
+      (needs.llvm.result == 'success' || needs.llvm.result == 'skipped')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -198,6 +210,19 @@ jobs:
 
       - name: Configure ${{ matrix.board }} defaults
         run: make ${{ matrix.config }}
+
+      - name: Restore released AArch64 LLVM
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if bash tools/build/graph_llvm_release.sh fetch out/graph-llvm; then
+            echo "Using released LLVM libraries."
+          else
+            status=$?
+            if [[ "$status" != 3 ]]; then exit "$status"; fi
+            echo "No LLVM release available; make will build from source."
+          fi
 
       - name: Build Initramfs targets
         run: |

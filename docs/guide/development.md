@@ -70,6 +70,19 @@ Additional tools depend on the workflow:
   Override `HOST_LLVM_CONFIG` and `HOST_CLANGXX` for version-suffixed tools.
   Graph compiler builds treat LLVM include directories as system headers so
   upstream header warnings do not fail AudioX's warning-as-error builds.
+- CI reuses a versioned LLVM dependency release built by `Prepare AArch64 LLVM`.
+  Trusted non-PR builds create it automatically when missing; pull requests
+  have no publishing permission and build LLVM from source if it is absent.
+  Authentication/network failures, corrupt archives, and incomplete releases
+  fail explicitly instead of falling back. Releases are prereleases and are not
+  marked latest, so they do not replace firmware releases.
+  The tag includes LLVM 21.1.8, the Ubuntu 24.04/GCC 13 toolchain contract, and a
+  hash of the source-build and packaging recipes. Archives include static
+  libraries, public/generated headers, license inputs, and a revision manifest.
+  Downloaded assets are checked against the SHA-256 sidecar in that immutable
+  release and the locally expected manifest; this trusts repository release
+  maintainers, not an independently pinned checksum. Never replace assets:
+  change the recipe for a new tag. Local `make` still builds LLVM from source.
 - Firmware DSP bitcode: **Clang 21**, matching the runtime LLVM 21 backend.
   Set `DSP_CLANGXX=/path/to/clang++-21` if it is not found through
   `llvm-config-21`. Ubuntu CI uses the signed [LLVM packages](https://apt.llvm.org/)

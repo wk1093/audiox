@@ -1,0 +1,61 @@
+name: Prepare AArch64 LLVM
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audiox-llvm-release
+  cancel-in-progress: false
+
+jobs:
+  llvm:
+    # Never run a write-capable dependency publisher for pull requests.
+    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - name: Reuse existing LLVM release
+        id: reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if bash tools/build/graph_llvm_release.sh fetch out/graph-llvm; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            status=$?
+            if [[ "$status" != 3 ]]; then exit "$status"; fi
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install LLVM build tools
+        if: steps.reuse.outputs.found == 'false'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+      - name: Build and package LLVM
+        if: steps.reuse.outputs.found == 'false'
+        run: |
+          bash tools/build/build_graph_llvm.sh out/graph-llvm aarch64-linux-gnu-gcc aarch64-linux-gnu-g++
+          bash tools/build/graph_llvm_release.sh package out/graph-llvm out/llvm-release
+      - name: Publish immutable dependency release
+        if: steps.reuse.outputs.found == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          LLVM_RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          export LLVM_RELEASE_COMMIT="$(git rev-parse HEAD)"
+          bash tools/build/graph_llvm_release.sh publish out/llvm-release

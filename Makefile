@@ -566,6 +566,8 @@ $(RUNTIME_OBJ_DIR)/%.o: src/%.cpp
 	@mkdir -p $(dir $@)
 	$(RUNTIME_COMPILER) $(RUNTIME_FLAGS) $(RUNTIME_DEFINES) $(DEPFLAGS) -c -o $@ $<
 
+$(RUNTIME_OBJ_DIR)/audio/effects/slot.o: Makefile
+$(RUNTIME_OBJ_DIR)/audio/effects/slot.o: RUNTIME_FLAGS += -ffp-contract=off
 $(addprefix $(RUNTIME_OBJ_DIR)/audio/effects/,dynamics.o equalizer.o noise_reduction.o): RUNTIME_FLAGS += -Wno-unused-function
 
 # Runtime objects include ALSA, SBC, and Lua headers, so their build-only

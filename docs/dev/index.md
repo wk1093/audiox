@@ -175,7 +175,9 @@ and meter publication remain in the runtime. The per-thread DSP table is retaine
 for host reference/failure-path tests, not used to dispatch built-ins in a ready
 production graph. This enables joint optimization but does not guarantee fusion
 of entire effect chains into one sample loop. Conservative floating-point behavior is retained (no blanket
-fast-math). Compilation can contend for CPU/memory bandwidth, and no reduction
+fast-math). Runtime slot bookkeeping and DSP bitcode disable floating-point contraction so
+silent-release fixed-point checks agree with generated DSP even on FMA-capable
+CPUs. Compilation can contend for CPU/memory bandwidth, and no reduction
 in X-runs is established without measurements on a Pi.
 
 Logs distinguish `LLVM compiled DSP generation ...` (size and compile time)

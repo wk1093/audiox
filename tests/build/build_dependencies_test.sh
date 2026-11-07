@@ -33,6 +33,9 @@ grep -Fq -- '-isystem "$(GRAPH_LLVM_ROOT)/source/llvm/include"' Makefile
 grep -Fq -- '-isystem "$(GRAPH_LLVM_ROOT)/build/include"' Makefile
 grep -Fq -- '-isystem "$$($(HOST_LLVM_CONFIG) --includedir)"' Makefile
 echo "PASS: graph compiler builds treat LLVM headers as system headers"
+grep -Fq '$(RUNTIME_OBJ_DIR)/audio/effects/slot.o: RUNTIME_FLAGS += -ffp-contract=off' Makefile
+grep -Fq '$(RUNTIME_OBJ_DIR)/audio/effects/slot.o: Makefile' Makefile
+echo "PASS: runtime silent-release checks use the DSP bitcode floating-point contraction policy"
 
 for test in audio_meters display_hotplug gadget_volume; do
     grep -E "tests/native/(audio|hardware)/${test}_test.cpp.*src/audio/plugin_host.cpp" "$WORK/targets" >/dev/null

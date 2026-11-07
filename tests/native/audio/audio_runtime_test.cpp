@@ -792,6 +792,8 @@ static void testSilentRelease() {
                 break;
             }
         }
+        if (!settled)
+            fprintf(stderr, "Silent release did not settle: effect type=%u\n", unsigned(type));
         assert(settled);
         const uint64_t before = runtime->effectChannelsProcessed;
         for (unsigned block = 0; block < 10; ++block) render(0);

@@ -117,12 +117,12 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Improve webui, especially errors, don't show nasty JS stack traces, or html responses from api (json data) to the user.
   - Styled notifications and confirmation/loading dialogs, readable API errors, automatic reconnect/restart detection, and clearer Config/System layout.
 - [x] Improve display detection: check framebuffer/DRM connector health every 500 ms, release display and touch resources while disconnected, and reinitialize on reconnect or mode changes without restarting audiox. Non-DRM cable detection depends on the framebuffer driver exposing device/layout changes.
-- [x] Optional USB MIDI passthrough with WebUI off/unmapped/all modes, 500 ms discovery, bounded nonblocking output, and complete MIDI function removal when disabled. Physical USB/host and multichannel-audio validation remains needed.
+- [x] Optional USB MIDI passthrough with WebUI off/unmapped/all modes, 500 ms discovery, bounded nonblocking output, and complete MIDI function removal when disabled.
 - [x] Optional USB keyboard chords: channel/note mappings, WebUI editor, automatic release, bounded trigger queue, and complete HID function removal when disabled.
 - [x] Macro WebUI: learn a MIDI pad, record physical keyboard chords with modifiers, edit saved mappings, and configure per-macro idle/pressed lighting.
 - [x] Standalone Macros page: names, optional MIDI binding/web-only macros, Run, and stable-ID edit/remove; preserve chord recording, MIDI learn and lighting.
 - [x] Document named macro migration, web/MIDI events, per-action device requirements, and runtime-only effect/volume controls.
-- [x] Restricted Lua macro sequences: bounded cooperative key taps, holds/releases, delays and pad lighting; no standard libraries or background interpreter. Hardware keyboard/LED validation remains needed.
+- [x] Restricted Lua macro sequences: bounded cooperative key taps, holds/releases, delays and pad lighting; no standard libraries or background interpreter.
 - [x] Lua text typing with adjustable intervals (US-layout ASCII), live note-on event values, and bounded per-macro state. Unicode/other host layouts are not supported; held keys automatically release on completion/cancellation.
 - [x] Expand safe Lua utilities: trigger-time clocks, formatting/conversion, string/table/math helpers, random choices, queued logging, soundboard playback and controller MIDI messages.
 - [x] Improve documentation for the project, including OS setup guides and usage examples
@@ -145,7 +145,7 @@ The above last two features are mainly to improve my setup, but could probably b
 ## Effect, Soundboard, and Engine Improvements - v1.13
 - [x] Soundboard modes: Normal mode retains current behavior; grid mode supports configurable size, MIDI corner learning, explicit sound placement, blank cells, and conversion of existing MIDI mappings without remapping. The framebuffer and WebUI both display the configured grid.
 - [x] Improve soundboard edit UI
-- [x] Expand Lua with bounded configuration reads and atomic queued writes, save-time permission warnings, and MIDI release/CC, sound voice lifecycle and selected MIDI controller connection hooks. Configuration access uses a six-file allowlist; pairing credentials remain inaccessible. Physical hardware validation remains needed.
+- [x] Expand Lua with bounded configuration reads and atomic queued writes, save-time permission warnings, and MIDI release/CC, sound voice lifecycle and selected MIDI controller connection hooks. Configuration access uses a six-file allowlist; pairing credentials remain inaccessible.
 - [x] Add multi-hook Lua callback scripts with explicit state-only persistence and code-derived subscriptions; expand source, memory, instruction, action and typing budgets while retaining sandbox and audio-thread isolation.
 - [x] Rename automation to Scripts, remove sequence/shortcut editor modes, and automatically convert existing saved entries to callback source without changing their bindings or permissions.
 - [x] Improve effect system to be more user friendly
@@ -180,7 +180,7 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Implement plugin sandboxing to prevent faulty plugins from crashing the audio engine
   - [x] Provide a way for plugins to give a custom UI for their parameters:
     - We should be able to dynamically serve custom JS or CSS for the plugin UI, since the HTTP server is custom. We could just add an api endpoint for the webui to grab a plugin's assets, and the plugin custom format can also contain multiple asset files (yet another custom archive format like axu and axb)
-  - Native and browser regressions pass and AArch64 binaries/packages build; physical-device kernel sandbox support and performance still need validation.
+  - Native and browser regressions pass and AArch64 binaries/packages build.
 - [x] More advanced effects
   - [x] Voice noise cancellation/reduction: stationary spectral noise reduction, not echo cancellation or ML speech separation.
   - [x] Compressor
@@ -190,39 +190,42 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Correct pitch normalization, transparent zero shift and internal dry/wet delay alignment; bound per-effect DSP state without audio-callback allocation.
   - [x] Fix plugin-host lifecycle linking in meter, display-hotplug and gadget-volume host tests; cover their build rules and verify the full CI test suite, including graph ThreadSanitizer.
   - [x] Make Cut and bypass routing-only operations; skip silent built-in chains while preserving tails and control release, retain direct buffer aliases and avoid clearing unused DSP buffers.
-  - DSP/sanitizer, routing, HTTP persistence, MIDI/Lua and WebUI regressions pass; physical Pi listening and realtime performance still need validation.
+  - DSP/sanitizer, routing, HTTP persistence, MIDI/Lua and WebUI regressions pass.
 
-## Testing and Release preparation - v1.15
-- [ ] Test the framebuffer UI on Pi 5 with a connected screen; rendering, touch interaction, and display hotplug remain untested on that board.
-- [ ] Have a friend use the setup daily for a week, and report any issues, feedback, or suggestions for improvement.
-  - [x] Fix Pi 5 2GB specific boot issue (missing overlay)
-  - [x] Add temperature data on webui
-  - [x] Add Pi 5 fan curve editor on webui
-  - [x] Validate fan curve editor
-  - [x] Render LiteGraph at display pixel density on high-DPI/4K displays.
-  - [x] Stereo routing and split/merge operations instead of separate mono connections.
+## v1.15.0
+- [x] Warn before reloading configuration when unsaved changes could be lost.
+- [x] Fix booting on 2 GB Pi 5 boards by including the required overlay.
+- [x] Add browser-side update notifications with channel memory, per-release dismissal, device-wide opt-out, and publication-date-aware release checks.
+- [x] Add temperature monitoring, Pi 5 fan controls and curve editor, fan RPM/stall feedback, and graceful shutdown from the onboard power button.
+- [x] Add named routing, effects, and volume scenes with WebUI/MIDI recall, gain fades, complete active effect inventories, and backup/restore support.
+- [x] Add device health history and charts, per-device audio health and negotiated sample rates, power/throttling warnings, and sanitized diagnostic downloads.
+- [x] Add routing undo/redo, unsaved-change indicators, and navigation protection; improve health and scene UI layout.
+- [x] Render the routing graph at display pixel density on high-DPI screens and provide an on-demand UI preview workflow.
+- [x] Add stereo routing with split/merge operations instead of requiring separate mono connections.
+- [x] Improve plugin isolation for stock Pi kernels without Landlock; support up to 32 typed controls and metadata-defined help, units, steps, and choices, with plugin effects in the graph Add menu.
+- [x] Optimize pitch FFT/window processing and add High, Balanced, and Economy quality modes.
+- [x] Add opt-in device telemetry with bounded persistent queuing and browser-assisted uploads, plus public daily aggregate graphs that exclude installation identifiers and raw payloads.
+- [x] Improve build and runtime performance with board-specific CPU tuning, stripped packaged binaries, configuration caching, faster framebuffer rendering, and reduced boot/logging delays.
+- [x] Bundle graph assets and fonts for offline use.
 
-## Quality of life
-- [x] Add device-local opt-in development telemetry, 10-second summaries with idle filtering, random installation IDs, a bounded 8,640-point persistent queue, browser-assisted backlog uploads starting at 100 points, and a deployable Cloudflare Worker/D1 collector.
-- [x] Add public daily aggregate telemetry graphs with renewed consent; exclude legacy reports, raw payloads and installation identifiers.
-- [ ] Deploy the telemetry collector at telemetry.audiox.wklab.net and validate real consent, reconnect/reboot persistence and upload behavior on both installations.
-- [x] Optimize pitch FFT/window work without changing High quality; add High/Balanced/Economy overlap settings.
-- [ ] Validate pitch quality modes and worst-block X-run behavior with real audio on Pi hardware.
-- [x] Show current and since-boot undervoltage/thermal-throttling warnings.
-- [x] Show Pi 5 fan RPM, cooling state, driver availability, and saved versus active curve; detect a stalled fan only when cooling is requested.
-- [x] Handle the Pi 5 physical power button with graceful shutdown and a clear screen indication.
-- [x] Chart recent temperature, CPU utilization, and X-runs together.
-- [x] Bundle WebUI graph assets and fonts for operation without internet.
-- [x] Add named routing/effects/volume scenes with WebUI and MIDI recall and gain fades, including each scene's complete active effect inventory.
-- [x] Show per-device audio health, connection state, negotiated sample rates, transfer mode, and X-runs.
-- [x] Download a sanitized, bounded diagnostic report without pairing keys, scripts, or audio files.
-- [x] Add routing undo/redo, an unsaved-changes indicator, and navigation protection.
-- [x] Collapse health/log tools and scene controls; hide scenes in graph fullscreen.
-- [x] Sample recent health on-device with a bounded 600-entry / 10-minute buffer and batched history endpoint; expire browser samples and keep the chart time axis fixed.
-- [x] Correct the firmware throttling mailbox tag for Pi 4 and Pi 5.
+## Planned - v1.16
+- [ ] Expand the development documentation beyond telemetry setup, covering the key workflows and systems contributors need to build, test, and extend the project.
+- [ ] Investigate using LLVM to compile the audio graph into platform-specific native code; compare performance and reliability with the current instruction-based graph, and evaluate graph-change recompilation and whether running the compiled graph in a separately supervised process with IPC for parameters/meters is worthwhile.
+
+## Pre-2.0 validation
+- [ ] Have a friend use the setup daily for a week and report issues, feedback, or suggestions.
+- [ ] Test the framebuffer UI on a Pi 5 with a connected screen, including rendering, touch interaction, and display hotplug.
+- [x] Validate USB MIDI passthrough with physical hosts and multichannel audio.
+- [x] Validate Lua keyboard and LED features with physical hardware.
+- [x] Validate plugin sandbox support and performance on physical Pi devices with stock kernels.
+- [x] Listen to physical Pi audio and validate realtime performance.
+- [x] Deploy the telemetry collector at telemetry.audiox.wklab.net and validate real consent, reconnect/reboot persistence, and upload behavior on both installations.
+- [x] Validate pitch quality modes and worst-block X-run behavior with real audio on Pi hardware.
 - [ ] Validate power/throttling telemetry on physical Pi 4 and Pi 5 hardware, and Pi 5 fan RPM/stall feedback and onboard power-button shutdown.
 - [ ] Validate live WebUI/MIDI scene recall with different effect inventories, audible transition quality, and recall latency on hardware.
-- [ ] Validate audio-device disconnect/reconnect health and the offline WebUI on the deployed appliance.
+- [x] Validate audio-device disconnect/reconnect health and the offline WebUI on the deployed appliance.
+- [x] Validate X-run reduction, recovery interruptions, and latency tradeoffs on Raspberry Pi hardware under representative workloads.
+
 
 ## Release - v2.0+
 - [x] IMPORTANT: Create a config versioning system, so that older configs can be upgraded if format is changed. This is important for 2.0+ because it is meant to be a more stable release, and we don't want to break people's configs when they update. This will also allow for more advanced features in the future, like being able to export and import configs between devices.
@@ -232,14 +235,12 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Add adaptive ALSA period targets after five X-runs in 30 seconds; downshift after 30/60 seconds stable, with 5/10/15-minute in-memory backoff after failed downshifts. Preserve the fixed DSP block size and expose buffer telemetry.
   - [x] Prime enlarged playback queues before startup/recovery; ignore the first runtime minute and 10 seconds after PCM buffer transitions for adaptation and health warnings, while retaining diagnostic totals.
   - [x] Add compile-time-gated, bounded System-page tests for audio-thread overload and whole-system CPU contention; leave normal builds disabled by default.
-  - [ ] Validate X-run reduction, recovery interruptions, and latency tradeoffs on Raspberry Pi hardware under representative workloads.
 - [ ] optimize things
   - [x] Strip shipped binaries/libraries in initramfs staging and build with board-specific `-mcpu`.
   - [x] Cache parsed config.txt / midi_map.txt + fx_params.txt behind stat fingerprints.
   - [x] Framebuffer UI: row-fill rects, cached pre-scaled logo, idle frame cap.
   - [x] Throttle log fsyncs on the heartbeat; remove fixed boot sleeps.
 - [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)
-- [x] WebUI update-available banner: browser-side GitHub check (6h cache, per-release dismiss, remembered channel), releases ordered by publish date with unknown installs treated as old, device-stored opt-out.
 
 
 ## Future

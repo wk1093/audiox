@@ -1,5 +1,6 @@
 #include "audio/effects/slot.hpp"
 #include "audio/effects/native.hpp"
+#include "audio/effects/pending.hpp"
 
 #include "defs.hpp"
 
@@ -415,93 +416,13 @@ bool slotHasPendingAudio(const char *effectId, uint8_t channel, const SlotParams
         return false;
     if (audiox::plugin::isPluginType(params.type))
         return params.pluginHost && params.pluginHost->hasPendingAudio(threshold);
-    switch (params.type) {
-    case EFFECT_PITCH:
-        return pitchHasPendingAudio(effectId, channel, threshold);
-    case EFFECT_REVERB: {
-        const ReverbState *state = getReverbStateFor(effectId, channel, false);
-        if (!state)
-            return false;
-        for (const auto &buffer : state->comb) {
-            for (float sample : buffer) {
-                if (!(fabsf(sample) <= threshold))
-                    return true;
-            }
-        }
-        for (float sample : state->combFilter) {
-            if (!(fabsf(sample) <= threshold))
-                return true;
-        }
-        for (const auto &buffer : state->allpass) {
-            for (float sample : buffer) {
-                if (!(fabsf(sample) <= threshold))
-                    return true;
-            }
-        }
-        return false;
-    }
-    case EFFECT_COMPRESSOR:
-        return false;
-    case EFFECT_LIMITER: {
-        const auto *state = limiterStates.find(effectId, channel, false);
-        return state && limiterHasPendingAudio(*state, threshold);
-    }
-    case EFFECT_MULTIBAND: {
-        const auto *state = multibandStates.find(effectId, channel, false);
-        return state && multibandCompressorHasPendingAudio(*state, threshold);
-    }
-    case EFFECT_EQ: {
-        const auto *state = equalizerStates.find(effectId, channel, false);
-        return state && equalizerHasPendingAudio(*state, threshold);
-    }
-    case EFFECT_NOISE_REDUCTION: {
-        const auto *state = noiseStates.find(effectId, channel, false);
-        return state && noiseReductionHasPendingAudio(*state, threshold);
-    }
-    case EFFECT_GAIN:
-    case EFFECT_DISTORTION:
-    case EFFECT_GATE:
-    case EFFECT_CUT:
-        return false;
-    default:
-        return true;
-    }
+    if (!isBuiltinEffectType(params.type)) return true;
+    return builtinHasPendingAudio(params.type, compiledStateFor(effectId, channel, params.type, false), threshold);
 }
 
 bool slotNeedsSilentProcessing(const char *effectId, uint8_t channel, const SlotParams &params) {
     if (slotHasPendingAudio(effectId, channel, params)) return true;
-    // Detector release and coefficient transitions must not freeze during silence.
-    if (params.type == EFFECT_GATE) {
-        const auto *state = getGateStateFor(effectId, channel, false);
-        if (!state) return false;
-        if (state->envelope > 1e-12f) return true;
-        const float floor = powf(10.0f, -params.values[3] / 20.0f);
-        const float ms = floor > state->gain ? params.values[1] : params.values[2];
-        const float samples = ms * float(SAMPLE_RATE) / 1000.0f;
-        const float coefficient = samples <= 1 ? 0 : expf(-1 / samples);
-        return coefficient * state->gain + (1 - coefficient) * floor != state->gain;
-    }
-    if (params.type == EFFECT_COMPRESSOR) {
-        const auto *state = compressorStates.find(effectId, channel, false);
-        return state && state->reductionDb > 1e-12;
-    }
-    if (params.type == EFFECT_LIMITER) {
-        const auto *state = limiterStates.find(effectId, channel, false);
-        const double release = exp(-1000.0 / (params.values[1] * SAMPLE_RATE));
-        return state && fabs(state->gain - 1.0) > 1e-12 &&
-            1 + release * (state->gain - 1) != state->gain;
-    }
-    if (params.type == EFFECT_MULTIBAND) {
-        const auto *state = multibandStates.find(effectId, channel, false);
-        if (state)
-            for (double reduction : state->reductionDb)
-                if (reduction > 1e-12) return true;
-    }
-    if (params.type == EFFECT_EQ) {
-        const auto *state = equalizerStates.find(effectId, channel, false);
-        return state && state->transitioning;
-    }
-    return false;
+    return builtinNeedsSilentProcessing(params, compiledStateFor(effectId, channel, params.type, false));
 }
 
 void resetSlotAudio(const char *effectId, uint8_t channel) {
@@ -528,6 +449,20 @@ void prepareSlotAudio(const char *effectId, uint8_t channel, const SlotParams &p
         resetSlotAudio(effectId, channel);
     active->type = params.type;
     active->enabled = params.enabled;
+}
+
+void *compiledStateFor(const char *effectId, uint8_t channel, uint8_t type, bool create) {
+    switch (type) {
+    case EFFECT_EQ: return equalizerStates.find(effectId, channel, create);
+    case EFFECT_NOISE_REDUCTION: return noiseStates.find(effectId, channel, create);
+    case EFFECT_COMPRESSOR: return compressorStates.find(effectId, channel, create);
+    case EFFECT_LIMITER: return limiterStates.find(effectId, channel, create);
+    case EFFECT_MULTIBAND: return multibandStates.find(effectId, channel, create);
+    case EFFECT_REVERB: return getReverbStateFor(effectId, channel, create);
+    case EFFECT_GATE: return getGateStateFor(effectId, channel, create);
+    case EFFECT_PITCH: return pitchStateFor(effectId, channel, create);
+    default: return nullptr;
+    }
 }
 
 void processSlot(const char *effectId, uint8_t channel, const SlotParams &params, const float *in,
@@ -558,22 +493,8 @@ void processSlot(const char *effectId, uint8_t channel, const SlotParams &params
         memset(out, 0, sizeof(float) * frames);
         return;
     }
-    void *state = nullptr;
-    const void *plan = nullptr;
-    switch (clamped.type) {
-    case EFFECT_EQ: state = equalizerStates.find(effectId, channel); break;
-    case EFFECT_NOISE_REDUCTION: state = noiseStates.find(effectId, channel); break;
-    case EFFECT_COMPRESSOR: state = compressorStates.find(effectId, channel); break;
-    case EFFECT_LIMITER: state = limiterStates.find(effectId, channel); break;
-    case EFFECT_MULTIBAND: state = multibandStates.find(effectId, channel); break;
-    case EFFECT_REVERB: state = getReverbStateFor(effectId, channel); break;
-    case EFFECT_GATE: state = getGateStateFor(effectId, channel); break;
-    case EFFECT_PITCH:
-        state = pitchStateFor(effectId, channel);
-        plan = &getPitchPlan();
-        break;
-    default: break;
-    }
+    void *state = compiledStateFor(effectId, channel, clamped.type);
+    const void *plan = clamped.type == EFFECT_PITCH ? &getPitchPlan() : nullptr;
     compiledDsp->entries[clamped.type](in, out, frames, clamped.values, state, plan);
 #else
     switch (clamped.type) {

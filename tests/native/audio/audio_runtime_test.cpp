@@ -7,6 +7,31 @@
 #include <chrono>
 #include <thread>
 
+#ifdef AUDIOX_DSP_RUNTIME_ONLY
+static audiox::graph::NativeGraph *directGraph;
+static audiox::graph::Schedule directSchedule{};
+static void processDirectTestBlock(AudioContext *ctx, RuntimeGraph *rt, AlsaCaptureBackend *capture,
+                                   uint64_t nowMs = monotonicMs()) {
+    auto schedule = nativeSchedule(*rt);
+    schedule.generation = directSchedule.generation;
+    if (!schedule.generation || memcmp(&schedule, &directSchedule, sizeof(schedule))) {
+        ++schedule.generation;
+        directSchedule = schedule;
+        directGraph->request(schedule);
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!directGraph->ready(schedule.generation)) {
+        assert(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const auto generation = rt->snapshot.generation;
+    rt->snapshot.generation = schedule.generation;
+    processGraphBlock(ctx, rt, capture, nowMs, directGraph);
+    rt->snapshot.generation = generation;
+}
+#define processGraphBlock processDirectTestBlock
+#endif
+
 struct _snd_pcm { int token; };
 static snd_pcm_t testPcm{};
 static int16_t captureSample;
@@ -904,10 +929,9 @@ static void testCompiledSchedule(const char *compiler, const char *bitcode) {
     assert(schedule.count == 7);
     audiox::graph::NativeGraph native(compiler, bitcode);
     native.request(schedule);
-    NativeBlockContext block{context.get(), runtime.get()};
     clearRuntimeBuffers(runtime.get());
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!native.execute(schedule.generation, &block, nativeRoute, nativeNode, audiox::effects::setCompiledDsp)) {
+    while (!executeNativeBlock(native, context.get(), runtime.get())) {
         assert(std::chrono::steady_clock::now() < deadline);
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
@@ -944,7 +968,7 @@ static void testCompiledSchedule(const char *compiler, const char *bitcode) {
         for (unsigned channel = 0; channel < 2; ++channel)
             memcpy(expected[channel], runtime->inputs[3][channel], sizeof(expected[channel]));
         initialize();
-        assert(native.execute(schedule.generation, &block, nativeRoute, nativeNode, audiox::effects::setCompiledDsp));
+        assert(executeNativeBlock(native, context.get(), runtime.get()));
         for (unsigned channel = 0; channel < 2; ++channel)
             assert(!memcmp(expected[channel], runtime->inputs[3][channel], sizeof(expected[channel])));
     }
@@ -953,8 +977,7 @@ static void testCompiledSchedule(const char *compiler, const char *bitcode) {
         const auto start = std::chrono::steady_clock::now();
         for (unsigned i = 0; i < 5000; ++i) {
             initialize();
-            if (compiled) assert(native.execute(schedule.generation, &block, nativeRoute, nativeNode,
-                                                audiox::effects::setCompiledDsp));
+            if (compiled) assert(executeNativeBlock(native, context.get(), runtime.get()));
             else fallback();
         }
         return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -970,6 +993,8 @@ int main(int argc, char **argv) {
     assert(argc == 3);
 #ifdef AUDIOX_DSP_RUNTIME_ONLY
     audiox::graph::NativeGraph dspOwner(argv[1], argv[2]);
+    audiox::graph::NativeGraph directOwner(argv[1], argv[2]);
+    directGraph = &directOwner;
     audiox::graph::Schedule dspSchedule{};
     dspSchedule.generation = 1;
     dspOwner.request(dspSchedule);

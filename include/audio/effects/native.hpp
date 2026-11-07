@@ -14,5 +14,6 @@ struct DspTable {
 
 // The audio thread selects a table whose lifetime is owned by NativeGraph.
 void setCompiledDsp(const DspTable *);
+void *compiledStateFor(const char *, uint8_t, uint8_t, bool create = true);
 
 } // namespace audiox::effects

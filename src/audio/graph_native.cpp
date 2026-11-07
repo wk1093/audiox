@@ -86,12 +86,17 @@ void NativeGraph::request(const Schedule &schedule) {
     if (!(previous & 4U) && wakeInitialized_ && sem_post(&wake_))
         std::fprintf(stderr, "[GRAPH] [ERR] wake compiler: %s\n", std::strerror(errno));
 }
-bool NativeGraph::execute(uint32_t generation, void *context, Callback route, Callback node,
-                         void (*activate)(const audiox::effects::DspTable *)) {
+bool NativeGraph::ready(uint32_t generation) {
     if (programMiddle_.load(std::memory_order_acquire) & 4U)
         programFront_ = programMiddle_.exchange(programFront_, std::memory_order_acq_rel) & 3U;
     const auto &program = programs_[programFront_];
-    const bool ready = program.memory && program.generation == generation;
+    return program.memory && program.generation == generation;
+}
+bool NativeGraph::execute(uint32_t generation, void *context, Callback route, Callback node,
+                         void (*activate)(const audiox::effects::DspTable *)) {
+    const bool available = ready(generation);
+    const auto &program = programs_[programFront_];
+    const bool ready = available;
     const uint32_t active = ready ? generation : 0;
     if (activeGeneration_.load(std::memory_order_relaxed) != active)
         activeGeneration_.store(active, std::memory_order_release);

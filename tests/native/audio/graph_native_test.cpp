@@ -38,6 +38,97 @@ static void waitFor(NativeGraph &graph, const Schedule &schedule) {
             (schedule.operations[i].kind == OperationKind::Node ? 1000 : 0));
     assert(actual == expected);
 }
+static void testDirectGraph(NativeGraph &graph) {
+        using namespace audiox::effects;
+        struct Fixture {
+            Block block{};
+            float silence[128]{};
+            float source[2][128]{};
+            float storage[5][128]{};
+            float *inputs[5][1]{}, *outputs[5][1]{};
+            uint8_t contributions[5]{};
+            uint16_t silent[5]{};
+            uint64_t processed{};
+            Fixture() {
+                block.silence = silence;
+                block.processedChannels = &processed;
+                for (unsigned i = 0; i < 5; ++i) {
+                    auto &node = block.nodes[i];
+                    node.inputs = inputs[i];
+                    node.outputs = outputs[i];
+                    node.inputStorage[0] = storage[i];
+                    node.outputStorage[0] = storage[i];
+                    node.contributions = &contributions[i];
+                    node.silentChannels = &silent[i];
+                    node.gain = 1;
+                    node.channels = node.outputChannels = 1;
+                }
+                for (unsigned i : {2U, 3U}) {
+                    block.nodes[i].effect = true;
+                    block.nodes[i].params.enabled = 1;
+                }
+                block.nodes[2].params.type = EFFECT_GAIN;
+                block.nodes[3].params.type = EFFECT_DISTORTION;
+            }
+            void clear() {
+                for (unsigned i = 0; i < 5; ++i) {
+                    inputs[i][0] = silence;
+                    outputs[i][0] = silence;
+                    contributions[i] = 0;
+                }
+                outputs[0][0] = source[0];
+                outputs[1][0] = source[1];
+            }
+        };
+        auto fixture = std::make_unique<Fixture>();
+        Schedule schedule{};
+        schedule.generation = 200;
+        schedule.direct = 1;
+        schedule.count = 6;
+        schedule.routes[0] = {0, 2, 0, 0};
+        schedule.routes[1] = {1, 2, 0, 0};
+        schedule.routes[128] = {2, 3, 0, 0};
+        schedule.routes[129] = {3, 4, 0, 0};
+        schedule.operations[0] = {OperationKind::Route, 0};
+        schedule.operations[1] = {OperationKind::Route, 1};
+        schedule.operations[2] = {OperationKind::Node, 2};
+        schedule.operations[3] = {OperationKind::Route, 128};
+        schedule.operations[4] = {OperationKind::Node, 3};
+        schedule.operations[5] = {OperationKind::Route, 129};
+        graph.request(schedule);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!graph.ready(schedule.generation)) {
+            assert(std::chrono::steady_clock::now() < deadline);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        const auto forbidden = [](void *, uint32_t) { assert(false && "built-in graph called back to main"); };
+        for (unsigned setting = 0; setting < 24; ++setting) {
+            fixture->clear();
+            auto &gain = fixture->block.nodes[2].params;
+            auto &distortion = fixture->block.nodes[3].params;
+            gain.values[0] = .25f + setting % 4;
+            gain.enabled = setting % 2;
+            distortion.values[0] = 1;
+            distortion.values[1] = 4;
+            distortion.values[2] = .35f;
+            distortion.values[3] = 1;
+            distortion.enabled = setting % 3;
+            float mixed[128], gained[128], expected[128];
+            for (unsigned frame = 0; frame < 128; ++frame) {
+                fixture->source[0][frame] = frame % 3 ? .1f : -.2f;
+                fixture->source[1][frame] = frame % 5 ? .25f : -.4f;
+                mixed[frame] = fixture->source[0][frame] + fixture->source[1][frame];
+            }
+            if (gain.enabled) audiox_dsp_0(mixed, gained, 128, gain.values, nullptr, nullptr);
+            else std::copy_n(mixed, 128, gained);
+            if (distortion.enabled) audiox_dsp_1(gained, expected, 128, distortion.values, nullptr, nullptr);
+            else std::copy_n(gained, 128, expected);
+            assert(graph.execute(schedule.generation, &fixture->block, forbidden, forbidden));
+            for (unsigned frame = 0; frame < 128; ++frame)
+                assert(std::fabs(fixture->inputs[4][0][frame] - expected[frame]) < 1.0e-5f);
+        }
+        puts("Direct compiled fan-in -> gain -> distortion graph matches reference without routing or DSP callbacks");
+    }
 static void testDsp(NativeGraph &graph, Schedule &schedule) {
         using namespace audiox::effects;
         struct States {
@@ -161,5 +252,6 @@ int main(int argc, char **argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(30));
         assert(!rejected.execute(schedule.generation, &empty, route, node));
     }
+    testDirectGraph(graph);
     puts("LLVM native DSP graph: empty/full schedules, order, replacement, coalescing and compiler-failure handling passed");
 }

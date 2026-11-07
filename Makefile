@@ -22,8 +22,8 @@ BOOTLOADER_SRC := src/init/bootloader.cpp
 RUNTIME_MAIN_SRC := src/init/init.cpp
 WATCHDOG_SRC := src/init/watchdog.cpp
 PLUGIN_WORKER_SRC := src/plugin_worker/main.cpp
-DSP_BITCODE_SRCS := $(addprefix src/audio/effects/,gain.cpp distortion.cpp pitch.cpp reverb.cpp gate.cpp dynamics.cpp equalizer.cpp noise_reduction.cpp native_kernels.cpp)
-DSP_STATELESS_SRCS := $(addprefix src/audio/effects/,gain.cpp distortion.cpp reverb.cpp gate.cpp native_kernels.cpp)
+DSP_BITCODE_SRCS := $(addprefix src/audio/effects/,gain.cpp distortion.cpp pitch.cpp reverb.cpp gate.cpp dynamics.cpp equalizer.cpp noise_reduction.cpp native_kernels.cpp native_graph.cpp)
+DSP_STATELESS_SRCS := $(addprefix src/audio/effects/,gain.cpp distortion.cpp reverb.cpp gate.cpp native_kernels.cpp native_graph.cpp)
 RUNTIME_CPP_SRCS := $(filter-out $(BOOTLOADER_SRC) $(RUNTIME_MAIN_SRC) $(WATCHDOG_SRC) $(PLUGIN_WORKER_SRC) $(DSP_STATELESS_SRCS),$(CPP_SRCS))
 RUNTIME_SRCS := $(RUNTIME_CPP_SRCS)
 RUNTIME_COMPILER := $(CXX)
@@ -312,6 +312,17 @@ RUNTIME_MAIN_OBJ := $(patsubst src/%.cpp,$(RUNTIME_OBJ_DIR)/%.o,$(RUNTIME_MAIN_S
 WATCHDOG_OBJ := $(patsubst src/%.cpp,$(RUNTIME_OBJ_DIR)/%.o,$(WATCHDOG_SRC))
 BOOTLOADER_OBJS := $(patsubst src/%.cpp,$(BOOTLOADER_OBJ_DIR)/%.o,$(BOOTLOADER_SRCS))
 RUNTIME_DEPS_FILES := $(RUNTIME_OBJS:.o=.d) $(RUNTIME_MAIN_OBJ:.o=.d) $(WATCHDOG_OBJ:.o=.d)
+RUNTIME_VERSION_FILE := $(RUNTIME_OBJ_DIR)/audiox-version
+
+.PHONY: force-runtime-version
+force-runtime-version:
+
+$(RUNTIME_VERSION_FILE): force-runtime-version
+	@mkdir -p "$(dir $@)"
+	@printf '%s\n' "$(AUDIOX_VERSION_STRING)" > "$@.tmp"
+	@if cmp -s "$@.tmp" "$@"; then rm -f "$@.tmp"; else mv "$@.tmp" "$@"; fi
+
+$(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ) $(WATCHDOG_OBJ): $(RUNTIME_VERSION_FILE)
 BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
 
@@ -558,7 +569,6 @@ $(RUNTIME_OBJ_DIR)/%.o: src/%.cpp
 $(addprefix $(RUNTIME_OBJ_DIR)/audio/effects/,dynamics.o equalizer.o noise_reduction.o): RUNTIME_FLAGS += -Wno-unused-function
 
 # Runtime objects include ALSA, SBC, and Lua headers, so their build-only
-# dependencies must exist before compilation starts.
 $(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ): | $(RUNTIME_DEPS) $(SBC_STATIC_LIB) $(SBC_HEADER) $(LUA_STATIC_LIB) $(LUA_HEADERS)
 
 $(BOOTLOADER_ROOTFS_DIR)/init: $(BOOTLOADER_OBJS)
@@ -587,19 +597,19 @@ $(ROOTFS_DIR)/sbin/audiox-plugin-worker: $(PLUGIN_WORKER_SRC) include/audio/plug
 $(GRAPH_LLVM_ROOT)/ready: tools/build/build_graph_llvm.sh
 	bash "$<" "$(GRAPH_LLVM_ROOT)" "$(CC)" "$(CXX)"
 
-$(GRAPH_COMPILER_BIN): tools/build/graph-compiler.cpp include/audio/graph_native.hpp $(GRAPH_LLVM_ROOT)/ready
+$(GRAPH_COMPILER_BIN): tools/build/graph-compiler.cpp include/audio/graph_native.hpp include/audio/graph_block.hpp include/audio/effects/native.hpp $(GRAPH_LLVM_ROOT)/ready
 	@mkdir -p "$(dir $@)"
 	$(CXX) $(CXXFLAGS) -I"$(GRAPH_LLVM_ROOT)/source/llvm/include" \
 		-I"$(GRAPH_LLVM_ROOT)/build/include" -o "$@" "$<" \
 		-Wl,--start-group $(wildcard $(GRAPH_LLVM_ROOT)/build/lib/libLLVM*.a) -Wl,--end-group $(LIBS) -ldl
 
-$(HOST_GRAPH_COMPILER): tools/build/graph-compiler.cpp include/audio/graph_native.hpp
+$(HOST_GRAPH_COMPILER): tools/build/graph-compiler.cpp include/audio/graph_native.hpp include/audio/graph_block.hpp include/audio/effects/native.hpp
 	@mkdir -p "$(dir $@)"
 	@command -v "$(HOST_LLVM_CONFIG)" >/dev/null || { echo "LLVM development files required for native graph tests"; exit 1; }
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude $$($(HOST_LLVM_CONFIG) --cflags) -std=c++17 -o "$@" "$<" \
 		$$($(HOST_LLVM_CONFIG) --ldflags --libs core nativecodegen object runtimedyld executionengine passes --system-libs)
 
-$(DSP_BITCODE_DIR)/%.bc: src/audio/effects/%.cpp $(wildcard include/audio/effects/*.hpp) include/defs.hpp Makefile $(AUDIOX_CONFIG_FILE)
+$(DSP_BITCODE_DIR)/%.bc: src/audio/effects/%.cpp $(wildcard include/audio/effects/*.hpp) include/audio/graph_block.hpp include/defs.hpp Makefile $(AUDIOX_CONFIG_FILE)
 	@mkdir -p "$(dir $@)"
 	@command -v "$(DSP_CLANGXX)" >/dev/null || { echo "LLVM 21 Clang required for target DSP bitcode (DSP_CLANGXX)"; exit 1; }
 	$(DSP_CLANGXX) --target=aarch64-linux-gnu --gcc-toolchain=/usr -std=c++17 -O1 \
@@ -607,7 +617,7 @@ $(DSP_BITCODE_DIR)/%.bc: src/audio/effects/%.cpp $(wildcard include/audio/effect
 		-DAUDIOX_DSP_BITCODE -DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) -DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) \
 		-Iinclude -emit-llvm -c "$<" -o "$@"
 
-$(HOST_DSP_BITCODE_DIR)/%.bc: src/audio/effects/%.cpp $(wildcard include/audio/effects/*.hpp) include/defs.hpp Makefile
+$(HOST_DSP_BITCODE_DIR)/%.bc: src/audio/effects/%.cpp $(wildcard include/audio/effects/*.hpp) include/audio/graph_block.hpp include/defs.hpp Makefile
 	@mkdir -p "$(dir $@)"
 	$(HOST_CLANGXX) -std=c++17 -O1 -fPIC -fno-exceptions -fno-rtti -fno-stack-protector -ffp-contract=off \
 		-fno-unwind-tables -fno-asynchronous-unwind-tables -DAUDIOX_DSP_BITCODE \

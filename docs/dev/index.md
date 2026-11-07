@@ -139,8 +139,10 @@ The firmware automatically requests native compilation after rebuilding a
 graph. A non-realtime compiler thread launches `/sbin/audiox-graph-compiler`,
 which links the shipped built-in DSP bitcode, optimizes it at O3 for the
 device's CPU, specializes its frame loops to the configured block size, and
-generates native code alongside the graph schedule. This recompiles all eleven
-built-ins, not just scheduling callbacks. LLVM itself stays outside the main
+generates a single native graph containing routing, mixing, bypass/silence
+handling, and direct built-in DSP calls. Route endpoints and node indices are
+compile-time constants; the graph helpers are inlined into its entry point.
+This recompiles all eleven built-ins, not just scheduling callbacks. LLVM itself stays outside the main
 runtime. There is no build flag and no user-authored compiled effect language.
 
 Code is adopted at a block boundary; stale generations never run against a new
@@ -158,12 +160,21 @@ existing behavior. Failed compilation or a ten-second timeout is explicitly
 logged; a subsequent graph rebuild can retry. Rapid route changes can coalesce.
 Expect temporary silence on routed effects after startup and routing saves.
 
-Parameter changes do not recompile the graph. The generated calls still use
-the existing routing, DSP state, clipping, bypass, meters, and plugin-worker
-behavior; audio processing stays in the existing thread. Native DSP functions
-are selected through a per-audio-thread function table. Routing and node
-lifecycle still use callbacks; this does not yet fuse entire effect chains into
-one sample loop. Conservative floating-point behavior is retained (no blanket
+Parameter changes do not recompile the graph. Before processing, the runtime
+prepares a persistent block view with current gains/parameters and state pointers.
+It then calls the native graph once. The generated
+graph routes and mixes buffers and calls DSP implementations directly, without
+per-route or built-in-effect callbacks into main. Effect-type selection remains
+inside native code so live type changes retain their behavior. The only processing
+callback is the intentional boundary to the isolated plugin worker.
+
+Tail/release checks execute inside the native graph only when a channel is silent,
+using shared helpers also used by the reference path.
+Device I/O, state reset/control preparation, whole-engine sleep decisions,
+and meter publication remain in the runtime. The per-thread DSP table is retained
+for host reference/failure-path tests, not used to dispatch built-ins in a ready
+production graph. This enables joint optimization but does not guarantee fusion
+of entire effect chains into one sample loop. Conservative floating-point behavior is retained (no blanket
 fast-math). Compilation can contend for CPU/memory bandwidth, and no reduction
 in X-runs is established without measurements on a Pi.
 
@@ -174,12 +185,19 @@ Adoption logging happens on the compiler thread, not in the audio callback.
 Run `make test-graph-native test-audio-runtime` for generated-code lifecycle
 and all-kernel output/state-continuity comparisons, and
 `make test-graph-native-tsan` for compiler mailbox/code-retirement race checks.
-`test-audio-runtime` runs both reference and runtime-only DSP variants covering
+`test-audio-runtime` runs both reference and direct-native-graph variants covering
 stereo mixing, effect tails, idle behavior, plugins, and missing-code silence.
+The native graph tests also compare a fan-in/gain/distortion chain with reference
+audio while forbidding routing/DSP callbacks.
 Reference kernels exist only in host test executables. Build prerequisites and the LLVM source cache are
 described in the [build guide](../guide/development#linux-build-prerequisites).
 
 ## Tests and continuous integration
+
+Runtime objects depend on a content-tracked version stamp. Changing the Makefile
+version or command-line `AUDIOX_VERSION_*` overrides rebuilds the runtime so
+the API/UI version matches the packaged version; unchanged versions leave
+incremental builds intact. Check the selected version with `make print-version`.
 
 Test targets live in `tests/Makefile`, included by the root Makefile:
 

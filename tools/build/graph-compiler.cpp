@@ -105,7 +105,7 @@ bool compile(const CompileRequest &request, const char *directory) {
     LLVMContextRef context = LLVMContextCreate();
     LLVMModuleRef module = LLVMModuleCreateWithNameInContext("audiox_graph", context);
     const char *sources[]{"gain", "distortion", "pitch", "reverb", "gate", "dynamics",
-                          "equalizer", "noise_reduction", "native_kernels"};
+                          "equalizer", "noise_reduction", "native_kernels", "native_graph"};
     bool ok = true;
     for (const char *source : sources) {
         const std::string path = std::string(directory) + "/" + source + ".bc";
@@ -146,9 +146,26 @@ bool compile(const CompileRequest &request, const char *directory) {
     LLVMPositionBuilderAtEnd(builder, LLVMAppendBasicBlockInContext(context, entry, "entry"));
     for (unsigned i = 0; i < schedule.count; ++i) {
         const auto &op = schedule.operations[i];
-        LLVMValueRef values[]{LLVMGetParam(entry, 0), LLVMConstInt(integer, op.index, false)};
-        LLVMBuildCall2(builder, callback,
-            LLVMGetParam(entry, op.kind == OperationKind::Route ? 1 : 2), values, 2, "");
+        if (schedule.direct) {
+            if (op.kind == OperationKind::Route) {
+                const auto &route = schedule.routes[op.index];
+                LLVMValueRef fn = LLVMGetNamedFunction(module, "audiox_native_route");
+                LLVMValueRef values[]{LLVMGetParam(entry, 0), LLVMConstInt(integer, route.src, false),
+                    LLVMConstInt(integer, route.dst, false), LLVMConstInt(integer, route.srcChannel, false),
+                    LLVMConstInt(integer, route.dstChannel, false)};
+                if (!fn) { ok = false; break; }
+                LLVMBuildCall2(builder, LLVMGlobalGetValueType(fn), fn, values, 5, "");
+            } else {
+                LLVMValueRef fn = LLVMGetNamedFunction(module, "audiox_native_node");
+                LLVMValueRef values[]{LLVMGetParam(entry, 0), LLVMConstInt(integer, op.index, false)};
+                if (!fn) { ok = false; break; }
+                LLVMBuildCall2(builder, LLVMGlobalGetValueType(fn), fn, values, 2, "");
+            }
+        } else {
+            LLVMValueRef values[]{LLVMGetParam(entry, 0), LLVMConstInt(integer, op.index, false)};
+            LLVMBuildCall2(builder, callback,
+                LLVMGetParam(entry, op.kind == OperationKind::Route ? 1 : 2), values, 2, "");
+        }
     }
     LLVMBuildRetVoid(builder);
     for (const auto &setting : {std::pair<const char *, uint32_t>{"audiox_dsp_sample_rate", schedule.sampleRate},
@@ -164,6 +181,10 @@ bool compile(const CompileRequest &request, const char *directory) {
     // implementations into their typed wrappers and eliminate unused helpers.
     for (LLVMValueRef fn = LLVMGetFirstFunction(module); fn; fn = LLVMGetNextFunction(fn)) {
         const char *name = LLVMGetValueName(fn);
+        if (!std::strncmp(name, "audiox_native_", 14)) {
+            const unsigned kind = LLVMGetEnumAttributeKindForName("alwaysinline", 12);
+            LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, LLVMCreateEnumAttribute(context, kind, 0));
+        }
         LLVMRemoveStringAttributeAtIndex(fn, LLVMAttributeFunctionIndex, "target-cpu", 10);
         LLVMRemoveStringAttributeAtIndex(fn, LLVMAttributeFunctionIndex, "target-features", 15);
         if (!std::strncmp(name, "audiox_dsp_", 11) && LLVMCountParams(fn) == 6)
@@ -256,6 +277,14 @@ int main(int argc, char **argv) {
             op.index >= (op.kind == OperationKind::Route ? 256U : 64U)) {
             std::fprintf(stderr, "[GRAPH] invalid compiler operation\n");
             return 1;
+        }
+        if (request.schedule.direct && op.kind == OperationKind::Route) {
+            const auto &route = request.schedule.routes[op.index];
+            if (route.src >= kGraphNodes || route.dst >= kGraphNodes ||
+                route.srcChannel >= kGraphChannels || route.dstChannel >= kGraphChannels) {
+                std::fprintf(stderr, "[GRAPH] invalid direct route\n");
+                return 1;
+            }
         }
     }
     const bool ok = compile(request, argv[1]);

@@ -2230,6 +2230,8 @@ static audiox::graph::Schedule nativeSchedule(const RuntimeGraph &rt) {
     static_assert(audiox::graph::kMaxOperations == 2 * AUDIO_GRAPH_MAX_EDGES + AUDIO_GRAPH_MAX_THINGS);
     audiox::graph::Schedule schedule{};
     schedule.generation = rt.snapshot.generation;
+    schedule.frames = BUFFER_FRAMES;
+    schedule.sampleRate = SAMPLE_RATE;
     for (uint16_t i = 0; i < rt.sourceRouteCount; ++i)
         schedule.operations[schedule.count++] = {audiox::graph::OperationKind::Route, i};
     for (uint16_t i = 0; i < rt.processNodeCount; ++i) {
@@ -2425,7 +2427,8 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt, AlsaCaptureBa
     } else {
         ++rt->dspBlocksProcessed;
         NativeBlockContext block{ctx, rt};
-        if (!native || !native->execute(rt->snapshot.generation, &block, nativeRoute, nativeNode)) {
+        if (!native || !native->execute(rt->snapshot.generation, &block, nativeRoute, nativeNode,
+                                        audiox::effects::setCompiledDsp)) {
             for (uint16_t i = 0; i < rt->sourceRouteCount; ++i) {
                 routeCompiledEdge(ctx, rt, rt->sourceRoutes[i]);
             }

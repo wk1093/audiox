@@ -32,5 +32,5 @@ cmake -S "$SOURCE/llvm" -B "$BUILD" -G Ninja \
     -DLLVM_ENABLE_CURL=OFF -DLLVM_ENABLE_TERMINFO=OFF \
     -DLLVM_ENABLE_RTTI=OFF -DLLVM_ENABLE_EH=OFF
 cmake --build "$BUILD" --parallel "${LLVM_BUILD_JOBS:-2}" \
-    --target LLVMAArch64CodeGen LLVMCore LLVMObject
+    --target LLVMAArch64CodeGen LLVMCore LLVMObject LLVMRuntimeDyld LLVMExecutionEngine LLVMPasses
 touch "$ROOT/ready"

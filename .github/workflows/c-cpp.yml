@@ -98,7 +98,7 @@ jobs:
         with:
           node-version: '22'
       - name: Install host test dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libasound2-dev libncurses-dev libsbc-dev jq llvm-dev
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libasound2-dev libncurses-dev libsbc-dev jq llvm-dev clang
       - name: Run regression suites
         run: make test
       - name: Check graph publication with ThreadSanitizer
@@ -107,7 +107,7 @@ jobs:
   build:
     name: Build AudioX (${{ matrix.board }})
     needs: [prepare, test]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -188,6 +188,13 @@ jobs:
             pkg-config \
             cmake \
             ninja-build
+          curl -fsSL --retry 3 --connect-timeout 20 https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /usr/share/keyrings/audiox-llvm.asc > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/audiox-llvm.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+            | sudo tee /etc/apt/sources.list.d/audiox-llvm.list
+          sudo apt-get update
+          sudo apt-get install -y clang-21
+          echo "DSP_CLANGXX=clang++-21" >> "$GITHUB_ENV"
 
       - name: Configure ${{ matrix.board }} defaults
         run: make ${{ matrix.config }}

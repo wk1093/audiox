@@ -168,6 +168,7 @@ bool noiseReductionHasPendingAudio(const NoiseReductionState &state, float thres
 
 uint32_t noiseReductionLatencyFrames() { return NoiseReductionState::kLatencyFrames; }
 
+#ifndef AUDIOX_DSP_RUNTIME_ONLY
 void processNoiseReduction(const float *in, float *out, uint32_t frames, float reductionDb,
                            float noiseFloorDb, float adaptation, float smoothing, float mix,
                            float outputGain, NoiseReductionState *state) {
@@ -227,4 +228,5 @@ void processNoiseReduction(const float *in, float *out, uint32_t frames, float r
     }
 }
 
+#endif
 } // namespace audiox::effects

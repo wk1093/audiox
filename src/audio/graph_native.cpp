@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
+#include <cmath>
+#include <cstdlib>
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
@@ -48,17 +50,28 @@ bool transfer(int fd, void *data, size_t size, bool writing, Clock::time_point d
 }
 }
 
-NativeGraph::NativeGraph(const char *compiler) : compiler_(compiler) {
+NativeGraph::NativeGraph(const char *compiler, const char *bitcode) : compiler_(compiler), bitcode_(bitcode) {
+    if (sem_init(&wake_, 0, 0)) {
+        std::fprintf(stderr, "[GRAPH] [ERR] compiler wakeup: %s; built-in DSP muted\n", std::strerror(errno));
+        return;
+    }
+    wakeInitialized_ = true;
     running_.store(true);
     const int result = pthread_create(&thread_, nullptr, threadMain, this);
     if (result) {
         running_.store(false);
-        std::fprintf(stderr, "[GRAPH] [ERR] compiler thread: %s; using existing executor\n",
+        std::fprintf(stderr, "[GRAPH] [ERR] compiler thread: %s; built-in DSP muted\n",
                      std::strerror(result));
     }
 }
 NativeGraph::~NativeGraph() {
-    if (running_.exchange(false)) pthread_join(thread_, nullptr);
+    if (running_.exchange(false)) {
+        if (sem_post(&wake_))
+            std::fprintf(stderr, "[GRAPH] [ERR] stop compiler wakeup: %s\n", std::strerror(errno));
+        pthread_join(thread_, nullptr);
+    }
+    if (wakeInitialized_ && sem_destroy(&wake_))
+        std::fprintf(stderr, "[GRAPH] [ERR] release compiler wakeup: %s\n", std::strerror(errno));
     for (auto &program : programs_) clear(program);
 }
 void NativeGraph::clear(Program &program) {
@@ -68,26 +81,55 @@ void NativeGraph::clear(Program &program) {
 }
 void NativeGraph::request(const Schedule &schedule) {
     requests_[requestBack_] = schedule;
-    requestBack_ = requestMiddle_.exchange(requestBack_ | 4U, std::memory_order_acq_rel) & 3U;
+    const unsigned previous = requestMiddle_.exchange(requestBack_ | 4U, std::memory_order_acq_rel);
+    requestBack_ = previous & 3U;
+    if (!(previous & 4U) && wakeInitialized_ && sem_post(&wake_))
+        std::fprintf(stderr, "[GRAPH] [ERR] wake compiler: %s\n", std::strerror(errno));
 }
-bool NativeGraph::execute(uint32_t generation, void *context, Callback route, Callback node) {
+bool NativeGraph::execute(uint32_t generation, void *context, Callback route, Callback node,
+                         void (*activate)(const audiox::effects::DspTable *)) {
     if (programMiddle_.load(std::memory_order_acquire) & 4U)
         programFront_ = programMiddle_.exchange(programFront_, std::memory_order_acq_rel) & 3U;
     const auto &program = programs_[programFront_];
-    if (!program.memory || program.generation != generation) return false;
-    reinterpret_cast<NativeEntry>(program.memory)(context, route, node);
+    const bool ready = program.memory && program.generation == generation;
+    const uint32_t active = ready ? generation : 0;
+    if (activeGeneration_.load(std::memory_order_relaxed) != active)
+        activeGeneration_.store(active, std::memory_order_release);
+    if (activate) activate(ready ? &program.dsp : nullptr);
+    if (!ready) return false;
+    program.entry(context, route, node);
     return true;
+}
+const audiox::effects::DspTable *NativeGraph::dsp(uint32_t generation) const {
+    const auto &program = programs_[programFront_];
+    return program.memory && program.generation == generation ? &program.dsp : nullptr;
 }
 void *NativeGraph::threadMain(void *opaque) {
     auto &self = *static_cast<NativeGraph *>(opaque);
+    uint32_t loggedGeneration = 0;
     while (self.running_.load(std::memory_order_acquire)) {
+        const uint32_t active = self.activeGeneration_.load(std::memory_order_acquire);
+        if (active != loggedGeneration) {
+            if (active) std::printf("[GRAPH] [INFO] audio adopted native DSP generation %u\n", active);
+            else std::printf("[GRAPH] [WARN] waiting for current native graph; built-in DSP muted\n");
+            loggedGeneration = active;
+        }
         if (self.requestMiddle_.load(std::memory_order_acquire) & 4U) {
             self.requestFront_ = self.requestMiddle_.exchange(self.requestFront_,
                 std::memory_order_acq_rel) & 3U;
             self.compile(self.requests_[self.requestFront_]);
         } else {
-            timespec delay{0, 10000000};
-            nanosleep(&delay, nullptr);
+            timespec deadline{};
+            clock_gettime(CLOCK_REALTIME, &deadline);
+            deadline.tv_nsec += 100000000;
+            if (deadline.tv_nsec >= 1000000000) {
+                ++deadline.tv_sec;
+                deadline.tv_nsec -= 1000000000;
+            }
+            int result;
+            do { result = sem_timedwait(&self.wake_, &deadline); } while (result && errno == EINTR);
+            if (result && errno != ETIMEDOUT)
+                std::fprintf(stderr, "[GRAPH] [ERR] wait for compiler request: %s\n", std::strerror(errno));
         }
     }
     return nullptr;
@@ -95,9 +137,11 @@ void *NativeGraph::threadMain(void *opaque) {
 void NativeGraph::compile(const Schedule &schedule) {
     const auto started = Clock::now();
     if (!schedule.generation || schedule.count > kMaxOperations) {
-        std::fprintf(stderr, "[GRAPH] [ERR] invalid schedule; using existing executor\n");
+        std::fprintf(stderr, "[GRAPH] [ERR] invalid schedule; built-in DSP muted\n");
         return;
     }
+    std::printf("[GRAPH] [INFO] compiling native DSP generation %u; enabled built-ins muted until ready\n",
+                schedule.generation);
     int sockets[2];
     if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets)) {
         std::fprintf(stderr, "[GRAPH] [ERR] compiler socket: %s\n", std::strerror(errno));
@@ -124,37 +168,78 @@ void NativeGraph::compile(const Schedule &schedule) {
         if (!result) result = posix_spawn_file_actions_adddup2(&actions, sockets[1], STDOUT_FILENO);
         if (!result) result = posix_spawn_file_actions_addclose(&actions, sockets[0]);
         pid_t child{};
-        char *arguments[]{const_cast<char *>(compiler_), nullptr};
+        char *arguments[]{const_cast<char *>(compiler_), const_cast<char *>(bitcode_), nullptr};
         if (!result) result = posix_spawn(&child, compiler_, &actions, nullptr, arguments, environ);
         posix_spawn_file_actions_destroy(&actions);
         close(sockets[1]);
         if (!result) {
             NativeHeader header{};
-            Schedule request = schedule;
-            const auto deadline = Clock::now() + std::chrono::seconds(10);
-            bool ok = transfer(sockets[0], &request, sizeof(request), true, deadline) &&
-                      transfer(sockets[0], &header, sizeof(header), false, deadline);
+            CompileRequest request{};
+            request.schedule = schedule;
             Program candidate{};
+            candidate.memory = mmap(nullptr, kMaxNativeBytes, PROT_NONE,
+                                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            if (candidate.memory == MAP_FAILED) candidate.memory = nullptr;
+            candidate.size = kMaxNativeBytes;
+            candidate.generation = schedule.generation;
+            request.address = reinterpret_cast<uintptr_t>(candidate.memory);
+#define IMPORT(symbol) \
+            std::strcpy(request.imports[request.importCount].name, #symbol); \
+            request.imports[request.importCount++].address = reinterpret_cast<uintptr_t>(&::symbol)
+            IMPORT(memcpy); IMPORT(memmove); IMPORT(memset);
+            IMPORT(exp); IMPORT(expf); IMPORT(pow); IMPORT(powf);
+            IMPORT(log); IMPORT(logf); IMPORT(log10); IMPORT(log10f);
+            IMPORT(sin); IMPORT(sinf); IMPORT(cos); IMPORT(cosf);
+            IMPORT(tan); IMPORT(tanf); IMPORT(sincos); IMPORT(sincosf);
+            IMPORT(sqrt); IMPORT(sqrtf); IMPORT(atan2); IMPORT(atan2f);
+            IMPORT(remainder); IMPORT(remainderf); IMPORT(fmod); IMPORT(fmodf);
+            IMPORT(fmaxf); IMPORT(fminf); IMPORT(floorf); IMPORT(ceilf);
+            IMPORT(roundf); IMPORT(truncf);
+            IMPORT(exp2); IMPORT(exp2f); IMPORT(log2); IMPORT(log2f);
+            IMPORT(tanh); IMPORT(tanhf); IMPORT(floor); IMPORT(ceil);
+            IMPORT(lround); IMPORT(lroundf); IMPORT(nextafterf);
+#undef IMPORT
+            const auto deadline = Clock::now() + std::chrono::seconds(10);
+            bool ok = candidate.memory &&
+                      transfer(sockets[0], &request, sizeof(request), true, deadline) &&
+                      transfer(sockets[0], &header, sizeof(header), false, deadline);
             if (ok && (header.magic != kNativeMagic || !header.size || header.size > kMaxNativeBytes)) {
                 errno = EINVAL;
                 ok = false;
             }
             if (ok) {
-                candidate.size = header.size;
-                candidate.generation = schedule.generation;
-                candidate.memory = mmap(nullptr, header.size, PROT_READ | PROT_WRITE,
-                                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-                if (candidate.memory == MAP_FAILED) {
-                    candidate.memory = nullptr;
-                    ok = false;
-                } else {
-                    ok = transfer(sockets[0], candidate.memory, header.size, false, deadline);
+                if (header.entryOffset >= header.size) ok = false;
+                for (auto offset : header.dspOffsets) {
+                    if (offset >= header.size) ok = false;
+                }
+                if (!ok) errno = EINVAL;
+                else {
+                    const long pageSize = sysconf(_SC_PAGESIZE);
+                    if (pageSize <= 0) {
+                        errno = EINVAL;
+                        ok = false;
+                    } else {
+                        const auto retained = static_cast<uint32_t>(
+                            (header.size + pageSize - 1) / pageSize * pageSize);
+                        if (retained < kMaxNativeBytes &&
+                            munmap(static_cast<char *>(candidate.memory) + retained, kMaxNativeBytes - retained)) {
+                            ok = false;
+                        } else {
+                            candidate.size = retained;
+                            ok = mprotect(candidate.memory, candidate.size, PROT_READ | PROT_WRITE) == 0 &&
+                                 transfer(sockets[0], candidate.memory, header.size, false, deadline);
+                        }
+                    }
                 }
             }
             if (ok) {
                 __builtin___clear_cache(static_cast<char *>(candidate.memory),
-                                        static_cast<char *>(candidate.memory) + candidate.size);
+                                        static_cast<char *>(candidate.memory) + header.size);
                 ok = mprotect(candidate.memory, candidate.size, PROT_READ | PROT_EXEC) == 0;
+                const auto base = reinterpret_cast<uintptr_t>(candidate.memory);
+                candidate.entry = reinterpret_cast<NativeEntry>(base + header.entryOffset);
+                for (unsigned i = 0; i < audiox::effects::kBuiltinDspCount; ++i)
+                    candidate.dsp.entries[i] = reinterpret_cast<audiox::effects::DspEntry>(base + header.dspOffsets[i]);
             }
             int error = errno;
             close(sockets[0]);
@@ -190,7 +275,7 @@ void NativeGraph::compile(const Schedule &schedule) {
             }
             if (!ok) {
                 clear(candidate);
-                std::fprintf(stderr, "[GRAPH] [ERR] compile generation %u: %s; using existing executor\n",
+                std::fprintf(stderr, "[GRAPH] [ERR] compile generation %u: %s; built-in DSP muted\n",
                              schedule.generation, std::strerror(error));
                 return;
             }
@@ -200,8 +285,8 @@ void NativeGraph::compile(const Schedule &schedule) {
                                                    std::memory_order_acq_rel) & 3U;
             const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
                 Clock::now() - started).count();
-            std::printf("[GRAPH] [INFO] LLVM compiled generation %u: %u operations, %u bytes in %lld us\n",
-                        schedule.generation, schedule.count, candidate.size,
+            std::printf("[GRAPH] [INFO] LLVM compiled DSP generation %u: %u operations, %u bytes in %lld us\n",
+                        schedule.generation, schedule.count, header.size,
                         static_cast<long long>(elapsed));
             return;
         }
@@ -209,7 +294,7 @@ void NativeGraph::compile(const Schedule &schedule) {
         close(sockets[1]);
     }
     close(sockets[0]);
-    std::fprintf(stderr, "[GRAPH] [ERR] launch compiler: %s; using existing executor\n",
+    std::fprintf(stderr, "[GRAPH] [ERR] launch compiler: %s; built-in DSP muted\n",
                  std::strerror(result));
 }
 } // namespace audiox::graph

@@ -81,6 +81,7 @@ double pendingThreshold(float value) {
 
 } // namespace
 
+#ifndef AUDIOX_DSP_RUNTIME_ONLY
 void processCompressor(const float *in, float *out, uint32_t frames, float thresholdDb, float ratio,
                        float attackMs, float releaseMs, float kneeDb, float makeupDb, float mix,
                        CompressorState *state) {
@@ -194,6 +195,7 @@ void processMultibandCompressor(const float *in, float *out, uint32_t frames, fl
     }
 }
 
+#endif
 void resetCompressor(CompressorState *state) {
     if (state)
         *state = {};

@@ -391,33 +391,36 @@ $(OUT_DIR)/host/audiox-mdns-test: tests/native/system/mdns_test.cpp src/http/mdn
 test-gadget-volume: $(OUT_DIR)/host/audiox-gadget-volume-test
 	@"$<"
 
-test-audio-runtime: $(OUT_DIR)/host/audiox-audio-runtime-test $(OUT_DIR)/host/audiox-plugin-worker $(OUT_DIR)/host/plugins/plugin-fixture-0.so $(HOST_GRAPH_COMPILER)
-	@"$<" "$(HOST_GRAPH_COMPILER)"
+test-audio-runtime: $(OUT_DIR)/host/audiox-audio-runtime-test $(OUT_DIR)/host/audiox-audio-runtime-native-test $(OUT_DIR)/host/audiox-plugin-worker $(OUT_DIR)/host/plugins/plugin-fixture-0.so $(HOST_GRAPH_COMPILER) $(HOST_DSP_BITCODE_FILES)
+	@"$<" "$(HOST_GRAPH_COMPILER)" "$(HOST_DSP_BITCODE_DIR)"
+	@"$(OUT_DIR)/host/audiox-audio-runtime-native-test" "$(HOST_GRAPH_COMPILER)" "$(HOST_DSP_BITCODE_DIR)"
 
-$(OUT_DIR)/host/audiox-audio-runtime-test: tests/native/audio/audio_runtime_test.cpp src/audio/processing.cpp src/audio/processing_fx.cpp src/audio/gadget_volume.cpp src/audio/graph_native.cpp $(AUDIO_EFFECT_SRCS) $(wildcard include/audio/*.hpp include/audio/*.h include/audio/effects/*.hpp) $(AUDIOX_CONFIG_FILE)
+$(OUT_DIR)/host/audiox-audio-runtime-test $(OUT_DIR)/host/audiox-audio-runtime-native-test: tests/native/audio/audio_runtime_test.cpp src/audio/processing.cpp src/audio/processing_fx.cpp src/audio/gadget_volume.cpp src/audio/graph_native.cpp $(AUDIO_EFFECT_SRCS) $(wildcard include/audio/*.hpp include/audio/*.h include/audio/effects/*.hpp) $(AUDIOX_CONFIG_FILE) tests/Makefile
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-function -Wno-format-truncation -Wno-unused-parameter \
+		$(if $(filter %/audiox-audio-runtime-native-test,$@),-DAUDIOX_DSP_RUNTIME_ONLY,) \
 		-Iinclude -DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) -DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections -o "$@" \
 		tests/native/audio/audio_runtime_test.cpp src/audio/processing_fx.cpp src/audio/gadget_volume.cpp src/audio/graph_native.cpp \
-		$(AUDIO_EFFECT_SRCS) $(shell pkg-config --cflags --libs alsa) -pthread -lm
+		$(if $(filter %/audiox-audio-runtime-native-test,$@),$(filter-out $(DSP_STATELESS_SRCS),$(AUDIO_EFFECT_SRCS)),$(AUDIO_EFFECT_SRCS)) $(shell pkg-config --cflags --libs alsa) -pthread -lm
 
 .PHONY: test-graph-native test-graph-native-tsan
 test-native: test-graph-native
-test-graph-native: $(OUT_DIR)/host/audiox-graph-native-test $(HOST_GRAPH_COMPILER)
-	@"$<" "$(HOST_GRAPH_COMPILER)"
+DSP_REFERENCE_SRCS = $(DSP_BITCODE_SRCS)
+test-graph-native: $(OUT_DIR)/host/audiox-graph-native-test $(HOST_GRAPH_COMPILER) $(HOST_DSP_BITCODE_FILES)
+	@"$<" "$(HOST_GRAPH_COMPILER)" "$(HOST_DSP_BITCODE_DIR)"
 
-$(OUT_DIR)/host/audiox-graph-native-test: tests/native/audio/graph_native_test.cpp src/audio/graph_native.cpp include/audio/graph_native.hpp
+$(OUT_DIR)/host/audiox-graph-native-test: tests/native/audio/graph_native_test.cpp src/audio/graph_native.cpp include/audio/graph_native.hpp $(DSP_REFERENCE_SRCS) $(wildcard include/audio/effects/*.hpp)
 	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/native/audio/graph_native_test.cpp src/audio/graph_native.cpp -pthread
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/native/audio/graph_native_test.cpp src/audio/graph_native.cpp $(DSP_REFERENCE_SRCS) -pthread -lm
 
-test-graph-native-tsan: $(OUT_DIR)/host/audiox-graph-native-tsan $(HOST_GRAPH_COMPILER)
-	@"$<" "$(HOST_GRAPH_COMPILER)"
+test-graph-native-tsan: $(OUT_DIR)/host/audiox-graph-native-tsan $(HOST_GRAPH_COMPILER) $(HOST_DSP_BITCODE_FILES)
+	@"$<" "$(HOST_GRAPH_COMPILER)" "$(HOST_DSP_BITCODE_DIR)"
 
-$(OUT_DIR)/host/audiox-graph-native-tsan: tests/native/audio/graph_native_test.cpp src/audio/graph_native.cpp include/audio/graph_native.hpp
+$(OUT_DIR)/host/audiox-graph-native-tsan: tests/native/audio/graph_native_test.cpp src/audio/graph_native.cpp include/audio/graph_native.hpp $(DSP_REFERENCE_SRCS) $(wildcard include/audio/effects/*.hpp)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -O1 -g -fsanitize=thread -Iinclude -o "$@" \
-		tests/native/audio/graph_native_test.cpp src/audio/graph_native.cpp -pthread
+		tests/native/audio/graph_native_test.cpp src/audio/graph_native.cpp $(DSP_REFERENCE_SRCS) -pthread -lm
 
 $(OUT_DIR)/host/audiox-gadget-volume-test: tests/native/audio/gadget_volume_test.cpp src/audio/processing.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp src/audio/plugin_host.cpp src/audio/graph_native.cpp $(wildcard include/audio/*.hpp include/audio/*.h) $(AUDIOX_CONFIG_FILE)
 	@mkdir -p "$(dir $@)"

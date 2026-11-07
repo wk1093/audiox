@@ -882,7 +882,7 @@ static void testNativePlugin() {
     puts("Native plugin planar processing, stereo, bypass, sleep-reset, tails and retirement observation tests passed");
 }
 
-static void testCompiledSchedule(const char *compiler) {
+static void testCompiledSchedule(const char *compiler, const char *bitcode) {
     auto context = std::make_unique<AudioContext>(nullptr);
     auto runtime = std::make_unique<RuntimeGraph>();
     runtime->snapshot.generation = 17;
@@ -902,12 +902,12 @@ static void testCompiledSchedule(const char *compiler) {
     buildProcessRouteIndex(runtime.get());
     const auto schedule = nativeSchedule(*runtime);
     assert(schedule.count == 7);
-    audiox::graph::NativeGraph native(compiler);
+    audiox::graph::NativeGraph native(compiler, bitcode);
     native.request(schedule);
     NativeBlockContext block{context.get(), runtime.get()};
     clearRuntimeBuffers(runtime.get());
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!native.execute(schedule.generation, &block, nativeRoute, nativeNode)) {
+    while (!native.execute(schedule.generation, &block, nativeRoute, nativeNode, audiox::effects::setCompiledDsp)) {
         assert(std::chrono::steady_clock::now() < deadline);
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
@@ -944,7 +944,7 @@ static void testCompiledSchedule(const char *compiler) {
         for (unsigned channel = 0; channel < 2; ++channel)
             memcpy(expected[channel], runtime->inputs[3][channel], sizeof(expected[channel]));
         initialize();
-        assert(native.execute(schedule.generation, &block, nativeRoute, nativeNode));
+        assert(native.execute(schedule.generation, &block, nativeRoute, nativeNode, audiox::effects::setCompiledDsp));
         for (unsigned channel = 0; channel < 2; ++channel)
             assert(!memcmp(expected[channel], runtime->inputs[3][channel], sizeof(expected[channel])));
     }
@@ -953,7 +953,8 @@ static void testCompiledSchedule(const char *compiler) {
         const auto start = std::chrono::steady_clock::now();
         for (unsigned i = 0; i < 5000; ++i) {
             initialize();
-            if (compiled) assert(native.execute(schedule.generation, &block, nativeRoute, nativeNode));
+            if (compiled) assert(native.execute(schedule.generation, &block, nativeRoute, nativeNode,
+                                                audiox::effects::setCompiledDsp));
             else fallback();
         }
         return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -966,8 +967,30 @@ static void testCompiledSchedule(const char *compiler) {
 }
 
 int main(int argc, char **argv) {
-    assert(argc == 2);
-    testCompiledSchedule(argv[1]);
+    assert(argc == 3);
+#ifdef AUDIOX_DSP_RUNTIME_ONLY
+    audiox::graph::NativeGraph dspOwner(argv[1], argv[2]);
+    audiox::graph::Schedule dspSchedule{};
+    dspSchedule.generation = 1;
+    dspOwner.request(dspSchedule);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    const auto noop = [](void *, uint32_t) {};
+    while (!dspOwner.execute(1, nullptr, noop, noop, audiox::effects::setCompiledDsp)) {
+        assert(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+#endif
+    testCompiledSchedule(argv[1], argv[2]);
+#ifdef AUDIOX_DSP_RUNTIME_ONLY
+    audiox::effects::SlotParams missing{};
+    missing.enabled = 1;
+    missing.values[0] = 1;
+    float input[2]{.5f, -.5f}, output[2]{};
+    audiox::effects::setCompiledDsp(nullptr);
+    audiox::effects::processSlot("missing_code", 0, missing, input, output, 2);
+    assert(output[0] == 0 && output[1] == 0);
+    audiox::effects::setCompiledDsp(dspOwner.dsp(1));
+#endif
     {
         auto context = std::make_unique<AudioContext>(nullptr);
         auto runtime = std::make_unique<RuntimeGraph>();

@@ -137,28 +137,46 @@ before changing that boundary.
 
 The firmware automatically requests native compilation after rebuilding a
 graph. A non-realtime compiler thread launches `/sbin/audiox-graph-compiler`,
-which uses LLVM to generate straight-line native calls for that graph's route
-and node schedule. LLVM itself stays outside the main runtime. There is no
-build flag and no user-authored compiled effect language.
+which links the shipped built-in DSP bitcode, optimizes it at O3 for the
+device's CPU, specializes its frame loops to the configured block size, and
+generates native code alongside the graph schedule. This recompiles all eleven
+built-ins, not just scheduling callbacks. LLVM itself stays outside the main
+runtime. There is no build flag and no user-authored compiled effect language.
 
-The existing executor remains active until code for the exact graph generation
-is ready. Code is adopted at a block boundary; stale generations never run
-against a new graph. The compiler thread owns mapping and retirement, and
-executable mappings are read/execute, not writable. Compiler failure or a
-ten-second request timeout is logged and leaves the existing executor usable.
-Rapid route changes can coalesce to the newest request.
+Code is adopted at a block boundary; stale generations never run against a new
+graph. The compiler relocates code and constants for an address reserved by the
+runtime, using explicitly supplied math/memory function addresses. It never
+executes the generated DSP. The compiler thread owns mapping and retirement;
+executable mappings are read/execute, not writable. Mutable generated globals
+are rejected: effect state and the pitch FFT plan live in the main runtime and
+survive code replacement.
+
+**There is no compiled-in DSP fallback.** Until compilation for the exact
+generation succeeds, enabled built-ins requiring sample processing produce
+silence. Direct routes, bypass, Cut, and isolated native plugins retain their
+existing behavior. Failed compilation or a ten-second timeout is explicitly
+logged; a subsequent graph rebuild can retry. Rapid route changes can coalesce.
+Expect temporary silence on routed effects after startup and routing saves.
 
 Parameter changes do not recompile the graph. The generated calls still use
 the existing routing, DSP state, clipping, bypass, meters, and plugin-worker
-behavior; audio processing stays in the existing thread. This is schedule
-specialization, not DSP fusion or vectorization. It adds callback overhead and
-may not outperform the original loops; no reduction in X-runs is established
-without measurements on a Pi.
+behavior; audio processing stays in the existing thread. Native DSP functions
+are selected through a per-audio-thread function table. Routing and node
+lifecycle still use callbacks; this does not yet fuse entire effect chains into
+one sample loop. Conservative floating-point behavior is retained (no blanket
+fast-math). Compilation can contend for CPU/memory bandwidth, and no reduction
+in X-runs is established without measurements on a Pi.
+
+Logs distinguish `LLVM compiled DSP generation ...` (size and compile time)
+from `audio adopted native DSP generation ...` (actual audio-thread adoption).
+Adoption logging happens on the compiler thread, not in the audio callback.
 
 Run `make test-graph-native test-audio-runtime` for generated-code lifecycle
-and stereo output comparisons, and `make test-graph-native-tsan` for compiler
-mailbox/code-retirement race checks. Existing runtime tests cover effect tails,
-idle behavior, and plugins. Build prerequisites and the LLVM source cache are
+and all-kernel output/state-continuity comparisons, and
+`make test-graph-native-tsan` for compiler mailbox/code-retirement race checks.
+`test-audio-runtime` runs both reference and runtime-only DSP variants covering
+stereo mixing, effect tails, idle behavior, plugins, and missing-code silence.
+Reference kernels exist only in host test executables. Build prerequisites and the LLVM source cache are
 described in the [build guide](../guide/development#linux-build-prerequisites).
 
 ## Tests and continuous integration

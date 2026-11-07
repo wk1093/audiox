@@ -65,9 +65,14 @@ You also need Git to obtain the repository/dependencies. Image creation uses Lin
 Additional tools depend on the workflow:
 
 - Host audio tests: host ALSA development headers/library (Debian/Ubuntu: `libasound2-dev`).
-- Native graph tests: LLVM development headers/library and `llvm-config`
-  (Debian/Ubuntu: `llvm-dev`, LLVM 15 or newer). Override `HOST_LLVM_CONFIG`
-  if the executable is version-suffixed.
+- Native graph tests: LLVM development headers/library, `llvm-config`, and
+  matching Clang (Debian/Ubuntu: `llvm-dev clang`, LLVM 15 or newer).
+  Override `HOST_LLVM_CONFIG` and `HOST_CLANGXX` for version-suffixed tools.
+- Firmware DSP bitcode: **Clang 21**, matching the runtime LLVM 21 backend.
+  Set `DSP_CLANGXX=/path/to/clang++-21` if it is not found through
+  `llvm-config-21`. Ubuntu CI uses the signed [LLVM packages](https://apt.llvm.org/)
+  for Noble and sets `DSP_CLANGXX=clang++-21`. Newer Clang bitcode is not
+  interchangeable with an older LLVM runtime.
 - Firmware WebUI assets and JavaScript regressions: Node.js/npm. `make web_assets`
   installs the pinned `web/embedded/package-lock.json` packages with lifecycle scripts
   disabled and compiles the device target of the web UI (scripts and styles minified
@@ -88,7 +93,11 @@ disk space. Its default parallelism is two jobs; set `LLVM_BUILD_JOBS` to
 change it without changing the rest of the build. The statically linked
 `/sbin/audiox-graph-compiler` is included automatically, along with LLVM's
 license. Subsequent builds reuse the source and library cache. The host LLVM
-used by tests is independent of this target dependency.
+used by tests is independent of this target dependency. Effect sources build
+to LLVM bitcode under `out/dsp-bitcode` and ship in `/usr/share/audiox/dsp`;
+the production executable contains effect state/control handling, not the
+built-in sample-processing kernels. Each graph compilation optimizes and
+recompiles these kernels on the device. There is no compiled-in DSP fallback.
 
 ## Configure a board
 

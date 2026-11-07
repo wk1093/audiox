@@ -1,4 +1,5 @@
 #include "audio/effects/slot.hpp"
+#include "audio/effects/native.hpp"
 
 #include "defs.hpp"
 
@@ -18,6 +19,8 @@
 #include <string.h>
 
 namespace audiox::effects {
+namespace { thread_local const DspTable *compiledDsp = nullptr; }
+void setCompiledDsp(const DspTable *table) { compiledDsp = table; }
 
 namespace {
 
@@ -550,6 +553,29 @@ void processSlot(const char *effectId, uint8_t channel, const SlotParams &params
     SlotParams clamped = params;
     clampSlotParams(&clamped);
 
+#ifdef AUDIOX_DSP_RUNTIME_ONLY
+    if (!compiledDsp || clamped.type >= kBuiltinDspCount || !compiledDsp->entries[clamped.type]) {
+        memset(out, 0, sizeof(float) * frames);
+        return;
+    }
+    void *state = nullptr;
+    const void *plan = nullptr;
+    switch (clamped.type) {
+    case EFFECT_EQ: state = equalizerStates.find(effectId, channel); break;
+    case EFFECT_NOISE_REDUCTION: state = noiseStates.find(effectId, channel); break;
+    case EFFECT_COMPRESSOR: state = compressorStates.find(effectId, channel); break;
+    case EFFECT_LIMITER: state = limiterStates.find(effectId, channel); break;
+    case EFFECT_MULTIBAND: state = multibandStates.find(effectId, channel); break;
+    case EFFECT_REVERB: state = getReverbStateFor(effectId, channel); break;
+    case EFFECT_GATE: state = getGateStateFor(effectId, channel); break;
+    case EFFECT_PITCH:
+        state = pitchStateFor(effectId, channel);
+        plan = &getPitchPlan();
+        break;
+    default: break;
+    }
+    compiledDsp->entries[clamped.type](in, out, frames, clamped.values, state, plan);
+#else
     switch (clamped.type) {
     case EFFECT_EQ:
         processEqualizer(in, out, frames, clamped.values[0], clamped.values[1], clamped.values[2],
@@ -601,6 +627,7 @@ void processSlot(const char *effectId, uint8_t channel, const SlotParams &params
         processGain(in, out, frames, clamped.values[0]);
         return;
     }
+#endif
 }
 
 } // namespace audiox::effects

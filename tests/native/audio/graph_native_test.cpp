@@ -4,6 +4,19 @@
 #include <cstdio>
 #include <thread>
 #include <vector>
+#include <memory>
+#include <cmath>
+#include "audio/effects/pitch.hpp"
+#include "audio/effects/reverb.hpp"
+#include "audio/effects/gate.hpp"
+#include "audio/effects/dynamics.hpp"
+#include "audio/effects/equalizer.hpp"
+#include "audio/effects/noise_reduction.hpp"
+
+#define DECLARE(n) extern "C" void audiox_dsp_##n(const float *, float *, uint32_t, const float *, void *, const void *)
+DECLARE(0); DECLARE(1); DECLARE(2); DECLARE(3); DECLARE(4); DECLARE(5);
+DECLARE(6); DECLARE(7); DECLARE(8); DECLARE(9); DECLARE(10);
+#undef DECLARE
 
 using namespace audiox::graph;
 static void route(void *opaque, uint32_t index) {
@@ -25,15 +38,101 @@ static void waitFor(NativeGraph &graph, const Schedule &schedule) {
             (schedule.operations[i].kind == OperationKind::Node ? 1000 : 0));
     assert(actual == expected);
 }
+static void testDsp(NativeGraph &graph, Schedule &schedule) {
+        using namespace audiox::effects;
+        struct States {
+            PitchState pitch{};
+            ReverbState reverb{};
+            GateState gate{};
+            CompressorState compressor{};
+            LimiterState limiter{};
+            EqualizerState equalizer{};
+            MultibandCompressorState multiband{};
+            NoiseReductionState noise{};
+            void *get(unsigned type) {
+                switch (type) {
+                case 2:
+                    return &pitch;
+                case 3:
+                    return &reverb;
+                case 4:
+                    return &gate;
+                case 6:
+                    return &compressor;
+                case 7:
+                    return &limiter;
+                case 8:
+                    return &equalizer;
+                case 9:
+                    return &multiband;
+                case 10:
+                    return &noise;
+                default:
+                    return nullptr;
+                }
+            }
+        };
+        const DspEntry reference[]{audiox_dsp_0, audiox_dsp_1, audiox_dsp_2, audiox_dsp_3,
+                                   audiox_dsp_4, audiox_dsp_5, audiox_dsp_6, audiox_dsp_7,
+                                   audiox_dsp_8, audiox_dsp_9, audiox_dsp_10};
+        const float parameters[11][8]{{3},
+                                      {1, 4, .35f, 1},
+                                      {1, 5, 1, 1, .001f, 12000, 0},
+                                      {1, .64f, .48f, .26f},
+                                      {-40, 2, 160, 30},
+                                      {},
+                                      {-18, 4, 10, 120, 6, 0, 1},
+                                      {-1, 80, 3, 1},
+                                      {150, 3, 1000, -2, 6000, 4, 1, 1},
+                                      {200, 2500, -18, -18, -18, 4, 120, 0},
+                                      {12, -55, .1f, .7f, 1, 1}};
+        PitchPlan plan;
+        for (unsigned type = 0; type < kBuiltinDspCount; ++type) {
+            auto original = std::make_unique<States>();
+            auto compiled = std::make_unique<States>();
+            float params[8];
+            std::copy_n(parameters[type], 8, params);
+            for (unsigned block = 0; block < 160; ++block) {
+                if (block == 80) {
+                    ++schedule.generation;
+                    graph.request(schedule);
+                    waitFor(graph, schedule);
+                }
+                if (block == 40 && type == 2)
+                    params[1] = -3;
+                float input[128], expected[128], actual[128];
+                for (unsigned frame = 0; frame < 128; ++frame)
+                    input[frame] = block < 100 ? .35f * std::sin((block * 128 + frame) * .05f) : 0;
+                if (block == 0)
+                    input[0] = 2;
+                reference[type](input, expected, 128, params, original->get(type), &plan);
+                const auto *table = graph.dsp(schedule.generation);
+                assert(table);
+                table->entries[type](input, actual, 128, params, compiled->get(type), &plan);
+                for (unsigned frame = 0; frame < 128; ++frame) {
+                    const float tolerance = 1.0e-4f * (1 + std::fabs(expected[frame]));
+                    if (!(std::fabs(actual[frame] - expected[frame]) <= tolerance)) {
+                        std::fprintf(stderr,
+                                     "DSP mismatch type=%u block=%u frame=%u reference=%g native=%g\n", type,
+                                     block, frame, expected[frame], actual[frame]);
+                        assert(false);
+                    }
+                }
+            }
+        }
+        puts("All 11 runtime-compiled DSP kernels match reference audio through live pitch changes, tails "
+             "and recompilation");
+}
 int main(int argc, char **argv) {
-    assert(argc == 2);
-    NativeGraph graph(argv[1]);
+    assert(argc == 3);
+    NativeGraph graph(argv[1], argv[2]);
     Schedule schedule{};
     schedule.generation = 1;
     std::vector<unsigned> empty;
     assert(!graph.execute(1, &empty, route, node));
     graph.request(schedule);
     waitFor(graph, schedule);
+    testDsp(graph, schedule);
     for (unsigned generation = 2; generation <= 12; ++generation) {
         schedule.generation = generation;
         schedule.count = generation == 12 ? kMaxOperations : generation;
@@ -62,5 +161,5 @@ int main(int argc, char **argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(30));
         assert(!rejected.execute(schedule.generation, &empty, route, node));
     }
-    puts("LLVM native graph: empty/full schedules, operation order, replacement, coalescing and fallback passed");
+    puts("LLVM native DSP graph: empty/full schedules, order, replacement, coalescing and compiler-failure handling passed");
 }

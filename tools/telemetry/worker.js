@@ -8,7 +8,7 @@ const metricLimits = {
   sample_rate: 384000, block_frames: 65536, temperature_c: 150, cpu_percent: 100,
 };
 const idPattern = /^[0-9a-f]{32}$/;
-const maxBytes = 128 * 1024;
+const maxBytes = 2 * 1024 * 1024;
 const exactKeys = (object, keys) => object !== null && typeof object === 'object' &&
   !Array.isArray(object) && Object.keys(object).length === keys.length &&
   keys.every((key) => Object.hasOwn(object, key));
@@ -16,7 +16,8 @@ const integer = (value, max) => Number.isSafeInteger(value) && value >= 0 && val
 
 export function validBatch(body) {
   if (!exactKeys(body, ['schema', 'batch', 'points']) || ![1, 2, 3].includes(body.schema) ||
-      typeof body.batch !== 'string' || !Array.isArray(body.points) || body.points.length !== 100) return false;
+      typeof body.batch !== 'string' || !Array.isArray(body.points) ||
+      (body.schema === 3 ? body.points.length < 1 || body.points.length > 1000 : body.points.length !== 100)) return false;
   const seen = new Set();
   const pointKeys = ['id', 'version', 'board', 'metrics', 'effects'];
   if (body.schema >= 2) pointKeys.push('installation_id', 'interval_ms');
@@ -44,7 +45,7 @@ export function validBatch(body) {
           !integer(pair[0], 4096) || !integer(pair[1], pair[0])) return false;
     }
   }
-  return body.batch === `${body.points[0].id}:${body.points[99].id}`;
+  return body.batch === `${body.points[0].id}:${body.points.at(-1).id}`;
 }
 
 async function boundedBody(request) {
@@ -114,7 +115,7 @@ export default {
     }
     if (!validBatch(body)) return reply({ error: 'Invalid telemetry schema' }, 400);
     try {
-      // One SQL statement rather than 100 statements (the free plan has a per-request query limit).
+      // Insert the entire batch with one SQL statement (the free plan limits queries per request).
       await env.DB.prepare(
         "INSERT OR IGNORE INTO points(id, received_day, payload) " +
         "SELECT json_extract(value, '$.id'), date('now'), value FROM json_each(?)"

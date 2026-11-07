@@ -473,7 +473,7 @@ int main() {
             point.version = "test";
             assert(audiox::telemetry::store.append(std::move(point)));
         }
-        assert(telemetryRequest("GET", "/api/telemetry/batch").find("\r\n\r\n{}") != std::string::npos);
+        assert(telemetryRequest("GET", "/api/telemetry/batch").find("\"points\":[") != std::string::npos);
         audio->devices.clear();
         AudioDeviceInfo usb{};
         usb.cardIndex = 42; usb.hasCapture = 1; usb.isUsb = 1;

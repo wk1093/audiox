@@ -81,7 +81,7 @@ int main() {
     assert(declined.load() && declined.consent() == Consent::Disabled);
     assert(declined.setConsent(true));
     for (unsigned i = 0; i < 99; ++i) assert(declined.append(point));
-    assert(declined.size() == 99 && declined.batch() == "{}");
+    assert(declined.size() == 99 && declined.batch() != "{}");
     assert(declined.append(point));
     const std::string firstBatch = declined.batch();
     const size_t idStart = firstBatch.find("\"installation_id\":\"") + 19;
@@ -106,8 +106,22 @@ int main() {
     assert(!restarted.acknowledge(token));
     Store acknowledged(directory);
     assert(acknowledged.load() && acknowledged.size() == 1);
+    for (unsigned i = 1; i < 120; ++i) assert(acknowledged.append(point));
+    const auto countPoints = [](const std::string &json) {
+        size_t count = 0, position = 0;
+        while ((position = json.find("\"public_consent\":1", position)) != std::string::npos) { ++count; ++position; }
+        return count;
+    };
+    assert(countPoints(acknowledged.batch()) == 120);
+    for (unsigned i = 120; i < 500; ++i) assert(acknowledged.append(point));
+    const std::string largeBatch = acknowledged.batch();
+    assert(countPoints(largeBatch) == 500);
+    assert(acknowledged.append(point));
+    assert(acknowledged.acknowledge(largeBatch.substr(largeBatch.find("\"batch\":\"") + 9, 65)));
+    assert(acknowledged.size() == 1); // A new point is not part of the in-flight batch.
     for (size_t i = 1; i < kCapacity; ++i) assert(acknowledged.append(point));
     assert(acknowledged.size() == kCapacity);
+    assert(countPoints(acknowledged.batch()) == kUploadSize);
     const std::string overflowBatch = acknowledged.batch();
     const std::string oldToken = overflowBatch.substr(overflowBatch.find("\"batch\":\"") + 9, 65);
     assert(acknowledged.append(point));

@@ -78,10 +78,12 @@ before accepting another point and logs a warning. A corrupt/unreadable queue
 stops collection and upload and exposes an error; disable and re-enable
 telemetry to clear it.
 
-While the real WebUI is open, it checks once per minute and uploads **exactly 100
-points** whenever at least 100 are pending. It sends at most one batch per check.
-There is no timer-based upload of smaller batches: 99 points remain pending
-until another point arrives. Short sessions can accumulate across reboots.
+While the real WebUI is open, it checks once per minute and starts draining the
+backlog whenever at least 100 are pending. Each request carries up to **1,000
+points**; consecutive requests include the final smaller remainder. Thus 120
+or 500 points upload in one request. A fresh 99-point queue waits until another
+point arrives, but an in-progress cycle retries a failed smaller remainder
+without a page reload. Short sessions can accumulate across reboots.
 Browser background throttling, suspension and lack of internet can delay upload.
 
 The browser sends HTTPS directly to
@@ -91,6 +93,13 @@ retain the queue and back off from one minute to one hour. Retried requests or
 multiple browser tabs are deduplicated by point ID in the database. Opt-out is
 checked again before transmission; a cross-tab opt-out cannot recall a request
 already in flight.
+
+Acknowledgements remove only the matching queue prefix, preserving points
+collected while a request was in flight. Each batch has a 30-second timeout.
+One cycle drains the starting backlog rather than running indefinitely as new
+points arrive. A full 8,640-point queue requires nine requests, within the
+single-browser 10-request/minute ingestion limit; competing tabs/clients can
+still be rate-limited and retry later.
 
 Use **Preview next upload (local only)** to inspect a ready batch without
 sending it. The raw queue is also local; no cloud request is made just by
@@ -120,6 +129,11 @@ Migration `0002_public_dashboard.sql` adds the `public_daily` and `public_dashbo
 aggregate tables. It does not publish or alter existing raw reports. Do not
 recreate the database or modify its ID. New point fields remain inside the
 existing `payload` JSON.
+
+The Worker also accepts 1-1,000 points in schema 3 batches for backlog uploads.
+Redeploy it before updating firmware/WebUI to this batching behavior. Schemas
+1/2 retain their original exact 100-point contract. This batching-only change
+does not require a new consent version or additional database migration.
 
 On the Pi, consent and queue storage advance to version 3. Earlier opt-ins are
 not carried forward: users must accept the expanded public-reporting notice;
@@ -229,7 +243,7 @@ redeploy. Do not use wildcard origins.
 Install the firmware and open the WebUI. Choose Enable telemetry, leave AudioX
 actively processing audio or receiving usage events for at least 100 completed
 10-second intervals (16 minutes 40 seconds), then inspect System. With internet
-available, the pending count should decrease by 100 after the next browser
+available, the pending backlog should drain after the next browser
 check. Do not lower the threshold or send synthetic production rows just to
 test it: the local tests cover the 99/100-point boundary.
 
@@ -295,7 +309,7 @@ not immediate erasure from Cloudflare-managed backups/Time Travel or provider
 connection metadata; review Cloudflare's policies for those.
 
 There is no public **raw-report** read endpoint or shared API secret in the WebUI. The collector
-strictly validates fields, values, a 128 KiB body limit, and 100-point batches,
+strictly validates fields, values, a 2 MiB body limit, and bounded batch sizes,
 and applies an approximate 10-request/minute per-IP limit. Rate limiter namespace
 `1001` must be unique among your account's rate limiter definitions; change it
 if you already use it.

@@ -14,12 +14,12 @@
     'totals can reveal individual activity. There is no minimum participant count. ' +
     'Opting out cannot recall uploaded reports or copies of published statistics. ' +
     'Cloudflare sees your connection IP. Up to 8,640 points are stored on this device. ' +
-    'When this WebUI is open, batches of 100 are sent to ' +
+    'When this WebUI is open and at least 100 points are pending, all queued points are sent to ' +
     'telemetry.audiox.wklab.net. Raw reports expire after 30 days. You can disable this and clear pending ' +
     'data on the System page. Telemetry is optional and off until you enable it.';
 
   function createRelay({ deviceRequest, request, onStatus = () => {}, onUnknown = () => {}, now = Date.now }) {
-    let running = false, controller = null, retryAt = 0, failures = 0, cancelled = false;
+    let running = false, controller = null, retryAt = 0, failures = 0, cancelled = false, draining = false;
     async function device(path, init = {}) {
       const response = await deviceRequest(`/api/telemetry${path}`, {
         cache: 'no-store', ...init, signal: controller.signal,
@@ -39,34 +39,49 @@
         running = true;
         cancelled = false;
         controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 30000);
+        let timeout = setTimeout(() => controller.abort(), 30000);
         try {
           const status = await device('');
           onStatus(status);
           if (status.consent === 'unknown') { onUnknown(); return; }
-          if (status.consent !== 'enabled' || status.pending < 100 || now() < retryAt) return;
-          const batch = await device('/batch');
-          if (!batch.batch || !Array.isArray(batch.points) || batch.points.length !== 100) return;
-          // Another tab may have disabled telemetry while this batch was being read.
-          const current = await device('');
-          if (current.consent !== 'enabled') { onStatus(current); return; }
-          const response = await request(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(batch),
-            credentials: 'omit',
-            referrerPolicy: 'no-referrer',
-            cache: 'no-store',
-            signal: controller.signal,
-          });
-          if (!response.ok) throw new Error(`Telemetry upload failed (${response.status}); queued data retained.`);
-          const receipt = await response.json();
-          if (receipt.batch !== batch.batch) throw new Error('Invalid telemetry receipt; queued data retained.');
-          onStatus(await device('/ack', {
-            method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: batch.batch,
-          }));
-          failures = 0;
-          retryAt = 0;
+          if (status.consent !== 'enabled') { draining = false; return; }
+          if (!status.pending) draining = false;
+          if ((!draining && status.pending < 100) || now() < retryAt) return;
+          draining = true;
+          let remaining = status.pending;
+          while (remaining > 0) {
+            clearTimeout(timeout);
+            timeout = setTimeout(() => controller.abort(), 30000);
+            const batch = await device('/batch');
+            if (!batch.batch || !Array.isArray(batch.points) || batch.points.length < 1 || batch.points.length > 1000)
+              throw new Error('Invalid telemetry batch; queued data retained.');
+            // Another tab may have disabled telemetry while this batch was being read.
+            const current = await device('');
+            if (current.consent !== 'enabled') { draining = false; onStatus(current); return; }
+            const response = await request(endpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(batch),
+              credentials: 'omit',
+              referrerPolicy: 'no-referrer',
+              cache: 'no-store',
+              signal: controller.signal,
+            });
+            if (!response.ok) throw new Error(`Telemetry upload failed (${response.status}); queued data retained.`);
+            const receipt = await response.json();
+            if (receipt.batch !== batch.batch) throw new Error('Invalid telemetry receipt; queued data retained.');
+            controller.signal.throwIfAborted();
+            const acknowledged = await device('/ack', {
+              method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: batch.batch,
+            });
+            onStatus(acknowledged);
+            if (!Number.isSafeInteger(acknowledged.pending) || acknowledged.pending < 0)
+              throw new Error('Invalid telemetry queue status.');
+            failures = 0;
+            retryAt = 0;
+            remaining = Math.min(remaining - batch.points.length, acknowledged.pending);
+          }
+          draining = false;
         } catch (error) {
           if (cancelled) return;
           failures = Math.min(failures + 1, 7);
@@ -153,7 +168,7 @@
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || `Preview failed (${response.status}).`);
-        preview.textContent = result.batch ? JSON.stringify(result, null, 2) : 'No batch ready (requires 100 pending points).';
+        preview.textContent = result.batch ? JSON.stringify(result, null, 2) : 'No pending telemetry points.';
       } catch (error) { statusEl.textContent = error.message; }
     });
     const tick = () => { if (!saving) relay.tick(); };

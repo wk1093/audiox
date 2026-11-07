@@ -12,10 +12,14 @@ function harness({ pending = 100, consent = 'enabled', uploadOk = true, receipt 
   const calls = [], statuses = [];
   let time = 0, unknown = 0;
   const state = { pending, consent };
+  let currentBatch = batch;
   const deviceRequest = async (path, init) => {
     calls.push({ path, init });
-    if (path === '/api/telemetry/batch') return Response.json(batch);
-    if (path === '/api/telemetry/ack') state.pending -= 100;
+    if (path === '/api/telemetry/batch') {
+      currentBatch = { ...batch, points: Array(Math.min(state.pending, 1000)).fill(batch.points[0]) };
+      return Response.json(currentBatch);
+    }
+    if (path === '/api/telemetry/ack') state.pending -= currentBatch.points.length;
     return Response.json({ ...state });
   };
   const relay = createRelay({
@@ -28,8 +32,44 @@ function harness({ pending = 100, consent = 'enabled', uploadOk = true, receipt 
     onUnknown: () => { unknown++; },
     now: () => time,
   });
+
   return { relay, calls, state, statuses, advance(ms) { time += ms; }, unknown: () => unknown };
 }
+
+test('one tick drains 120 and 500 points in one request, and larger queues including the remainder', async () => {
+  for (const pending of [120, 500, 1020, 8640]) {
+    const h = harness({ pending });
+    await h.relay.tick();
+    const lengths = h.calls.filter((call) => call.path === endpoint).map((call) => JSON.parse(call.init.body).points.length);
+    assert.equal(lengths.reduce((sum, size) => sum + size, 0), pending);
+    assert.equal(lengths.length, Math.ceil(pending / 1000));
+    assert.equal(h.state.pending, 0);
+  }
+});
+
+test('a failed remainder stays queued and retries below the initial threshold without reload', async () => {
+  let pending = 1020, time = 0, uploads = 0, currentBatch;
+  const relay = createRelay({
+    now: () => time,
+    deviceRequest: async (path) => {
+      if (path.endsWith('/batch')) {
+        currentBatch = { ...batch, points: Array(Math.min(pending, 1000)).fill(batch.points[0]) };
+        return Response.json(currentBatch);
+      }
+      if (path.endsWith('/ack')) pending -= currentBatch.points.length;
+      return Response.json({ consent: 'enabled', pending });
+    },
+    request: async () => Response.json({ batch: batch.batch }, { status: ++uploads === 2 ? 503 : 200 }),
+  });
+  await relay.tick();
+  assert.equal(pending, 20);
+  await relay.tick();
+  assert.equal(uploads, 2);
+  time += 60000;
+  await relay.tick();
+  assert.equal(uploads, 3);
+  assert.equal(pending, 0);
+});
 
 test('unknown, disabled and 99-point queues never upload', async () => {
   for (const options of [{ consent: 'unknown' }, { consent: 'disabled' }, { pending: 99 }]) {
@@ -38,6 +78,21 @@ test('unknown, disabled and 99-point queues never upload', async () => {
     assert.deepEqual(h.calls.map((call) => call.path), ['/api/telemetry']);
     assert.equal(h.unknown(), options.consent === 'unknown' ? 1 : 0);
   }
+});
+
+test('later polling drains a newly accumulated backlog without recreating the relay', async () => {
+  const h = harness({ pending: 99 });
+  await h.relay.tick();
+  h.state.pending = 120;
+  h.advance(60000);
+  await h.relay.tick();
+  assert.equal(h.state.pending, 0);
+  h.state.pending = 500;
+  h.advance(60000);
+  await h.relay.tick();
+  assert.equal(h.state.pending, 0);
+  assert.deepEqual(h.calls.filter((call) => call.path === endpoint).map((call) =>
+    JSON.parse(call.init.body).points.length), [120, 500]);
 });
 
 test('100-point threshold uploads exact batch and acknowledges only after matching receipt', async () => {

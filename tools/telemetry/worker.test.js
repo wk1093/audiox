@@ -5,11 +5,11 @@ import { publicSnapshot, refreshDashboard } from './dashboard.js';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 
-function fixture(schema = 3) {
+function fixture(schema = 3, count = 100) {
   const keys = ['usb_audio', 'gadget_audio', 'other_audio', 'bluetooth_audio', 'midi_connected',
     'input_devices', 'output_devices', 'soundboard_triggers', 'midi_notes', 'midi_cc',
     'scene_recalls', 'sampler_enabled', 'xruns', 'sample_rate', 'block_frames', 'temperature_c', 'cpu_percent'];
-  const points = Array.from({ length: 100 }, (_, index) => ({
+  const points = Array.from({ length: count }, (_, index) => ({
     id: index.toString(16).padStart(32, '0'), version: '1.15.0-beta.13', board: 5,
     metrics: Object.fromEntries(keys.map((key) => [key, key === 'temperature_c' ? null : 0])),
     effects: Array.from({ length: 12 }, () => [2, 1]),
@@ -20,7 +20,7 @@ function fixture(schema = 3) {
     point.metrics.audio_active = 0;
   }
   if (schema === 3) for (const point of points) point.public_consent = 1;
-  return { schema, batch: `${points[0].id}:${points[99].id}`, points };
+  return { schema, batch: count ? `${points[0].id}:${points.at(-1).id}` : '', points };
 }
 
 function environment() {
@@ -53,7 +53,10 @@ const request = (body = fixture(), extra = {}) => new Request('https://telemetry
   body: JSON.stringify(body), ...extra,
 });
 
-test('schema accepts exactly 100 points and rejects extra identifying fields or invalid values', () => {
+test('schema accepts bounded variable public batches and fixed legacy batches, with strict field validation', () => {
+  for (const count of [1, 20, 99, 100, 120, 500, 1000]) assert.equal(validBatch(fixture(3, count)), true);
+  for (const count of [0, 1001]) assert.equal(validBatch(fixture(3, count)), false);
+  for (const schema of [1, 2]) for (const count of [20, 120]) assert.equal(validBatch(fixture(schema, count)), false);
   assert.equal(validBatch(fixture()), true);
   assert.equal(validBatch(fixture(2)), true);
   assert.equal(validBatch(fixture(1)), true); // Older installations can still upload minute summaries.
@@ -129,7 +132,7 @@ test('CORS preflight works for USB hostname and rejects unrelated origins', asyn
 
 test('oversized, malformed, rate-limited and unavailable storage requests never acknowledge', async () => {
   const env = environment();
-  assert.equal((await worker.fetch(request(undefined, { body: 'x'.repeat(128 * 1024 + 1) }), env)).status, 413);
+  assert.equal((await worker.fetch(request(undefined, { body: 'x'.repeat(2 * 1024 * 1024 + 1) }), env)).status, 413);
   assert.equal((await worker.fetch(request(undefined, { body: '{broken' }), env)).status, 400);
   const bad = fixture();
   bad.points[0].private_name = 'do not retain';
@@ -162,6 +165,8 @@ function sqliteEnvironment() {
   });
   return {
     db, statements,
+    ALLOWED_ORIGINS: 'http://audiox.local',
+    INGEST_LIMIT: { limit: async () => ({ success: true }) },
     DB: { prepare, async batch(queries) {
       db.exec('BEGIN');
       try { for (const query of queries) await query.run(); db.exec('COMMIT'); }
@@ -170,6 +175,20 @@ function sqliteEnvironment() {
     ASSETS: { fetch: async () => new Response('<html>dashboard</html>', { headers: { 'Content-Type': 'text/html' } }) },
   };
 }
+
+test('real D1 inserts variable batches atomically and retries do not duplicate points', async () => {
+  for (const count of [20, 120, 500, 1000]) {
+    const env = sqliteEnvironment();
+    const body = fixture(3, count);
+    for (let retry = 0; retry < 2; retry++) {
+      const response = await worker.fetch(request(body), env);
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { batch: body.batch });
+    }
+    assert.equal(env.db.prepare('SELECT COUNT(*) AS n FROM points').get().n, count);
+    env.db.close();
+  }
+});
 
 test('public snapshot allowlists fields, fills 30 days and never exports IDs or raw data', () => {
   const snapshot = publicSnapshot([{ day: '2026-11-06', points: 2, xruns: 4, cpu_percent: 5.555,

@@ -52,7 +52,7 @@ and [Telemetry collector setup](../dev/telemetry) for deployment details.
 | --- | --- |
 | `GET /api/telemetry` | Consent (`unknown`, `disabled`, `enabled`), consent version, pending count, capacity, interval, batch size and error |
 | `POST /api/telemetry` | Exact text `enabled=0` or `enabled=1&consent_version=3`; opting out clears queued points and installation ID |
-| `GET /api/telemetry/batch` | Next 100-point batch, or `{}` below threshold/when disabled; non-2xx on a queue error |
+| `GET /api/telemetry/batch` | Next 1-1,000 points, or `{}` when empty/disabled; non-2xx on a queue error. Browser upload cycles start at 100 pending points |
 | `POST /api/telemetry/ack` | Exact 65-character `batch` token from a successfully uploaded batch; rejects stale tokens |
 
 These are local device endpoints. No GET request causes a cloud upload.

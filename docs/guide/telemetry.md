@@ -95,8 +95,11 @@ fabricated.
 ## When reports upload
 
 Reports are stored on the device until at least **100 points** are pending.
-While the WebUI is open, it checks once per minute and can upload one batch of
-100 through your browser to `https://telemetry.audiox.wklab.net/v1/batches`.
+While the WebUI is open, it checks once per minute and uploads the queued backlog
+through your browser to `https://telemetry.audiox.wklab.net/v1/batches`.
+For example, 120 or 500 points upload together. Backlogs over 1,000 points use
+consecutive batches of up to 1,000, including the final smaller remainder;
+no page reload is needed.
 The computer displaying the WebUI needs internet access; the Pi does not.
 You do not need a server, Cloudflare account, or port forwarding to participate.
 
@@ -118,7 +121,8 @@ measurement of audible duration; very short signals between meter polls or
 signals below that threshold can be missed.
 
 On the System page, **Preview next upload (local only)** shows the next ready
-batch without sending it. A preview is available once 100 points are pending.
+batch without sending it. A preview is available whenever points are pending;
+automatic uploads still start at 100.
 Viewing the status or preview does not itself contact the collector.
 
 ## Retention and troubleshooting

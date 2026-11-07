@@ -273,14 +273,19 @@ bool Store::append(Point point) {
 }
 
 std::string Store::token() const {
-    if (points_.size() < kBatchSize) return {};
-    return points_.front().id + ":" + points_[kBatchSize - 1].id;
+    if (points_.empty()) return {};
+    return points_.front().id + ":" + points_[std::min(points_.size(), kUploadSize) - 1].id;
 }
 
 bool Store::acknowledge(const std::string &batch) {
-    if (consent_ != Consent::Enabled || !error_.empty() || batch.empty() || batch != token()) return false;
+    if (consent_ != Consent::Enabled || !error_.empty() || points_.empty() || batch.size() != 65 ||
+        batch.substr(0, 33) != points_.front().id + ":") return false;
+    size_t count = 0;
+    for (; count < std::min(points_.size(), kUploadSize); ++count)
+        if (points_[count].id == batch.substr(33)) break;
+    if (count == std::min(points_.size(), kUploadSize)) return false;
     auto retained = points_;
-    retained.erase(retained.begin(), retained.begin() + kBatchSize);
+    retained.erase(retained.begin(), retained.begin() + count + 1);
     if (!rewrite(retained)) return false;
     points_ = std::move(retained);
     return true;
@@ -295,9 +300,9 @@ std::string Store::status() const {
 }
 
 std::string Store::batch() const {
-    if (consent_ != Consent::Enabled || !error_.empty() || points_.size() < kBatchSize) return "{}";
+    if (consent_ != Consent::Enabled || !error_.empty() || points_.empty()) return "{}";
     std::string out = "{\"schema\":3,\"batch\":\"" + token() + "\",\"points\":[";
-    for (size_t i = 0; i < kBatchSize; ++i) {
+    for (size_t i = 0; i < std::min(points_.size(), kUploadSize); ++i) {
         if (i) out += ',';
         out += points_[i].json();
     }

@@ -203,7 +203,7 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Stereo routing and split/merge operations instead of separate mono connections.
 
 ## Quality of life
-- [x] Add device-local opt-in development telemetry, 10-second summaries with idle filtering, random installation IDs, a bounded 8,640-point persistent queue, browser-assisted 100-point uploads, and a deployable Cloudflare Worker/D1 collector.
+- [x] Add device-local opt-in development telemetry, 10-second summaries with idle filtering, random installation IDs, a bounded 8,640-point persistent queue, browser-assisted backlog uploads starting at 100 points, and a deployable Cloudflare Worker/D1 collector.
 - [x] Add public daily aggregate telemetry graphs with renewed consent; exclude legacy reports, raw payloads and installation identifiers.
 - [ ] Deploy the telemetry collector at telemetry.audiox.wklab.net and validate real consent, reconnect/reboot persistence and upload behavior on both installations.
 - [x] Optimize pitch FFT/window work without changing High quality; add High/Balanced/Economy overlap settings.

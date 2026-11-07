@@ -10,6 +10,7 @@ struct Audiox;
 namespace audiox::telemetry {
 
 constexpr size_t kBatchSize = 100;
+constexpr size_t kUploadSize = 1000;
 constexpr size_t kCapacity = 8640;
 constexpr uint64_t kIntervalMs = 10000;
 constexpr size_t kEffectTypes = 12; // Eleven built-ins, then all third-party plugins.

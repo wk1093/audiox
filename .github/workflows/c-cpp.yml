@@ -98,11 +98,11 @@ jobs:
         with:
           node-version: '22'
       - name: Install host test dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libasound2-dev libncurses-dev libsbc-dev jq
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libasound2-dev libncurses-dev libsbc-dev jq llvm-dev
       - name: Run regression suites
         run: make test
       - name: Check graph publication with ThreadSanitizer
-        run: make test-audio-graph-tsan
+        run: make test-audio-graph-tsan test-graph-native-tsan
 
   build:
     name: Build AudioX (${{ matrix.board }})
@@ -185,7 +185,9 @@ jobs:
             libncurses-dev \
             xz-utils \
             jq \
-            pkg-config
+            pkg-config \
+            cmake \
+            ninja-build
 
       - name: Configure ${{ matrix.board }} defaults
         run: make ${{ matrix.config }}

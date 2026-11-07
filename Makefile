@@ -81,6 +81,11 @@ HOST_LUA_INCLUDE_DIR = $(HOST_LUA_BUILD_ROOT)/include
 HOST_LUA_STATIC_LIB = $(HOST_LUA_BUILD_ROOT)/lib/liblua.a
 HOST_LUA_HEADERS = $(addprefix $(HOST_LUA_INCLUDE_DIR)/,lua.h lauxlib.h luaconf.h)
 
+GRAPH_LLVM_ROOT = $(SHARED_OUT_DIR)/graph-llvm
+GRAPH_COMPILER_BIN = $(ROOTFS_DIR)/sbin/audiox-graph-compiler
+HOST_LLVM_CONFIG ?= llvm-config
+HOST_GRAPH_COMPILER = $(OUT_DIR)/host/audiox-graph-compiler
+
 ifeq ($(ENABLE_ALSA),1)
 RUNTIME_FLAGS += -I$(ALSA_INCLUDE_DIR)
 RUNTIME_LIBS += -L$(ALSA_LIB_DIR) -lasound -ldl
@@ -568,6 +573,21 @@ $(ROOTFS_DIR)/sbin/audiox-plugin-worker: $(PLUGIN_WORKER_SRC) include/audio/plug
 	@mkdir -p "$(dir $@)"
 	$(CXX) $(filter-out -static,$(CXXFLAGS)) $(RUNTIME_DEFINES) -o "$@" "$<" -ldl -lm
 
+$(GRAPH_LLVM_ROOT)/ready: tools/build/build_graph_llvm.sh
+	bash "$<" "$(GRAPH_LLVM_ROOT)" "$(CC)" "$(CXX)"
+
+$(GRAPH_COMPILER_BIN): tools/build/graph-compiler.cpp include/audio/graph_native.hpp $(GRAPH_LLVM_ROOT)/ready
+	@mkdir -p "$(dir $@)"
+	$(CXX) $(CXXFLAGS) -I"$(GRAPH_LLVM_ROOT)/source/llvm/include" \
+		-I"$(GRAPH_LLVM_ROOT)/build/include" -o "$@" "$<" \
+		-Wl,--start-group $(wildcard $(GRAPH_LLVM_ROOT)/build/lib/libLLVM*.a) -Wl,--end-group $(LIBS) -ldl
+
+$(HOST_GRAPH_COMPILER): tools/build/graph-compiler.cpp include/audio/graph_native.hpp
+	@mkdir -p "$(dir $@)"
+	@command -v "$(HOST_LLVM_CONFIG)" >/dev/null || { echo "LLVM development files required for native graph tests"; exit 1; }
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude $$($(HOST_LLVM_CONFIG) --cflags) -std=c++17 -o "$@" "$<" \
+		$$($(HOST_LLVM_CONFIG) --ldflags --libs core nativecodegen object --system-libs)
+
 .PHONY: axm-pack plugin-examples test-plugin-package test-plugin-host
 axm-pack: $(OUT_DIR)/host/axm-pack
 
@@ -627,7 +647,7 @@ $(CURDIR)/web/embedded/node_modules/.audiox-assets-installed: $(CURDIR)/web/embe
 	npm ci --prefix "$(CURDIR)/web/embedded" --ignore-scripts --no-audit --no-fund
 	touch "$@"
 
-rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(ROOTFS_DIR)/sbin/audiox-plugin-worker $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB) $(LUA_STAGED_LICENSE) $(DNSMASQ_BIN) check_dnsmasq_conf web_assets
+rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(ROOTFS_DIR)/sbin/audiox-plugin-worker $(GRAPH_COMPILER_BIN) $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB) $(LUA_STAGED_LICENSE) $(DNSMASQ_BIN) check_dnsmasq_conf web_assets
 	@echo "Creating runtime rootfs structure..."
 	mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/sbin $(ROOTFS_DIR)/etc
 	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev $(ROOTFS_DIR)/tmp
@@ -654,6 +674,14 @@ rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(ROOTFS_DIR)/sbin/aud
 	@mkdir -p "$(ROOTFS_DIR)/usr/share/licenses/audiox/libsbc"
 	cp "$(SBC_SRC_DIR)/COPYING.LIB" "$(ROOTFS_DIR)/usr/share/licenses/audiox/libsbc/COPYING.LIB"
 	@echo "Staging static dnsmasq $(DNSMASQ_VERSION)..."
+	@mkdir -p "$(ROOTFS_DIR)/usr/share/licenses/audiox/llvm/BLAKE3"
+	cp "$(GRAPH_LLVM_ROOT)/source/llvm/LICENSE.TXT" "$(ROOTFS_DIR)/usr/share/licenses/audiox/llvm/LICENSE.TXT"
+	cp "$(GRAPH_LLVM_ROOT)/source/llvm/lib/Support/BLAKE3/LICENSE" "$(ROOTFS_DIR)/usr/share/licenses/audiox/llvm/BLAKE3/LICENSE"
+	@for source in regex_impl.h regstrlcpy.c regfree.c regutils.h regex2.h regexec.c regerror.c regcomp.c \
+		xxhash.cpp UnicodeNameToCodepointGenerated.cpp MD5.cpp SHA256.cpp ConvertUTF.cpp SHA1.cpp; do \
+		sed '/^#/,$$d' "$(GRAPH_LLVM_ROOT)/source/llvm/lib/Support/$$source" \
+			> "$(ROOTFS_DIR)/usr/share/licenses/audiox/llvm/$$source.NOTICE"; \
+	done
 	install -m 0755 "$(DNSMASQ_BIN)" "$(ROOTFS_DIR)/sbin/dnsmasq"
 	@mkdir -p "$(ROOTFS_DIR)/usr/share/licenses/audiox/dnsmasq"
 	cp "$(dir $(DNSMASQ_BIN))COPYING" "$(dir $(DNSMASQ_BIN))COPYING-v3" \

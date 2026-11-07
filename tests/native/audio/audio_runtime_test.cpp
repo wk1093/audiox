@@ -882,7 +882,92 @@ static void testNativePlugin() {
     puts("Native plugin planar processing, stereo, bypass, sleep-reset, tails and retirement observation tests passed");
 }
 
-int main() {
+static void testCompiledSchedule(const char *compiler) {
+    auto context = std::make_unique<AudioContext>(nullptr);
+    auto runtime = std::make_unique<RuntimeGraph>();
+    runtime->snapshot.generation = 17;
+    runtime->snapshot.thingCount = 4;
+    runtime->nodeKind[2] = NODE_EFFECT;
+    runtime->nodeKind[3] = NODE_SINK;
+    strcpy(runtime->snapshot.things[2].id, "native_comparison");
+    runtime->snapshot.things[2].inputs = runtime->snapshot.things[2].outputs = 2;
+    runtime->snapshot.things[3].inputs = 2;
+    runtime->processNodes[0] = 2;
+    runtime->processNodeCount = 1;
+    for (uint8_t channel = 0; channel < 2; ++channel) {
+        runtime->sourceRoutes[runtime->sourceRouteCount++] = {0, 2, channel, channel};
+        runtime->sourceRoutes[runtime->sourceRouteCount++] = {1, 2, channel, channel};
+        runtime->processRoutes[runtime->processRouteCount++] = {2, 3, channel, channel};
+    }
+    buildProcessRouteIndex(runtime.get());
+    const auto schedule = nativeSchedule(*runtime);
+    assert(schedule.count == 7);
+    audiox::graph::NativeGraph native(compiler);
+    native.request(schedule);
+    NativeBlockContext block{context.get(), runtime.get()};
+    clearRuntimeBuffers(runtime.get());
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!native.execute(schedule.generation, &block, nativeRoute, nativeNode)) {
+        assert(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const auto initialize = [&] {
+        clearRuntimeBuffers(runtime.get());
+        for (unsigned channel = 0; channel < 2; ++channel)
+            for (unsigned frame = 0; frame < BUFFER_FRAMES; ++frame) {
+                runtime->outputs[0][channel][frame] = frame % 3 ? .75f : -.5f;
+                runtime->outputs[1][channel][frame] = frame % 5 ? .25f : -.25f;
+            }
+    };
+    const auto fallback = [&] {
+        for (uint16_t i = 0; i < runtime->sourceRouteCount; ++i)
+            routeCompiledEdge(context.get(), runtime.get(), runtime->sourceRoutes[i]);
+        for (uint16_t i = 0; i < runtime->processNodeCount; ++i) {
+            const uint16_t node = runtime->processNodes[i];
+            processNode(context.get(), runtime.get(), node);
+            for (uint16_t r = 0; r < runtime->processRouteLen[node]; ++r)
+                routeCompiledEdge(context.get(), runtime.get(),
+                    runtime->processRoutesBySrc[runtime->processRouteStart[node] + r]);
+        }
+    };
+    for (unsigned setting = 0; setting < 24; ++setting) {
+        auto &params = runtime->effectParamsCache[2];
+        params.type = setting % 3 ? audiox::effects::EFFECT_GAIN : audiox::effects::EFFECT_CUT;
+        params.enabled = setting % 2;
+        audiox::effects::setSlotDefaultsForType(&params, params.type);
+        params.values[0] = setting % 4;
+        for (unsigned node = 0; node < 3; ++node)
+            context->nodeGainAtomics[node].store((setting + node) % 3);
+        initialize();
+        fallback();
+        float expected[2][BUFFER_FRAMES];
+        for (unsigned channel = 0; channel < 2; ++channel)
+            memcpy(expected[channel], runtime->inputs[3][channel], sizeof(expected[channel]));
+        initialize();
+        assert(native.execute(schedule.generation, &block, nativeRoute, nativeNode));
+        for (unsigned channel = 0; channel < 2; ++channel)
+            assert(!memcmp(expected[channel], runtime->inputs[3][channel], sizeof(expected[channel])));
+    }
+    puts("LLVM graph schedule matches stereo mixing, gain/clipping, bypass and Cut with live parameters");
+    const auto measure = [&](bool compiled) {
+        const auto start = std::chrono::steady_clock::now();
+        for (unsigned i = 0; i < 5000; ++i) {
+            initialize();
+            if (compiled) assert(native.execute(schedule.generation, &block, nativeRoute, nativeNode));
+            else fallback();
+        }
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - start).count() / 5000;
+    };
+    const auto fallbackNs = measure(false);
+    const auto nativeNs = measure(true);
+    printf("Graph schedule microbenchmark (host, includes buffer setup): fallback %lld ns/block, native %lld ns/block\n",
+           static_cast<long long>(fallbackNs), static_cast<long long>(nativeNs));
+}
+
+int main(int argc, char **argv) {
+    assert(argc == 2);
+    testCompiledSchedule(argv[1]);
     {
         auto context = std::make_unique<AudioContext>(nullptr);
         auto runtime = std::make_unique<RuntimeGraph>();

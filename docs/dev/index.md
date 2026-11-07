@@ -133,6 +133,34 @@ Native plugins execute in an isolated worker and have their own ABI, package
 format, sandbox, and lifecycle rules. Read [Native plugin development](../plugins)
 before changing that boundary.
 
+### Native graph compilation prototype
+
+The firmware automatically requests native compilation after rebuilding a
+graph. A non-realtime compiler thread launches `/sbin/audiox-graph-compiler`,
+which uses LLVM to generate straight-line native calls for that graph's route
+and node schedule. LLVM itself stays outside the main runtime. There is no
+build flag and no user-authored compiled effect language.
+
+The existing executor remains active until code for the exact graph generation
+is ready. Code is adopted at a block boundary; stale generations never run
+against a new graph. The compiler thread owns mapping and retirement, and
+executable mappings are read/execute, not writable. Compiler failure or a
+ten-second request timeout is logged and leaves the existing executor usable.
+Rapid route changes can coalesce to the newest request.
+
+Parameter changes do not recompile the graph. The generated calls still use
+the existing routing, DSP state, clipping, bypass, meters, and plugin-worker
+behavior; audio processing stays in the existing thread. This is schedule
+specialization, not DSP fusion or vectorization. It adds callback overhead and
+may not outperform the original loops; no reduction in X-runs is established
+without measurements on a Pi.
+
+Run `make test-graph-native test-audio-runtime` for generated-code lifecycle
+and stereo output comparisons, and `make test-graph-native-tsan` for compiler
+mailbox/code-retirement race checks. Existing runtime tests cover effect tails,
+idle behavior, and plugins. Build prerequisites and the LLVM source cache are
+described in the [build guide](../guide/development#linux-build-prerequisites).
+
 ## Tests and continuous integration
 
 Test targets live in `tests/Makefile`, included by the root Makefile:

@@ -1,4 +1,5 @@
 #include "audio/context.hpp"
+#include "audio/graph_native.hpp"
 #include "audio/plugin_registry.hpp"
 #include "audio/alsa_pcm.h"
 #include "audio/stress_test.hpp"
@@ -17,6 +18,10 @@
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
+
+#ifndef AUDIOX_GRAPH_COMPILER_PATH
+#define AUDIOX_GRAPH_COMPILER_PATH "/sbin/audiox-graph-compiler"
+#endif
 
 namespace {
 
@@ -2221,6 +2226,37 @@ static void rebuildRuntimeGraph(AudioContext *ctx,
     clearRuntimeBuffers(rt);
 }
 
+static audiox::graph::Schedule nativeSchedule(const RuntimeGraph &rt) {
+    static_assert(audiox::graph::kMaxOperations == 2 * AUDIO_GRAPH_MAX_EDGES + AUDIO_GRAPH_MAX_THINGS);
+    audiox::graph::Schedule schedule{};
+    schedule.generation = rt.snapshot.generation;
+    for (uint16_t i = 0; i < rt.sourceRouteCount; ++i)
+        schedule.operations[schedule.count++] = {audiox::graph::OperationKind::Route, i};
+    for (uint16_t i = 0; i < rt.processNodeCount; ++i) {
+        const uint16_t node = rt.processNodes[i];
+        schedule.operations[schedule.count++] = {audiox::graph::OperationKind::Node, node};
+        for (uint16_t r = 0; r < rt.processRouteLen[node]; ++r)
+            schedule.operations[schedule.count++] = {audiox::graph::OperationKind::Route,
+                static_cast<uint32_t>(AUDIO_GRAPH_MAX_EDGES + rt.processRouteStart[node] + r)};
+    }
+    return schedule;
+}
+
+struct NativeBlockContext {
+    AudioContext *context;
+    RuntimeGraph *runtime;
+};
+static void nativeRoute(void *opaque, uint32_t index) {
+    auto &block = *static_cast<NativeBlockContext *>(opaque);
+    const auto &route = index < AUDIO_GRAPH_MAX_EDGES ? block.runtime->sourceRoutes[index]
+        : block.runtime->processRoutesBySrc[index - AUDIO_GRAPH_MAX_EDGES];
+    routeCompiledEdge(block.context, block.runtime, route);
+}
+static void nativeNode(void *opaque, uint32_t index) {
+    auto &block = *static_cast<NativeBlockContext *>(opaque);
+    processNode(block.context, block.runtime, static_cast<uint16_t>(index));
+}
+
 static uint16_t channelMask(uint8_t channels) {
     return static_cast<uint16_t>((1U << std::min<uint8_t>(channels, kMaxChannelsPerThing)) - 1U);
 }
@@ -2357,7 +2393,8 @@ static void beginAudioSleep(RuntimeGraph *rt) {
 }
 
 static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt, AlsaCaptureBackend *captureBackend,
-                              uint64_t nowMs = monotonicMs()) {
+                              uint64_t nowMs = monotonicMs(),
+                              audiox::graph::NativeGraph *native = nullptr) {
     if (!ctx || !rt || !captureBackend) {
         return;
     }
@@ -2387,16 +2424,19 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt, AlsaCaptureBa
         servicePlaybackIo(ctx, rt);
     } else {
         ++rt->dspBlocksProcessed;
-        for (uint16_t i = 0; i < rt->sourceRouteCount; ++i) {
-            routeCompiledEdge(ctx, rt, rt->sourceRoutes[i]);
-        }
-        for (uint16_t i = 0; i < rt->processNodeCount; ++i) {
-            const uint16_t nodeIndex = rt->processNodes[i];
-            processNode(ctx, rt, nodeIndex);
-            const uint16_t routeStart = rt->processRouteStart[nodeIndex];
-            const uint16_t routeLength = rt->processRouteLen[nodeIndex];
-            for (uint16_t routeIndex = 0; routeIndex < routeLength; ++routeIndex) {
-                routeCompiledEdge(ctx, rt, rt->processRoutesBySrc[routeStart + routeIndex]);
+        NativeBlockContext block{ctx, rt};
+        if (!native || !native->execute(rt->snapshot.generation, &block, nativeRoute, nativeNode)) {
+            for (uint16_t i = 0; i < rt->sourceRouteCount; ++i) {
+                routeCompiledEdge(ctx, rt, rt->sourceRoutes[i]);
+            }
+            for (uint16_t i = 0; i < rt->processNodeCount; ++i) {
+                const uint16_t nodeIndex = rt->processNodes[i];
+                processNode(ctx, rt, nodeIndex);
+                const uint16_t routeStart = rt->processRouteStart[nodeIndex];
+                const uint16_t routeLength = rt->processRouteLen[nodeIndex];
+                for (uint16_t routeIndex = 0; routeIndex < routeLength; ++routeIndex) {
+                    routeCompiledEdge(ctx, rt, rt->processRoutesBySrc[routeStart + routeIndex]);
+                }
             }
         }
         servicePlaybackIo(ctx, rt);
@@ -2562,8 +2602,8 @@ static void *audioProcessingThreadMain(void *arg) {
     timespec nextDeadline = monotonicNow();
     addNs(&nextDeadline, blockPeriodNs());
 
+    audiox::graph::NativeGraph native(AUDIOX_GRAPH_COMPILER_PATH);
     configureRealtimeScheduling();
-
     while (ctx->processingThreadRun.load(std::memory_order_acquire)) {
         AudioGraphState graphSnapshot = runtime.snapshot;
         if (tryReadPublishedGraph(ctx, &graphSnapshot, runtime.snapshot.generation == 0)) {
@@ -2581,6 +2621,7 @@ static void *audioProcessingThreadMain(void *arg) {
         if (graphSnapshot.generation != runtime.snapshot.generation) {
             rebuildRuntimeGraph(ctx, &runtime, &captureBackend, graphSnapshot);
             ctx->snapshotGainsForGraph(graphSnapshot);
+            native.request(nativeSchedule(runtime));
         }
 
         const uint32_t release = ctx->sceneReleaseGeneration.load(std::memory_order_acquire);
@@ -2590,7 +2631,7 @@ static void *audioProcessingThreadMain(void *arg) {
         }
 
         if (runtime.snapshot.generation > 0 && runtime.snapshot.thingCount > 0) {
-            processGraphBlock(ctx, &runtime, &captureBackend);
+            processGraphBlock(ctx, &runtime, &captureBackend, monotonicMs(), &native);
             maybeLogStats(&runtime, &captureBackend);
         }
 

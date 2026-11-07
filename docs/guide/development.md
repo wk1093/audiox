@@ -57,7 +57,7 @@ sudo apt-get install -y \
   build-essential autoconf automake libtool \
   gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
   cpio curl wget parted e2fsprogs dosfstools mtools \
-  libarchive-tools libncurses-dev xz-utils jq pkg-config
+  libarchive-tools libncurses-dev xz-utils jq pkg-config cmake ninja-build
 ```
 
 You also need Git to obtain the repository/dependencies. Image creation uses Linux loop devices, mounting tools, and `sudo`; a working cross compiler alone does not provide those facilities. Build as your normal user; only the image script's privileged disk operations should require elevation.
@@ -65,6 +65,9 @@ You also need Git to obtain the repository/dependencies. Image creation uses Lin
 Additional tools depend on the workflow:
 
 - Host audio tests: host ALSA development headers/library (Debian/Ubuntu: `libasound2-dev`).
+- Native graph tests: LLVM development headers/library and `llvm-config`
+  (Debian/Ubuntu: `llvm-dev`, LLVM 15 or newer). Override `HOST_LLVM_CONFIG`
+  if the executable is version-suffixed.
 - Firmware WebUI assets and JavaScript regressions: Node.js/npm. `make web_assets`
   installs the pinned `web/embedded/package-lock.json` packages with lifecycle scripts
   disabled and compiles the device target of the web UI (scripts and styles minified
@@ -78,6 +81,14 @@ Additional tools depend on the workflow:
 - Some helper/validation paths use `qemu-aarch64` for target executables on a non-AArch64 host.
 
 Downloads require network access during dependency preparation. Do not mistake a successful host compiler setup for a complete offline build cache.
+
+Firmware builds also compile a pinned LLVM 21.1.8 AArch64 backend from source
+in `out/graph-llvm`. The first build is substantial; allow additional time and
+disk space. Its default parallelism is two jobs; set `LLVM_BUILD_JOBS` to
+change it without changing the rest of the build. The statically linked
+`/sbin/audiox-graph-compiler` is included automatically, along with LLVM's
+license. Subsequent builds reuse the source and library cache. The host LLVM
+used by tests is independent of this target dependency.
 
 ## Configure a board
 

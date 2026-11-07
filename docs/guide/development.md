@@ -136,7 +136,7 @@ make initramfs
 
 - Firmware sync provides the matching kernel, modules, device trees, and overlays.
 - ALSA is built from source into `out/alsa-sysroot`; static ALSA is the supported build strategy.
-- SBC, Lua, dnsmasq, and Bluetooth firmware are prepared by their build dependencies. Lua/dnsmasq and configured firmware downloads use the checks specified in the build scripts/Makefile.
+- SBC, Lua, dnsmasq, and Bluetooth firmware are prepared by their build dependencies. Lua 5.4.9 comes from the `lua/lua` GitHub mirror at the immutable commit pinned in the Makefile; host and cross builds cache Git sources separately. dnsmasq and configured firmware downloads use the checks specified in the build scripts/Makefile.
 - Module dependencies are resolved and copied into the appropriate rootfs.
 - The compiled device web UI from `out/web-device` is copied into the runtime image.
 
@@ -309,8 +309,8 @@ status rather than treating every runtime warning as a failed test; do not
 suppress stderr, which also carries genuine failures and sanitizer reports.
 
 Compiler warnings, assertion failures, sanitizer reports, and nonzero exits
-need investigation. Lua-based host tests also fetch the pinned, checksum-verified
-Lua source when its local cache is missing. A curl connection timeout during that
+need investigation. Lua-based host tests also fetch the commit-pinned
+Lua source from GitHub when its local cache is missing. A Git connection failure during that
 step is a dependency-download failure, not an audio or scripting test failure.
 
 Browser behavior uses Node's built-in runner, for example:

@@ -53,6 +53,12 @@ $(OUT_DIR)/host/audiox-storage-expand-test: tests/native/system/storage_expand_t
 test-build-dependencies:
 	bash tests/build/build_dependencies_test.sh
 
+.PHONY: test-lua-build
+test-native: test-lua-build
+test-lua-build: $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
+	bash tests/build/lua_build_test.sh "$(LUA_VERSION)" "$(LUA_COMMIT)" \
+		"$(HOST_LUA_BUILD_ROOT)/downloads/lua.git" "$(HOSTCC)" "$(HOSTAR)"
+
 .PHONY: test-device-health
 test-device-health: $(OUT_DIR)/host/audiox-device-health-test $(OUT_DIR)/host/audiox-pcm-rate-test
 	@"$(OUT_DIR)/host/audiox-device-health-test"

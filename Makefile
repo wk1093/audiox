@@ -66,13 +66,13 @@ DNSMASQ_CONF ?= $(CURDIR)/root/etc/dnsmasq.conf
 
 # Official Lua source is fetched and verified at build time, never vendored.
 LUA_VERSION := 5.4.9
-LUA_SHA256 := 2335b6c582a52654f94612bf10d2f4672805d05329aa6568b1d8cd9e5c6fb8e6
+LUA_COMMIT := 312b9efaa1061c2c4cad08554dbc1351c3270eef
 LUA_BUILD_ROOT ?= $(SHARED_OUT_DIR)/lua-aarch64
 LUA_INCLUDE_DIR = $(LUA_BUILD_ROOT)/include
 LUA_STATIC_LIB = $(LUA_BUILD_ROOT)/lib/liblua.a
 LUA_HEADERS = $(addprefix $(LUA_INCLUDE_DIR)/,lua.h lauxlib.h luaconf.h)
-LUA_LICENSE = $(LUA_BUILD_ROOT)/COPYRIGHT.html
-LUA_STAGED_LICENSE = $(ROOTFS_DIR)/usr/share/licenses/audiox/lua/COPYRIGHT.html
+LUA_LICENSE = $(LUA_BUILD_ROOT)/COPYRIGHT
+LUA_STAGED_LICENSE = $(ROOTFS_DIR)/usr/share/licenses/audiox/lua/COPYRIGHT
 LUA_AR ?= $(patsubst %gcc,%ar,$(CC))
 HOSTCC ?= cc
 HOSTAR ?= ar
@@ -454,10 +454,10 @@ dnsmasq: $(DNSMASQ_BIN)
 lua: $(LUA_STATIC_LIB) $(LUA_HEADERS) $(LUA_LICENSE)
 
 $(LUA_STATIC_LIB) $(LUA_HEADERS) $(LUA_LICENSE) &: tools/build/build_lua.sh
-	@bash "$(CURDIR)/tools/build/build_lua.sh" "$(LUA_VERSION)" "$(LUA_SHA256)" "$(LUA_BUILD_ROOT)" "$(CC)" "$(LUA_AR)" "$(PKG_FETCH)"
+	@bash "$(CURDIR)/tools/build/build_lua.sh" "$(LUA_VERSION)" "$(LUA_COMMIT)" "$(LUA_BUILD_ROOT)" "$(CC)" "$(LUA_AR)"
 
 $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS) &: tools/build/build_lua.sh
-	@bash "$(CURDIR)/tools/build/build_lua.sh" "$(LUA_VERSION)" "$(LUA_SHA256)" "$(HOST_LUA_BUILD_ROOT)" "$(HOSTCC)" "$(HOSTAR)" "$(PKG_FETCH)"
+	@bash "$(CURDIR)/tools/build/build_lua.sh" "$(LUA_VERSION)" "$(LUA_COMMIT)" "$(HOST_LUA_BUILD_ROOT)" "$(HOSTCC)" "$(HOSTAR)"
 
 $(DNSMASQ_BIN): tools/build/build_dnsmasq.sh
 	@"$(CURDIR)/tools/build/build_dnsmasq.sh" "$(DNSMASQ_VERSION)" "$(DNSMASQ_SHA256)" "$(SHARED_OUT_DIR)" "$@" "$(CC)" "$(PKG_FETCH)"

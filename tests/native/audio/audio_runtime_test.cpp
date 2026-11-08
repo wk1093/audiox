@@ -7,6 +7,31 @@
 #include <chrono>
 #include <thread>
 
+#ifdef AUDIOX_DSP_RUNTIME_ONLY
+static audiox::graph::NativeGraph *directGraph;
+static audiox::graph::Schedule directSchedule{};
+static void processDirectTestBlock(AudioContext *ctx, RuntimeGraph *rt, AlsaCaptureBackend *capture,
+                                   uint64_t nowMs = monotonicMs()) {
+    auto schedule = nativeSchedule(*rt);
+    schedule.generation = directSchedule.generation;
+    if (!schedule.generation || memcmp(&schedule, &directSchedule, sizeof(schedule))) {
+        ++schedule.generation;
+        directSchedule = schedule;
+        directGraph->request(schedule);
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!directGraph->ready(schedule.generation)) {
+        assert(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const auto generation = rt->snapshot.generation;
+    rt->snapshot.generation = schedule.generation;
+    processGraphBlock(ctx, rt, capture, nowMs, directGraph);
+    rt->snapshot.generation = generation;
+}
+#define processGraphBlock processDirectTestBlock
+#endif
+
 struct _snd_pcm { int token; };
 static snd_pcm_t testPcm{};
 static int16_t captureSample;
@@ -767,6 +792,8 @@ static void testSilentRelease() {
                 break;
             }
         }
+        if (!settled)
+            fprintf(stderr, "Silent release did not settle: effect type=%u\n", unsigned(type));
         assert(settled);
         const uint64_t before = runtime->effectChannelsProcessed;
         for (unsigned block = 0; block < 10; ++block) render(0);
@@ -882,7 +909,115 @@ static void testNativePlugin() {
     puts("Native plugin planar processing, stereo, bypass, sleep-reset, tails and retirement observation tests passed");
 }
 
-int main() {
+static void testCompiledSchedule(const char *compiler, const char *bitcode) {
+    auto context = std::make_unique<AudioContext>(nullptr);
+    auto runtime = std::make_unique<RuntimeGraph>();
+    runtime->snapshot.generation = 17;
+    runtime->snapshot.thingCount = 4;
+    runtime->nodeKind[2] = NODE_EFFECT;
+    runtime->nodeKind[3] = NODE_SINK;
+    strcpy(runtime->snapshot.things[2].id, "native_comparison");
+    runtime->snapshot.things[2].inputs = runtime->snapshot.things[2].outputs = 2;
+    runtime->snapshot.things[3].inputs = 2;
+    runtime->processNodes[0] = 2;
+    runtime->processNodeCount = 1;
+    for (uint8_t channel = 0; channel < 2; ++channel) {
+        runtime->sourceRoutes[runtime->sourceRouteCount++] = {0, 2, channel, channel};
+        runtime->sourceRoutes[runtime->sourceRouteCount++] = {1, 2, channel, channel};
+        runtime->processRoutes[runtime->processRouteCount++] = {2, 3, channel, channel};
+    }
+    buildProcessRouteIndex(runtime.get());
+    const auto schedule = nativeSchedule(*runtime);
+    assert(schedule.count == 7);
+    audiox::graph::NativeGraph native(compiler, bitcode);
+    native.request(schedule);
+    clearRuntimeBuffers(runtime.get());
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!executeNativeBlock(native, context.get(), runtime.get())) {
+        assert(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const auto initialize = [&] {
+        clearRuntimeBuffers(runtime.get());
+        for (unsigned channel = 0; channel < 2; ++channel)
+            for (unsigned frame = 0; frame < BUFFER_FRAMES; ++frame) {
+                runtime->outputs[0][channel][frame] = frame % 3 ? .75f : -.5f;
+                runtime->outputs[1][channel][frame] = frame % 5 ? .25f : -.25f;
+            }
+    };
+    const auto fallback = [&] {
+        for (uint16_t i = 0; i < runtime->sourceRouteCount; ++i)
+            routeCompiledEdge(context.get(), runtime.get(), runtime->sourceRoutes[i]);
+        for (uint16_t i = 0; i < runtime->processNodeCount; ++i) {
+            const uint16_t node = runtime->processNodes[i];
+            processNode(context.get(), runtime.get(), node);
+            for (uint16_t r = 0; r < runtime->processRouteLen[node]; ++r)
+                routeCompiledEdge(context.get(), runtime.get(),
+                    runtime->processRoutesBySrc[runtime->processRouteStart[node] + r]);
+        }
+    };
+    for (unsigned setting = 0; setting < 24; ++setting) {
+        auto &params = runtime->effectParamsCache[2];
+        params.type = setting % 3 ? audiox::effects::EFFECT_GAIN : audiox::effects::EFFECT_CUT;
+        params.enabled = setting % 2;
+        audiox::effects::setSlotDefaultsForType(&params, params.type);
+        params.values[0] = setting % 4;
+        for (unsigned node = 0; node < 3; ++node)
+            context->nodeGainAtomics[node].store((setting + node) % 3);
+        initialize();
+        fallback();
+        float expected[2][BUFFER_FRAMES];
+        for (unsigned channel = 0; channel < 2; ++channel)
+            memcpy(expected[channel], runtime->inputs[3][channel], sizeof(expected[channel]));
+        initialize();
+        assert(executeNativeBlock(native, context.get(), runtime.get()));
+        for (unsigned channel = 0; channel < 2; ++channel)
+            assert(!memcmp(expected[channel], runtime->inputs[3][channel], sizeof(expected[channel])));
+    }
+    puts("LLVM graph schedule matches stereo mixing, gain/clipping, bypass and Cut with live parameters");
+    const auto measure = [&](bool compiled) {
+        const auto start = std::chrono::steady_clock::now();
+        for (unsigned i = 0; i < 5000; ++i) {
+            initialize();
+            if (compiled) assert(executeNativeBlock(native, context.get(), runtime.get()));
+            else fallback();
+        }
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - start).count() / 5000;
+    };
+    const auto fallbackNs = measure(false);
+    const auto nativeNs = measure(true);
+    printf("Graph schedule microbenchmark (host, includes buffer setup): fallback %lld ns/block, native %lld ns/block\n",
+           static_cast<long long>(fallbackNs), static_cast<long long>(nativeNs));
+}
+
+int main(int argc, char **argv) {
+    assert(argc == 3);
+#ifdef AUDIOX_DSP_RUNTIME_ONLY
+    audiox::graph::NativeGraph dspOwner(argv[1], argv[2]);
+    audiox::graph::NativeGraph directOwner(argv[1], argv[2]);
+    directGraph = &directOwner;
+    audiox::graph::Schedule dspSchedule{};
+    dspSchedule.generation = 1;
+    dspOwner.request(dspSchedule);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    const auto noop = [](void *, uint32_t) {};
+    while (!dspOwner.execute(1, nullptr, noop, noop, audiox::effects::setCompiledDsp)) {
+        assert(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+#endif
+    testCompiledSchedule(argv[1], argv[2]);
+#ifdef AUDIOX_DSP_RUNTIME_ONLY
+    audiox::effects::SlotParams missing{};
+    missing.enabled = 1;
+    missing.values[0] = 1;
+    float input[2]{.5f, -.5f}, output[2]{};
+    audiox::effects::setCompiledDsp(nullptr);
+    audiox::effects::processSlot("missing_code", 0, missing, input, output, 2);
+    assert(output[0] == 0 && output[1] == 0);
+    audiox::effects::setCompiledDsp(dspOwner.dsp(1));
+#endif
     {
         auto context = std::make_unique<AudioContext>(nullptr);
         auto runtime = std::make_unique<RuntimeGraph>();

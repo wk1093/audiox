@@ -133,7 +133,73 @@ Native plugins execute in an isolated worker and have their own ABI, package
 format, sandbox, and lifecycle rules. Read [Native plugin development](../plugins)
 before changing that boundary.
 
+### Native graph compilation prototype
+
+The firmware automatically requests native compilation after rebuilding a
+graph. A non-realtime compiler thread launches `/sbin/audiox-graph-compiler`,
+which links the shipped built-in DSP bitcode, optimizes it at O3 for the
+device's CPU, specializes its frame loops to the configured block size, and
+generates a single native graph containing routing, mixing, bypass/silence
+handling, and direct built-in DSP calls. Route endpoints and node indices are
+compile-time constants; the graph helpers are inlined into its entry point.
+This recompiles all eleven built-ins, not just scheduling callbacks. LLVM itself stays outside the main
+runtime. There is no build flag and no user-authored compiled effect language.
+
+Code is adopted at a block boundary; stale generations never run against a new
+graph. The compiler relocates code and constants for an address reserved by the
+runtime, using explicitly supplied math/memory function addresses. It never
+executes the generated DSP. The compiler thread owns mapping and retirement;
+executable mappings are read/execute, not writable. Mutable generated globals
+are rejected: effect state and the pitch FFT plan live in the main runtime and
+survive code replacement.
+
+**There is no compiled-in DSP fallback.** Until compilation for the exact
+generation succeeds, enabled built-ins requiring sample processing produce
+silence. Direct routes, bypass, Cut, and isolated native plugins retain their
+existing behavior. Failed compilation or a ten-second timeout is explicitly
+logged; a subsequent graph rebuild can retry. Rapid route changes can coalesce.
+Expect temporary silence on routed effects after startup and routing saves.
+
+Parameter changes do not recompile the graph. Before processing, the runtime
+prepares a persistent block view with current gains/parameters and state pointers.
+It then calls the native graph once. The generated
+graph routes and mixes buffers and calls DSP implementations directly, without
+per-route or built-in-effect callbacks into main. Effect-type selection remains
+inside native code so live type changes retain their behavior. The only processing
+callback is the intentional boundary to the isolated plugin worker.
+
+Tail/release checks execute inside the native graph only when a channel is silent,
+using shared helpers also used by the reference path.
+Device I/O, state reset/control preparation, whole-engine sleep decisions,
+and meter publication remain in the runtime. The per-thread DSP table is retained
+for host reference/failure-path tests, not used to dispatch built-ins in a ready
+production graph. This enables joint optimization but does not guarantee fusion
+of entire effect chains into one sample loop. Conservative floating-point behavior is retained (no blanket
+fast-math). Runtime slot bookkeeping and DSP bitcode disable floating-point contraction so
+silent-release fixed-point checks agree with generated DSP even on FMA-capable
+CPUs. Compilation can contend for CPU/memory bandwidth, and no reduction
+in X-runs is established without measurements on a Pi.
+
+Logs distinguish `LLVM compiled DSP generation ...` (size and compile time)
+from `audio adopted native DSP generation ...` (actual audio-thread adoption).
+Adoption logging happens on the compiler thread, not in the audio callback.
+
+Run `make test-graph-native test-audio-runtime` for generated-code lifecycle
+and all-kernel output/state-continuity comparisons, and
+`make test-graph-native-tsan` for compiler mailbox/code-retirement race checks.
+`test-audio-runtime` runs both reference and direct-native-graph variants covering
+stereo mixing, effect tails, idle behavior, plugins, and missing-code silence.
+The native graph tests also compare a fan-in/gain/distortion chain with reference
+audio while forbidding routing/DSP callbacks.
+Reference kernels exist only in host test executables. Build prerequisites and the LLVM source cache are
+described in the [build guide](../guide/development#linux-build-prerequisites).
+
 ## Tests and continuous integration
+
+Runtime objects depend on a content-tracked version stamp. Changing the Makefile
+version or command-line `AUDIOX_VERSION_*` overrides rebuilds the runtime so
+the API/UI version matches the packaged version; unchanged versions leave
+incremental builds intact. Check the selected version with `make print-version`.
 
 Test targets live in `tests/Makefile`, included by the root Makefile:
 
@@ -155,6 +221,8 @@ node --test tests/web/site_navigation_test.js tests/web/docs_site_test.js
 release-workflow tests. Release tests use mocks and do not publish anything.
 Individual test targets are listed in `tests/Makefile`; consult their recipes
 when a target needs extra tools or has hardware limitations.
+Hardware telemetry tests include an optimized `_FORTIFY_SOURCE=3` build of the
+firmware fixture to catch bounded-read regressions exposed by CI compilers.
 
 The `Build AudioX OS Image` workflow runs `make test`, the graph ThreadSanitizer
 test, and Pi 4/Pi 5 builds for relevant source changes and pull requests. The

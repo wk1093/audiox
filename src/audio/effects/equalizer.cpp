@@ -122,6 +122,7 @@ bool equalizerHasPendingAudio(const EqualizerState &state, float threshold) {
     return hasEnergy(state.active) || (state.transitioning && hasEnergy(state.transition));
 }
 
+#ifndef AUDIOX_DSP_RUNTIME_ONLY
 void processEqualizer(const float *in, float *out, uint32_t frames, float lowHz, float lowGainDb,
                       float midHz, float midGainDb, float highHz, float highGainDb, float q,
                       float outputGain, EqualizerState *state) {
@@ -200,4 +201,5 @@ void processEqualizer(const float *in, float *out, uint32_t frames, float lowHz,
     }
 }
 
+#endif
 } // namespace audiox::effects

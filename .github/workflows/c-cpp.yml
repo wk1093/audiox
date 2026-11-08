@@ -98,16 +98,28 @@ jobs:
         with:
           node-version: '22'
       - name: Install host test dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libasound2-dev libncurses-dev libsbc-dev jq
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libasound2-dev libncurses-dev libsbc-dev jq llvm-dev clang
       - name: Run regression suites
         run: make test
       - name: Check graph publication with ThreadSanitizer
-        run: make test-audio-graph-tsan
+        run: make test-audio-graph-tsan test-graph-native-tsan
+
+  llvm:
+    needs: [prepare, test]
+    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/llvm.yml
+    with:
+      ref: ${{ needs.prepare.outputs.commit }}
 
   build:
     name: Build AudioX (${{ matrix.board }})
-    needs: [prepare, test]
-    runs-on: ubuntu-latest
+    needs: [prepare, test, llvm]
+    if: >-
+      always() && needs.prepare.result == 'success' && needs.test.result == 'success' &&
+      (needs.llvm.result == 'success' || needs.llvm.result == 'skipped')
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -185,10 +197,32 @@ jobs:
             libncurses-dev \
             xz-utils \
             jq \
-            pkg-config
+            pkg-config \
+            cmake \
+            ninja-build
+          curl -fsSL --retry 3 --connect-timeout 20 https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /usr/share/keyrings/audiox-llvm.asc > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/audiox-llvm.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+            | sudo tee /etc/apt/sources.list.d/audiox-llvm.list
+          sudo apt-get update
+          sudo apt-get install -y clang-21
+          echo "DSP_CLANGXX=clang++-21" >> "$GITHUB_ENV"
 
       - name: Configure ${{ matrix.board }} defaults
         run: make ${{ matrix.config }}
+
+      - name: Restore released AArch64 LLVM
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if bash tools/build/graph_llvm_release.sh fetch out/graph-llvm; then
+            echo "Using released LLVM libraries."
+          else
+            status=$?
+            if [[ "$status" != 3 ]]; then exit "$status"; fi
+            echo "No LLVM release available; make will build from source."
+          fi
 
       - name: Build Initramfs targets
         run: |

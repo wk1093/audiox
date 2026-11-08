@@ -275,25 +275,11 @@ void readSavedFanCurve(const BoardInfo &board, FanCurve *curve) {
 bool readDeviceTreeCells(const char *path, int minimum, int maximum,
 						 int *values, size_t valueCount) {
 	if (!path || !values || valueCount == 0 || valueCount > 16) return false;
-	unsigned char bytes[64];
-	const size_t byteCount = valueCount * 4;
-	const int fd = open(path, O_RDONLY | O_CLOEXEC);
-	if (fd < 0) return false;
-	size_t offset = 0;
-	while (offset < byteCount) {
-		ssize_t count = read(fd, bytes + offset, byteCount - offset);
-		if (count < 0 && errno == EINTR) continue;
-		if (count <= 0) {
-			close(fd);
-			return false;
-		}
-		offset += (size_t)count;
-	}
-	unsigned char extra = 0;
-	ssize_t extraCount = read(fd, &extra, 1);
-	close(fd);
-	if (extraCount != 0) return false;
-	return decodeDeviceTreeCells(bytes, byteCount, minimum, maximum,
+	char bytes[65];
+	size_t byteCount = 0;
+	if (!readSmallFile(path, bytes, sizeof(bytes), &byteCount)) return false;
+	return decodeDeviceTreeCells(reinterpret_cast<const unsigned char *>(bytes),
+								 byteCount, minimum, maximum,
 								 values, valueCount);
 }
 

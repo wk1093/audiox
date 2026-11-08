@@ -57,7 +57,7 @@ sudo apt-get install -y \
   build-essential autoconf automake libtool \
   gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
   cpio curl wget parted e2fsprogs dosfstools mtools \
-  libarchive-tools libncurses-dev xz-utils jq pkg-config
+  libarchive-tools libncurses-dev xz-utils jq pkg-config cmake ninja-build
 ```
 
 You also need Git to obtain the repository/dependencies. Image creation uses Linux loop devices, mounting tools, and `sudo`; a working cross compiler alone does not provide those facilities. Build as your normal user; only the image script's privileged disk operations should require elevation.
@@ -65,6 +65,29 @@ You also need Git to obtain the repository/dependencies. Image creation uses Lin
 Additional tools depend on the workflow:
 
 - Host audio tests: host ALSA development headers/library (Debian/Ubuntu: `libasound2-dev`).
+- Native graph tests: LLVM development headers/library, `llvm-config`, and
+  matching Clang (Debian/Ubuntu: `llvm-dev clang`, LLVM 15 or newer).
+  Override `HOST_LLVM_CONFIG` and `HOST_CLANGXX` for version-suffixed tools.
+  Graph compiler builds treat LLVM include directories as system headers so
+  upstream header warnings do not fail AudioX's warning-as-error builds.
+- CI reuses a versioned LLVM dependency release built by `Prepare AArch64 LLVM`.
+  Trusted non-PR builds create it automatically when missing; pull requests
+  have no publishing permission and build LLVM from source if it is absent.
+  Authentication/network failures, corrupt archives, and incomplete releases
+  fail explicitly instead of falling back. Releases are prereleases and are not
+  marked latest, so they do not replace firmware releases.
+  The tag includes LLVM 21.1.8, the Ubuntu 24.04/GCC 13 toolchain contract, and a
+  hash of the source-build and packaging recipes. Archives include static
+  libraries, public/generated headers, license inputs, and a revision manifest.
+  Downloaded assets are checked against the SHA-256 sidecar in that immutable
+  release and the locally expected manifest; this trusts repository release
+  maintainers, not an independently pinned checksum. Never replace assets:
+  change the recipe for a new tag. Local `make` still builds LLVM from source.
+- Firmware DSP bitcode: **Clang 21**, matching the runtime LLVM 21 backend.
+  Set `DSP_CLANGXX=/path/to/clang++-21` if it is not found through
+  `llvm-config-21`. Ubuntu CI uses the signed [LLVM packages](https://apt.llvm.org/)
+  for Noble and sets `DSP_CLANGXX=clang++-21`. Newer Clang bitcode is not
+  interchangeable with an older LLVM runtime.
 - Firmware WebUI assets and JavaScript regressions: Node.js/npm. `make web_assets`
   installs the pinned `web/embedded/package-lock.json` packages with lifecycle scripts
   disabled and compiles the device target of the web UI (scripts and styles minified
@@ -78,6 +101,18 @@ Additional tools depend on the workflow:
 - Some helper/validation paths use `qemu-aarch64` for target executables on a non-AArch64 host.
 
 Downloads require network access during dependency preparation. Do not mistake a successful host compiler setup for a complete offline build cache.
+
+Firmware builds also compile a pinned LLVM 21.1.8 AArch64 backend from source
+in `out/graph-llvm`. The first build is substantial; allow additional time and
+disk space. Its default parallelism is two jobs; set `LLVM_BUILD_JOBS` to
+change it without changing the rest of the build. The statically linked
+`/sbin/audiox-graph-compiler` is included automatically, along with LLVM's
+license. Subsequent builds reuse the source and library cache. The host LLVM
+used by tests is independent of this target dependency. Effect sources build
+to LLVM bitcode under `out/dsp-bitcode` and ship in `/usr/share/audiox/dsp`;
+the production executable contains effect state/control handling, not the
+built-in sample-processing kernels. Each graph compilation optimizes and
+recompiles these kernels on the device. There is no compiled-in DSP fallback.
 
 ## Configure a board
 

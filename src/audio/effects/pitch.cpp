@@ -6,63 +6,39 @@
 #include <cmath>
 #include <cstring>
 
-#define AUDIOX_PITCH_VOCODER_FFT_SIZE 1024U
 #define AUDIOX_PITCH_VOCODER_MAX_SEMITONES 12.0f
 
 namespace audiox::effects {
-
-namespace {
-
-struct PitchState {
-    static constexpr uint32_t FFT_SIZE = AUDIOX_PITCH_VOCODER_FFT_SIZE;
-    static constexpr uint32_t HALF_BINS = FFT_SIZE / 2U + 1U;
-
-    float inFifo[FFT_SIZE];
-    float outFifo[FFT_SIZE];
-    float fftWork[FFT_SIZE * 2U];
-    float outputAccum[FFT_SIZE];
-    float dryDelay[FFT_SIZE];
-    uint32_t dryIndex;
-
-    float lastPhase[HALF_BINS];
-    float sumPhase[HALF_BINS];
-    float anaMag[HALF_BINS];
-    float anaFreq[HALF_BINS];
-    float synMag[HALF_BINS];
-    float synFreqAcc[HALF_BINS];
-
-    uint32_t rover;
-    float wetLpfZ;
-    bool inited;
-    uint8_t quality;
-    float cachedShift, pitchRatio, cachedLpfHz, wetLpfAlpha;
-};
 
 static_assert((PitchState::FFT_SIZE & (PitchState::FFT_SIZE - 1U)) == 0U,
               "AUDIOX_PITCH_VOCODER_FFT_SIZE must be a power of two");
 
 constexpr float kPi = 3.14159265358979323846f;
 
-struct PitchPlan {
-    FftPlan<PitchState::FFT_SIZE> fft;
-    float window[PitchState::FFT_SIZE]{};
-    float synthesis[3][PitchState::FFT_SIZE]{};
-    PitchPlan() {
+#ifndef AUDIOX_DSP_BITCODE
+PitchPlan::PitchPlan() {
+    for (uint32_t i = 0; i < PitchState::FFT_SIZE; ++i) {
+        window[i] = .5f - .5f * cosf(2 * kPi * i / PitchState::FFT_SIZE);
+    }
+    for (uint32_t quality = 0; quality < 3; ++quality) {
+        const uint32_t overlap = 8U >> quality;
         for (uint32_t i = 0; i < PitchState::FFT_SIZE; ++i) {
-            window[i] = .5f - .5f * cosf(2 * kPi * i / PitchState::FFT_SIZE);
-        }
-        for (uint32_t quality = 0; quality < 3; ++quality) {
-            const uint32_t overlap = 8U >> quality;
-            for (uint32_t i = 0; i < PitchState::FFT_SIZE; ++i) {
-                const float scale = 8.0f / (3.0f * PitchState::FFT_SIZE * overlap);
-                synthesis[quality][i] = window[i] * scale;
-            }
+            const float scale = 8.0f / (3.0f * PitchState::FFT_SIZE * overlap);
+            synthesis[quality][i] = window[i] * scale;
         }
     }
-};
-const PitchPlan pitchPlan;
+}
+namespace { const PitchPlan pitchPlan; }
+const PitchPlan &getPitchPlan() { return pitchPlan; }
+StateBank<PitchState> pitchStates;
+PitchState *pitchStateFor(const char *effectId, uint8_t channel, bool create) {
+    return pitchStates.find(effectId, channel, create);
+}
+#endif
 
-inline void processFrame(PitchState *s, float pitchRatio, float noiseFloorRatio) {
+#ifndef AUDIOX_DSP_RUNTIME_ONLY
+namespace {
+inline void processFrame(PitchState *s, const PitchPlan &pitchPlan, float pitchRatio, float noiseFloorRatio) {
     const uint32_t fftSize = PitchState::FFT_SIZE;
     const uint32_t hop = fftSize / (8U >> s->quality);
     const uint32_t halfBins = PitchState::HALF_BINS;
@@ -166,15 +142,12 @@ inline void processFrame(PitchState *s, float pitchRatio, float noiseFloorRatio)
     memmove(s->inFifo, s->inFifo + hop, remain * sizeof(float));
 }
 
-StateBank<PitchState> pitchStates;
-PitchState *getStateFor(const char *effectId, uint8_t channel, bool create = true) {
-    return pitchStates.find(effectId, channel, create);
-}
-
 } // namespace
+#endif
 
+#ifndef AUDIOX_DSP_BITCODE
 bool pitchHasPendingAudio(const char *effectId, uint8_t channel, float threshold) {
-    const PitchState *state = getStateFor(effectId, channel, false);
+    const PitchState *state = pitchStateFor(effectId, channel, false);
     if (!state)
         return false;
     for (uint32_t i = 0; i < PitchState::FFT_SIZE; ++i) {
@@ -187,15 +160,25 @@ bool pitchHasPendingAudio(const char *effectId, uint8_t channel, float threshold
 }
 
 void resetPitch(const char *effectId, uint8_t channel) {
-    PitchState *state = getStateFor(effectId, channel, false);
+    PitchState *state = pitchStateFor(effectId, channel, false);
     if (state)
-        memset(state, 0, sizeof(*state));
+        *state = {};
 }
+#endif
 
+#ifndef AUDIOX_DSP_RUNTIME_ONLY
+#ifndef AUDIOX_DSP_BITCODE
 void processPitch(const char *effectId, uint8_t channel, const float *in, float *out,
                   uint32_t frames, float inputGain, float semitoneShift, float mix,
                   float outputGain, float noiseFloorRatio, float wetLpfHz, uint8_t quality) {
-    if (!in || !out || frames == 0) {
+    processPitchState(pitchStateFor(effectId, channel), getPitchPlan(), in, out, frames,
+                      inputGain, semitoneShift, mix, outputGain, noiseFloorRatio, wetLpfHz, quality);
+}
+#endif
+void processPitchState(PitchState *s, const PitchPlan &plan, const float *in, float *out,
+                  uint32_t frames, float inputGain, float semitoneShift, float mix,
+                  float outputGain, float noiseFloorRatio, float wetLpfHz, uint8_t quality) {
+    if (!s || !in || !out || frames == 0) {
         return;
     }
 
@@ -236,12 +219,11 @@ void processPitch(const char *effectId, uint8_t channel, const float *in, float 
     if (wetLpfHz > 18000.0f)
         wetLpfHz = 18000.0f;
 
-    PitchState *s = getStateFor(effectId, channel);
     if (quality > 2) quality = 0;
     const uint32_t hop = PitchState::FFT_SIZE / (8U >> quality);
 
     if (fabsf(semitoneShift) < 1.0e-6f || mix == 0.0f) {
-        memset(s, 0, sizeof(*s));
+        *s = {};
         for (uint32_t i = 0; i < frames; ++i)
             out[i] = std::isfinite(in[i])
                          ? fmaxf(-1.0f, fminf(1.0f, in[i] * inputGain * outputGain))
@@ -249,7 +231,7 @@ void processPitch(const char *effectId, uint8_t channel, const float *in, float 
         return;
     }
     if (!s->inited || s->quality != quality) {
-        memset(s, 0, sizeof(*s));
+        *s = {};
         s->quality = quality;
         s->cachedShift = s->cachedLpfHz = NAN;
         s->rover = PitchState::FFT_SIZE - hop;
@@ -289,10 +271,10 @@ void processPitch(const char *effectId, uint8_t channel, const float *in, float 
 
         s->rover++;
         if (s->rover >= PitchState::FFT_SIZE) {
-            processFrame(s, pitchRatio, noiseFloorRatio);
+            processFrame(s, plan, pitchRatio, noiseFloorRatio);
             s->rover = inFifoLatency;
         }
     }
 }
-
+#endif
 } // namespace audiox::effects

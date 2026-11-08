@@ -10,7 +10,7 @@ test-midi-docs: test-script-docs
 test-native: test-audio-runtime test-builtin-effects test-audio-meters test-audio-graph test-audio-graph-mailbox \
     test-scenes \
 	test-plugin-package test-plugin-host test-plugin-integration \
-	test-audio-pcm-recover test-audio-stress test-bluetooth-hci test-bluetooth-a2dp test-display-hotplug test-soundboard-config \
+	test-audio-pcm-recover test-audio-stress test-bluetooth-hci test-bluetooth-a2dp test-bluetooth-connect-log test-display-hotplug test-soundboard-config \
 	test-boot-recovery test-config-backup test-system-logs test-system test-gadget-setup test-mdns \
 	test-gadget-volume test-diagnostics test-midi-usb test-script test-script-storage test-script-docs test-watchdog test-resolve-modules test-build-dependencies test-storage-expand test-device-health test-hardware-telemetry test-hardware-power-button
 
@@ -242,6 +242,16 @@ $(OUT_DIR)/host/audiox-bluetooth-hci-test: tests/native/bluetooth/bluetooth_hci_
 .PHONY: test-bluetooth-a2dp
 test-bluetooth-a2dp: $(OUT_DIR)/host/audiox-bluetooth-a2dp-test
 	@"$<"
+
+.PHONY: test-bluetooth-connect-log
+test-bluetooth-connect-log: $(OUT_DIR)/host/audiox-bluetooth-connect-log-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-bluetooth-connect-log-test: tests/native/bluetooth/bluetooth_connect_log_test.cpp src/bluetooth/context.cpp src/bluetooth/hci.cpp src/bluetooth/a2dp.cpp include/bluetooth/context.hpp tests/Makefile
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-error=format-truncation -Iinclude -fno-access-control -ffunction-sections -fdata-sections \
+		-Wl,--gc-sections -Wl,--wrap=socket -Wl,--wrap=setsockopt -Wl,--wrap=connect -Wl,--wrap=getsockopt \
+		-o "$@" tests/native/bluetooth/bluetooth_connect_log_test.cpp src/bluetooth/context.cpp src/bluetooth/hci.cpp src/bluetooth/a2dp.cpp -lsbc -pthread
 
 $(OUT_DIR)/host/audiox-bluetooth-a2dp-test: tests/native/bluetooth/bluetooth_a2dp_test.cpp src/bluetooth/a2dp.cpp include/bluetooth/a2dp.hpp include/bluetooth/avrcp.hpp
 	@mkdir -p "$(dir $@)"

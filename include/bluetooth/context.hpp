@@ -58,6 +58,7 @@ struct BluetoothLink {
     int signalingFd;
     // Outgoing L2CAP connect still in progress.
     bool signalingConnecting;
+    bool automaticConnect;
     // User-visible "connecting": until the output starts, or the signaling
     // channel is up for an input-only device.
     bool connecting;

@@ -1369,7 +1369,9 @@ bool BluetoothContext::beginConnect(const bt::Address &target, bool automatic) {
     bool inProgress = false;
     if (connect(fd, (struct sockaddr *)&remote, sizeof(remote)) != 0) {
         if (errno != EINPROGRESS) {
-            printf("[BT] [WARN] AVDTP signaling connect failed: %s\n", strerror(errno));
+            if (!automatic) {
+                printf("[BT] [WARN] AVDTP signaling connect failed: %s\n", strerror(errno));
+            }
             close(fd);
             resetLink(links[index]);
             return false;
@@ -1380,15 +1382,16 @@ bool BluetoothContext::beginConnect(const bt::Address &target, bool automatic) {
     const bool inputOnly = source && !sink;
     link.signalingFd = fd;
     link.signalingConnecting = inProgress;
+    link.automaticConnect = automatic;
     link.connecting = true;
     link.deadlineMs = bt::monotonicMs() + BT_OUTPUT_CONNECT_TIMEOUT_MS;
     link.wantOutput = !inputOnly;
     link.wantInput = source;
     link.discoverAtMs = 0;
-    printf("[BT] [INFO] %sconnecting A2DP %s %s on hci%d\n",
-           automatic ? "auto-" : "",
-           inputOnly ? "input from" : "to",
-           targetText, devId);
+    if (!automatic) {
+        printf("[BT] [INFO] connecting A2DP %s %s on hci%d\n",
+               inputOnly ? "input from" : "to", targetText, devId);
+    }
     if (!inProgress) {
         handleSignalingConnected(index);
     }
@@ -2581,6 +2584,8 @@ void BluetoothContext::closeLink(int index, const char *reason, bool hold) {
         return;
     }
     const bt::Address address = link.address;
+    const bool quietAttempt = link.automaticConnect && link.signalingConnecting &&
+        (!reason || strcmp(reason, BT_USER_DISCONNECT_REASON) != 0);
     const bool wasOutput = link.outUp || link.wantOutput;
     for (unsigned i = 0; i < BT_MAX_LINKS; ++i)
         if (mediaSessions[i].fd >= 0 && bt::sameAddress(mediaSessions[i].address, address))
@@ -2614,7 +2619,9 @@ void BluetoothContext::closeLink(int index, const char *reason, bool hold) {
         }
         char label[BT_NAME_MAX] = {};
         deviceLabel(address, label, sizeof(label));
-        printf("[BT] [INFO] %s disconnected: %s\n", label, reason);
+        if (!quietAttempt) {
+            printf("[BT] [INFO] %s disconnected: %s\n", label, reason);
+        }
         setMessage("%s: %s", label, reason);
     }
 }

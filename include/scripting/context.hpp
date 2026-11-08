@@ -18,6 +18,8 @@ struct ScriptContext {
   uint16_t macroEventMasks[SCRIPTS_MAX]{};
   bool bootHooksDispatched{false};
   uint64_t nextScriptTimerMs{0};
+  uint64_t nextDeviceActivityMs{0};
+  ScriptActivity deviceActivity[SCRIPTS_MAX]{};
   uint64_t scriptBluetoothHash{0};
   bool scriptBluetoothKnown{false};
   bool macroUsesKeyboard[SCRIPTS_MAX]{};
@@ -51,6 +53,7 @@ struct ScriptContext {
   bool queueMacroEvent(unsigned index, ScriptEvent event);
   void dispatchMacroEvent(ScriptEvent event);
   void pollScriptLifecycle(uint64_t now, bool startupStable);
+  void pollDeviceActivity(uint64_t now);
   void pollBluetoothMediaEvents();
   void pollMacros(uint64_t now);
   bool queueControllerMidi(const uint8_t *bytes, size_t count);

@@ -1,4 +1,5 @@
 #include "audio/context.hpp"
+#include "audio/activity.hpp"
 #include "audio/processing_fx.hpp"
 #include "init.hpp"
 #include "midi/context.hpp"
@@ -36,6 +37,7 @@ void ScriptContext::stopMacros() {
   for (auto &state : macroStates)
     state = {};
   memset(macroPressed, 0, sizeof(macroPressed));
+  nextDeviceActivityMs = 0;
   for (auto &light : macroLight)
     light = -1;
 }
@@ -47,6 +49,7 @@ void ScriptContext::syncMacros() {
                  midi.cachedMidiMap.chords, scriptMacroEqual))
     return;
   stopMacros();
+  for (auto &activity : deviceActivity) activity = {};
   compiledMacroCount = count;
   memcpy(compiledMacros, midi.cachedMidiMap.chords,
          count * sizeof(ScriptDefinition));
@@ -58,7 +61,7 @@ void ScriptContext::syncMacros() {
     if (macro.script[0]) {
       macroValid[i] =
           macro.hookMode && scriptInspectHooks(macro.script, macroEventMasks[i],
-                                               error, sizeof(error));
+                                               error, sizeof(error), &deviceActivity[i]);
     } else {
       macroValid[i] = false;
     }
@@ -162,6 +165,48 @@ void ScriptContext::pollBluetoothMediaEvents() {
            dropped);
 }
 
+void ScriptContext::pollDeviceActivity(uint64_t now) {
+  if (now < nextDeviceActivityMs) return;
+  nextDeviceActivityMs = now + 100;
+  auto *audio = midi.app ? midi.app->audio : nullptr;
+  for (unsigned i = 0; i < compiledMacroCount; ++i) {
+    if (!macroValid[i]) continue;
+    for (unsigned d = 0; d < deviceActivity[i].count; ++d) {
+      auto &device = deviceActivity[i].devices[d];
+      bool active = false;
+      if (audio) {
+        std::lock_guard<std::mutex> lock(audio->routingGraphMutex);
+        const auto &graph = audio->routingGraphPublished;
+        for (unsigned n = 0; n < graph.thingCount; ++n) {
+          if (strcmp(graph.things[n].id, device.id)) continue;
+          const unsigned channels = std::min<unsigned>(16, graph.things[n].outputs ?
+              graph.things[n].outputs : graph.things[n].inputs);
+          for (unsigned ch = 0; ch < channels; ++ch)
+            active |= !(audio->nodeChannelLevels[n][ch].load(std::memory_order_relaxed) <= audiox::kAudioActivityNoiseFloor);
+          break;
+        }
+      }
+      if (!active && !device.active) continue;
+      ScriptEvent event{};
+      event.kind = ScriptEventKind::DeviceActive;
+      event.active = active;
+      event.pressed = active;
+      snprintf(event.device, sizeof(event.device), "%s", device.id);
+      bool queued = false;
+      for (unsigned j = 0; j < macroQueueCount; ++j) {
+        auto &pending = macroQueue[j];
+        if (pending.index != i || pending.event.kind != event.kind ||
+            strcmp(pending.event.device, device.id)) continue;
+        pending.event.active = active;
+        pending.event.pressed = active;
+        queued = true;
+        break;
+      }
+      if (queued || queueMacroEvent(i, event)) device.active = active;
+    }
+  }
+}
+
 void ScriptContext::pollScriptLifecycle(uint64_t now, bool startupStable) {
   if (!startupStable)
     return;
@@ -189,6 +234,7 @@ void ScriptContext::pollScriptLifecycle(uint64_t now, bool startupStable) {
     bootHooksDispatched = true;
     nextScriptTimerMs = now + 1000;
   }
+  pollDeviceActivity(now);
   if (now < nextScriptTimerMs)
     return;
   nextScriptTimerMs = now + 1000;
@@ -250,12 +296,29 @@ void ScriptContext::pollMacros(uint64_t now) {
     macroPlan = {};
     macroErrors[activeMacro][0] = '\0';
     ScriptState nextState = macroStates[activeMacro];
+    ScriptMeters meters{};
+    if (midi.app && midi.app->audio) {
+        auto *audio = midi.app->audio;
+        std::lock_guard<std::mutex> lock(audio->routingGraphMutex);
+        const auto &graph = audio->routingGraphPublished;
+        static_assert(AUDIO_GRAPH_MAX_THINGS <= 64);
+        meters.count = graph.thingCount;
+        for (unsigned i = 0; i < meters.count; ++i) {
+            auto &node = meters.nodes[i];
+            snprintf(node.id, sizeof(node.id), "%s", graph.things[i].id);
+            node.channels = std::min<unsigned>(16, graph.things[i].outputs ?
+                                              graph.things[i].outputs : graph.things[i].inputs);
+            for (unsigned ch = 0; ch < node.channels; ++ch)
+                node.levels[ch] = audio->nodeChannelLevels[i][ch].load(std::memory_order_relaxed);
+        }
+    }
     {
       if (!scriptEvaluate(
               macro.script, trigger.event, nextState, macroPlan,
               macroErrors[activeMacro], sizeof(macroErrors[activeMacro]),
               midi.app ? midi.app->config : nullptr, macro.configWriteAllowed,
-              macro.hookMode, macroEventMasks[activeMacro], macro.id)) {
+              macro.hookMode, macroEventMasks[activeMacro], macro.id,
+              midi.app && midi.app->audio ? &meters : nullptr)) {
         printf("[SCRIPT] [WARN] Macro ch=%u note=%u failed: %s\n",
                macro.channel, macro.note, macroErrors[activeMacro]);
         activeMacro = -1;

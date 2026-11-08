@@ -32,6 +32,10 @@ In this example, `scratch` starts at zero on every event; only `state.runs`
 remembers previous events. Ordinary globals, local tables and closure variables
 also reset. No functions or tables can be stored in `state`.
 
+Activity handlers use `hook("device_active", "routing_id", callback)` and receive
+`event.device` and `event.active`. They need no MIDI binding. See the
+[activity hook limits and CPU warning](./api#startup-and-utility-hooks).
+
 Up to 32 callbacks may be registered, including several for the same event.
 Matching handlers run in registration order, sharing that event's temporary
 environment and one aggregate action plan. If any handler fails, **none** of the

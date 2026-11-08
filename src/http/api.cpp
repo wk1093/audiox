@@ -5652,6 +5652,13 @@ static int handleMidiChords(HttpServer *server, int cfd, const char *method,
 				return reply("400 Bad Request", "event subscriptions require the named scripts API\n");
 			if (chord.hookMode && !scriptInspectHooks(chord.script, chord.eventMask, error, sizeof(error)))
 				return reply("400 Bad Request", error);
+			char activityAck[4]{};
+			int activityField = field("activity_ack", activityAck, sizeof(activityAck));
+			if (activityField < 0 || (activityField && strcmp(activityAck, "0") && strcmp(activityAck, "1")))
+				return reply("400 Bad Request", "activity_ack must be 0 or 1\n");
+			if ((chord.eventMask & (1U << static_cast<unsigned>(ScriptEventKind::DeviceActive))) &&
+				!(activityField == 1 && !strcmp(activityAck, "1")))
+				return reply("409 Conflict", "device_active hooks can run ten times per second per device and cause significant CPU usage. Confirm the activity-hook warning before saving.\n");
 			int ackField = field("config_write_ack", acknowledge, sizeof(acknowledge));
 			if (ackField < 0 || (ackField && strcmp(acknowledge, "0") && strcmp(acknowledge, "1")))
 				return reply("400 Bad Request", "config_write_ack must be 0 or 1\n");

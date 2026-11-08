@@ -2650,6 +2650,12 @@ async function saveMidiChord(method, chord, button) {
   if (button.disabled) return;
   button.disabled = true;
   try {
+    const activityScript = method === 'POST' &&
+      /\bdevice_active\b/.test(chordHexDecode(chord.script_hex || ''));
+    if (activityScript && !await AudioxUI.confirm(
+      'Device activity hooks can run ten times per second per device. Repeated Lua evaluation can cause significant CPU usage and compete with audio processing. Keep callbacks small. Save this script?', {
+        title: 'High-frequency activity hook', label: 'Acknowledge and save',
+      })) return;
     const configurationScript = method === 'POST' &&
       (Boolean(chord.config_write_allowed) ||
         /\b(?:config|settings|system|bluetooth)\b/.test(chordHexDecode(chord.script_hex || '')));
@@ -2663,10 +2669,22 @@ async function saveMidiChord(method, chord, button) {
       `&channel=${chord.channel}&note=${chord.note}` +
       `&idle_velocity=${chord.idle_velocity ?? 0}&pressed_velocity=${chord.pressed_velocity ?? 0}` +
       `&config_write_ack=${configurationScript ? 1 : 0}` +
+      `&activity_ack=${activityScript ? 1 : 0}` +
       `&script_hex=${chord.script_hex || ''}`;
-    const res = await apiFetch('/api/scripts', {
+    let res = await apiFetch('/api/scripts', {
       method, headers: { 'Content-Type': 'text/plain' }, body: payload,
     });
+    if (method === 'POST' && res.status === 409 && !activityScript) {
+      const warning = await res.text();
+      if (!warning.includes('device_active')) throw new Error(`409: ${warning}`);
+      if (!await AudioxUI.confirm(warning, {
+        title: 'High-frequency activity hook', label: 'Acknowledge and save',
+      })) return;
+      res = await apiFetch('/api/scripts', {
+        method, headers: { 'Content-Type': 'text/plain' },
+        body: payload.replace('&activity_ack=0', '&activity_ack=1'),
+      });
+    }
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
     if (method === 'POST' || editingMacroId === chord.id) resetMacroEditor();
     setStatus(method === 'DELETE' ? 'Script removed' : 'Script saved', 'ok', 'midi-chords');

@@ -228,7 +228,9 @@ make image
 make image IMG_SIZE_MB=1024
 ```
 
-The default output is `out/audiox.img`, default size 256 MiB. `tools/build/build_image.sh` creates an MBR image with a FAT boot partition and an ext4 storage partition, uses a loop device, formats/mounts the image partitions, and copies boot files plus the converter. The script checks required space for FFmpeg staging.
+The default output is `out/audiox.img`, default size 512 MiB. `tools/build/build_image.sh` creates an MBR image with a 128 MiB FAT boot partition and an ext4 storage partition, uses a loop device, formats/mounts the image partitions, and copies boot files plus the converter. The script checks boot payload space and required storage space for FFmpeg before creating the image. Increasing `IMG_SIZE_MB` enlarges storage, not the boot partition.
+
+Older images have a smaller boot partition that may not fit LLVM-enabled firmware. Increasing the image default does not resize an already flashed card: back up persistent settings/files and reflash the new image, or resize its partitions separately. QEMU uses the same 128 MiB boot layout; an old undersized debug disk must be backed up and recreated with `make debug-reset-disk`.
 
 This command creates an image file; it does **not** select and flash a physical SD card. Install it using the explicit card-identification/verification steps in [Getting started](/guide/getting-started). Successful image generation is not proof that the resulting image boots on hardware.
 

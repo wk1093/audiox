@@ -23,6 +23,8 @@ constexpr uint64_t DURATION_MAX = 60000;
 char hooksRegistryKey;
 
 struct Compiler {
+    const ScriptMeters *meters;
+    unsigned meterReads;
     ScriptPlan *plan;
     ScriptState *state;
     const ScriptState *initialState;
@@ -45,6 +47,8 @@ struct Compiler {
     uint16_t hookMask;
     uint16_t expectedHookMask;
     uint16_t *discoveredMask;
+    ScriptActivity activity;
+    ScriptActivity *discoveredActivity;
     uint32_t scriptId;
     ScriptUi ui;
     ScriptUi *inspectedUi;
@@ -291,6 +295,32 @@ void identifier(lua_State *lua, int index, char (&out)[64]) {
         if (c < 33 || c > 126) luaL_error(lua, "IDs must be printable ASCII without spaces");
     }
     memcpy(out, text, size);
+}
+
+int meterGet(lua_State *lua) {
+    arity(lua, 1, 2);
+    auto *compiler = context(lua);
+    if (compiler->registering) return luaL_error(lua, "meters.get belongs inside callbacks");
+    if (++compiler->meterReads > 32) return luaL_error(lua, "meter read limit exceeded (32)");
+    if (!compiler->meters) return luaL_error(lua, "meters.get: audio snapshot unavailable");
+    char id[64]{};
+    identifier(lua, 1, id);
+    lua_Integer channel = 0;
+    if (lua_gettop(lua) == 2) {
+        if (!lua_isinteger(lua, 2)) return luaL_error(lua, "meter channel must be an integer");
+        channel = lua_tointeger(lua, 2);
+    }
+    if (channel < 0 || channel >= 16) return luaL_error(lua, "meter channel out of range (0..15)");
+    for (unsigned i = 0; i < compiler->meters->count; ++i) {
+        const auto &node = compiler->meters->nodes[i];
+        if (strcmp(node.id, id)) continue;
+        if (channel >= node.channels) return luaL_error(lua, "meter channel not present on node");
+        const float level = node.levels[channel];
+        if (!std::isfinite(level)) return luaL_error(lua, "meter reading is not finite");
+        lua_pushnumber(lua, level);
+        return 1;
+    }
+    return luaL_error(lua, "meters.get: unknown routing thing ID");
 }
 
 int deviceControl(lua_State *lua) {
@@ -880,6 +910,10 @@ void libraries(lua_State *lua) {
     lua_pushcclosure(lua, deviceControl, 1);
     lua_setfield(lua, -2, "adjust");
     lua_setglobal(lua, "volume");
+    lua_newtable(lua);
+    lua_pushcfunction(lua, meterGet);
+    lua_setfield(lua, -2, "get");
+    lua_setglobal(lua, "meters");
     const luaL_Reg helpers[] = {{"millis", millis}, {"epoch", epoch}, {"log", log}, {"choose", choose},
         {"clamp", clamp}, {"map", map}, {"round", round}, {nullptr, nullptr}};
     for (const luaL_Reg *helper = helpers; helper->name; ++helper) {
@@ -1207,6 +1241,8 @@ void pushEvent(lua_State *lua, const ScriptEvent &event) {
     lua_setfield(lua, -2, "velocity");
     lua_pushboolean(lua, event.pressed);
     lua_setfield(lua, -2, "pressed");
+    lua_pushboolean(lua, event.active);
+    lua_setfield(lua, -2, "active");
     lua_pushstring(lua, scriptEventName(event.kind));
     lua_setfield(lua, -2, "type");
     lua_pushinteger(lua, event.note);
@@ -1226,7 +1262,8 @@ void pushEvent(lua_State *lua, const ScriptEvent &event) {
     }
     const bool audio = event.kind == ScriptEventKind::SoundStart || event.kind == ScriptEventKind::SoundFinish;
     const bool device = event.kind == ScriptEventKind::DeviceConnect || event.kind == ScriptEventKind::DeviceDisconnect;
-    const bool system = event.kind == ScriptEventKind::Boot || event.kind == ScriptEventKind::Timer;
+    const bool system = event.kind == ScriptEventKind::Boot || event.kind == ScriptEventKind::Timer ||
+                        event.kind == ScriptEventKind::DeviceActive;
     const bool web = event.fromWeb || event.kind == ScriptEventKind::Ui || event.kind == ScriptEventKind::ConfigChange;
     lua_pushstring(lua, (event.kind == ScriptEventKind::BluetoothChange ||
                         event.kind == ScriptEventKind::BluetoothMediaKey) ? "bluetooth" :
@@ -1282,11 +1319,12 @@ void exportState(lua_State *lua, ScriptState *result) {
 }
 
 int registerHook(lua_State *lua) {
-    arity(lua, 2, 2);
+    arity(lua, 2, 3);
     Compiler *compiler = context(lua);
     if (!compiler->hookMode) return luaL_error(lua, "hook requires Lua callbacks mode");
     if (!compiler->registering) return luaL_error(lua, "hooks must be registered at script top level");
-    if (lua_type(lua, 1) != LUA_TSTRING || lua_type(lua, 2) != LUA_TFUNCTION)
+    const int callback = lua_gettop(lua);
+    if (lua_type(lua, 1) != LUA_TSTRING || lua_type(lua, callback) != LUA_TFUNCTION)
         return luaL_error(lua, "hook expects an event name and a function");
     size_t length = 0;
     const char *name = lua_tolstring(lua, 1, &length);
@@ -1296,14 +1334,29 @@ int registerHook(lua_State *lua) {
         if (length == strlen(candidate) && !memcmp(name, candidate, length)) break;
     }
     if (kind == SCRIPT_EVENT_COUNT) return luaL_error(lua, "unknown hook event name");
+    char device[64]{};
+    if (kind == static_cast<unsigned>(ScriptEventKind::DeviceActive)) {
+        if (callback != 3) return luaL_error(lua, "device_active expects device ID and callback");
+        identifier(lua, 2, device);
+        unsigned i = 0;
+        for (; i < compiler->activity.count; ++i)
+            if (!strcmp(compiler->activity.devices[i].id, device)) break;
+        if (i == compiler->activity.count) {
+            if (i == SCRIPT_ACTIVITY_MAX) return luaL_error(lua, "device_active device limit exceeded (8)");
+            strcpy(compiler->activity.devices[i].id, device);
+            ++compiler->activity.count;
+        }
+    } else if (callback != 2) return luaL_error(lua, "hook expects event name and callback");
     if (compiler->hookCount == SCRIPT_HOOKS_MAX)
         return luaL_error(lua, "hook limit exceeded (32)");
     lua_rawgetp(lua, LUA_REGISTRYINDEX, &hooksRegistryKey);
     lua_createtable(lua, 2, 0);
     lua_pushinteger(lua, kind);
     lua_rawseti(lua, -2, 1);
-    lua_pushvalue(lua, 2);
+    lua_pushvalue(lua, callback);
     lua_rawseti(lua, -2, 2);
+    lua_pushstring(lua, device);
+    lua_rawseti(lua, -2, 3);
     lua_rawseti(lua, -2, ++compiler->hookCount);
     compiler->hookMask |= static_cast<uint16_t>(1U << kind);
     return 0;
@@ -1375,6 +1428,7 @@ int evaluate(lua_State *lua) {
         }
         if (compiler->discoveredMask) {
             *compiler->discoveredMask = compiler->hookMask;
+            if (compiler->discoveredActivity) *compiler->discoveredActivity = compiler->activity;
             return 0;
         }
         if (compiler->expectedHookMask && compiler->expectedHookMask != compiler->hookMask)
@@ -1387,6 +1441,11 @@ int evaluate(lua_State *lua) {
             lua_rawgeti(lua, -1, 1);
             bool matches = lua_tointeger(lua, -1) == static_cast<unsigned>(compiler->event->kind);
             lua_pop(lua, 1);
+            if (matches && compiler->event->kind == ScriptEventKind::DeviceActive) {
+                lua_rawgeti(lua, -1, 3);
+                matches = !strcmp(lua_tostring(lua, -1), compiler->event->device);
+                lua_pop(lua, 1);
+            }
             if (matches) {
                 lua_rawgeti(lua, -1, 2);
                 lua_getglobal(lua, "event");
@@ -1428,12 +1487,15 @@ bool run(const char *source, const ScriptEvent *event, const ScriptState *initia
          char *error, size_t errorSize, ConfigStore *config = nullptr,
          bool configWriteAllowed = false, bool hookMode = false,
          uint16_t expectedHookMask = 0, uint16_t *discoveredMask = nullptr,
-         uint32_t scriptId = 0, ScriptUi *inspectedUi = nullptr) {
+         uint32_t scriptId = 0, ScriptUi *inspectedUi = nullptr,
+         const ScriptMeters *meters = nullptr, ScriptActivity *activity = nullptr) {
     writeError(error, errorSize, "");
     size_t length = 0;
     if (!sourceLength(source, length, error, errorSize,
                       hookMode || syntaxOnly ? SCRIPT_STORAGE_MAX : SCRIPT_MAX)) return false;
     Compiler compiler{};
+    compiler.meters = meters;
+    compiler.discoveredActivity = activity;
     compiler.plan = plan;
     compiler.state = resultState;
     compiler.initialState = initialState;
@@ -1485,7 +1547,8 @@ ScriptAction *scriptUtilityAppend(lua_State *lua, ScriptKind kind) { return appe
 bool scriptEvaluate(const char *source, const ScriptEvent &event,
                         ScriptState &state, ScriptPlan &plan,
                         char *error, size_t errorSize, ConfigStore *config, bool configWriteAllowed,
-                        bool hookMode, uint16_t expectedHookMask, uint32_t scriptId) {
+                        bool hookMode, uint16_t expectedHookMask, uint32_t scriptId,
+                        const ScriptMeters *meters) {
     plan = {};
     ScriptStateEntry eventValue = event.value;
     memcpy(eventValue.key, event.key, sizeof(eventValue.key));
@@ -1506,7 +1569,7 @@ bool scriptEvaluate(const char *source, const ScriptEvent &event,
     }
     ScriptState updated{};
     bool success = run(source, &event, &state, &updated, &plan, false, error, errorSize,
-                       config, configWriteAllowed, hookMode, expectedHookMask, nullptr, scriptId);
+                       config, configWriteAllowed, hookMode, expectedHookMask, nullptr, scriptId, nullptr, meters);
     if (!success) {
         plan = {};
         return false;
@@ -1532,6 +1595,7 @@ const char *scriptEventName(ScriptEventKind kind) {
     case ScriptEventKind::Ui: return "ui";
     case ScriptEventKind::BluetoothChange: return "bluetooth_change";
     case ScriptEventKind::BluetoothMediaKey: return "bluetooth_media_key";
+    case ScriptEventKind::DeviceActive: return "device_active";
     }
     return "unknown";
 }
@@ -1540,11 +1604,13 @@ bool scriptValidate(const char *source, char *error, size_t errorSize) {
     return run(source, nullptr, nullptr, nullptr, nullptr, true, error, errorSize);
 }
 
-bool scriptInspectHooks(const char *source, uint16_t &mask, char *error, size_t errorSize) {
+bool scriptInspectHooks(const char *source, uint16_t &mask, char *error, size_t errorSize,
+                        ScriptActivity *activity) {
     mask = 0;
+    if (activity) *activity = {};
     uint16_t discovered = 0;
     if (!run(source, nullptr, nullptr, nullptr, nullptr, false, error, errorSize,
-             nullptr, false, true, 0, &discovered)) return false;
+             nullptr, false, true, 0, &discovered, 0, nullptr, nullptr, activity)) return false;
     mask = discovered;
     return true;
 }

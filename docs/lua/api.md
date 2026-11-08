@@ -5,7 +5,7 @@ small: there is no arbitrary filesystem, shell, network, dynamic loading, or unr
 device access. `_G`, `_VERSION`, metatables, pattern matching, module loading,
 coroutines, `io`, `os`, `debug`, and `package` are not exposed. Each function
 below is available globally unless shown under
-`math`, `string`, `table`, `sound`, `midi`, `effects`, `volume`, `config`,
+`math`, `string`, `table`, `sound`, `midi`, `effects`, `volume`, `meters`, `config`,
 `settings`, `system`, `bluetooth`, `script_config`, `storage`, or `ui`.
 Unless shown as complete callback scripts, examples below are handler-body
 snippets: put them inside `hook("run", function(event) ... end)` or another
@@ -48,6 +48,24 @@ is disabled and the Run API rejects execution.
 See [callback examples and lifetime rules](/lua/events-and-state#register-callbacks-in-one-script).
 
 ### Startup and utility hooks
+
+- `hook("device_active", "routing_id", callback)`: after startup stabilization,
+  polls the node's published peaks at most every 100 ms. Runs while any channel
+  exceeds the engine noise floor (`0.001` linear amplitude, about -60 dBFS),
+  then once with `event.active=false` when activity stops or the node disappears.
+  Active ticks supply `event.active=true`; `event.device` is the routing ID,
+  `event.source` is `"system"`, and `event.pressed` mirrors activity.
+  Nodes with outputs monitor their outputs; sinks monitor inputs. It is not a
+  connection event or an audio/sample-accurate detector. Short bursts between
+  polls may be missed. Avoid monitoring the very branch your script mutes.
+  Up to eight distinct IDs per script, within the existing 32-handler limit.
+  Pending ticks coalesce to the latest activity state per script/device; missed
+  ticks are not replayed, and inactive transitions retry if the queue is full.
+  Coalesced events retain their original queue-time clock values. Unknown IDs
+  remain inactive until a matching node is present.
+  Saving requires acknowledging a high-CPU warning (`activity_ack=1` for HTTP
+  clients). Repeated Lua evaluation can compete with audio even though all
+  polling and Lua execution stay off the audio thread. Keep callbacks small.
 
 - `boot`: once after the main runtime has been ready for **60 seconds**, using
   the same healthy-startup interval as OS update recovery. Fires on ordinary
@@ -270,6 +288,24 @@ using a new sound; the trigger does not scan storage. See
 [MIDI and soundboard](/lua/midi-and-soundboard).
 
 ## Effects and volume
+
+### Meter readings
+
+`meters.get(id[, channel])` reads a routing node's published linear peak meter.
+Channel indices are zero-based (`0` by default, at most `15`) and must exist
+on that node. Use exact routing IDs, not display names. Unknown IDs, invalid
+channels, unavailable audio, and nonfinite readings raise a script error.
+Reads are callback-only and limited to 32 per event. Every callback in an event
+uses the same captured meter snapshot; it does not observe queued volume changes.
+Nodes with outputs expose output peaks; nodes without outputs expose input peaks.
+Readings are linear sample amplitudes (not percentages or dB, and may exceed 1).
+They are latest published block peaks, not sample-accurate or an atomic snapshot
+of all audio channels. A known offline node may read zero.
+Lua and meter snapshot capture remain on the control thread.
+
+The existing `timer` hook fires once per second, so meter-driven scripts can
+perform slow automatic mixing or coarse ducking, not fast sidechain compression.
+Do not use `wait()` as a polling loop: it delays actions, not Lua execution.
 
 | Call | Description |
 | --- | --- |

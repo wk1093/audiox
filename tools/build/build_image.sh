@@ -14,28 +14,39 @@ FFMPEG_BIN="${8:-}"
 MNT_BOOT="${OUT_DIR}/mnt_boot"
 MNT_STORAGE="${OUT_DIR}/mnt_storage"
 
-BOOT_PARTITION_MIB=48
+BOOT_PARTITION_MIB=128
+BOOT_OVERHEAD_MIB=16
 STORAGE_OVERHEAD_MIB=64
+boot_bytes=$(du -sb "${OUT_DIR}/bootfiles" | cut -f1)
+for file in "${INITRAMFS}" "${PROGRAM_INITRAMFS}" "${BOOT_CONFIG}" "${BOOT_CMDLINE}"; do
+    boot_bytes=$(( boot_bytes + $(stat -c%s "${file}") ))
+done
+boot_required_mib=$(( (boot_bytes + 1024*1024 - 1) / (1024*1024) + BOOT_OVERHEAD_MIB ))
+if (( boot_required_mib > BOOT_PARTITION_MIB )); then
+    echo "Error: boot payload requires ${boot_required_mib}MiB including overhead; boot partition is ${BOOT_PARTITION_MIB}MiB." >&2
+    exit 1
+fi
+ffmpeg_size_mib=0
 if [[ -n "${FFMPEG_BIN}" && -f "${FFMPEG_BIN}" ]]; then
     ffmpeg_size_mib=$(( ( $(stat -c%s "${FFMPEG_BIN}") + 1024*1024 - 1 ) / (1024*1024) ))
-    required_storage_mib=$(( ffmpeg_size_mib + STORAGE_OVERHEAD_MIB ))
-    required_total_mib=$(( BOOT_PARTITION_MIB + required_storage_mib ))
-    if (( IMG_SIZE_MB < required_total_mib )); then
-        echo "Error: image size too small for ffmpeg staging."
-        echo "Requested IMG_SIZE_MB=${IMG_SIZE_MB}MiB"
-        echo "Required minimum is ${required_total_mib}MiB (boot ${BOOT_PARTITION_MIB}MiB + ffmpeg ${ffmpeg_size_mib}MiB + overhead ${STORAGE_OVERHEAD_MIB}MiB)."
-        echo "Try: make image IMG_SIZE_MB=${required_total_mib}"
-        exit 1
-    fi
 fi
+required_total_mib=$(( 1 + BOOT_PARTITION_MIB + ffmpeg_size_mib + STORAGE_OVERHEAD_MIB ))
+if (( IMG_SIZE_MB < required_total_mib )); then
+    echo "Error: image size too small for boot and storage staging."
+    echo "Requested IMG_SIZE_MB=${IMG_SIZE_MB}MiB"
+    echo "Required minimum is ${required_total_mib}MiB (alignment 1MiB + boot ${BOOT_PARTITION_MIB}MiB + ffmpeg ${ffmpeg_size_mib}MiB + overhead ${STORAGE_OVERHEAD_MIB}MiB)."
+    echo "Try: make image IMG_SIZE_MB=${required_total_mib}"
+    exit 1
+fi
+storage_start_sector=$(( (1 + BOOT_PARTITION_MIB) * 2048 ))
 
 echo "Creating a blank ${IMG_SIZE_MB}MB image file..."
 dd if=/dev/zero of="${IMG_FILE}" bs=1M count="${IMG_SIZE_MB}" status=progress
 
 parted --script "${IMG_FILE}" mklabel msdos
-parted --script "${IMG_FILE}" mkpart primary fat32 2048s 98303s
+parted --script "${IMG_FILE}" mkpart primary fat32 2048s "$(( storage_start_sector - 1 ))s"
 parted --script "${IMG_FILE}" set 1 boot on
-parted --script "${IMG_FILE}" mkpart primary ext4 98304s 100%
+parted --script "${IMG_FILE}" mkpart primary ext4 "${storage_start_sector}s" 100%
 
 LOOP_DEV="$(sudo losetup --find --show --partscan "${IMG_FILE}")"
 cleanup() {

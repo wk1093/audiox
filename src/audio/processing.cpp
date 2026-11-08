@@ -1,4 +1,5 @@
 #include "audio/context.hpp"
+#include "audio/activity.hpp"
 #include "audio/graph_native.hpp"
 #include "audio/effects/pitch.hpp"
 #include "audio/plugin_registry.hpp"
@@ -41,7 +42,7 @@ constexpr float kSoundboardClipGain = 0.35f;
 constexpr float kBluetoothOutputPeakLimit = 0.2511886f;
 constexpr uint32_t kMaxSoundboardVoices = 64;
 constexpr uint64_t kAudioIdleTimeoutMs = 5000;
-constexpr float kAudioIdleNoiseFloor = 0.001f;
+constexpr float kAudioIdleNoiseFloor = audiox::kAudioActivityNoiseFloor;
 
 struct AdaptiveSrcController {
     float ratio;

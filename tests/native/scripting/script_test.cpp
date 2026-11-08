@@ -9,6 +9,7 @@
 #include <cstring>
 #include <string>
 #include <filesystem>
+#include <limits>
 #include <unistd.h>
 
 namespace {
@@ -76,6 +77,76 @@ void evaluationFailure(const char *source, const char *expected) {
 }
 
 int main() {
+    {
+        ScriptActivity activity{};
+        uint16_t mask{};
+        const char *source =
+            "hook('device_active','mic',function(e) assert(e.device=='mic'); state.active=e.active end); "
+            "hook('device_active','music',function(e) error('wrong device') end)";
+        assert(scriptInspectHooks(source, mask, error, sizeof(error), &activity));
+        assert(mask == 16384 && activity.count == 2);
+        assert(!strcmp(activity.devices[0].id, "mic"));
+        ScriptEvent event{};
+        event.kind = ScriptEventKind::DeviceActive;
+        strcpy(event.device, "mic");
+        event.active = true;
+        assert(scriptEvaluate(source, event, state, plan, error, sizeof(error),
+                              nullptr, false, true, mask));
+        assert(findState(state, "active")->booleanValue);
+        event.active = false;
+        assert(scriptEvaluate(source, event, state, plan, error, sizeof(error),
+                              nullptr, false, true, mask));
+        assert(!findState(state, "active")->booleanValue);
+        assert(!scriptInspectHooks("hook('device_active',function(e) end)", mask, error, sizeof(error)));
+        assert(!scriptInspectHooks("hook('device_active','bad id',function(e) end)", mask, error, sizeof(error)));
+        assert(!scriptInspectHooks("hook('run','mic',function(e) end)", mask, error, sizeof(error)));
+        assert(scriptInspectHooks("hook('device_active','mic',function(e) end); "
+                                  "hook('device_active','mic',function(e) end)",
+                                  mask, error, sizeof(error), &activity));
+        assert(activity.count == 1);
+        assert(scriptEvaluate("hook('device_active','mic',function(e) log('one') end); "
+                              "hook('device_active','mic',function(e) log('two') end)",
+                              event, state, plan, error, sizeof(error),
+                              nullptr, false, true, mask));
+        assert(plan.count == 2);
+        assert(!scriptInspectHooks("for i=1,9 do hook('device_active','mic'..i,function(e) end) end",
+                                  mask, error, sizeof(error)));
+        state = {};
+    }
+    {
+        ScriptMeters meters{};
+        meters.count = 1;
+        strcpy(meters.nodes[0].id, "mic");
+        meters.nodes[0].channels = 2;
+        meters.nodes[0].levels[0] = .25f;
+        meters.nodes[0].levels[1] = .5f;
+        const auto evaluate = [&](const char *source) {
+            return scriptEvaluate(source, defaultEvent, state, plan, error, sizeof(error),
+                                  nullptr, false, false, 0, 0, &meters);
+        };
+        assert(evaluate("volume.set('music', meters.get('mic') * 100); effects.set('fx_1', 'mix', meters.get('mic', 1))"));
+        assert(plan.count == 2 && plan.actions[0].number == 25 && plan.actions[1].number == .5);
+        assert(!evaluate("volume.set('music', 50); meters.get('missing')") && plan.count == 0);
+        assert(!evaluate("meters.get('mic', 2)"));
+        assert(!evaluate("meters.get('mic', -1)"));
+        assert(!evaluate("meters.get('mic', 0.5)"));
+        assert(!evaluate("for i=1,33 do meters.get('mic') end"));
+        meters.nodes[0].levels[0] = std::numeric_limits<float>::infinity();
+        assert(!evaluate("meters.get('mic')"));
+        meters.nodes[0].levels[0] = .25f;
+        assert(!scriptEvaluate("meters.get('mic')", defaultEvent, state, plan, error, sizeof(error)));
+        uint16_t mask{};
+        assert(!scriptInspectHooks("local x=meters.get('mic'); hook('run', function(e) end)",
+                                  mask, error, sizeof(error)));
+        ScriptEvent cc{0, 7, 64, false};
+        cc.kind = ScriptEventKind::ControlChange;
+        const char *macro = "hook('cc', function(e) effects.set('fx_1','mix',e.value/127); effects.set('fx_2','mix',e.value/127) end)";
+        assert(scriptInspectHooks(macro, mask, error, sizeof(error)));
+        assert(scriptEvaluate(macro, cc, state, plan, error, sizeof(error),
+                              nullptr, false, true, mask));
+        assert(plan.count == 2 && plan.actions[0].kind == ScriptKind::EffectSet &&
+               plan.actions[1].kind == ScriptKind::EffectSet);
+    }
     {
         ScriptDefinition migrated{};
         migrated.id = 42;

@@ -28,6 +28,19 @@ function demoContext() {
   return context;
 }
 
+test('demo requires activity-hook consent and reports the new event mask', async () => {
+  const context = demoContext();
+  const body = new URLSearchParams({
+    name_hex: Buffer.from('Ducking').toString('hex'),
+    script_hex: Buffer.from("hook('device_active','mic',function(e) end)").toString('hex'),
+  }).toString();
+  const save = (payload) => context.apiFetch('/api/scripts', { method: 'POST', body: payload });
+  assert.equal((await save(body)).status, 409);
+  assert.equal((await save(body + '&activity_ack=1')).status, 200);
+  const { scripts } = await (await context.apiFetch('/api/scripts')).json();
+  assert.equal(scripts.find(script => script.name === 'Ducking').event_mask, 16384);
+});
+
 test('demo build swaps api.js for the simulated device and relativizes asset URLs', () => {
   const html = demoHtml(read('index.html'));
   assert.doesNotMatch(html, /src="\/api\.js"/);

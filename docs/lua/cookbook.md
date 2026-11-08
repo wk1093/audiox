@@ -7,6 +7,61 @@ host; MIDI and lighting require the selected controller; sound playback
 requires a loaded clip. `light()` also requires a saved MIDI binding, including
 for Web Run.
 
+## Coarse microphone ducking
+
+Replace the example IDs with routing IDs from your device. This uses the existing
+one-second timer, after startup stabilization: it is coarse ducking, not an
+audio-rate sidechain. Route the microphone through a separate branch so lowering
+the music gain does not lower the detector itself. The timer deliberately does
+not persist volume changes to flash. Disabling the script does not restore the
+volume automatically; restore it with a Run callback before disabling.
+
+```lua callbacks
+hook("timer", function(event)
+    local speaking = meters.get("usb_microphone", 0) > 0.03
+    local target = speaking and 25 or 100
+    if state.target ~= target then
+        volume.set("music_bus", target)
+        state.target = target
+    end
+end)
+
+hook("run", function(event)
+    volume.set("music_bus", 100)
+    state.target = 100
+end)
+```
+
+## Activity-based ducking
+
+For faster ducking, replace the timer handler above with the following activity
+handler, acknowledge the CPU warning, and keep the Run handler for restoring
+volume. This still uses control-loop polling, not sample-accurate compression:
+
+```lua callbacks
+hook("device_active", "usb_microphone", function(event)
+    local target = event.active and 25 or 100
+    if state.target ~= target then
+        volume.set("music_bus", target)
+        state.target = target
+    end
+end)
+```
+
+## One CC controlling several effects
+
+Bind this script to a MIDI channel and set its Note field to the CC number.
+`effects.set` takes each parameter's actual units/range; scale the controller
+value accordingly. These mix values use `0`–`1`.
+
+```lua callbacks
+hook("cc", function(event)
+    local amount = event.value / 127
+    effects.set("fx_1", "mix", amount)
+    effects.set("fx_2", "mix", amount * 0.5)
+end)
+```
+
 ## One script, several callbacks
 
 This script counts Web Run events and tracks completion of a named sound.

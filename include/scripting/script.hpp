@@ -21,11 +21,29 @@ inline constexpr size_t SCRIPT_CONFIG_WRITE_MAX = 4096;
 inline constexpr size_t SCRIPT_CONFIG_PLAN_MAX = 8192;
 
 struct ConfigStore;
+struct ScriptMeters {
+    struct Node {
+        char id[64]{};
+        uint8_t channels{};
+        float levels[16]{};
+    };
+    Node nodes[64]{};
+    unsigned count{};
+};
+inline constexpr unsigned SCRIPT_ACTIVITY_MAX = 8;
+struct ScriptActivity {
+    struct Device {
+        char id[64]{};
+        bool active{};
+    };
+    Device devices[SCRIPT_ACTIVITY_MAX]{};
+    unsigned count{};
+};
 enum class ScriptEventKind : uint8_t {
     NoteOn, NoteOff, ControlChange, SoundStart, SoundFinish, DeviceConnect, DeviceDisconnect, Run,
-    Boot, Timer, ConfigChange, Ui, BluetoothChange, BluetoothMediaKey
+    Boot, Timer, ConfigChange, Ui, BluetoothChange, BluetoothMediaKey, DeviceActive
 };
-inline constexpr unsigned SCRIPT_EVENT_COUNT = 14;
+inline constexpr unsigned SCRIPT_EVENT_COUNT = 15;
 inline constexpr uint16_t SCRIPT_EVENTS_MASK = (1U << SCRIPT_EVENT_COUNT) - 1;
 inline constexpr uint16_t SCRIPT_LEGACY_EVENTS_MASK = 127;
 const char *scriptEventName(ScriptEventKind kind);
@@ -115,6 +133,7 @@ struct ScriptEvent {
     char key[32]{};
     ScriptStateEntry value{};
     bool hasValue{true};
+    bool active{false};
 };
 
 // Evaluate text once into an isolated, bounded plan. No actions are executed.
@@ -125,11 +144,13 @@ bool scriptEvaluate(const char *source, const ScriptEvent &event,
                         ScriptState &state, ScriptPlan &plan,
                         char *error, size_t errorSize, ConfigStore *config = nullptr,
                         bool configWriteAllowed = false, bool hookMode = false,
-                        uint16_t expectedHookMask = 0, uint32_t scriptId = 0);
+                        uint16_t expectedHookMask = 0, uint32_t scriptId = 0,
+                        const ScriptMeters *meters = nullptr);
 
 // Execute registration only in an isolated sandbox, without state, event, or device I/O.
 // The returned mask is authoritative for callback scripts; callbacks are not invoked.
-bool scriptInspectHooks(const char *source, uint16_t &mask, char *error, size_t errorSize);
+bool scriptInspectHooks(const char *source, uint16_t &mask, char *error, size_t errorSize,
+                        ScriptActivity *activity = nullptr);
 bool scriptInspectUi(const char *source, ScriptUi &ui, char *error, size_t errorSize);
 
 // Parse text without running it. The same source, memory, and instruction limits apply.

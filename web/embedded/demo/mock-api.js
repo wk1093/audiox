@@ -794,12 +794,16 @@
     const f = form(body);
     const source = unhex(f.script_hex);
     if (!/hook\s*\(/.test(source)) return fail('script must register at least one hook() callback');
+    const activityHook = /hook\s*\(\s*['"]device_active['"]/.test(source);
+    if (activityHook && f.activity_ack !== '1')
+      return fail('device_active hooks can cause significant CPU usage; acknowledge before saving', 409);
     const fields = {
       name: unhex(f.name_hex), midi_enabled: f.midi_enabled === '1', channel: Number(f.channel) || 0,
       note: Number(f.note) || 0, idle_velocity: Number(f.idle_velocity) || 0, pressed_velocity: Number(f.pressed_velocity) || 0,
       config_write_allowed: f.config_write_ack === '1', script: source,
       event_mask: (/hook\(\s*"run"/.test(source) ? 128 : 0) | (/hook\(\s*"note_on"/.test(source) ? 1 : 0)
-        | (/hook\(\s*"sound_/.test(source) ? 48 : 0) | (/hook\(\s*"(boot|ui)"/.test(source) ? 2048 : 0),
+        | (/hook\(\s*"sound_/.test(source) ? 48 : 0) | (/hook\(\s*"(boot|ui)"/.test(source) ? 2048 : 0)
+        | (activityHook ? 16384 : 0),
     };
     const existing = f.id ? findScript(f.id) : null;
     if (existing) Object.assign(existing, fields);

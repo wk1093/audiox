@@ -245,7 +245,7 @@ PI_PORT ?= 80
 SD_MOUNT_BOOT ?= /run/media/$(USER)/bootfs
 
 IMG_FILE = $(OUT_DIR)/audiox.img
-IMG_SIZE_MB = 256
+IMG_SIZE_MB = 512
 
 # Kernel and module tree that resolve_modules.sh stages from, and the target
 # that provides them.

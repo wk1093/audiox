@@ -59,6 +59,11 @@ test-build-dependencies:
 	bash tests/build/build_dependencies_test.sh
 	bash tests/build/graph_llvm_release_test.sh
 
+.PHONY: test-image-layout
+test-native: test-image-layout
+test-image-layout:
+	bash tests/build/image_layout_test.sh
+
 .PHONY: test-lua-build
 test-native: test-lua-build
 test-lua-build: $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)

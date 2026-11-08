@@ -1804,6 +1804,55 @@ int main() {
             if (allowManagement) body += "&config_write_ack=1";
             macroRequest("POST", body, status, false, true);
         };
+        {
+            const std::string source = "hook('device_active','activity_mic',function(e) state.active=e.active end)";
+            const std::string body = "id=" + std::to_string(midiId) +
+                "&name_hex=" + scriptHexEncode("Activity") +
+                "&midi_enabled=0&channel=5&note=66&script_hex=" + scriptHexEncode(source.c_str());
+            macroRequest("POST", body, "409 Conflict", false, true);
+            macroRequest("POST", body + "&activity_ack=2", "400 Bad Request", false, true);
+            macroRequest("POST", body + "&activity_ack=1", "200 OK", false, true);
+            midi.scripts.syncMacros();
+            const auto graph = audio.routingGraphPublished;
+            audio.routingGraphPublished.thingCount = 1;
+            strcpy(audio.routingGraphPublished.things[0].id, "activity_mic");
+            audio.routingGraphPublished.things[0].inputs = 0;
+            audio.routingGraphPublished.things[0].outputs = 1;
+            audio.nodeChannelLevels[0][0].store(0);
+            midi.scripts.pollDeviceActivity(100);
+            assert(midi.scripts.macroQueueCount == 0);
+            audio.nodeChannelLevels[0][0].store(.1f);
+            midi.scripts.pollDeviceActivity(199);
+            assert(midi.scripts.macroQueueCount == 0);
+            midi.scripts.pollDeviceActivity(200);
+            assert(midi.scripts.macroQueueCount == 1 && midi.scripts.macroQueue[0].event.active);
+            midi.scripts.pollDeviceActivity(300);
+            assert(midi.scripts.macroQueueCount == 1);
+            audio.nodeChannelLevels[0][0].store(.001f);
+            midi.scripts.pollDeviceActivity(400);
+            assert(midi.scripts.macroQueueCount == 1 && !midi.scripts.macroQueue[0].event.active);
+            midi.scripts.macroQueueCount = 0;
+            midi.scripts.pollDeviceActivity(500);
+            assert(midi.scripts.macroQueueCount == 0);
+            audio.nodeChannelLevels[0][0].store(.1f);
+            midi.scripts.pollDeviceActivity(600);
+            assert(midi.scripts.macroQueueCount == 1);
+            midi.scripts.stopMacros();
+            midi.scripts.syncMacros();
+            assert(midi.scripts.deviceActivity[1].count == 1 &&
+                   midi.scripts.deviceActivity[1].devices[0].active);
+            audio.routingGraphPublished.thingCount = 0;
+            midi.scripts.macroQueueCount = SCRIPTS_MAX;
+            for (auto &entry : midi.scripts.macroQueue) entry.event.kind = ScriptEventKind::Run;
+            midi.scripts.pollDeviceActivity(700);
+            assert(midi.scripts.deviceActivity[1].devices[0].active);
+            midi.scripts.macroQueueCount = 0;
+            midi.scripts.pollDeviceActivity(800);
+            assert(midi.scripts.macroQueueCount == 1 &&
+                   !midi.scripts.macroQueue[0].event.active);
+            audio.routingGraphPublished = graph;
+            midi.scripts.stopMacros();
+        }
         std::string strictScript = "id=" + std::to_string(midiId) +
             "&name_hex=" + scriptHexEncode("Strict callbacks") +
             "&midi_enabled=0&channel=5&note=66&script_hex=" +

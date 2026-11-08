@@ -19,6 +19,7 @@ test('USB keyboard settings remain backwards compatible', () => {
 function fixture() {
   const elements = new Map(), confirmations = [], calls = [], reads = [], notices = [];
   let confirmResult = true, fail = false, learnFailure = false, scripts = [], unsaved = false;
+  let activityWarning = false;
   let waitForControl = null, releaseControl;
   let note = { connected: true, last_seq: 10, last_note: 60, last_channel: 0 };
   function element(tagName = 'div') {
@@ -71,6 +72,9 @@ function fixture() {
       }
       if (options.method === 'POST' && url === '/api/scripts') {
         const fields = Object.fromEntries(new URLSearchParams(options.body));
+        if (activityWarning && fields.activity_ack !== '1') return {
+          ok: false, status: 409, text: async () => 'device_active: significant CPU usage; acknowledge before saving',
+        };
         scripts = [{ id: Number(fields.id || 17), name: context.chordHexDecode(fields.name_hex),
           midi_enabled: fields.midi_enabled === '1', channel: Number(fields.channel),
           note: Number(fields.note), script_hex: fields.script_hex, hook_mode: true, event_mask: 128,
@@ -98,8 +102,29 @@ function fixture() {
     },
     holdControls: () => { waitForControl = new Promise(resolve => { releaseControl = resolve; }); },
     releaseControls: () => { releaseControl(); waitForControl = null; },
+    setActivityWarning: value => { activityWarning = value; },
     setConfirmResult: value => { confirmResult = value; } };
 }
+
+test('activity saves require acknowledgment, cancellation does not save, dynamic hooks retry server warning', async () => {
+  const f = fixture();
+  const script = { name: 'Ducking', midi_enabled: false, channel: 0, note: 0,
+    script_hex: f.context.chordHexEncode('hook("device_active","mic",function(e) end)') };
+  f.setConfirmResult(false);
+  await f.context.saveMidiChord('POST', script, f.get('btn-chord-save'));
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.get('btn-chord-save').disabled, false);
+  f.setConfirmResult(true);
+  await f.context.saveMidiChord('POST', script, f.get('btn-chord-save'));
+  assert.match(f.confirmations.at(-1)[0], /significant CPU usage/);
+  assert.match(f.calls.at(-1).body, /activity_ack=1/);
+  f.setActivityWarning(true);
+  await f.context.saveMidiChord('POST', { ...script,
+    script_hex: f.context.chordHexEncode('hook("device_".."active","mic",function(e) end)') },
+    f.get('btn-chord-save'));
+  assert.match(f.calls.at(-2).body, /activity_ack=0/);
+  assert.match(f.calls.at(-1).body, /activity_ack=1/);
+});
 
 test('Scripts is callback-only with no sequence, shortcut recorder or subscription controls', () => {
   const html = fs.readFileSync(require.resolve('../../web/embedded/index.html'), 'utf8');

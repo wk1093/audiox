@@ -21,14 +21,18 @@ for tool in sfdisk mkfs.vfat mcopy mkfs.ext4; do
     }
 done
 
-# Partition 1 spans sectors 2048..98303 like build_image.sh; partition 2 fills the rest.
+# A 128 MiB boot partition starts at 1 MiB, matching build_image.sh.
 SECTOR=512
 P1_START=2048
-P1_SECTORS=96256
-P2_START=98304
+P1_SECTORS=$(( 128 * 2048 ))
+P2_START=$(( P1_START + P1_SECTORS ))
 TOTAL_SECTORS=$(( IMG_SIZE_MB * 1024 * 1024 / SECTOR ))
 P2_SECTORS=$(( TOTAL_SECTORS - P2_START ))
-if (( P2_SECTORS < 64 * 2048 )); then
+ffmpeg_bytes=0
+if [[ -n "${FFMPEG_BIN}" && -f "${FFMPEG_BIN}" ]]; then
+    ffmpeg_bytes=$(stat -c%s "${FFMPEG_BIN}")
+fi
+if (( P2_SECTORS * SECTOR < ffmpeg_bytes + 64 * 1024 * 1024 )); then
     echo "[qemu-disk] ERROR: image size ${IMG_SIZE_MB}MiB is too small" >&2
     exit 1
 fi
@@ -44,6 +48,12 @@ copy_boot_files() {
 # An existing disk keeps its STORAGE partition (settings, recordings) and only
 # gets fresh boot files; remove the image (make debug-reset-disk) to start over.
 if [[ -f "${IMG_FILE}" ]]; then
+    existing_boot_sectors=$(sfdisk --dump "${IMG_FILE}" |
+        awk -F 'size= *' '/start=/ && !found {split($2, fields, ","); print fields[1]+0; found=1}')
+    if [[ -z "${existing_boot_sectors}" ]] || (( existing_boot_sectors < P1_SECTORS )); then
+        echo "[qemu-disk] ERROR: existing disk has an undersized BOOT partition; back up STORAGE, then run make debug-reset-disk." >&2
+        exit 1
+    fi
     echo "[qemu-disk] Refreshing boot files in ${IMG_FILE}"
     copy_boot_files "${IMG_FILE}@@$(( P1_START * SECTOR ))"
     exit 0

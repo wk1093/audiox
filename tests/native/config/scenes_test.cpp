@@ -52,6 +52,7 @@ int main() {
     const fs::path scratch = original / "out" / "host" / ("scenes-test-" + std::to_string(getpid()));
     assert(fs::create_directories(scratch));
     assert(chdir(scratch.c_str()) == 0);
+    assert(fs::create_directory("config"));
     {
         Audiox app;
         ConfigStore config(&app);
@@ -60,9 +61,9 @@ int main() {
         app.config = &config;
         app.audio = &audio;
         app.http = &server;
-        write("routing.txt", "# audiox routing v1\nedge=soundboard_out,fx_1,0,0\n");
-        write("config.txt", "# audiox config v1\nsample_rate=48000\n");
-        const std::string oldConfig = read("config.txt");
+        write("config/routing.txt", "# audiox routing v1\nedge=soundboard_out,fx_1,0,0\n");
+        write("config/config.txt", "# audiox config v1\nsample_rate=48000\n");
+        const std::string oldConfig = read("config/config.txt");
         auto map = config.readMidiMapFile();
         map.effectStateCount = 1;
         snprintf(map.effectStates[0].effectId, 64, "fx_1");
@@ -91,15 +92,15 @@ int main() {
         assert(loaded.name == clean.name && loaded.routes == clean.routes);
         assert(loaded.volumes[0].gain == 0.75f);
         assert(loaded.effects[0].enabled == 1 && loaded.params[0].value == 0.6f);
-        const std::string disk = read("scenes/clean.scene");
+        const std::string disk = read("config/scenes/clean.scene");
         assert(disk.find("audiox-scenes 1\n") == 0);
         failSync = true;
         Scene replacement = clean;
         replacement.name = "Failed replacement";
         assert(!store.save(replacement, error));
         failSync = false;
-        assert(read("scenes/clean.scene") == disk);
-        assert(!fs::exists("scenes/clean.scene.pending"));
+        assert(read("config/scenes/clean.scene") == disk);
+        assert(!fs::exists("config/scenes/clean.scene.pending"));
         Scene invalid = clean;
         invalid.id = "../escape";
         assert(!store.save(invalid, error));
@@ -138,7 +139,7 @@ int main() {
         assert(error.find("timed out") != std::string::npos);
         audio.processingThreadStarted = 0;
         audio.processingThreadRun.store(0);
-        assert(!audio.sceneMuted.load() && read("config.txt") == oldConfig);
+        assert(!audio.sceneMuted.load() && read("config/config.txt") == oldConfig);
 
         char pitchId[64];
         assert(audio.createEffect("pitch", pitchId, sizeof(pitchId)) == RET_OK);
@@ -178,8 +179,8 @@ int main() {
         assert(live.effects.size() == 2 && live.helper);
         assert(store.save(live, error));
         // Backup carries the scene inventory, but not interrupted writes or notes.
-        write("scenes/clean.scene.pending", "incomplete");
-        write("scenes/notes.txt", "not scene configuration");
+        write("config/scenes/clean.scene.pending", "incomplete");
+        write("config/scenes/notes.txt", "not scene configuration");
         char backupError[256]{};
         int archive = open("backup.axb", O_RDWR | O_CREAT | O_TRUNC, 0600);
         assert(archive >= 0);
@@ -193,7 +194,7 @@ int main() {
         assert(audiox::backup::stage(".", archive, archiveText.size(), backupError, sizeof(backupError)) == 0);
         assert(audiox::backup::applyPending(".", backupError, sizeof(backupError)) == 0);
         assert(store.read("clean", loaded, error) && loaded.name == clean.name);
-        assert(!fs::exists("scenes/notes.txt"));
+        assert(!fs::exists("config/scenes/notes.txt"));
         std::string invalidArchive = archiveText;
         const size_t marker = invalidArchive.find("audiox-scenes 1\n");
         assert(marker != std::string::npos);
@@ -212,7 +213,7 @@ int main() {
         assert(!router.hasRoutingHelper());
         audiox::effects::SlotParams params{};
         assert(audio.getEffectParams("fx_1", &params) == RET_OK && params.values[0] == 0.6f);
-        assert(read("config.txt") == oldConfig);
+        assert(read("config/config.txt") == oldConfig);
         assert(recall(&app, live, error));
         assert(audio.effectStates.size() == 2 && router.hasRoutingHelper());
         assert(audio.getThingGain("orphan_gain") == 1.5f);
@@ -225,16 +226,16 @@ int main() {
         assert(request(server, "POST", "/api/scenes/save", "id=captured&name_hex=4361707475726564&channel=-1&note=-1").find("200") != std::string::npos);
         assert(request(server, "DELETE", "/api/scenes/delete", "id=captured").find("200") != std::string::npos);
         // Unsupported versions are not silently migrated or overwritten.
-        write("scenes/clean.scene", "audiox-scenes 999\n");
+        write("config/scenes/clean.scene", "audiox-scenes 999\n");
         assert(!store.read("clean", loaded, error));
         assert(!store.save(clean, error));
-        assert(read("scenes/clean.scene") == "audiox-scenes 999\n");
+        assert(read("config/scenes/clean.scene") == "audiox-scenes 999\n");
         archive = open("invalid-backup.axb", O_RDWR | O_CREAT | O_TRUNC, 0600);
         assert(archive >= 0);
         assert(audiox::backup::create(".", archive, backupError, sizeof(backupError)) < 0);
         assert(strstr(backupError, "scene schema"));
         close(archive);
-        write("scenes/clean.scene", disk);
+        write("config/scenes/clean.scene", disk);
         assert(store.remove("clean", error));
         assert(!store.read("clean", loaded, error));
         std::vector<Scene> scenes;

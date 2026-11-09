@@ -209,6 +209,14 @@ for name in "Build Initramfs targets" "Upload Bootloader Initramfs Artifact" "Up
 done
 echo "PASS: workflow wiring separates artifact builds from explicit publication"
 
+PAGES="$ROOT/.github/workflows/update-site.yml"
+grep -Fq 'name: github-pages-${{ github.run_id }}-${{ github.run_attempt }}' "$PAGES"
+grep -Fq 'artifact_name: github-pages-${{ github.run_id }}-${{ github.run_attempt }}' "$PAGES"
+grep -Fq 'du -sh out/update-pages' "$PAGES"
+grep -Fq 'needs: publish' "$BUILD"
+grep -Fq 'uses: ./.github/workflows/update-site.yml' "$BUILD"
+echo "PASS: Pages reports payload size and deploys a unique artifact on each run attempt after publishing"
+
 grep -q '^  test:$' "$BUILD"
 grep -Fq 'needs: [prepare, test]' "$BUILD"
 grep -Fq 'run: make test' "$BUILD"

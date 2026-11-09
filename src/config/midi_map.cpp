@@ -1,4 +1,5 @@
 #include "config/context.hpp"
+#include "config/file.hpp"
 #include "audio/plugin_registry.hpp"
 
 #include <errno.h>
@@ -652,7 +653,7 @@ static void assignMacroIdentities(MidiMapData &data) {
     }
 }
 
-static int readMidiMapPath(const char *path, MidiMapData *out) {
+static int readMidiMapPath(const char *path, MidiMapData *out, bool scriptsOnly = false) {
     if (!path || !out) {
         return RET_ERR;
     }
@@ -671,7 +672,8 @@ static int readMidiMapPath(const char *path, MidiMapData *out) {
         return (errno == ENOENT) ? RET_WARN : RET_ERR;
     }
     ConfigTextSchemaStatus schema =
-        checkConfigTextSchema(fp, "# audiox midi map v", MIDI_MAP_SCHEMA_VERSION);
+        checkConfigTextSchema(fp, scriptsOnly ? "# audiox scripts v" : "# audiox midi map v",
+                              scriptsOnly ? SCRIPTS_SCHEMA_VERSION : MIDI_MAP_SCHEMA_VERSION);
     if (schema == ConfigTextSchemaStatus::Unsupported ||
         schema == ConfigTextSchemaStatus::Invalid ||
         schema == ConfigTextSchemaStatus::IoError) {
@@ -950,12 +952,13 @@ static void migrateMidiMapFromConfig(const char *configPath, MidiMapData *out) {
     fclose(fp);
 }
 
-static int writeMidiMapPath(const char *path, MidiMapData *data) {
+static int writeMidiMapPath(const char *path, MidiMapData *data, bool scriptsOnly = false) {
     if (!path || !data) {
         return RET_ERR;
     }
     ConfigTextSchemaStatus schema =
-        checkConfigTextFileSchema(path, "# audiox midi map v", MIDI_MAP_SCHEMA_VERSION);
+        checkConfigTextFileSchema(path, scriptsOnly ? "# audiox scripts v" : "# audiox midi map v",
+                                  scriptsOnly ? SCRIPTS_SCHEMA_VERSION : MIDI_MAP_SCHEMA_VERSION);
     if (schema == ConfigTextSchemaStatus::Unsupported ||
         schema == ConfigTextSchemaStatus::Invalid ||
         schema == ConfigTextSchemaStatus::IoError) {
@@ -963,33 +966,38 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         return RET_ERR;
     }
 
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) {
+    audiox::AtomicConfigFile output(path);
+    FILE *fd = output.get();
+    if (!fd) {
         printf("[CONFIG] [WARN] failed to open %s for writing: %s\n", path, strerror(errno));
         return RET_ERR;
     }
 
-    if (dprintf(fd, "# audiox midi map v%u\n", MIDI_MAP_SCHEMA_VERSION) < 0) {
+    if (fprintf(fd, scriptsOnly ? "# audiox scripts v%u\n" : "# audiox midi map v%u\n",
+                scriptsOnly ? SCRIPTS_SCHEMA_VERSION : MIDI_MAP_SCHEMA_VERSION) < 0) {
         printf("[CONFIG] [WARN] failed to write MIDI map schema in %s: %s\n", path, strerror(errno));
-        close(fd);
         return RET_ERR;
     }
-    for (uint32_t i = 0; i < data->chordCount && i < SCRIPTS_MAX; ++i) {
+    for (uint32_t i = 0; scriptsOnly && i < data->chordCount && i < SCRIPTS_MAX; ++i) {
         const auto &chord = data->chords[i];
         std::string hex = scriptHexEncode(chord.script);
-        if (dprintf(fd, "automation=%u,%u,%u,%u,%u,%u,%s,%s,%s\n",
+        if (fprintf(fd, "automation=%u,%u,%u,%u,%u,%u,%s,%s,%s\n",
                     chord.id, chord.midiEnabled ? 1 : 0, chord.channel, chord.note,
                     chord.idleVelocity, chord.pressedVelocity, scriptHexEncode(chord.name).c_str(),
                     chord.keys[0] ? chord.keys : "-", hex.c_str()) < 0 ||
-            dprintf(fd, "automation_events=%u,%u\n", chord.id, chord.eventMask) < 0 ||
-            dprintf(fd, "automation_config_write=%u,%u\n", chord.id, chord.configWriteAllowed ? 1 : 0) < 0 ||
-            dprintf(fd, "automation_hooks=%u,%u\n", chord.id, chord.hookMode ? 1 : 0) < 0) {
+            fprintf(fd, "automation_events=%u,%u\n", chord.id, chord.eventMask) < 0 ||
+            fprintf(fd, "automation_config_write=%u,%u\n", chord.id, chord.configWriteAllowed ? 1 : 0) < 0 ||
+            fprintf(fd, "automation_hooks=%u,%u\n", chord.id, chord.hookMode ? 1 : 0) < 0) {
             printf("[CONFIG] [WARN] Cannot write macro mapping\n");
-            close(fd);
             return RET_ERR;
         }
     }
-    dprintf(fd, "# note-to-sfx mappings\n");
+    if (scriptsOnly) {
+        if (output.commit() == 0) return RET_OK;
+        printf("[CONFIG] [WARN] failed to save scripts: %s\n", strerror(errno));
+        return RET_ERR;
+    }
+    fprintf(fd, "# note-to-sfx mappings\n");
     uint32_t count = data->mappingCount;
     if (count > MIDI_MAPPINGS_MAX) {
         count = MIDI_MAPPINGS_MAX;
@@ -998,26 +1006,26 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         if (!data->mappings[i].sfxPath[0]) {
             continue;
         }
-        dprintf(fd, "note_map=%u,%s\n", (unsigned)data->mappings[i].note, data->mappings[i].sfxPath);
+        fprintf(fd, "note_map=%u,%s\n", (unsigned)data->mappings[i].note, data->mappings[i].sfxPath);
     }
 
-    dprintf(fd, "# lighting config (velocities 0-127; channel 0-15)\n");
-    dprintf(fd, "light_channel=%u\n", (unsigned)data->globalLight.channel);
-    dprintf(fd, "light_mapped_vel=%u\n", (unsigned)data->globalLight.mappedVel);
-    dprintf(fd, "light_playing_vel=%u\n", (unsigned)data->globalLight.playingVel);
-    dprintf(fd, "light_stop_all_vel=%u\n", (unsigned)data->globalLight.stopAllVel);
+    fprintf(fd, "# lighting config (velocities 0-127; channel 0-15)\n");
+    fprintf(fd, "light_channel=%u\n", (unsigned)data->globalLight.channel);
+    fprintf(fd, "light_mapped_vel=%u\n", (unsigned)data->globalLight.mappedVel);
+    fprintf(fd, "light_playing_vel=%u\n", (unsigned)data->globalLight.playingVel);
+    fprintf(fd, "light_stop_all_vel=%u\n", (unsigned)data->globalLight.stopAllVel);
 
     uint32_t slCount = data->soundLightCount;
     if (slCount > MIDI_SOUND_LIGHTS_MAX) {
         slCount = MIDI_SOUND_LIGHTS_MAX;
     }
     if (slCount > 0) {
-        dprintf(fd, "# per-sound lighting overrides: sfx,mapped_vel,playing_vel\n");
+        fprintf(fd, "# per-sound lighting overrides: sfx,mapped_vel,playing_vel\n");
         for (uint32_t i = 0; i < slCount; ++i) {
             if (!data->soundLights[i].sfxPath[0]) {
                 continue;
             }
-            dprintf(fd,
+            fprintf(fd,
                     "sound_light=%s,%u,%u\n",
                     data->soundLights[i].sfxPath,
                     (unsigned)data->soundLights[i].mappedVel,
@@ -1030,12 +1038,12 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         smCount = MIDI_SOUND_MODES_MAX;
     }
     if (smCount > 0) {
-        dprintf(fd, "# per-sound playback mode: sfx,mode(play|hold)\n");
+        fprintf(fd, "# per-sound playback mode: sfx,mode(play|hold)\n");
         for (uint32_t i = 0; i < smCount; ++i) {
             if (!data->soundModes[i].sfxPath[0]) {
                 continue;
             }
-            dprintf(fd,
+            fprintf(fd,
                     "sound_mode=%s,%s\n",
                     data->soundModes[i].sfxPath,
                     soundboardModeToString(data->soundModes[i].mode));
@@ -1043,20 +1051,18 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
     }
 
     for (uint32_t i = 0; i < data->soundOrderCount && i < SOUNDBOARD_ORDER_MAX; ++i) {
-        if (dprintf(fd, "sound_order=%s\n", data->soundOrder[i].sfxPath) < 0) {
+        if (fprintf(fd, "sound_order=%s\n", data->soundOrder[i].sfxPath) < 0) {
             printf("[CONFIG] [WARN] failed to write soundboard order: %s\n", strerror(errno));
-            close(fd);
             return RET_ERR;
         }
     }
-    if (dprintf(fd, "soundboard_grid_initialized=%u\nsoundboard_layout=%s,%u,%u\n",
+    if (fprintf(fd, "soundboard_grid_initialized=%u\nsoundboard_layout=%s,%u,%u\n",
                 (unsigned)(data->gridInitialized || data->soundboardLayout == SOUNDBOARD_LAYOUT_GRID ||
                            data->gridCellCount > 0),
                 data->soundboardLayout == SOUNDBOARD_LAYOUT_GRID ? "grid" : "normal",
                 (unsigned)(data->gridRows ? data->gridRows : 4),
                 (unsigned)(data->gridColumns ? data->gridColumns : 4)) < 0) {
         printf("[CONFIG] [WARN] failed to write soundboard layout: %s\n", strerror(errno));
-        close(fd);
         return RET_ERR;
     }
     for (uint8_t i = 0; i < SOUNDBOARD_GRID_CORNER_COUNT; ++i) {
@@ -1064,19 +1070,17 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         static const char *const names[SOUNDBOARD_GRID_CORNER_COUNT] = {
             "top_left", "top_right", "bottom_left", "bottom_right",
         };
-        if (dprintf(fd, "soundboard_grid_corner=%s,%u\n", names[i],
+        if (fprintf(fd, "soundboard_grid_corner=%s,%u\n", names[i],
                     (unsigned)data->gridCornerNotes[i]) < 0) {
             printf("[CONFIG] [WARN] failed to write soundboard grid calibration: %s\n", strerror(errno));
-            close(fd);
             return RET_ERR;
         }
     }
     for (uint32_t i = 0; i < data->gridCellCount && i < SOUNDBOARD_GRID_CELLS_MAX; ++i) {
         if (!data->gridCells[i].sfxPath[0]) continue;
-        if (dprintf(fd, "soundboard_grid_cell=%s,%u,%u\n", data->gridCells[i].sfxPath,
+        if (fprintf(fd, "soundboard_grid_cell=%s,%u,%u\n", data->gridCells[i].sfxPath,
                     (unsigned)data->gridCells[i].row, (unsigned)data->gridCells[i].column) < 0) {
             printf("[CONFIG] [WARN] failed to write soundboard grid cell: %s\n", strerror(errno));
-            close(fd);
             return RET_ERR;
         }
     }
@@ -1086,35 +1090,35 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         actionCount = MIDI_ACTION_MAPPINGS_MAX;
     }
     if (actionCount > 0) {
-        dprintf(fd, "# action mappings: note,action(stop_all|sampler_toggle)\n");
+        fprintf(fd, "# action mappings: note,action(stop_all|sampler_toggle)\n");
         for (uint32_t i = 0; i < actionCount; ++i) {
             const char *action = midiActionToString(data->actionMappings[i].action);
             if (!action) {
                 continue;
             }
-            dprintf(fd,
+            fprintf(fd,
                     "note_action=%u,%s\n",
                     (unsigned)data->actionMappings[i].note,
                     action);
         }
     }
 
-    dprintf(fd, "# sampler keyboard config\n");
-    dprintf(fd, "sampler_keyboard_enabled=%u\n", (unsigned)data->samplerKeyboardEnabled);
-    dprintf(fd, "sampler_keyboard_channel=%u\n", (unsigned)data->samplerKeyboardChannel);
-    dprintf(fd, "sampler_root_note=%u\n", (unsigned)data->samplerRootNote);
+    fprintf(fd, "# sampler keyboard config\n");
+    fprintf(fd, "sampler_keyboard_enabled=%u\n", (unsigned)data->samplerKeyboardEnabled);
+    fprintf(fd, "sampler_keyboard_channel=%u\n", (unsigned)data->samplerKeyboardChannel);
+    fprintf(fd, "sampler_root_note=%u\n", (unsigned)data->samplerRootNote);
 
     uint32_t cvCount = data->ccVolumeMappingCount;
     if (cvCount > MIDI_CC_VOLUME_MAPPINGS_MAX) {
         cvCount = MIDI_CC_VOLUME_MAPPINGS_MAX;
     }
     if (cvCount > 0) {
-        dprintf(fd, "# MIDI CC to volume mappings: cc,thing_id\n");
+        fprintf(fd, "# MIDI CC to volume mappings: cc,thing_id\n");
         for (uint32_t i = 0; i < cvCount; ++i) {
             if (!data->ccVolumeMappings[i].thingId[0]) {
                 continue;
             }
-            dprintf(fd,
+            fprintf(fd,
                     "cc_volume=%u,%s\n",
                     (unsigned)data->ccVolumeMappings[i].cc,
                     data->ccVolumeMappings[i].thingId);
@@ -1126,12 +1130,12 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         fxStateCount = MIDI_EFFECT_STATES_MAX;
     }
     if (fxStateCount > 0) {
-        dprintf(fd, "# effect state: effect_id,type,enabled,gain,drive,clip,output\n");
+        fprintf(fd, "# effect state: effect_id,type,enabled,gain,drive,clip,output\n");
         for (uint32_t i = 0; i < fxStateCount; ++i) {
             if (!data->effectStates[i].effectId[0]) {
                 continue;
             }
-            dprintf(fd,
+            fprintf(fd,
                     "fx_state=%s,%s,%u,%.6f,%.6f,%.6f,%.6f\n",
                     data->effectStates[i].effectId,
                     data->effectStates[i].type[0] ? data->effectStates[i].type : "gain",
@@ -1141,7 +1145,7 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
                     (double)data->effectStates[i].clip,
                     (double)data->effectStates[i].output);
             if (data->effectStates[i].name[0]) {
-                dprintf(fd, "fx_name=%s,%s\n", data->effectStates[i].effectId,
+                fprintf(fd, "fx_name=%s,%s\n", data->effectStates[i].effectId,
                         scriptHexEncode(data->effectStates[i].name).c_str());
             }
         }
@@ -1154,12 +1158,12 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         fxCcCount = MIDI_EFFECT_CC_MAPPINGS_MAX;
     }
     if (fxCcCount > 0) {
-        dprintf(fd, "# effect MIDI CC mappings: cc,effect_id,param\n");
+        fprintf(fd, "# effect MIDI CC mappings: cc,effect_id,param\n");
         for (uint32_t i = 0; i < fxCcCount; ++i) {
             if (!data->effectCcMappings[i].effectId[0] || !data->effectCcMappings[i].param[0]) {
                 continue;
             }
-            dprintf(fd,
+            fprintf(fd,
                     "fx_cc=%u,%s,%s\n",
                     (unsigned)data->effectCcMappings[i].cc,
                     data->effectCcMappings[i].effectId,
@@ -1172,12 +1176,12 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         fxToggleCount = MIDI_EFFECT_TOGGLE_MAPPINGS_MAX;
     }
     if (fxToggleCount > 0) {
-        dprintf(fd, "# effect bypass toggle mappings: note,effect_id\n");
+        fprintf(fd, "# effect bypass toggle mappings: note,effect_id\n");
         for (uint32_t i = 0; i < fxToggleCount; ++i) {
             if (!data->effectToggleMappings[i].effectId[0]) {
                 continue;
             }
-            dprintf(fd,
+            fprintf(fd,
                     "fx_toggle=%u,%s\n",
                     (unsigned)data->effectToggleMappings[i].note,
                     data->effectToggleMappings[i].effectId);
@@ -1189,12 +1193,12 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         fxLightCount = MIDI_EFFECT_LIGHT_MAPPINGS_MAX;
     }
     if (fxLightCount > 0) {
-        dprintf(fd, "# effect light mappings: effect_id,enabled_vel,bypassed_vel\n");
+        fprintf(fd, "# effect light mappings: effect_id,enabled_vel,bypassed_vel\n");
         for (uint32_t i = 0; i < fxLightCount; ++i) {
             if (!data->effectLightMappings[i].effectId[0]) {
                 continue;
             }
-            dprintf(fd,
+            fprintf(fd,
                     "fx_light=%s,%u,%u\n",
                     data->effectLightMappings[i].effectId,
                     (unsigned)data->effectLightMappings[i].enabledVel,
@@ -1202,7 +1206,7 @@ static int writeMidiMapPath(const char *path, MidiMapData *data) {
         }
     }
 
-    const int closeResult = close(fd);
+    const int closeResult = output.commit();
     if (closeResult != 0) {
         printf("[CONFIG] [WARN] failed to finalize %s: %s\n", path, strerror(errno));
         return RET_ERR;
@@ -1223,15 +1227,15 @@ static int writeFxParamsPath(const char *path, const MidiEffectParam *params, ui
                path);
         return RET_ERR;
     }
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) {
+    audiox::AtomicConfigFile output(path);
+    FILE *fd = output.get();
+    if (!fd) {
         printf("[CONFIG] [WARN] failed to open %s for writing: %s\n", path, strerror(errno));
         return RET_ERR;
     }
-    if (dprintf(fd, "# audiox fx params v%u\n", FX_PARAMS_SCHEMA_VERSION) < 0) {
+    if (fprintf(fd, "# audiox fx params v%u\n", FX_PARAMS_SCHEMA_VERSION) < 0) {
         printf("[CONFIG] [WARN] failed to write effect parameter schema in %s: %s\n",
                path, strerror(errno));
-        close(fd);
         return RET_ERR;
     }
     if (params) {
@@ -1240,13 +1244,13 @@ static int writeFxParamsPath(const char *path, const MidiEffectParam *params, ui
             if (!params[i].effectId[0] || !params[i].param[0]) {
                 continue;
             }
-            dprintf(fd, "fx_param=%s,%s,%.6f\n",
+            fprintf(fd, "fx_param=%s,%s,%.6f\n",
                     params[i].effectId,
                     params[i].param,
                     (double)params[i].value);
         }
     }
-    if (close(fd) != 0) {
+    if (output.commit() != 0) {
         printf("[CONFIG] [WARN] failed to finalize %s: %s\n", path, strerror(errno));
         return RET_ERR;
     }
@@ -1346,14 +1350,16 @@ void midiEffectDisplayName(const MidiMapData &map, const char *id, const char *t
 MidiMapData ConfigStore::readMidiMapFile() const {
     // MidiMapData is ~364KB: every path must return `data` so NRVO avoids a second stack copy.
     MidiMapData data = {};
-    ConfigFileStamp mapBefore{}, fxBefore{};
+    ConfigFileStamp mapBefore{}, fxBefore{}, scriptsBefore{};
     bool stamped = configFileStamp(MIDI_MAP_REAL_FILE_PATH, &mapBefore) &&
-                   configFileStamp(FX_PARAMS_FILE_PATH, &fxBefore);
+                   configFileStamp(FX_PARAMS_FILE_PATH, &fxBefore) &&
+                   configFileStamp(SCRIPTS_FILE_PATH, &scriptsBefore);
     if (stamped) {
         std::lock_guard<std::mutex> lock(cacheMutex);
         if (midiMapCached && midiMapCacheData &&
             configFileStampEqual(mapBefore, midiMapCacheStamp) &&
-            configFileStampEqual(fxBefore, fxParamsCacheStamp)) {
+            configFileStampEqual(fxBefore, fxParamsCacheStamp) &&
+            configFileStampEqual(scriptsBefore, scriptsCacheStamp)) {
             data = *midiMapCacheData;
             return data;
         }
@@ -1368,6 +1374,18 @@ MidiMapData ConfigStore::readMidiMapFile() const {
         (void)writeMidiMapPath(MIDI_MAP_REAL_FILE_PATH, &data);
     }
     if (rc == RET_ERR) return data;
+    {
+        MidiMapData scripts{};
+        int scriptsRc = readMidiMapPath(SCRIPTS_FILE_PATH, &scripts, true);
+        if (scriptsRc == RET_ERR) {
+            printf("[CONFIG] [WARN] cannot read standalone scripts\n");
+            return data;
+        }
+        if (scriptsRc == RET_OK) {
+            data.chordCount = scripts.chordCount;
+            memcpy(data.chords, scripts.chords, sizeof(data.chords));
+        }
+    }
 
     // fx_params.txt is the authoritative source for fx_param entries.
     // If it exists, it replaces any fx_param lines read from midi_map.txt.
@@ -1380,17 +1398,21 @@ MidiMapData ConfigStore::readMidiMapFile() const {
     }
     // If fx_params.txt doesn't exist (RET_WARN), keep whatever was in midi_map.txt.
 
-    ConfigFileStamp mapAfter{}, fxAfter{};
+    ConfigFileStamp mapAfter{}, fxAfter{}, scriptsAfter{};
     if (rc == RET_OK && stamped &&
         configFileStamp(MIDI_MAP_REAL_FILE_PATH, &mapAfter) &&
         configFileStamp(FX_PARAMS_FILE_PATH, &fxAfter) &&
+        configFileStamp(SCRIPTS_FILE_PATH, &scriptsAfter) &&
         configFileStampEqual(mapBefore, mapAfter) && configFileStampEqual(fxBefore, fxAfter) &&
-        configFileStampSettled(mapBefore, now) && configFileStampSettled(fxBefore, now)) {
+        configFileStampEqual(scriptsBefore, scriptsAfter) &&
+        configFileStampSettled(mapBefore, now) && configFileStampSettled(fxBefore, now) &&
+        configFileStampSettled(scriptsBefore, now)) {
         std::lock_guard<std::mutex> lock(cacheMutex);
         if (!midiMapCacheData) midiMapCacheData.reset(new MidiMapData);
         *midiMapCacheData = data;
         midiMapCacheStamp = mapBefore;
         fxParamsCacheStamp = fxBefore;
+        scriptsCacheStamp = scriptsBefore;
         midiMapCached = true;
     }
     return data;
@@ -1406,12 +1428,14 @@ int ConfigStore::writeMidiMapFile(MidiMapData *data) {
     ConfigTextSchemaStatus paramsSchema =
         checkConfigTextFileSchema(FX_PARAMS_FILE_PATH, "# audiox fx params v",
                                   FX_PARAMS_SCHEMA_VERSION);
+    ConfigTextSchemaStatus scriptsSchema =
+        checkConfigTextFileSchema(SCRIPTS_FILE_PATH, "# audiox scripts v", SCRIPTS_SCHEMA_VERSION);
     auto schemaUnavailable = [](ConfigTextSchemaStatus status) {
         return status == ConfigTextSchemaStatus::Unsupported ||
                status == ConfigTextSchemaStatus::Invalid ||
                status == ConfigTextSchemaStatus::IoError;
     };
-    if (schemaUnavailable(midiSchema) || schemaUnavailable(paramsSchema)) {
+    if (schemaUnavailable(midiSchema) || schemaUnavailable(paramsSchema) || schemaUnavailable(scriptsSchema)) {
         printf("[CONFIG] [WARN] refusing to overwrite unsupported MIDI/effect configuration schema\n");
         return RET_ERR;
     }
@@ -1505,12 +1529,18 @@ int ConfigStore::writeMidiMapFile(MidiMapData *data) {
     if (fxLightCount > MIDI_EFFECT_LIGHT_MAPPINGS_MAX) {
         data->effectLightMappingCount = MIDI_EFFECT_LIGHT_MAPPINGS_MAX;
     }
-    int rc = writeMidiMapPath(MIDI_MAP_REAL_FILE_PATH, data);
+    if (writeMidiMapPath(SCRIPTS_FILE_PATH, data, true) != RET_OK) return RET_ERR;
     uint32_t paramCount = data->effectParamCount;
     if (paramCount > MIDI_EFFECT_PARAMS_MAX) {
         paramCount = MIDI_EFFECT_PARAMS_MAX;
     }
     int fxRc = writeFxParamsPath(FX_PARAMS_FILE_PATH, data->effectParams, paramCount);
+    if (fxRc != RET_OK) {
+        invalidateConfigCache();
+        return RET_ERR;
+    }
+    // Persist extracted parameters before removing their legacy MIDI representation.
+    int rc = writeMidiMapPath(MIDI_MAP_REAL_FILE_PATH, data);
     invalidateConfigCache();
     if (rc != RET_OK || fxRc != RET_OK) {
         return RET_ERR;

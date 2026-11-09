@@ -193,12 +193,9 @@ produce a warning.
   device. A manual disconnect stops retries for that device until you connect
   it again.
 - **Phone shows "Connection refused" or "device refused the connection":**
-  phones paired with older AudioX versions saw AudioX as a device without a
-  speaker role and refuse its audio connection. On the phone, forget AudioX;
+  clear the saved pairing on both devices. On the phone, forget AudioX;
   on AudioX, choose **Forget** on the phone's card. Then put the phone in
-  pairing mode and pair it again from **Add device**. A phone paired with an
-  older version may first be tried as an output; AudioX recognizes it as an
-  input after it reports its audio endpoints or refuses twice.
+  pairing mode and pair it again from **Add device**.
 - **Input connects but stays "waiting for audio":** start playback on the
   sending device and check that it selected AudioX as its audio output.
 - **Sound breaks up:** confirm the route is correct, keep the wireless device

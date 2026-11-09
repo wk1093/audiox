@@ -1,4 +1,5 @@
 #include "config/context.hpp"
+#include "config/file.hpp"
 #include "audio/context.hpp"
 
 #include <errno.h>
@@ -121,7 +122,8 @@ static int saveRoutes(const std::vector<std::string> &routes) {
         return RET_ERR;
     }
     bool helperEnabled = loadRoutingHelper();
-    FILE *fp = fopen(ROUTING_REAL_FILE_PATH, "w");
+    audiox::AtomicConfigFile output(ROUTING_REAL_FILE_PATH);
+    FILE *fp = output.get();
     if (!fp) {
         printf("[CONFIG] [WARN] failed to open %s for writing: %s\n", ROUTING_REAL_FILE_PATH, strerror(errno));
         return RET_ERR;
@@ -136,7 +138,7 @@ static int saveRoutes(const std::vector<std::string> &routes) {
     }
     fprintf(fp, "\n");
 
-    if (fclose(fp) != 0) {
+    if (output.commit() != 0) {
         printf("[CONFIG] [WARN] failed to finalize %s: %s\n", ROUTING_REAL_FILE_PATH, strerror(errno));
         return RET_ERR;
     }
@@ -149,8 +151,10 @@ static int saveRoutingHelper(bool enabled) {
         return RET_ERR;
     }
 
-    FILE *fp = fopen(ROUTING_REAL_FILE_PATH, "w");
+    audiox::AtomicConfigFile output(ROUTING_REAL_FILE_PATH);
+    FILE *fp = output.get();
     if (!fp) {
+        printf("[CONFIG] [WARN] cannot stage routing helper settings: %s\n", strerror(errno));
         return RET_ERR;
     }
     fprintf(fp, "# audiox routing v%u\n", ROUTING_SCHEMA_VERSION);
@@ -161,7 +165,9 @@ static int saveRoutingHelper(bool enabled) {
         fprintf(fp, "edge=%s\n", routes[i].c_str());
     }
     fprintf(fp, "\n");
-    return fclose(fp) == 0 ? RET_OK : RET_ERR;
+    if (output.commit() == 0) return RET_OK;
+    printf("[CONFIG] [WARN] cannot save routing helper settings: %s\n", strerror(errno));
+    return RET_ERR;
 }
 
 } // namespace
@@ -271,17 +277,16 @@ int RouterConfig::replaceSceneRoutes(const std::vector<std::string> &routes, boo
         ROUTING_SCHEMA_HEADER, ROUTING_SCHEMA_VERSION);
     if (schema == ConfigTextSchemaStatus::Unsupported || schema == ConfigTextSchemaStatus::Invalid ||
         schema == ConfigTextSchemaStatus::IoError) return RET_ERR;
-    const std::string pending = std::string(ROUTING_REAL_FILE_PATH) + ".scene-pending";
-    int fd = open(pending.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
-    if (fd < 0) return RET_ERR;
-    FILE *fp = fdopen(fd, "w");
-    if (!fp) { close(fd); unlink(pending.c_str()); return RET_ERR; }
+    audiox::AtomicConfigFile output(ROUTING_REAL_FILE_PATH);
+    FILE *fp = output.get();
+    if (!fp) {
+        printf("[CONFIG] [WARN] cannot stage scene routing: %s\n", strerror(errno));
+        return RET_ERR;
+    }
     fprintf(fp, "# audiox routing v%u\n", ROUTING_SCHEMA_VERSION);
     if (helper) fprintf(fp, "node=routing_helper\n");
     for (const auto &route : routes) fprintf(fp, "edge=%s\n", route.c_str());
-    bool ok = fflush(fp) == 0 && fsync(fd) == 0;
-    if (fclose(fp) != 0) ok = false;
-    if (ok) ok = rename(pending.c_str(), ROUTING_REAL_FILE_PATH) == 0;
-    if (!ok) unlink(pending.c_str());
-    return ok ? RET_OK : RET_ERR;
+    if (output.commit() == 0) return RET_OK;
+    printf("[CONFIG] [WARN] cannot save scene routing: %s\n", strerror(errno));
+    return RET_ERR;
 }

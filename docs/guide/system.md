@@ -352,7 +352,7 @@ AudioX uses a two-stage initramfs, not a persistent root Linux installation:
 | --- | --- |
 | `/dev/mmcblk0p1`, FAT (`BOOT`) | Persistent kernel, firmware, device trees/overlays, boot config and initramfs files; bootloader uses `/mnt/boot`, update code mounts `/boot` |
 | `/dev/mmcblk0p2`, ext4 (`STORAGE`) mounted at `/audiox` | Persistent user configuration, sounds, converter, logs, staging, and recovery state |
-| `/audiox/config.txt` | Runtime user settings; distinct from boot partition `config.txt` |
+| `/audiox/config/config.txt` | Runtime user settings; distinct from boot partition `config.txt` |
 | `/audiox/staging/program.cpio.gz` | Pending runtime for promotion on the next boot |
 | `/etc`, `/sbin`, `/lib`, `/etc/www` in the running image | RAM-backed program image content; editing it is not a durable firmware customization |
 | `/proc`, `/sys`, `/dev`, ConfigFS | Kernel/pseudo-filesystem state, not user backup contents |

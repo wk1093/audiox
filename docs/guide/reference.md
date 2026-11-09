@@ -19,25 +19,28 @@ They are not paths on the computer running your browser.
 
 | Path | Contents |
 | --- | --- |
-| `config.txt` | Active USB configuration and persistent view/playback preferences |
-| `config.staging.txt` | Staged configuration saved before USB reload |
-| `routing.txt` | Saved signal connections and routing-helper configuration |
-| `midi_map.txt` | Sound/action/CC mappings, sampler, lighting, effects, sound order, and named script definitions |
-| `fx_params.txt` | Saved effect parameter data used by the firmware |
-| `volumes.txt` | Saved gains keyed by audio thing ID |
-| `bluetooth/paired.txt` | Saved Bluetooth pairing records, Auto-connect flags, and sensitive key material |
+| `config/config.txt` | Active USB configuration and persistent view/playback preferences |
+| `config/config.staging.txt` | Staged configuration saved before USB reload |
+| `config/routing.txt` | Saved signal connections and routing-helper configuration |
+| `config/midi_map.txt` | Sound/action/CC mappings, sampler, lighting, effects, and sound order |
+| `config/scripts.txt` | Named script definitions, trigger bindings, and permissions |
+| `config/scripts/` | Script-owned persistent options and custom files |
+| `config/scenes/` | Named setup scenes |
+| `config/fx_params.txt` | Saved effect parameter data used by the firmware |
+| `config/volumes.txt` | Saved gains keyed by audio thing ID |
+| `config/bluetooth/paired.txt` | Saved Bluetooth pairing records, Auto-connect flags, and sensitive key material |
 | `sfx/` | Soundboard audio files |
 | `plugins/` | Installed native `.axm` modules, metadata, and sandboxed UI assets; excluded from normal backups |
-| `telemetry-consent-v3.txt` | Device-local opt-in decision (`0` or `1`) for linkable reports and public daily aggregates; excluded from backups |
-| `telemetry-queue-v3.txt` | Bounded pending 10-second usage reports with public-sharing consent; excluded from backups |
-| `telemetry-installation-id.txt` | Random 256-bit installation ID; deleted on opt-out; excluded from backups |
+| `config/telemetry-consent-v3.txt` | Device-local opt-in decision (`0` or `1`) for linkable reports and public daily aggregates; excluded from backups |
+| `config/telemetry-queue-v3.txt` | Bounded pending 10-second usage reports with public-sharing consent; excluded from backups |
+| `config/telemetry-installation-id.txt` | Random 256-bit installation ID; deleted on opt-out; excluded from backups |
 
 Use the normal editors instead of hand-editing files where possible: edits can
 need validation, runtime reload, and corresponding LED/graph refresh. Backups
 include the supported settings and sound roots, not arbitrary files placed on
 the data partition. See [Config and backups](./config).
 
-Do not confuse `/audiox/config.txt` with `/boot/config.txt`. The latter controls
+Do not confuse `/audiox/config/config.txt` with `/boot/config.txt`. The latter controls
 Raspberry Pi boot behavior, kernel selection, and overlays. Changing boot files
 can make the device unbootable.
 
@@ -58,10 +61,6 @@ and [Telemetry collector setup](../dev/telemetry) for deployment details.
 These are local device endpoints. No GET request causes a cloud upload.
 The browser relays ready batches only after opt-in. Consent is not copied in
 configuration backups.
-
-Legacy consent/queue files ending in `v1.txt` or `v2.txt` are retired on a new consent
-decision. Legacy opt-ins become undecided and require renewed consent; legacy
-opt-outs stay disabled. Older pending points are not relabeled for public reporting.
 
 For plugin upload, catalog, reload/removal, and UI asset routes, see
 [Native plugin HTTP management](../plugins#install-and-use).

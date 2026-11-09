@@ -448,6 +448,10 @@ end)
         </div>
         <section class="card stack">
           <h2>Configuration Backup</h2>
+          <div id="legacy-config-notice" hidden>
+            <p>Configuration was migrated to /audiox/config/. Legacy settings and script data are retained for rollback. Back up and verify your setup before deleting them.</p>
+            <button id="btn-delete-legacy-config" class="warn">Delete legacy configuration data</button>
+          </div>
           <p class="small">Export settings, routing, MIDI assignments, effects, gains, pairings, and clips as an .axb archive. Save pending edits first. Archives contain Bluetooth keys; store them securely.</p>
           <button id="btn-config-backup" class="primary">Backup Configuration</button>
           <div class="cfg-row">

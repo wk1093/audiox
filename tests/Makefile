@@ -7,7 +7,7 @@ test-midi-script: test-script
 test-midi-script-storage: test-script-storage
 test-midi-docs: test-script-docs
 
-test-native: test-audio-runtime test-builtin-effects test-audio-meters test-audio-graph test-audio-graph-mailbox \
+test-native: test-config-storage test-audio-runtime test-builtin-effects test-audio-meters test-audio-graph test-audio-graph-mailbox \
     test-scenes \
 	test-plugin-package test-plugin-host test-plugin-integration \
 	test-audio-pcm-recover test-audio-stress test-bluetooth-hci test-bluetooth-a2dp test-bluetooth-connect-log test-display-hotplug test-soundboard-config \
@@ -311,7 +311,7 @@ test-soundboard-config: $(OUT_DIR)/host/audiox-soundboard-config-test
 SOUNDBOARD_CONFIG_TEST_SRCS = tests/native/config/soundboard_config_test.cpp src/context.cpp \
     src/config/scenes.cpp src/http/scenes.cpp src/system/hardware_telemetry.cpp \
 	src/system/usage_telemetry_store.cpp src/system/usage_telemetry.cpp \
-	src/config/basic.cpp src/config/midi_map.cpp src/config/backup.cpp \
+	src/config/basic.cpp src/config/midi_map.cpp src/config/backup.cpp src/config/storage.cpp \
 	src/midi/midi.cpp src/scripting/runtime.cpp src/midi/usb.cpp src/scripting/keyboard.cpp src/scripting/script.cpp src/scripting/storage.cpp src/scripting/utilities.cpp src/audio/setup.cpp src/audio/plugins.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp \
 	src/http/server.cpp src/http/logs.cpp src/init/recovery.cpp src/touch/touch.cpp src/bluetooth/hci.cpp \
 	$(AUDIO_EFFECT_SRCS)
@@ -360,11 +360,19 @@ test-config-backup: $(OUT_DIR)/host/audiox-config-backup-test $(OUT_DIR)/host/au
 	@"$(OUT_DIR)/host/audiox-config-backup-test"
 	@"$(OUT_DIR)/host/audiox-config-backup-http-test"
 
-$(OUT_DIR)/host/audiox-config-backup-test: tests/native/config/config_backup_test.cpp src/config/backup.cpp include/config/backup.hpp include/config/scene_schema.hpp include/update_archive.hpp include/watchdog_heartbeat.hpp
+.PHONY: test-config-storage
+test-config-storage: $(OUT_DIR)/host/audiox-config-storage-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-config-storage-test: tests/native/config/config_storage_test.cpp src/config/storage.cpp include/config/storage.hpp include/config/paths.hpp include/config/schema.hpp include/watchdog_heartbeat.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -Wl,--wrap=fsync -o "$@" "$<" src/config/storage.cpp
+
+$(OUT_DIR)/host/audiox-config-backup-test: tests/native/config/config_backup_test.cpp src/config/backup.cpp $(wildcard include/config/*.hpp) include/update_archive.hpp include/watchdog_heartbeat.hpp
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/native/config/config_backup_test.cpp src/config/backup.cpp
 
-$(OUT_DIR)/host/audiox-config-backup-http-test: tests/native/config/config_backup_http_test.cpp src/config/backup.cpp src/http/server.cpp src/http/api.cpp include/config/backup.hpp include/config/scene_schema.hpp include/http/context.hpp include/json.hpp include/update_archive.hpp include/watchdog_heartbeat.hpp $(wildcard include/midi/*.hpp include/scripting/*.hpp)
+$(OUT_DIR)/host/audiox-config-backup-http-test: tests/native/config/config_backup_http_test.cpp src/config/backup.cpp src/http/server.cpp src/http/api.cpp $(wildcard include/config/*.hpp) include/http/context.hpp include/json.hpp include/update_archive.hpp include/watchdog_heartbeat.hpp $(wildcard include/midi/*.hpp include/scripting/*.hpp)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-format-truncation -Wno-unused-parameter -Iinclude \
 		-DROOT_MOUNT_POINT='"."' -ffunction-sections -fdata-sections -Wl,--gc-sections \

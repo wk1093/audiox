@@ -21,9 +21,9 @@ const logsViewEl = document.getElementById('logs-view');
 const bluetoothStatusEl = document.getElementById('bluetooth-status');
 const bluetoothDevicesEl = document.getElementById('bluetooth-devices');
 
-const configPath = '/api/rootfs/config.staging.txt';
-const realConfigPath = '/api/rootfs/config.txt';
-const routingPath = '/api/rootfs/routing.txt';
+const configPath = '/api/rootfs/config/config.staging.txt';
+const realConfigPath = '/api/rootfs/config/config.txt';
+const routingPath = '/api/rootfs/config/routing.txt';
 const defaultFanCurve = {
   enabled: true,
   temperatures: [50, 60, 68, 75],
@@ -2378,6 +2378,39 @@ function openPi5FanDialog() {
   if (state.pi5FanIsPi5 && !state.pi5FanSettingsLoaded) loadPi5FanSettings();
 }
 
+async function loadLegacyConfigStatus() {
+  const notice = document.getElementById('legacy-config-notice');
+  if (!notice) return;
+  try {
+    const response = await apiFetch('/api/config/legacy');
+    if (!response.ok) throw new Error(`${response.status} ${(await response.text()).trim()}`);
+    const data = await response.json();
+    notice.hidden = data.legacy_entries === 0;
+  } catch (error) {
+    setStatus(`legacy configuration check failed: ${error}`, 'warn');
+  }
+}
+
+async function deleteLegacyConfig() {
+  const accepted = await AudioxUI.confirm(
+    'Delete the retained legacy configuration and old script data? The active configuration is unchanged. Back up first. Older firmware will no longer have its original settings, and rollback may require a compatible backup.', {
+      label: 'Delete legacy data', danger: true,
+    });
+  if (!accepted) return;
+  const button = document.getElementById('btn-delete-legacy-config');
+  button.disabled = true;
+  try {
+    const response = await apiFetch('/api/config/legacy', { method: 'DELETE' });
+    if (!response.ok) throw new Error(`${response.status} ${(await response.text()).trim()}`);
+    await loadLegacyConfigStatus();
+    setStatus('legacy configuration deleted; active settings preserved', 'ok');
+  } catch (error) {
+    setStatus(`legacy configuration cleanup failed: ${error}`, 'warn');
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function loadConfig() {
   setStatus('loading config...');
   try {
@@ -4030,6 +4063,7 @@ async function saveSamplerConfig() {
 async function initializeGraphFromConfig() {
   ensureRoutingGraph();
   await loadConfig();
+  await loadLegacyConfigStatus();
   await loadFramebufferView();
   await loadSoundboardModes();
   await listSfxFiles();
@@ -4905,6 +4939,7 @@ document.getElementById('vol-show-effects').addEventListener('change', (event) =
   renderVolGrid();
 });
 
+document.getElementById('btn-delete-legacy-config').addEventListener('click', deleteLegacyConfig);
 document.getElementById('btn-sampler-config-save').addEventListener('click', saveSamplerConfig);
 document.getElementById('btn-sampler-config-load').addEventListener('click', loadSamplerConfig);
 

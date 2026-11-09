@@ -60,7 +60,7 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Apply the audio stability fixes and suggestions
   - [x] Use direct ALSA MMAP transfers where supported, with RW-interleaved fallback. Thanks u/Brer1Rabbit
   - [x] mlockall before starting the audio engine to prevent page faults from causing xruns. Thanks u/Kamran-nottakenone
-- [x] Prefer USB vendor/product identity plus a serial hash for stable audio device IDs; use the USB port path when no serial is exposed, and preserve the ALSA ID for existing-route migration.
+- [x] Prefer USB vendor/product identity plus a serial hash for stable audio device IDs; use the USB port path when no serial is exposed.
 - [x] Investigate audio-engine latency changes. The processing block is 128 frames, but PCM setup tries 512- and 256-frame periods before 128; defer tuning until Pi-side latency/xrun measurements are available.
   
 
@@ -121,7 +121,7 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Optional USB keyboard chords: channel/note mappings, WebUI editor, automatic release, bounded trigger queue, and complete HID function removal when disabled.
 - [x] Macro WebUI: learn a MIDI pad, record physical keyboard chords with modifiers, edit saved mappings, and configure per-macro idle/pressed lighting.
 - [x] Standalone Macros page: names, optional MIDI binding/web-only macros, Run, and stable-ID edit/remove; preserve chord recording, MIDI learn and lighting.
-- [x] Document named macro migration, web/MIDI events, per-action device requirements, and runtime-only effect/volume controls.
+- [x] Document named scripts, web/MIDI events, per-action device requirements, and runtime-only effect/volume controls.
 - [x] Restricted Lua macro sequences: bounded cooperative key taps, holds/releases, delays and pad lighting; no standard libraries or background interpreter.
 - [x] Lua text typing with adjustable intervals (US-layout ASCII), live note-on event values, and bounded per-macro state. Unicode/other host layouts are not supported; held keys automatically release on completion/cancellation.
 - [x] Expand safe Lua utilities: trigger-time clocks, formatting/conversion, string/table/math helpers, random choices, queued logging, soundboard playback and controller MIDI messages.
@@ -212,6 +212,15 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Expand the development documentation beyond telemetry setup, covering the key workflows and systems contributors need to build, test, and extend the project.
 - [x] Investigate using LLVM to compile the audio graph into platform-specific native code; compare performance and reliability with the current instruction-based graph, and evaluate graph-change recompilation and whether running the compiled graph in a separately supervised process with IPC for parameters/meters is worthwhile.
 
+## Stabilization - v1.17
+- [x] Centralize persistent settings under `/audiox/config/` and separate script definitions from MIDI settings.
+  - [x] Include script-owned data in backups, recover interrupted restores, and keep telemetry device-local.
+  - [x] Use atomic MIDI/effect/routing and HTTP file replacement; extend newer-schema overwrite protection to raw Lua and HTTP writes.
+- [ ] Validate settings on a populated physical Pi: staged USB settings, routing, scripts and options, scenes, Bluetooth pairing, backup/restore, and reboot persistence.
+- [ ] Gate firmware trial confirmation on audio readiness and ongoing audio-thread progress, not only 60 seconds of main-loop uptime (`src/init/recovery.cpp`, `src/init/init.cpp`, `src/audio/processing.cpp`). Test a responsive main loop with a stalled audio thread.
+- [ ] Reject incomplete rollback boot backups and preserve trial/backup state when restoration is incomplete (`include/boot_recovery.hpp`). Required boot files currently may be skipped during both backup and revert.
+- [ ] Fault-inject interruption at update, rollback, configuration-save, and restore persistence boundaries; validate FAT boot-partition power-loss behavior on hardware before declaring 2.0 stable.
+
 ## Pre-2.0 validation
 - [ ] Have a friend use the setup daily for a week and report issues, feedback, or suggestions.
 - [ ] Test the framebuffer UI on a Pi 5 with a connected screen, including rendering, touch interaction, and display hotplug.
@@ -228,8 +237,8 @@ The above last two features are mainly to improve my setup, but could probably b
 
 
 ## Release - v2.0+
-- [x] IMPORTANT: Create a config versioning system, so that older configs can be upgraded if format is changed. This is important for 2.0+ because it is meant to be a more stable release, and we don't want to break people's configs when they update. This will also allow for more advanced features in the future, like being able to export and import configs between devices.
-  - [x] Add schema versioning to USB settings, routing, MIDI, effects, volumes, and Bluetooth pairing; read legacy unversioned files and refuse unsupported newer versions.
+- [x] Version configuration formats to protect settings across updates and support backup/restore.
+  - [x] Add schema versioning to USB settings, routing, MIDI, effects, volumes, and Bluetooth pairing; refuse unsupported newer versions.
   - [x] Validate configuration schema versions when creating or staging a backup.
 - [ ] Stabilize the audio thread under various load conditions and ensure low-latency performance. (maybe dynamic buffer sizing)
   - [x] Add adaptive ALSA period targets after five X-runs in 30 seconds; downshift after 30/60 seconds stable, with 5/10/15-minute in-memory backoff after failed downshifts. Preserve the fixed DSP block size and expose buffer telemetry.

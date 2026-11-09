@@ -64,11 +64,20 @@ jobs:
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
+      - name: Report Pages payload size
+        run: |
+          du -sh out/update-pages
+          du -h --max-depth=2 out/update-pages | sort -h | tail -n 20
+          find out/update-pages -type f -printf '%s %p\n' | sort -nr | sed -n '1,10p'
+
       - name: Upload Pages site artifact
         uses: actions/upload-pages-artifact@v3
         with:
+          name: github-pages-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/update-pages
 
       - name: Deploy update mirror
         id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          artifact_name: github-pages-${{ github.run_id }}-${{ github.run_attempt }}

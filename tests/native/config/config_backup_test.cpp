@@ -17,13 +17,18 @@ namespace {
 
 const char *const names[] = {
     "config.txt", "config.staging.txt", "routing.txt", "midi_map.txt",
-    "fx_params.txt", "volumes.txt", "bluetooth", "sfx",
+    "fx_params.txt", "volumes.txt", "bluetooth", "sfx", "scenes",
+    "scripts.txt", "scripts",
 };
+
+fs::path live(const fs::path &root, const std::string &name) {
+    return (name == "sfx" ? root : root / "config") / name;
+}
 
 struct Workspace {
     fs::path path;
     Workspace() {
-        char pattern[] = "/tmp/audiox-backup-test-XXXXXX";
+        char pattern[] = "./audiox-backup-test-XXXXXX";
         assert(mkdtemp(pattern));
         path = pattern;
     }
@@ -47,13 +52,13 @@ std::string get(const fs::path &path) {
 std::map<std::string, std::string> snapshot(const fs::path &root) {
     std::map<std::string, std::string> result;
     for (const char *name : names) {
-        fs::path path = root / name;
+        fs::path path = live(root, name);
         if (!fs::exists(path)) continue;
         if (fs::is_regular_file(path)) result[name] = get(path);
         else {
             result[std::string(name) + "/"] = "";
             for (const auto &entry : fs::recursive_directory_iterator(path)) {
-                std::string relative = fs::relative(entry.path(), root).string();
+                std::string relative = std::string(name) + "/" + fs::relative(entry.path(), path).string();
                 if (entry.is_directory()) result[relative + "/"] = "";
                 else result[relative] = get(entry.path());
             }
@@ -63,13 +68,18 @@ std::map<std::string, std::string> snapshot(const fs::path &root) {
 }
 
 void fixture(const fs::path &root) {
-    put(root / "config.txt", "usb_sample_rate=44100\nsoundboard_mode=hold\n");
-    put(root / "config.staging.txt", "usb_sample_rate=48000\n");
-    put(root / "routing.txt", "routing_helper=true\nusb_0:0>fx_7:0\nfx_7:0>alsa_0:0\n");
-    put(root / "midi_map.txt", "note_map=36,kick.wav\nfx_state=fx_7,cut,1\n");
-    put(root / "fx_params.txt", "fx_param=fx_7,channels,6\n");
-    put(root / "volumes.txt", "usb_0=0.75\n");
-    put(root / "bluetooth/paired.txt", "00:11:22:33:44:55 0123456789abcdef0123456789abcdef 4 Headphones\n");
+    put(root / "config/.layout-version", "1\n");
+    put(root / "config/config.txt", "usb_sample_rate=44100\nsoundboard_mode=hold\n");
+    put(root / "config/config.staging.txt", "usb_sample_rate=48000\n");
+    put(root / "config/routing.txt", "routing_helper=true\nusb_0:0>fx_7:0\nfx_7:0>alsa_0:0\n");
+    put(root / "config/midi_map.txt", "note_map=36,kick.wav\nfx_state=fx_7,cut,1\n");
+    put(root / "config/fx_params.txt", "fx_param=fx_7,channels,6\n");
+    put(root / "config/volumes.txt", "usb_0=0.75\n");
+    put(root / "config/bluetooth/paired.txt", "00:11:22:33:44:55 0123456789abcdef0123456789abcdef 4 Headphones\n");
+    put(root / "config/scripts.txt", "# audiox scripts v1\nmacro=test\n");
+    put(root / "config/scripts/nested/data.bin", "script data");
+    fs::create_directories(root / "config/scripts/empty");
+    put(root / "config/scenes/test.scene", "audiox-scenes 1\n");
     std::string sound(200000, '\0');
     for (size_t i = 0; i < sound.size(); ++i) sound[i] = (char)i;
     put(root / "sfx/kick.wav", sound);
@@ -152,12 +162,17 @@ void testRoundTrip() {
     Workspace work;
     fs::path source = work.path / "source", target = work.path / "target";
     fixture(source);
+    put(source / "config/usage-telemetry-device-local", "private source state");
     auto expected = snapshot(source);
     int fd = archive(source, work.path / "backup.axb");
     assert((uint64_t)lseek(fd, 0, SEEK_END) > 200000);
     assert(get(work.path / "backup.axb").find("not a setting") == std::string::npos);
+    assert(get(work.path / "backup.axb").find("private source state") == std::string::npos);
     fixture(target);
-    put(target / "config.txt", "new image defaults");
+    put(target / "config/config.txt", "new image defaults");
+    put(target / "config.txt", "legacy must remain");
+    put(target / "scripts/legacy", "legacy script data");
+    put(target / "config/usage-telemetry-device-local", "private device state");
     put(target / "sfx/extra.wav", "remove me");
     put(target / "system/boot-trial", "leave recovery state alone");
     auto before = snapshot(target);
@@ -167,6 +182,10 @@ void testRoundTrip() {
     assert(audiox::backup::stage(target.c_str(), fd, (uint64_t)lseek(fd, 0, SEEK_END), error, sizeof(error)) < 0);
     apply(target);
     assert(snapshot(target) == expected);
+    assert(get(target / "config.txt") == "legacy must remain");
+    assert(get(target / "scripts/legacy") == "legacy script data");
+    assert(get(target / "config/.layout-version") == "1\n");
+    assert(get(target / "config/usage-telemetry-device-local") == "private device state");
     assert(get(target / "system/boot-trial") == "leave recovery state alone");
     assert(get(target / "staging/program.cpio.gz") == "not a setting");
     put(target / ".config-backup-ABC123/new/sfx/unfinished.wav", "interrupted staging");
@@ -179,15 +198,16 @@ void testRoundTrip() {
 
     // Resume after any prefix of the root entries, and after saving an old entry
     // but before moving its replacement. No live subsystem has started yet.
-    for (size_t stop = 0; stop <= 8; ++stop) {
-        for (const char *name : names) fs::remove_all(target / name);
+    for (size_t stop = 0; stop <= std::size(names); ++stop) {
+        for (const char *name : names) fs::remove_all(live(target, name));
         fixture(target);
-        put(target / "volumes.txt", "new volumes");
+        put(target / "config/volumes.txt", "new volumes");
         stage(target, fd);
         fs::path pending = target / ".config-restore";
-        for (size_t i = 0; i <= stop && i < 8; ++i) {
-            fs::rename(target / names[i], pending / "old" / names[i]);
-            if (i < stop) fs::rename(pending / "new" / names[i], target / names[i]);
+        for (size_t i = 0; i <= stop && i < std::size(names); ++i) {
+            fs::path dst = live(target, names[i]);
+            fs::rename(dst, pending / (i == 7 ? "old" : "old-config") / names[i]);
+            if (i < stop) fs::rename(pending / "new" / names[i], dst);
         }
         apply(target);
         assert(snapshot(target) == expected);
@@ -199,7 +219,7 @@ void testRoundTrip() {
 void testAbsentAndSymlinks() {
     Workspace work;
     fs::path source = work.path / "source", target = work.path / "target";
-    put(source / "config.txt", "minimal");
+    put(source / "config/config.txt", "minimal");
     int fd = archive(source, work.path / "minimal.axb");
     fixture(target);
     fs::path outside = work.path / "outside";
@@ -207,10 +227,14 @@ void testAbsentAndSymlinks() {
     fs::remove_all(target / "sfx");
     fs::create_directory_symlink(outside, target / "sfx");
     stage(target, fd);
+    fs::rename(target / "config/scripts.txt", target / ".config-restore/old-config/scripts.txt");
+    fs::rename(target / "config/scripts", target / ".config-restore/old-config/scripts");
     apply(target);
-    assert(get(target / "config.txt") == "minimal");
-    for (size_t i = 1; i < 6; ++i) assert(!fs::exists(target / names[i]));
-    assert(fs::is_empty(target / "sfx") && fs::is_empty(target / "bluetooth"));
+    assert(get(target / "config/config.txt") == "minimal");
+    for (size_t i = 1; i < 6; ++i) assert(!fs::exists(live(target, names[i])));
+    assert(!fs::exists(target / "config/scripts.txt"));
+    assert(fs::is_empty(target / "config/scripts"));
+    assert(fs::is_empty(target / "sfx") && fs::is_empty(target / "config/bluetooth"));
     assert(get(outside / "must-stay.wav") == "do not overwrite");
     close(fd);
     fs::create_directories(source / "sfx");
@@ -225,11 +249,70 @@ void testAbsentAndSymlinks() {
     fs::create_directory_symlink(outside, source / "sfx");
     assert(audiox::backup::create(source.c_str(), fd, error, sizeof(error)) < 0);
     fs::remove(source / "sfx");
-    fs::create_directories(source / "bluetooth/paired.txt");
+    fs::create_directories(source / "config/bluetooth/paired.txt");
     assert(audiox::backup::create(source.c_str(), fd, error, sizeof(error)) < 0);
     assert(strstr(error, "Unexpected file type"));
     close(fd);
     puts("PASS: absent settings remove defaults and links cannot escape the backup or restore");
+}
+
+void testLegacyRestore() {
+    Workspace work;
+    fs::path target = work.path / "target", archivePath = work.path / "legacy.axb";
+    const std::vector<Entry> entries = {
+        {"config.txt", 1, "legacy backup config\n"},
+        {"config.staging.txt", 1, "staging\n"},
+        {"routing.txt", 1, "routing\n"},
+        {"midi_map.txt", 1, "note_map=36,kick.wav\nkey_macro=legacy\n"},
+        {"fx_params.txt", 1, "fx\n"}, {"volumes.txt", 1, "volumes\n"},
+        {"bluetooth", 2, ""}, {"bluetooth/paired.txt", 1, "paired\n"},
+        {"sfx", 2, ""}, {"sfx/legacy.wav", 1, "sound"},
+        {"scenes", 2, ""}, {"scenes/test.scene", 1, "audiox-scenes 1\n"},
+    };
+    put(archivePath, encode(entries));
+    int fd = open(archivePath.c_str(), O_RDONLY);
+    assert(fd >= 0);
+    fixture(target);
+    put(target / "midi_map.txt", "legacy root unchanged");
+    stage(target, fd);
+    apply(target);
+    assert(get(target / "config/midi_map.txt") == "note_map=36,kick.wav\nkey_macro=legacy\n");
+    assert(!fs::exists(target / "config/scripts.txt"));
+    assert(!fs::exists(target / "config/scripts"));
+    assert(get(target / "midi_map.txt") == "legacy root unchanged");
+    for (size_t stop = 0; stop <= 9; ++stop) {
+        fs::remove_all(target);
+        fixture(target);
+        for (size_t i = 0; i < 9; ++i) {
+            if (i != 7) fs::copy(live(target, names[i]), target / names[i], fs::copy_options::recursive);
+        }
+        stage(target, fd);
+        fs::path pending = target / ".config-restore";
+        std::string plan = get(pending / "plan");
+        assert(plan.size() == 8);
+        put(pending / "plan", plan.substr(0, 4));
+        fs::remove_all(pending / "old-config");
+        for (size_t i = 0; i <= stop && i < 9; ++i) {
+            fs::rename(target / names[i], pending / "old" / names[i]);
+            if (i < stop) fs::rename(pending / "new" / names[i], target / names[i]);
+        }
+        if (stop == 2) put(pending / "recovering/partial", "interrupted recovery copy");
+        std::map<std::string, std::string> legacy;
+        for (size_t i = 0; i < 6; ++i)
+            if (fs::exists(target / names[i])) legacy[names[i]] = get(target / names[i]);
+        apply(target);
+        for (const auto &item : legacy) assert(get(target / item.first) == item.second);
+        assert(get(target / "config/config.txt") == "legacy backup config\n");
+        assert(get(target / "config/midi_map.txt") == "note_map=36,kick.wav\nkey_macro=legacy\n");
+        assert(get(target / "config/bluetooth/paired.txt") == "paired\n");
+        assert(get(target / "config/scenes/test.scene") == "audiox-scenes 1\n");
+        assert(get(target / "sfx/legacy.wav") == "sound");
+        assert(!fs::exists(target / "config/scripts.txt"));
+        assert(!fs::exists(target / "config/scripts"));
+        assert(get(target / "config/.layout-version") == "1\n");
+    }
+    close(fd);
+    puts("PASS: old archives and interrupted old restore transactions migrate without touching legacy files");
 }
 
 void testMalformed() {
@@ -258,7 +341,9 @@ void testMalformed() {
     }
     for (const Entry &entry : std::vector<Entry>{
             {"config.txt", 1, "duplicate"}, {"sfx/link", 3, "symlink"},
-            {"routing.txt", 2, ""}, {"sfx/directory", 2, "not empty"},
+            {"routing.txt", 2, ""}, {"scripts.txt", 2, ""}, {"scripts", 1, "bad"},
+            {"scripts.txt", 1, "# audiox scripts v2\n"},
+            {"sfx/directory", 2, "not empty"},
             {"sfx/missing/file.wav", 1, "no parent"}, {"fx_params.txt", 1, std::string(1024 * 1024 + 1, 'a')}}) {
         auto bad = entries;
         bad.push_back(entry);
@@ -299,10 +384,14 @@ void testUnsupportedSchema() {
 
     fs::path source = work.path / "source";
     fixture(source);
-    put(source / "bluetooth/paired.txt", "# audiox bluetooth paired v2\n");
+    put(source / "config/bluetooth/paired.txt", "# audiox bluetooth paired v2\n");
     int fd = open(archivePath.c_str(), O_CREAT | O_RDWR, 0600);
     assert(fd >= 0);
     char error[256] = {};
+    assert(audiox::backup::create(source.c_str(), fd, error, sizeof(error)) < 0);
+    assert(strstr(error, "unsupported schema version"));
+    put(source / "config/bluetooth/paired.txt", "paired\n");
+    put(source / "config/scripts.txt", "# audiox scripts v2\n");
     assert(audiox::backup::create(source.c_str(), fd, error, sizeof(error)) < 0);
     assert(strstr(error, "unsupported schema version"));
     close(fd);
@@ -314,6 +403,7 @@ void testUnsupportedSchema() {
 int main() {
     testRoundTrip();
     testAbsentAndSymlinks();
+    testLegacyRestore();
     testMalformed();
     testUnsupportedSchema();
 }

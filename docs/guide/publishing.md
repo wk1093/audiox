@@ -100,8 +100,25 @@ to the URL above.
 
 Release workflows use `GITHUB_TOKEN` with release-content and tag-management
 permissions. Repository policy must allow replacement of rolling assets and
-Nightly pruning. The Pages workflow separately builds the documentation and
-download/update mirror; firmware publication does not deploy Pages.
+Nightly pruning. After publication, the build workflow calls the Pages workflow
+to rebuild the documentation, live demo, download page, and update mirror.
+
+### Troubleshoot Pages deployment
+
+The local website preview does not include mirrored firmware. The uploaded
+directory is `out/update-pages/`; the workflow reports its total size and
+largest files before upload. The artifact includes the stable and nightly
+update archives used by browser-based installation.
+
+Check which step fails: uploading the artifact and deploying Pages are separate
+operations. A successful upload followed by empty deployment statuses until
+timeout does not establish a size problem. Check
+[GitHub Status](https://www.githubstatus.com/) and repository Pages settings;
+if a fresh workflow run still stalls, include the run URL in a GitHub Support
+request. Increasing the polling timeout does not fix a stuck deployment.
+
+Artifact names include the run ID and attempt number so reruns cannot
+accidentally select multiple artifacts with the same name.
 
 ## Validate release tooling
 

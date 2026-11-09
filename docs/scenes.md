@@ -38,19 +38,18 @@ device returns. Custom effect plugins must remain installed.
 
 ## Storage and compatibility
 
-Scenes are independent versioned files in `/audiox/scenes/<id>.scene`, written
+Scenes are independent versioned files in `/audiox/config/scenes/<id>.scene`, written
 using a same-directory staging file, file fsync, atomic rename and directory
 fsync. An unsupported scene version is rejected rather than overwritten.
-No scenes are required in existing installations. Creating or binding scenes
-does not rewrite old config files. Successful recall updates the existing
-`routing.txt`, `volumes.txt`, `midi_map.txt` and `fx_params.txt` formats, preserving
+Scenes are optional. Successful recall updates
+`routing.txt`, `volumes.txt`, `midi_map.txt` and `fx_params.txt` under
+`/audiox/config/`, preserving
 unrelated MIDI and main configuration settings, so the recalled setup survives
 restart. Failed writes attempt to restore the previous config; these four
-legacy files are not one crash-atomic transaction. Keep a configuration backup
+configuration files are not one crash-atomic transaction. Keep a configuration backup
 before important performances. Scene files are included in `.axb` exports and
 validated during restore. Pending scene writes and unrelated files in the scenes
-directory are excluded. Restoring an older backup without a scenes directory
-leaves existing scenes untouched; newer backups replace the scene inventory.
+directory are excluded.
 
 ## HTTP API
 

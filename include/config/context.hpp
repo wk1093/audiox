@@ -13,12 +13,13 @@
 #include "../context.hpp"
 #include "midi/usb.hpp"
 
-#define CONFIG_REAL_FILE_PATH ROOT_MOUNT_POINT "/config.txt"
-#define CONFIG_STAGING_FILE_PATH ROOT_MOUNT_POINT "/config.staging.txt"
-#define ROUTING_REAL_FILE_PATH ROOT_MOUNT_POINT "/routing.txt"
-#define MIDI_MAP_REAL_FILE_PATH ROOT_MOUNT_POINT "/midi_map.txt"
-#define FX_PARAMS_FILE_PATH ROOT_MOUNT_POINT "/fx_params.txt"
-#define VOLUMES_FILE_PATH ROOT_MOUNT_POINT "/volumes.txt"
+#define CONFIG_REAL_FILE_PATH CONFIG_ROOT_DIR "/config.txt"
+#define CONFIG_STAGING_FILE_PATH CONFIG_ROOT_DIR "/config.staging.txt"
+#define ROUTING_REAL_FILE_PATH CONFIG_ROOT_DIR "/routing.txt"
+#define MIDI_MAP_REAL_FILE_PATH CONFIG_ROOT_DIR "/midi_map.txt"
+#define SCRIPTS_FILE_PATH CONFIG_ROOT_DIR "/scripts.txt"
+#define FX_PARAMS_FILE_PATH CONFIG_ROOT_DIR "/fx_params.txt"
+#define VOLUMES_FILE_PATH CONFIG_ROOT_DIR "/volumes.txt"
 inline constexpr const char *SCRIPT_CONFIG_FILES[] = {
     "config.txt", "config.staging.txt", "routing.txt", "midi_map.txt", "fx_params.txt", "volumes.txt"
 };
@@ -286,7 +287,7 @@ struct ConfigStore {
     RouterConfig router() const;
 
 private:
-    // Parsed copies of config.txt and midi_map.txt + fx_params.txt. Callers poll these from the
+    // Parsed copies of config.txt and midi_map.txt + scripts.txt + fx_params.txt. Callers poll these from the
     // UI, MIDI, audio and HTTP paths, so re-parsing from the SD card on each call is avoided.
     void invalidateConfigCache();
     mutable std::mutex cacheMutex;
@@ -296,5 +297,6 @@ private:
     mutable bool midiMapCached = false;
     mutable ConfigFileStamp midiMapCacheStamp{};
     mutable ConfigFileStamp fxParamsCacheStamp{};
+    mutable ConfigFileStamp scriptsCacheStamp{};
     mutable std::unique_ptr<MidiMapData> midiMapCacheData;
 };

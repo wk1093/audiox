@@ -55,7 +55,7 @@ discarding edits and loads the current device setup. Saving a stale draft is
 blocked until you load the active setup.
 
 Routing uses the full-width graph, without an overview or technical route-list
-sidebar. For advanced inspection, read `/api/rootfs/routing.txt` or use
+sidebar. For advanced inspection, read `/api/rootfs/config/routing.txt` or use
 `config.read("routing.txt")` inside a script callback. Long files may need to
 be split into bounded log messages. The graph
 canvas itself does not show live per-node level meters. AudioX's device display

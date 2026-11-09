@@ -20,7 +20,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define BT_STATE_DIR ROOT_MOUNT_POINT "/bluetooth"
+#define BT_STATE_DIR CONFIG_ROOT_DIR "/bluetooth"
 #define BT_PAIRED_FILE BT_STATE_DIR "/paired.txt"
 #define BT_PAIR_TIMEOUT_MS 30000ULL
 #define BT_OUTPUT_CONNECT_TIMEOUT_MS 30000ULL

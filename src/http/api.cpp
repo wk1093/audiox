@@ -12,6 +12,9 @@
 #include "audio/effects/slot.hpp"
 #include "bluetooth/context.hpp"
 #include "config/context.hpp"
+#include "config/storage.hpp"
+#include "config/paths.hpp"
+#include "config/file.hpp"
 #include "init.hpp"
 #include "boot_recovery.hpp"
 #include "midi/context.hpp"
@@ -592,6 +595,23 @@ static const char *rootfsSuffix(const char *path) {
 	return NULL;
 }
 
+static int handleLegacyConfig(HttpServer *server, int cfd, const char *method) {
+	char error[256]{};
+	int result;
+	if (!strcmp(method, "GET")) {
+		result = audiox::config_storage::legacyCount(ROOT_MOUNT_POINT, error, sizeof(error));
+	} else if (!strcmp(method, "DELETE")) {
+		result = audiox::config_storage::removeLegacy(ROOT_MOUNT_POINT, error, sizeof(error));
+	} else return sendMethodNotAllowed(server, cfd);
+	if (result < 0) {
+		printf("[CONFIG] [WARN] legacy configuration operation failed: %s\n", error);
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain", error, strlen(error));
+	}
+	char response[64];
+	int length = snprintf(response, sizeof(response), "{\"legacy_entries\":%d}\n", result);
+	return server->sendResponse(cfd, "200 OK", "application/json", response, static_cast<size_t>(length));
+}
+
 static int ensureParentDirs(const char *path) {
 	if (!path || !path[0]) {
 		return -1;
@@ -676,7 +696,8 @@ static int handleApiGetRootfs(HttpServer *server, int cfd, const char *path) {
 	}
 
 	char fs_path[512];
-	int pn = snprintf(fs_path, sizeof(fs_path), "%s%s", HTTP_FS_ROOT, suffix);
+	int pn = snprintf(fs_path, sizeof(fs_path), "%s%s", HTTP_FS_ROOT,
+					  audiox::config_storage::rootfsPath(suffix).c_str());
 	if (pn <= 0 || (size_t)pn >= sizeof(fs_path)) {
 		static const char bad[] = "path too long\n";
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
@@ -714,9 +735,15 @@ static int handleApiPutRootfs(HttpServer *server,
 		static const char bad[] = "bad file path\n";
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
 	}
+	if (!audiox::config_storage::rootfsWritable(ROOT_MOUNT_POINT, suffix)) {
+		static const char error[] = "configuration schema is unsupported, unreadable, or reserved\n";
+		printf("[CONFIG] [WARN] refusing raw configuration write: %s\n", suffix);
+		return server->sendResponse(cfd, "409 Conflict", "text/plain", error, sizeof(error) - 1);
+	}
 
 	char fs_path[512];
-	int pn = snprintf(fs_path, sizeof(fs_path), "%s%s", HTTP_FS_ROOT, suffix);
+	int pn = snprintf(fs_path, sizeof(fs_path), "%s%s", HTTP_FS_ROOT,
+					  audiox::config_storage::rootfsPath(suffix).c_str());
 	if (pn <= 0 || (size_t)pn >= sizeof(fs_path)) {
 		static const char bad[] = "path too long\n";
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
@@ -727,20 +754,17 @@ static int handleApiPutRootfs(HttpServer *server,
 		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
 	}
 
-	int fd = open(fs_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-	if (fd < 0) {
+	audiox::AtomicConfigFile output(fs_path);
+	FILE *file = output.get();
+	if (!file) {
 		static const char err[] = "open failed\n";
 		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
 	}
 
 	size_t written = 0;
 	while (written < body_len) {
-		ssize_t nw = write(fd, body + written, body_len - written);
-		if (nw < 0) {
-			if (errno == EINTR) {
-				continue;
-			}
-			close(fd);
+		size_t nw = fwrite(body + written, 1, body_len - written, file);
+		if (!nw && ferror(file)) {
 			static const char err[] = "write failed\n";
 			return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
 		}
@@ -749,9 +773,7 @@ static int handleApiPutRootfs(HttpServer *server,
 		}
 		written += (size_t)nw;
 	}
-	close(fd);
-
-	if (written != body_len) {
+	if (written != body_len || output.commit() < 0) {
 		static const char err[] = "write failed\n";
 		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
 	}
@@ -770,9 +792,15 @@ static int handleApiDeleteRootfs(HttpServer *server, int cfd, const char *path) 
 		static const char bad[] = "cannot delete a directory\n";
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
 	}
+	if (!audiox::config_storage::rootfsWritable(ROOT_MOUNT_POINT, suffix)) {
+		static const char error[] = "configuration schema is unsupported, unreadable, or reserved\n";
+		printf("[CONFIG] [WARN] refusing raw configuration deletion: %s\n", suffix);
+		return server->sendResponse(cfd, "409 Conflict", "text/plain", error, sizeof(error) - 1);
+	}
 
 	char fs_path[512];
-	int pn = snprintf(fs_path, sizeof(fs_path), "%s%s", HTTP_FS_ROOT, suffix);
+	int pn = snprintf(fs_path, sizeof(fs_path), "%s%s", HTTP_FS_ROOT,
+					  audiox::config_storage::rootfsPath(suffix).c_str());
 	if (pn <= 0 || (size_t)pn >= sizeof(fs_path)) {
 		static const char bad[] = "path too long\n";
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
@@ -5932,6 +5960,10 @@ int handleApiRequest(HttpServer *server,
 			return sendNotImplemented(server, cfd, "config reload");
 		}
 		return rc;
+	}
+
+	if (strcmp(path, "/api/config/legacy") == 0) {
+		return handleLegacyConfig(server, cfd, method);
 	}
 
 	if (strcmp(path, HTTP_ROUTING_RELOAD_PATH) == 0) {

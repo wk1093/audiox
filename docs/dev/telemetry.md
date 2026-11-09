@@ -110,37 +110,15 @@ points/day and roughly 173 batch uploads/day. No port forwarding is required, an
 the Pi does not need internet access. Only the computer displaying the WebUI
 needs internet for delivery. If nobody opens the WebUI, nothing uploads.
 
-## Upgrade an existing collector
+## Collector protocol
 
-The batch endpoint remains `/v1/batches`, but the JSON batch `schema` is now `3`.
-Schema 2 added `installation_id`, `interval_ms` and `metrics.audio_active`;
-schema 3 adds `public_consent: 1`. The updated Worker still accepts schemas 1
-and 2, but those reports stay private and are excluded from public charts.
+The `/v1/batches` endpoint accepts 1-1,000 points in schema 3 batches. Reports
+include `installation_id`, `interval_ms`, `metrics.audio_active`, and
+`public_consent: 1`. Point fields are stored in the `payload` JSON; public
+aggregates use the `public_daily` and `public_dashboard` tables.
 
-Apply the dashboard migration and redeploy **before** installing the new firmware:
-
-```sh
-cd tools/telemetry
-npx wrangler d1 migrations apply audiox-telemetry --remote
-npm run deploy
-```
-
-Migration `0002_public_dashboard.sql` adds the `public_daily` and `public_dashboard`
-aggregate tables. It does not publish or alter existing raw reports. Do not
-recreate the database or modify its ID. New point fields remain inside the
-existing `payload` JSON.
-
-The Worker also accepts 1-1,000 points in schema 3 batches for backlog uploads.
-Redeploy it before updating firmware/WebUI to this batching behavior. Schemas
-1/2 retain their original exact 100-point contract. This batching-only change
-does not require a new consent version or additional database migration.
-
-On the Pi, consent and queue storage advance to version 3. Earlier opt-ins are
-not carried forward: users must accept the expanded public-reporting notice;
-earlier opt-outs remain disabled. The API requires `consent_version=3` when
-enabling, so an older browser tab cannot accidentally opt in using the old notice.
-Old queued data is never tagged retroactively for public reporting. The
-legacy files are removed when the user makes a new consent decision.
+The device requires `consent_version=3` when enabling telemetry. Users must
+accept the public-reporting notice before reports can be uploaded.
 
 ## Deploy the collector on Cloudflare
 
@@ -278,16 +256,15 @@ npx wrangler d1 execute audiox-telemetry --remote \
 
 `received_day` is the collector's UTC receipt date, **not** the collection date.
 The device may have been offline and has no guaranteed accurate wall clock.
-Schema 2 and 3 points describe retained 10-second intervals, not a complete uptime
-history; idle intervals are omitted. Schema 1 points describe one minute.
-Neither means a precise audible-processing duration. Use `interval_ms` (or
-60,000 for legacy rows) rather than assuming every row represents one minute.
+Points describe retained 10-second intervals, not a complete uptime history;
+idle intervals are omitted. They do not measure precise audible-processing
+duration. Use each report's `interval_ms` when summing observed time.
 
 Filter and group reports by installation using the JSON field:
 
 ```sh
 npx wrangler d1 execute audiox-telemetry --remote \
-  --command "SELECT json_extract(payload, '$.installation_id') AS installation_id, COUNT(*) AS retained_points, SUM(COALESCE(json_extract(payload, '$.interval_ms'), 60000)) / 1000 AS observed_interval_seconds FROM points GROUP BY installation_id"
+  --command "SELECT json_extract(payload, '$.installation_id') AS installation_id, COUNT(*) AS retained_points, SUM(json_extract(payload, '$.interval_ms')) / 1000 AS observed_interval_seconds FROM points GROUP BY installation_id"
 ```
 
 ```sh

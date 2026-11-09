@@ -6,6 +6,8 @@
 #include "init.hpp"
 #include "update_archive.hpp"
 #include "config/backup.hpp"
+#include "config/paths.hpp"
+#include "config/file.hpp"
 #include "watchdog_heartbeat.hpp"
 
 #include <arpa/inet.h>
@@ -928,6 +930,11 @@ static int handleRootfsUpload(HttpServer *server,
         static const char bad[] = "bad file path\n";
         return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
     }
+    if (!audiox::config_storage::rootfsWritable(ROOT_MOUNT_POINT, suffix)) {
+        static const char error[] = "configuration schema is unsupported, unreadable, or reserved\n";
+        printf("[CONFIG] [WARN] refusing configuration upload: %s\n", suffix);
+        return server->sendResponse(cfd, "409 Conflict", "text/plain", error, sizeof(error) - 1);
+    }
 
     if (content_length == 0) {
         static const char bad[] = "missing body\n";
@@ -940,7 +947,8 @@ static int handleRootfsUpload(HttpServer *server,
     }
 
     char fs_path[512];
-    int pn = snprintf(fs_path, sizeof(fs_path), "%s%s", ROOT_MOUNT_POINT "/", suffix);
+    int pn = snprintf(fs_path, sizeof(fs_path), "%s%s", ROOT_MOUNT_POINT "/",
+                      audiox::config_storage::rootfsPath(suffix).c_str());
     if (pn <= 0 || (size_t)pn >= sizeof(fs_path)) {
         static const char bad[] = "path too long\n";
         return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
@@ -950,29 +958,26 @@ static int handleRootfsUpload(HttpServer *server,
         return sendErrnoResponse(server, cfd, "500 Internal Server Error", "mkdir failed", errno);
     }
 
-    int fd = open(fs_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) {
+    audiox::AtomicConfigFile output(fs_path);
+    if (!output.get()) {
         return sendErrnoResponse(server, cfd, "500 Internal Server Error", "open failed", errno);
     }
+    int fd = fileno(output.get());
 
     int stream_rc = streamRequestBodyToFd(cfd, fd, initial_body, initial_body_len, content_length);
     if (stream_rc < 0) {
         int saved_errno = errno;
-        close(fd);
         return sendErrnoResponse(server, cfd, "500 Internal Server Error", "write failed", saved_errno);
     }
     if (stream_rc > 0) {
-        close(fd);
         static const char err[] = "incomplete upload\n";
         return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", err, sizeof(err) - 1);
     }
 
-    if (fsync(fd) < 0) {
+    if (output.commit() < 0) {
         int saved_errno = errno;
-        close(fd);
         return sendErrnoResponse(server, cfd, "500 Internal Server Error", "fsync failed", saved_errno);
     }
-    close(fd);
 
     // Auto-set executable permissions for common binary paths
     const char *leaf = strrchr(suffix, '/');

@@ -5,11 +5,23 @@ settings. Routing, effect, soundboard, and script settings are edited on their
 respective pages.
 
 The USB settings, routing, MIDI/effect, volume, and Bluetooth pairing files are
-schema-versioned. Older unversioned files are read as the legacy schema and
-upgraded when saved. AudioX refuses to overwrite a file declaring a newer
+schema-versioned. AudioX refuses to overwrite a file declaring a newer
 schema version than it supports. Backup creation and restore staging also
 reject unsupported schema versions, so an older build cannot silently discard
 newer settings.
+That protection also applies to Lua whole-file writes and rootfs HTTP
+uploads/deletion. Raw HTTP mutations of an unsupported or unreadable settings
+schema (or reserved layout metadata) return `409 Conflict`; restore a compatible
+backup or use compatible firmware rather than overwriting the version marker.
+
+## Persistent storage
+
+Settings live in `/audiox/config/`. Script definitions are in `scripts.txt`,
+separate from `midi_map.txt`; script options and custom files live under
+`config/scripts/`. Scenes, Bluetooth pairings, and device-local telemetry state
+also live in the configuration directory. Sound clips remain in `/audiox/sfx/`;
+logs, ffmpeg, plugins, and update/recovery files stay outside configuration.
+Raspberry Pi boot settings remain on the separate boot partition.
 
 ## USB audio settings
 
@@ -98,8 +110,9 @@ in the newly opened download tab.
 The backup does **not** contain the installed kernel, bootloader, runtime
 firmware, arbitrary files elsewhere on the system, browser-only graph layout,
 or Lua's in-memory `state`. Dim-lights state and current playback are not saved.
-Script-owned persistent options and custom files under `/audiox/scripts/` are
-also excluded; export important script data separately.
+Script-owned persistent options and custom files under `/audiox/config/scripts/`
+are included. Device-local telemetry consent, installation identity, and queued
+reports are excluded and are not replaced by a restore.
 
 ::: warning Keep backups private
 Bluetooth pairing records contain keys. A backup can also include private audio

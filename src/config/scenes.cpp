@@ -461,7 +461,7 @@ bool recallMidi(Audiox *app, uint8_t channel, uint8_t note) {
     std::lock_guard<std::mutex> lock(cacheMutex);
     ConfigFileStamp current{};
     std::string error;
-    if (!configFileStamp(ROOT_MOUNT_POINT "/scenes", &current)) return false;
+    if (!configFileStamp(CONFIG_ROOT_DIR "/scenes", &current)) return false;
     if (!loaded || !configFileStampEqual(stamp, current)) {
         if (!Store().list(scenes, error)) return false;
         stamp = current;

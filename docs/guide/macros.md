@@ -6,6 +6,9 @@ sound voice start/finish, and selected controller connect/disconnect events.
 Startup, one-second timers, Bluetooth changes, custom options, and custom WebUI
 buttons are also supported.
 See [Lua scripting](/lua/) for callback behavior and the complete API.
+Definitions are stored separately in `/audiox/config/scripts.txt`; persistent
+script options and custom files under `/audiox/config/scripts/` are included in
+configuration backups.
 
 ## Create and run a script
 

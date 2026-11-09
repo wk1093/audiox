@@ -121,7 +121,12 @@ void expectDark(int fd) {
 }
 
 std::string readMidiConfig() {
-    std::ifstream file("midi_map.txt");
+    std::ifstream file("config/midi_map.txt");
+    assert(file);
+    return std::string(std::istreambuf_iterator<char>(file), {});
+}
+std::string readScriptsConfig() {
+    std::ifstream file("config/scripts.txt");
     assert(file);
     return std::string(std::istreambuf_iterator<char>(file), {});
 }
@@ -134,6 +139,7 @@ int main() {
     char temp[] = "/tmp/audiox-soundboard-test-XXXXXX";
     assert(mkdtemp(temp));
     assert(chdir(temp) == 0);
+    assert(mkdir("config", 0700) == 0);
     assert(mkdir("sfx", 0755) == 0);
     touch("sfx/keep.wav");
     touch("sfx/remove.wav");
@@ -168,7 +174,7 @@ int main() {
     touchscreen.fd = -1;
 
     ConfigStore config(&app);
-    FILE *fixture = fopen("config.txt", "w");
+    FILE *fixture = fopen("config/config.txt", "w");
     assert(fixture);
     assert(fputs("\t usb_sample_rate\t =\t 44100\n"
                  " \t soundboard_mode \t=\t hold\t\n"
@@ -180,7 +186,7 @@ int main() {
     assert(indented.framebufferSoundboard == 1);
     assert(indented.playbackChannels == 2 && indented.captureChannels == 2);
 
-    fixture = fopen("midi_map.txt", "w");
+    fixture = fopen("config/midi_map.txt", "w");
     assert(fixture);
     assert(fputs("\t note_map\t=\t 38,\t keep.wav\t\n"
                  " \t sound_mode =\t keep.wav,\t hold\t\n", fixture) >= 0);
@@ -999,7 +1005,7 @@ int main() {
         chordRequest("GET", "", "\"chords\":[]");
         auto noMacros = config.readMidiMapFile();
         {
-            std::ofstream legacy("midi_map.txt", std::ios::app);
+            std::ofstream legacy("config/scripts.txt", std::ios::app);
             legacy << "key_chord=3,50,ALT+TAB\n";
             legacy.close();
             assert(legacy);
@@ -1010,13 +1016,14 @@ int main() {
         assert(legacyMacro.chords[0].midiEnabled);
         assert(config.writeMidiMapFile(&legacyMacro) == RET_OK);
         assert(config.readMidiMapFile().chords[0].id == legacyMacro.chords[0].id);
-        assert(readMidiConfig().find("automation=") != std::string::npos);
+        assert(readMidiConfig().find("automation=") == std::string::npos);
+        assert(readScriptsConfig().find("automation=") != std::string::npos);
         assert(!legacyMacro.chords[0].idleVelocity && !legacyMacro.chords[0].pressedVelocity);
         assert(legacyMacro.chords[0].hookMode && !legacyMacro.chords[0].keys[0]);
         assert(strstr(legacyMacro.chords[0].script, "tap(\"ALT+TAB\")"));
         assert(legacyMacro.chords[0].eventMask == 129);
         {
-            std::ofstream malformed("midi_map.txt", std::ios::app);
+            std::ofstream malformed("config/scripts.txt", std::ios::app);
             malformed << "key_macro=1,61,1,2,BAD\"KEY," << scriptHexEncode("tap(\"A\")") << "\n";
             malformed.close();
             assert(malformed);
@@ -1024,13 +1031,13 @@ int main() {
         assert(config.readMidiMapFile().chordCount == 1);
         assert(config.writeMidiMapFile(&noMacros) == RET_OK);
         {
-            std::ofstream legacy("midi_map.txt", std::ios::app);
+            std::ofstream legacy("config/scripts.txt", std::ios::app);
             legacy << "key_macro=1,61,3,7,-," << scriptHexEncode("return -- trailing comment") << "\n";
             legacy << "automation=900,1,2,63,4,8," << scriptHexEncode("Imported") << ",-,"
                    << scriptHexEncode("state.value=event.type") << "\n";
             legacy << "automation_events=900,126\nautomation_config_write=900,1\n";
             legacy.close();
-            const auto originalText = readMidiConfig();
+            const auto originalText = readScriptsConfig();
             auto imported = std::make_unique<MidiMapData>(config.readMidiMapFile());
             assert(imported->chordCount == 2);
             assert(imported->chords[0].hookMode && imported->chords[0].eventMask == 129);
@@ -1038,7 +1045,7 @@ int main() {
             assert(!imported->chords[0].configWriteAllowed);
             assert(imported->chords[1].id == 900 && imported->chords[1].eventMask == 254);
             assert(imported->chords[1].configWriteAllowed && imported->chords[1].hookMode);
-            assert(readMidiConfig() == originalText);
+            assert(readScriptsConfig() == originalText);
             assert(config.writeMidiMapFile(imported.get()) == RET_OK);
             auto reread = std::make_unique<MidiMapData>(config.readMidiMapFile());
             assert(scriptMacroEqual(imported->chords[0], reread->chords[0]));
@@ -1072,19 +1079,19 @@ int main() {
         assert(config.readConfigFile().midiPassthrough == 1 && config.readConfigFile().keyboardMacros == 1);
         assert(config.readConfigFile().schemaVersion == CONFIG_SCHEMA_VERSION);
         {
-            std::ifstream savedConfig("config.txt");
+            std::ifstream savedConfig("config/config.txt");
             assert(savedConfig);
             std::string firstLine;
             assert(std::getline(savedConfig, firstLine));
             assert(firstLine == "config_version=1");
         }
         assert(!config.readMidiMapFile().samplerKeyboardEnabled);
-        assert(mkdir("config.txt.tmp", 0755) == 0);
+        assert(mkdir("config/config.txt.tmp", 0755) == 0);
         ConfigData failedUsbConfig = usbConfig;
         failedUsbConfig.midiPassthrough = 2;
         assert(config.writeConfigFile(&failedUsbConfig) == RET_ERR);
         assert(config.readConfigFile().midiPassthrough == 1);
-        assert(rmdir("config.txt.tmp") == 0);
+        assert(rmdir("config/config.txt.tmp") == 0);
 
         auto updateNoticeRequest = [&](const char *method, const char *body, const char *expected) {
             int sockets[2];
@@ -1105,7 +1112,7 @@ int main() {
         updateNoticeRequest("POST", "enabled=maybe", "400 Bad Request");
         updateNoticeRequest("DELETE", "", "405 Method Not Allowed");
         {
-            std::ifstream savedConfig("config.txt");
+            std::ifstream savedConfig("config/config.txt");
             std::string text((std::istreambuf_iterator<char>(savedConfig)), std::istreambuf_iterator<char>());
             assert(text.find("\nupdate_notifications=0\n") != std::string::npos);
         }
@@ -1141,12 +1148,12 @@ int main() {
         updateChannelRequest("POST", "channel=invalid", "400 Bad Request");
         updateChannelRequest("POST", "", "400 Bad Request");
         updateChannelRequest("DELETE", "", "405 Method Not Allowed");
-        assert(mkdir("config.txt.tmp", 0755) == 0);
+        assert(mkdir("config/config.txt.tmp", 0755) == 0);
         updateChannelRequest("POST", "channel=stable", "500 Internal Server Error");
-        assert(rmdir("config.txt.tmp") == 0);
+        assert(rmdir("config/config.txt.tmp") == 0);
         updateChannelRequest("GET", "", "{\"channel\":\"nightly\"}");
         {
-            std::ifstream savedConfig("config.txt");
+            std::ifstream savedConfig("config/config.txt");
             std::string text((std::istreambuf_iterator<char>(savedConfig)), std::istreambuf_iterator<char>());
             assert(text.find("\nupdate_channel=nightly\n") != std::string::npos);
         }
@@ -1639,7 +1646,7 @@ int main() {
         audio.routingGraph.thingCount = 1;
         strcpy(audio.routingGraph.things[0].id, "sfx");
         const auto persisted = readMidiConfig();
-        const auto volumes = std::string("volumes.txt");
+        const auto volumes = std::string("config/volumes.txt");
         assert(access(volumes.c_str(), F_OK) != 0 && errno == ENOENT);
         macroRequest("POST", "id=" + std::to_string(webId), "200 OK", true);
         stepMacro(8000);
@@ -1927,7 +1934,7 @@ int main() {
         macroRequest("POST", configScript + "&config_write_ack=1", "200 OK");
         assert(config.readMidiMapFile().chords[1].configWriteAllowed);
         macroRequest("GET", "", "\"config_write_allowed\":true");
-        assert(access("volumes.txt", F_OK) != 0);
+        assert(access("config/volumes.txt", F_OK) != 0);
         macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
         testNowMs += 20;
         midi.scripts.pollMacros(testNowMs);
@@ -1936,7 +1943,7 @@ int main() {
         assert(config.readScriptConfig("volumes.txt", configText, sizeof(configText), &configLength) == RET_OK);
         assert(!strcmp(configText, "sfx=0.5\n"));
         assert(!midi.scripts.macroErrors[1][0]);
-        assert(unlink("volumes.txt") == 0);
+        assert(unlink("config/volumes.txt") == 0);
         saveCallbacks("hook('boot',function(e) assert(e.source=='system'); "
                       "state.boots=(state.boots or 0)+1 end); "
                       "hook('timer',function(e) assert(e.source=='system'); "
@@ -2165,7 +2172,7 @@ int main() {
         controlRequest(controlId + "&key_hex=" + scriptHexEncode("apply") + "&value_hex=31",
                        "400 Bad Request");
         controlRequest(controlId + "&id=1&key_hex=31", "400 Bad Request");
-        const std::string dataDirectory = "scripts/" + std::to_string(midiId);
+        const std::string dataDirectory = "config/scripts/" + std::to_string(midiId);
         ScriptStorage privateStorage(midiId);
         ScriptState savedOptions{};
         assert(privateStorage.readSettings(savedOptions) == RET_OK && savedOptions.count == 3);
@@ -2187,7 +2194,7 @@ int main() {
         assert(replacement.readFile("owned.txt", isolated) == RET_ERR && errno == ENOENT);
         macroRequest("DELETE", "id=" + std::to_string(replacementId), "200 OK");
         assert(orphan.removeFile("owned.txt") == RET_OK);
-        assert(rmdir(("scripts/" + std::to_string(orphanId)).c_str()) == 0);
+        assert(rmdir(("config/scripts/" + std::to_string(orphanId)).c_str()) == 0);
         for (unsigned i = 0; i < SCRIPTS_MAX; ++i)
             controlRequest(controlId + "&key_hex=" + scriptHexEncode("apply"), "200 OK");
         option("level", "80", "409 Conflict");
@@ -2230,7 +2237,7 @@ int main() {
         assert(!midi.scripts.macroErrors[1][0] && privateStorage.readFile("private.bin", binary) == RET_ERR);
         assert(unlink((dataDirectory + "/.settings").c_str()) == 0);
         assert(rmdir(dataDirectory.c_str()) == 0);
-        assert(rmdir("scripts") == 0);
+        assert(rmdir("config/scripts") == 0);
         hookScript(1, "state.count=(state.count or 0)+1");
         for (unsigned i = 0; i < SCRIPTS_MAX; ++i)
             macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
@@ -2247,12 +2254,12 @@ int main() {
         assert(config.readScriptConfig("bluetooth.txt", configText, sizeof(configText), &configLength) == RET_ERR);
         assert(config.readScriptConfig("../config.txt", configText, sizeof(configText), &configLength) == RET_ERR);
         assert(config.readScriptConfig("volumes.txt", configText, sizeof(configText), &configLength) == RET_ERR);
-        assert(symlink("config.txt", "volumes.txt") == 0);
+        assert(symlink("config.txt", "config/volumes.txt") == 0);
         assert(config.readScriptConfig("volumes.txt", configText, sizeof(configText), &configLength) == RET_ERR);
-        assert(unlink("volumes.txt") == 0);
-        assert(mkdir("volumes.txt", 0700) == 0);
+        assert(unlink("config/volumes.txt") == 0);
+        assert(mkdir("config/volumes.txt", 0700) == 0);
         assert(config.writeScriptConfig("volumes.txt", "sfx=1\n", 6) == RET_ERR);
-        assert(rmdir("volumes.txt") == 0);
+        assert(rmdir("config/volumes.txt") == 0);
         assert(config.writeScriptConfig("volumes.txt", "sfx=1\n", 6) == RET_OK);
         ScriptState state{};
         ScriptPlan plan{};
@@ -2297,7 +2304,7 @@ int main() {
                                    event, state, plan, error, sizeof(error), &config, true));
         assert(config.readScriptConfig("volumes.txt", configText, sizeof(configText), &configLength) == RET_OK);
         assert(!strcmp(configText, "sfx=1\n"));
-        FILE *fp = fopen("volumes.txt", "w");
+        FILE *fp = fopen("config/volumes.txt", "w");
         assert(fp);
         std::string line = std::string(511, 'x') + "\n";
         for (unsigned i = 0; i < 128; ++i)
@@ -2309,63 +2316,108 @@ int main() {
                                   event, state, plan, error, sizeof(error), &config));
         assert(scriptEvaluate("local lines=config.lines('volumes.txt'); assert(#lines==128 and #lines[1]==511)",
                                   event, state, plan, error, sizeof(error), &config));
-        fp = fopen("volumes.txt", "w");
+        fp = fopen("config/volumes.txt", "w");
         assert(fp);
         std::string oversized(SCRIPT_CONFIG_READ_MAX + 1, 'x');
         assert(fwrite(oversized.data(), 1, oversized.size(), fp) == oversized.size());
         assert(fclose(fp) == 0);
         assert(config.readScriptConfig("volumes.txt", configText, sizeof(configText), &configLength) == RET_ERR);
-        fp = fopen("volumes.txt", "w");
+        fp = fopen("config/volumes.txt", "w");
         assert(fp && fwrite("x\0y", 1, 3, fp) == 3);
         assert(fclose(fp) == 0);
         assert(config.readScriptConfig("volumes.txt", configText, sizeof(configText), &configLength) == RET_ERR);
-        assert(unlink("volumes.txt") == 0);
+        assert(unlink("config/volumes.txt") == 0);
     }
 
     {
         const std::string futureConfig = "config_version=2\nusb_sample_rate=96000\n";
-        FILE *future = fopen("config.txt", "w");
+        FILE *future = fopen("config/config.txt", "w");
         assert(future);
         assert(fwrite(futureConfig.data(), 1, futureConfig.size(), future) == futureConfig.size());
         assert(fclose(future) == 0);
         ConfigData unsupported = config.readConfigFile();
         assert(unsupported.schemaVersion == 2);
         assert(config.writeConfigFile(&unsupported) == RET_ERR);
-        std::ifstream preserved("config.txt");
+        ConfigData stale{};
+        assert(config.writeConfigFile(&stale) == RET_ERR);
+        assert(config.writeScriptConfig("config.txt", "config_version=1\n", 17) == RET_ERR);
+        std::ifstream preserved("config/config.txt");
         assert(preserved);
         assert(std::string(std::istreambuf_iterator<char>(preserved), {}) == futureConfig);
     }
 
     {
         const std::string futureMap = "# audiox midi map v2\nnote_map=36,future.wav\n";
-        FILE *future = fopen("midi_map.txt", "w");
+        FILE *future = fopen("config/midi_map.txt", "w");
         assert(future);
         assert(fwrite(futureMap.data(), 1, futureMap.size(), future) == futureMap.size());
         assert(fclose(future) == 0);
         MidiMapData emptyMap{};
         assert(config.writeMidiMapFile(&emptyMap) == RET_ERR);
+        assert(config.writeScriptConfig("midi_map.txt", "", 0) == RET_ERR);
         assert(readMidiConfig() == futureMap);
-        assert(unlink("midi_map.txt") == 0);
+        assert(unlink("config/midi_map.txt") == 0);
 
         assert(config.writeMidiMapFile(&emptyMap) == RET_OK);
         const std::string savedMap = readMidiConfig();
         const std::string futureParams = "# audiox fx params v2\nfx_param=fx_1,gain,0.5\n";
-        future = fopen("fx_params.txt", "w");
+        future = fopen("config/fx_params.txt", "w");
         assert(future);
         assert(fwrite(futureParams.data(), 1, futureParams.size(), future) == futureParams.size());
         assert(fclose(future) == 0);
         assert(config.writeMidiMapFile(&emptyMap) == RET_ERR);
         assert(readMidiConfig() == savedMap);
-        std::ifstream preservedParams("fx_params.txt");
+        std::ifstream preservedParams("config/fx_params.txt");
         assert(preservedParams);
         assert(std::string(std::istreambuf_iterator<char>(preservedParams), {}) == futureParams);
     }
 
+    {
+        HttpServer storageServer(&app);
+        auto request = [&](const char *method, const char *path) {
+            int sockets[2];
+            assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+            int result = !strcmp(path, "/api/config/legacy")
+                ? handleLegacyConfig(&storageServer, sockets[0], method)
+                : !strcmp(method, "DELETE") ? handleApiDeleteRootfs(&storageServer, sockets[0], path)
+                : !strcmp(method, "PUT") ? handleApiPutRootfs(&storageServer, sockets[0], path, "", 0)
+                : handleApiGetRootfs(&storageServer, sockets[0], path);
+            assert(result == 0);
+            assert(shutdown(sockets[0], SHUT_WR) == 0);
+            std::string response;
+            char buffer[4096];
+            ssize_t n;
+            while ((n = read(sockets[1], buffer, sizeof(buffer))) > 0) response.append(buffer, n);
+            close(sockets[0]);
+            close(sockets[1]);
+            return response;
+        };
+        assert(request("GET", "/api/config/legacy").find("\"legacy_entries\":0") != std::string::npos);
+        FILE *legacy = fopen("config.txt", "w");
+        assert(legacy && fputs("legacy settings", legacy) >= 0 && fclose(legacy) == 0);
+        assert(request("GET", "/api/config/legacy").find("\"legacy_entries\":1") != std::string::npos);
+        assert(request("DELETE", "/api/config/legacy").find("500 Internal Server Error") != std::string::npos);
+        assert(access("config.txt", F_OK) == 0);
+        FILE *marker = fopen("config/.layout-version", "w");
+        assert(marker && fputs("1\n", marker) >= 0 && fclose(marker) == 0);
+        const auto active = request("GET", "/api/rootfs/config/config.txt");
+        assert(request("PUT", "/api/rootfs/config.txt").find("409 Conflict") != std::string::npos);
+        assert(request("DELETE", "/api/rootfs/config/config.txt").find("409 Conflict") != std::string::npos);
+        assert(active == request("GET", "/api/rootfs/config.txt"));
+        assert(active.find("legacy settings") == std::string::npos);
+        assert(request("DELETE", "/api/config/legacy").find("200 OK") != std::string::npos);
+        assert(request("GET", "/api/config/legacy").find("\"legacy_entries\":0") != std::string::npos);
+        assert(request("GET", "/api/rootfs/config/config.txt") == active);
+        assert(unlink("config/.layout-version") == 0);
+    }
+
     assert(unlink("sfx/keep.wav") == 0);
     assert(rmdir("sfx") == 0);
-    assert(unlink("config.txt") == 0);
-    assert(unlink("midi_map.txt") == 0);
-    assert(unlink("fx_params.txt") == 0);
+    assert(unlink("config/config.txt") == 0);
+    assert(unlink("config/midi_map.txt") == 0);
+    assert(unlink("config/fx_params.txt") == 0);
+    assert(unlink("config/scripts.txt") == 0);
+    assert(rmdir("config") == 0);
     assert(fchdir(cwd) == 0);
     close(cwd);
     assert(rmdir(temp) == 0);

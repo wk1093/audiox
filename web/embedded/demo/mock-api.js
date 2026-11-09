@@ -519,9 +519,10 @@
     return reply({ status: 'shutting down' });
   });
 
-  on('GET', '/api/rootfs/config.staging.txt', () => reply(S.configText));
-  on('GET', '/api/rootfs/config.txt', () => reply(S.configText));
-  on('PUT', '/api/rootfs/config.staging.txt', ({ body }) => { S.configText = body; return reply('ok\n'); });
+  on('GET', '/api/config/legacy', () => reply({ legacy_entries: 0 }));
+  on('GET', '/api/rootfs/config/config.staging.txt', () => reply(S.configText));
+  on('GET', '/api/rootfs/config/config.txt', () => reply(S.configText));
+  on('PUT', '/api/rootfs/config/config.staging.txt', ({ body }) => { S.configText = body; return reply('ok\n'); });
   on('POST', '/api/config/reload', () => reply({ ok: true, sampleRate: 48000, playbackChannels: 2, captureChannels: 2,
     sampleSize: 2, soundboardMode: 'play', source: 'real' }));
   on('GET', '/api/config/restore/check', () => reply('ok\n'));
@@ -543,8 +544,8 @@
 
   // Routing
   on('GET', '/api/routing/things', () => reply({ ok: true, things: things() }));
-  on('GET', '/api/rootfs/routing.txt', () => reply(S.routingText));
-  on('PUT', '/api/rootfs/routing.txt', ({ body }) => { setRoutingText(body); return reply('ok\n'); });
+  on('GET', '/api/rootfs/config/routing.txt', () => reply(S.routingText));
+  on('PUT', '/api/rootfs/config/routing.txt', ({ body }) => { setRoutingText(body); return reply('ok\n'); });
   on('POST', '/api/routing/reload', () => {
     const { edges, skipped } = parsedEdges();
     const count = things().length;

@@ -15,7 +15,7 @@ inline constexpr const char *SCRIPT_STORAGE_SETTINGS_NAME = ".settings";
 // RET_ERR/ENOENT. Reads never create directories. The override is a scripts root.
 class ScriptStorage {
 public:
-    explicit ScriptStorage(uint32_t id, const char *root = ROOT_MOUNT_POINT "/scripts");
+    explicit ScriptStorage(uint32_t id, const char *root = CONFIG_ROOT_DIR "/scripts");
     int readFile(const char *name, std::string &text) const;
     int listFiles(std::vector<std::string> &names) const;
     int writeFile(const char *name, const char *text, size_t length) const;

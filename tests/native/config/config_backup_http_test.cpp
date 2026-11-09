@@ -94,8 +94,9 @@ int main() {
     char pattern[] = "/tmp/audiox-backup-http-test-XXXXXX";
     assert(mkdtemp(pattern));
     assert(chdir(pattern) == 0);
+    assert(mkdir("config", 0700) == 0);
     assert(mkdir("sfx", 0700) == 0);
-    put("config.txt", "usb_sample_rate=44100\n");
+    put("config/config.txt", "usb_sample_rate=44100\n");
     const std::string sound(200000, 'x');
     put("sfx/kick.wav", sound);
     HttpServer server(nullptr);
@@ -122,6 +123,27 @@ int main() {
     assert(exchange(server, "PUT", "/api/plugins/install", "", 12 * 1024 * 1024 + 1).find("413 Payload Too Large") != std::string::npos);
     assert(exchange(server, "PUT", "/api/plugins/install", "", 0).find("413 Payload Too Large") != std::string::npos);
     assert(exchange(server, "POST", "/api/plugins/install", "", 0).find("405 Method Not Allowed") != std::string::npos);
+    put("config/config.staging.txt", "original settings\n");
+    const std::string staged = "usb_sample_rate=48000\n";
+    assert(exchange(server, "PUT", "/api/rootfs/config.staging.txt", staged, staged.size())
+        .find("200 OK") != std::string::npos);
+    assert(get("config/config.staging.txt") == staged);
+    assert(!fs::exists("config.staging.txt"));
+    assert(exchange(server, "PUT", "/api/rootfs/config/config.staging.txt", "partial", 200000)
+        .find("400 Bad Request") != std::string::npos);
+    assert(get("config/config.staging.txt") == staged);
+    put("config/config.staging.txt", "config_version=2\nfuture_setting=1\n");
+    for (const char *path : {"/api/rootfs/config.staging.txt", "/api/rootfs/config/config.staging.txt"}) {
+        assert(exchange(server, "PUT", path, staged, staged.size()).find("409 Conflict") != std::string::npos);
+    }
+    assert(get("config/config.staging.txt") == "config_version=2\nfuture_setting=1\n");
+    assert(exchange(server, "PUT", "/api/rootfs/config//./.layout-version", "0\n", 2)
+        .find("409 Conflict") != std::string::npos);
+    put("config/config.staging.txt", staged);
+    for (const auto &entry : fs::directory_iterator("config")) {
+        assert(entry.path().filename().string().find(".tmp.") == std::string::npos);
+    }
+    assert(unlink("config/config.staging.txt") == 0);
     lowStorage = true;
     std::string response = exchange(server, "GET", "/api/config/restore/check?size=46661632");
     assert(response.find("507 Insufficient Storage") != std::string::npos);
@@ -160,16 +182,16 @@ int main() {
     assert(response.find("incomplete backup upload") != std::string::npos);
     assert(!fs::exists(".config-restore"));
     assert(rebootRequests == 0);
-    put("config.txt", "new image");
+    put("config/config.txt", "new image");
     put("sfx/extra.wav", "not in backup");
     response = exchange(server, "PUT", "/api/config/restore", archive, archive.size());
     assert(response.find("202 Accepted") != std::string::npos);
     assert(response.find("validated and staged") != std::string::npos);
     assert(rebootRequests == 1);
-    assert(get("config.txt") == "new image");
+    assert(get("config/config.txt") == "new image");
     char error[256];
     assert(audiox::backup::applyPending(".", error, sizeof(error)) == 0);
-    assert(get("config.txt") == "usb_sample_rate=44100\n");
+    assert(get("config/config.txt") == "usb_sample_rate=44100\n");
     assert(get("sfx/kick.wav") == sound);
     assert(!fs::exists("sfx/extra.wav"));
     for (const auto &entry : fs::directory_iterator(".")) {

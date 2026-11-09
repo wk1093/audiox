@@ -13,7 +13,7 @@
 
 namespace audiox::telemetry {
 
-Store store(ROOT_MOUNT_POINT);
+Store store(CONFIG_ROOT_DIR);
 
 static bool hexId(const std::string &id, size_t length = 32) {
     return id.size() == length && id.find_first_not_of("0123456789abcdef") == std::string::npos;

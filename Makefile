@@ -113,9 +113,9 @@ RUNTIME_LIBS += $(LUA_STATIC_LIB) -lm
 #   PRERELEASE=       -> 1.10.1-nightly+<commit>
 # AUDIOX_VERSION_BUILD defaults to the 12-character git commit for nightly builds.
 AUDIOX_VERSION_MAJOR ?= 1
-AUDIOX_VERSION_MINOR ?= 16
+AUDIOX_VERSION_MINOR ?= 17
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= 
+AUDIOX_VERSION_PRERELEASE ?= beta.1
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
 $(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
@@ -599,9 +599,10 @@ $(ROOTFS_DIR)/sbin/audiox-plugin-worker: $(PLUGIN_WORKER_SRC) include/audio/plug
 $(GRAPH_LLVM_ROOT)/ready: tools/build/build_graph_llvm.sh
 	bash "$<" "$(GRAPH_LLVM_ROOT)" "$(CC)" "$(CXX)"
 
-$(GRAPH_COMPILER_BIN): tools/build/graph-compiler.cpp include/audio/graph_native.hpp include/audio/graph_block.hpp include/audio/effects/native.hpp $(GRAPH_LLVM_ROOT)/ready
+$(GRAPH_COMPILER_BIN): tools/build/graph-compiler.cpp include/audio/graph_native.hpp include/audio/graph_block.hpp include/audio/effects/native.hpp $(GRAPH_LLVM_ROOT)/ready Makefile
 	@mkdir -p "$(dir $@)"
-	$(CXX) $(CXXFLAGS) -isystem "$(GRAPH_LLVM_ROOT)/source/llvm/include" \
+	$(CXX) $(CXXFLAGS) -ffunction-sections -fdata-sections -Wl,--gc-sections \
+		-isystem "$(GRAPH_LLVM_ROOT)/source/llvm/include" \
 		-isystem "$(GRAPH_LLVM_ROOT)/build/include" -o "$@" "$<" \
 		-Wl,--start-group $(wildcard $(GRAPH_LLVM_ROOT)/build/lib/libLLVM*.a) -Wl,--end-group $(LIBS) -ldl
 

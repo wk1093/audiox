@@ -3,6 +3,7 @@
 #include "system.hpp"
 #include "config/context.hpp"
 #include "config/backup.hpp"
+#include "config/storage.hpp"
 #include "storage_expand.hpp"
 
 #include <stdio.h>
@@ -39,8 +40,16 @@ int mountRootfs(void *_context) {
     (void)audiox::storage::growFilesystem(CONFIG_DEVICE_PATH, ROOT_MOUNT_POINT);
 
     char error[256];
+    if (audiox::config_storage::migrate(ROOT_MOUNT_POINT, error, sizeof(error)) < 0) {
+        printf("[INIT] [ERR] configuration migration failed: %s\n", error);
+        return RET_ERR;
+    }
     if (audiox::backup::applyPending(ROOT_MOUNT_POINT, error, sizeof(error)) < 0) {
         printf("[INIT] [ERR] configuration restore failed: %s\n", error);
+        return RET_ERR;
+    }
+    if (audiox::config_storage::splitScripts(CONFIG_ROOT_DIR, error, sizeof(error)) < 0) {
+        printf("[INIT] [ERR] script configuration migration failed: %s\n", error);
         return RET_ERR;
     }
 

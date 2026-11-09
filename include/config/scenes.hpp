@@ -23,7 +23,7 @@ bool decode(const std::string &text, std::string &out);
 class Store {
     std::string directory;
 public:
-    explicit Store(std::string root = ROOT_MOUNT_POINT "/scenes");
+    explicit Store(std::string root = CONFIG_ROOT_DIR "/scenes");
     bool list(std::vector<Scene> &out, std::string &error) const;
     bool read(const std::string &id, Scene &out, std::string &error) const;
     bool save(const Scene &scene, std::string &error) const;

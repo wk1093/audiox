@@ -110,7 +110,7 @@ test('demo device state is consistent across routing, effects and meters', async
 test('demo scenes capture and recall the setup within the page', async () => {
   const context = demoContext();
   const json = async (url, init) => (await context.apiFetch(url, init)).json();
-  const routing = async () => (await context.apiFetch('/api/rootfs/routing.txt')).text();
+  const routing = async () => (await context.apiFetch('/api/rootfs/config/routing.txt')).text();
   const hex = (text) => Buffer.from(text).toString('hex');
 
   const initial = await json('/api/scenes');

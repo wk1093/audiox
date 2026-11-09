@@ -134,18 +134,18 @@ digits, `_`, `-`, `.`); leading dots and `..` are rejected. Reads/listing share
 a 32-call per-event limit and see earlier queued file changes from that event.
 Option reads also see earlier queued option changes.
 
-Storage is confined to `/audiox/scripts/<stable-script-id>/` on the persistent
+Storage is confined to `/audiox/config/scripts/<stable-script-id>/` on the persistent
 partition. Only flat, validated basenames are accepted: no absolute paths,
 directory traversal, symlinks, hard links, or access to another script.
 The options store is reserved and cannot be accessed through the file API.
 **Official device configuration and Bluetooth credentials are never exposed
 through this directory**; use `settings`, `effects`, `volume`, `bluetooth`,
-or the legacy allowlisted `config` API instead.
+or the allowlisted `config` API instead.
 
 Custom files and options survive reboot and source/name edits. Removing a
 script retains its data; newly allocated script IDs do not reuse stored
-directories. The standard configuration backup currently includes script
-definitions, **not this script-owned storage**. Export important data separately.
+directories. Configuration backups include both script definitions and this
+script-owned storage.
 Writes share the per-event action/payload budgets and occur only after successful
 evaluation. An execution failure does not undo earlier actions. Avoid writing
 on every timer, CC, or sound event to limit flash wear and control-loop stalls.
@@ -225,7 +225,9 @@ transaction, and an execution failure does not undo earlier successful actions.
 These are raw text edits, **not format-validated settings changes**. Back up
 first, preserve the documented file format, and reload/restart the relevant
 subsystem afterwards. Some subsystems periodically reload their files.
-Editing `midi_map.txt` can change or reset scripts at the next map reload.
+Files with an unsupported or invalid existing schema marker cannot be overwritten.
+These allowlisted names resolve inside `/audiox/config/`. Script definitions
+are stored separately in `scripts.txt`, which is not exposed by this API.
 Avoid writes on every CC or sound event: filesystem sync can stall the control
 loop and repeated writes wear flash storage. Use runtime `effects`/`volume`
 actions when persistence is unnecessary.

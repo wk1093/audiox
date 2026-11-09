@@ -41,11 +41,16 @@ Pi 4 Model B and Pi 5 are hardware-tested targets. The Pi 5 framebuffer UI remai
 | `out/` | Generated binaries, dependencies, firmware, rootfs trees, and images |
 
 Scripting has its own `ScriptContext`; MIDI is an event source and output
-adapter, not the Lua runtime. The control loop owns script evaluation. Existing
-script IDs, options, callback names, HTTP endpoints, and serialized entries in
-the MIDI mapping file are retained for compatibility. `make test-script`,
-`test-script-storage`, and `test-script-docs` cover scripting; the old
-`test-midi-script*`/`test-midi-docs` targets remain aliases.
+adapter, not the Lua runtime. The control loop owns script evaluation. Script
+definitions live in `/audiox/config/scripts.txt`, with options and custom files
+under `/audiox/config/scripts/`. `make test-script`, `test-script-storage`, and
+`test-script-docs` cover scripting.
+
+The AArch64 graph compiler statically links LLVM with linker garbage collection
+to discard unused code. Runtime packaging strips all shipped executables,
+including the graph compiler, in `out/program_stage/`; the corresponding
+`out/program_rootfs/` binaries retain symbols for debugging. Measure firmware
+size using the packaged copy or `out/program.cpio.gz`, not the debug binaries.
 
 ## Linux build prerequisites
 
@@ -149,7 +154,7 @@ dependencies require it.
 - **Audio:** engine sample rate and frames per block (defaults: 48,000 Hz and 128 frames).
 - **Development:** debug shell, normally disabled.
 
-The build-time engine sample rate is distinct from the runtime USB format saved under `/audiox/config.txt`. The Web UI preserves the latter's sample-rate field rather than exposing it as a sample-rate control. See [Config](/guide/config).
+The build-time engine sample rate is distinct from the runtime USB format saved under `/audiox/config/config.txt`. The Web UI preserves the latter's sample-rate field rather than exposing it as a sample-rate control. See [Config](/guide/config).
 
 Boot configuration is generated as `out/dev-config.txt` and
 `out/dev-cmdline.txt`. The generated `kernel=` entry uses the selected firmware

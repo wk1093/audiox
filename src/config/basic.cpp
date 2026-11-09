@@ -212,7 +212,7 @@ bool scriptConfigPath(const char *name, char *path, size_t size) {
     if (!name) return false;
     for (const char *allowed : SCRIPT_CONFIG_FILES) {
         if (strcmp(name, allowed) == 0) {
-            int n = snprintf(path, size, "%s/%s", ROOT_MOUNT_POINT, name);
+            int n = snprintf(path, size, "%s/%s", CONFIG_ROOT_DIR, name);
             return n > 0 && static_cast<size_t>(n) < size;
         }
     }
@@ -262,6 +262,10 @@ int ConfigStore::writeScriptConfig(const char *name, const char *text, size_t le
         printf("[CONFIG] [WARN] Invalid Lua configuration write\n");
         return RET_ERR;
     }
+    if (!configSchemaWritable(checkNamedConfigSchema(path, name))) {
+        printf("[CONFIG] [WARN] Lua cannot replace an unsupported configuration schema: %s\n", name);
+        return RET_ERR;
+    }
     char temporary[288]{};
     snprintf(temporary, sizeof(temporary), "%s.lua-XXXXXX", path);
     int fd = mkstemp(temporary);
@@ -281,7 +285,7 @@ int ConfigStore::writeScriptConfig(const char *name, const char *text, size_t le
     if (close(fd) < 0) ok = false;
     if (ok && rename(temporary, path) < 0) ok = false;
     if (ok) {
-        int directory = open(ROOT_MOUNT_POINT, O_RDONLY | O_DIRECTORY);
+        int directory = open(CONFIG_ROOT_DIR, O_RDONLY | O_DIRECTORY);
         if (directory < 0) ok = false;
         else {
             if (fsync(directory) < 0) ok = false;
@@ -405,7 +409,7 @@ int ConfigStore::writeScriptSetting(const char *key, const ScriptStateEntry &val
         return RET_ERR;
     }
     if (writeConfigFile(&cfg) != RET_OK) return RET_ERR;
-    const int directory = open(ROOT_MOUNT_POINT, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    const int directory = open(CONFIG_ROOT_DIR, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     bool ok = directory >= 0;
     int error = errno;
     if (ok && fsync(directory) < 0) { ok = false; error = errno; }
@@ -428,6 +432,11 @@ int ConfigStore::writeConfigFile(ConfigData *cfg) {
     if (cfg->schemaVersion > CONFIG_SCHEMA_VERSION) {
         printf("[CONFIG] [WARN] refusing to overwrite config version %u (supported through %u)\n",
                cfg->schemaVersion, CONFIG_SCHEMA_VERSION);
+        return RET_ERR;
+    }
+    ConfigData current{};
+    if (readConfigPath(CONFIG_REAL_FILE_PATH, &current, 0) == RET_ERR) {
+        printf("[CONFIG] [WARN] refusing to replace unreadable or unsupported active configuration\n");
         return RET_ERR;
     }
 
@@ -453,6 +462,14 @@ int ConfigStore::writeConfigFile(ConfigData *cfg) {
     int error = errno;
     if (close(fd) < 0 && ok) { ok = false; error = errno; }
     if (ok && rename(temporary, CONFIG_REAL_FILE_PATH) < 0) { ok = false; error = errno; }
+    if (ok) {
+        int directory = open(CONFIG_ROOT_DIR, O_RDONLY | O_DIRECTORY);
+        if (directory < 0) { ok = false; error = errno; }
+        else {
+            if (fsync(directory) < 0) { ok = false; error = errno; }
+            if (close(directory) < 0 && ok) { ok = false; error = errno; }
+        }
+    }
     if (!ok) {
         printf("[CONFIG] [WARN] failed to save %s: %s\n", CONFIG_REAL_FILE_PATH, strerror(error));
         if (unlink(temporary) < 0 && errno != ENOENT) {
@@ -642,7 +659,7 @@ int ConfigStore::writeVolumesFile(const VolumeEntry *entries, uint32_t count) {
         }
         return RET_ERR;
     }
-    int directory = open(ROOT_MOUNT_POINT, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    int directory = open(CONFIG_ROOT_DIR, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (directory < 0) {
         printf("[CONFIG] [WARN] cannot open volume directory for sync: %s\n", strerror(errno));
         return RET_ERR;

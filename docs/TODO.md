@@ -253,6 +253,11 @@ The above last two features are mainly to improve my setup, but could probably b
 
 
 ## Future
+- [ ] Post-2.0: Support a dedicated USB keyboard connected directly to the Pi as a controller for every MIDI-mappable action, including soundboard playback, effects, scenes, and scripts.
+  - [ ] Translate keyboard input into the shared controller-event/mapping system so keyboard and MIDI bindings use the same mapping controls, without duplicate map buttons or parallel action implementations.
+  - [ ] Handle key press/release, held keys, repeat suppression, and disconnect cleanup so actions cannot remain stuck.
+- [ ] Post-2.0: Create a lightweight desktop companion app with keyboard shortcuts that trigger actions on the Pi through an API.
+  - [ ] Expose controller-event injection through the same shared mapping/action system as local keyboards and MIDI, with paired/authorized access and release cleanup on connection loss.
 - [ ] Option in config to use raspi AUX port as an output source (for people without an audio interface, since custom hardware is still WIP)
 - [ ] Create a roadmap for future features and improvements
 - [ ] Explore integration with other audio software and hardware, such as DAWs and MIDI controllers

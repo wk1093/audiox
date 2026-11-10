@@ -74,6 +74,7 @@ public:
     static constexpr uint64_t kXrunWindowMs = 30000;
     static constexpr uint64_t kStartupGraceMs = 60000;
     static constexpr uint64_t kShiftGraceMs = 10000;
+    static constexpr uint64_t kDownshiftSettleMs = 1000;
     static constexpr uint64_t kQuietPeriodMs = 30000;
     static constexpr uint64_t kBusyQuietPeriodMs = 60000;
     static constexpr uint64_t kDownshiftRetryWindowMs = 600000;
@@ -82,11 +83,14 @@ public:
     };
 
     explicit AdaptiveAudioBuffer(uint64_t started = healthMonotonicMs())
-        : instanceId_(started), graceUntil_(started + kStartupGraceMs) {}
+        : instanceId_(started), startupGraceUntil_(started + kStartupGraceMs),
+          graceUntil_(startupGraceUntil_) {}
 
     // Audio-thread only; successful opens extend settling past the reconfiguration work.
     void bufferChanged(uint64_t now = healthMonotonicMs()) {
         graceUntil_ = std::max(graceUntil_, now + kShiftGraceMs);
+        if (downshiftRetryActive(now))
+            downshiftSettleUntil_ = now + kDownshiftSettleMs;
         lastXrunAt_ = now;
         clearXrunWindow();
     }
@@ -114,9 +118,11 @@ public:
     }
 
     bool recordXrun(uint64_t now, uint32_t baseFrames) {
-        if (now < graceUntil_) return false;
+        if (now < startupGraceUntil_) return false;
         lastXrunAt_ = now;
         hasXrun_ = true;
+        if (now < graceUntil_ &&
+            (!downshiftRetryActive(now) || now < downshiftSettleUntil_)) return false;
         xrunTimes_[xrunIndex_++ % kXrunsToIncrease] = now;
         uint32_t recentXruns = 0;
         for (uint64_t time : xrunTimes_)
@@ -130,9 +136,7 @@ public:
         level_.store(current + 1, std::memory_order_release);
         changeId_.fetch_add(1, std::memory_order_relaxed);
         increaseId_.fetch_add(1, std::memory_order_release);
-        if (pendingDownshiftFromLevel_ == current + 1 &&
-            now >= lastDownshiftAt_ &&
-            now - lastDownshiftAt_ <= kDownshiftRetryWindowMs) {
+        if (pendingDownshiftFromLevel_ == current + 1 && downshiftRetryActive(now)) {
             const uint32_t failures = downshiftFailures_.load(std::memory_order_relaxed);
             if (failures < 3) downshiftFailures_.store(failures + 1, std::memory_order_release);
         }
@@ -190,12 +194,18 @@ public:
 private:
     static constexpr uint32_t kXrunsToIncrease = 5;
 
+    bool downshiftRetryActive(uint64_t now) const {
+        return pendingDownshiftFromLevel_ && now >= lastDownshiftAt_ &&
+            now - lastDownshiftAt_ <= kDownshiftRetryWindowMs;
+    }
+
     void clearXrunWindow() {
         xrunIndex_ = 0;
         for (uint64_t &time : xrunTimes_) time = 0;
     }
 
     const uint64_t instanceId_;
+    const uint64_t startupGraceUntil_;
     uint64_t graceUntil_;
     std::atomic<uint32_t> level_{0};
     std::atomic<uint64_t> changeId_{0}, increaseId_{0};
@@ -205,6 +215,7 @@ private:
     std::atomic<uint32_t> recentBurstCount_{0}, downshiftFailures_{0};
     uint64_t lastXrunAt_ = 0;
     uint64_t lastDownshiftAt_ = 0;
+    uint64_t downshiftSettleUntil_ = 0;
     bool hasXrun_ = false;
 };
 

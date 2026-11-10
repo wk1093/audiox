@@ -19,6 +19,8 @@ snd_pcm_state_t recoveryPcmState = SND_PCM_STATE_PREPARED;
 int recoveryStartResult = 0;
 unsigned recoveryStartCalls = 0;
 snd_pcm_sframes_t playbackAvailable = 0;
+int closeResult = 0;
+unsigned closeCalls = 0;
 
 }
 
@@ -43,6 +45,11 @@ extern "C" snd_pcm_sframes_t snd_pcm_avail_update(snd_pcm_t*) {
     return playbackAvailable;
 }
 
+extern "C" int snd_pcm_close(snd_pcm_t*) {
+    ++closeCalls;
+    return closeResult;
+}
+
 int main() {
     audiox::AdaptiveAudioBuffer adaptive(0);
     assert(adaptive.targetPeriodFrames(128) == 128);
@@ -55,15 +62,14 @@ int main() {
     assert(adaptive.recordXrun(60004, 128)); // Startup events cannot count toward this threshold.
     assert(adaptive.level() == 1 && adaptive.targetPeriodFrames(128) == 256);
     assert(adaptive.increaseId() == 1 && adaptive.changeId() == 1);
-    for (uint64_t t = 60005; t < 70004; t += 100)
-        assert(!adaptive.recordXrun(t, 128)); // A transition cannot cause a chain reaction.
+    assert(!adaptive.recordXrun(70003, 128)); // An increase cannot cause a chain reaction.
     assert(adaptive.downshiftDelayMs() == 60000);
-    assert(!adaptive.tick(120003));
-    assert(adaptive.tick(120004));
+    assert(!adaptive.tick(130002)); // Settling xruns still postpone a downshift.
+    assert(adaptive.tick(130003));
     assert(adaptive.level() == 0 && adaptive.targetPeriodFrames(128) == 128);
     assert(adaptive.changeId() == 2 && adaptive.increaseId() == 1);
 
-    uint64_t retryAt = 130004;
+    uint64_t retryAt = 131003;
     for (uint32_t failures = 1; failures <= 3; ++failures) {
         assert(!adaptive.recordXrun(retryAt - 1, 128));
         for (uint64_t t = retryAt; t < retryAt + 4; ++t)
@@ -74,8 +80,34 @@ int main() {
         assert(adaptive.downshiftDelayMs() == delay);
         assert(!adaptive.tick(retryAt + 4 + delay - 1));
         assert(adaptive.tick(retryAt + 4 + delay));
-        retryAt += 4 + delay + audiox::AdaptiveAudioBuffer::kShiftGraceMs;
+        retryAt += 4 + delay + audiox::AdaptiveAudioBuffer::kDownshiftSettleMs;
     }
+
+    audiox::AdaptiveAudioBuffer downshift(0);
+    for (uint64_t t = 60000; t < 60004; ++t) assert(!downshift.recordXrun(t, 128));
+    assert(downshift.recordXrun(60004, 128));
+    assert(downshift.tick(120004));
+    downshift.bufferChanged(120500); // Last stream finished reopening later.
+    for (uint64_t t = 120500; t < 121500; t += 100)
+        assert(!downshift.recordXrun(t, 128));
+    for (uint64_t t = 121500; t < 121504; ++t) assert(!downshift.recordXrun(t, 128));
+    assert(downshift.recordXrun(121504, 128));
+    assert(downshift.level() == 1 && downshift.downshiftFailures() == 1);
+    for (uint64_t t = 121505; t < 131504; t += 100)
+        assert(!downshift.recordXrun(t, 128)); // An upshift retains its settling grace.
+    assert(downshift.level() == 1);
+    assert(!downshift.tick(421503)); // The most recent settling xrun resets quiet time.
+
+    audiox::AdaptiveAudioBuffer expired(0);
+    for (uint64_t t = 60000; t < 60004; ++t) assert(!expired.recordXrun(t, 128));
+    assert(expired.recordXrun(60004, 128));
+    assert(expired.tick(120004));
+    expired.bufferChanged(720005); // An unrelated reopen after the retry window.
+    for (uint64_t t = 721005; t < 721010; ++t) assert(!expired.recordXrun(t, 128));
+    assert(expired.level() == 0 && expired.downshiftFailures() == 0);
+    for (uint64_t t = 730005; t < 730009; ++t) assert(!expired.recordXrun(t, 128));
+    assert(expired.recordXrun(730009, 128));
+    assert(expired.downshiftFailures() == 0);
 
     audiox::AdaptiveAudioBuffer maxed(0);
     uint64_t eventTime = 60000;
@@ -132,6 +164,10 @@ int main() {
     }
 
     snd_pcm_t pcm = {};
+    assert(audio_pcm_close(&pcm, "test", "playback") == 0);
+    closeResult = -EBADFD;
+    assert(audio_pcm_close(&pcm, "test", "playback") == -EBADFD);
+    assert(closeCalls == 2);
     assert(audio_pcm_playback_start_frames(128, 512) == 128);
     assert(audio_pcm_playback_start_frames(1024, 4096) == 3072);
     assert(audio_pcm_playback_start_frames(1024, 1024) == 1024);

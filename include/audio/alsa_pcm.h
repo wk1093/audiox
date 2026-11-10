@@ -73,6 +73,17 @@ static inline void audio_pcm_install_error_handler() {
     installed = 1;
 }
 
+static inline int audio_pcm_close(snd_pcm_t *pcm, const char *path, const char *op) {
+    const snd_pcm_state_t state = snd_pcm_state(pcm);
+    const int rc = snd_pcm_close(pcm);
+    if (rc < 0) {
+        printf("[AUDIO] [WARN] ALSA %s close failed on %s (state=%s, error=%d): %s\n",
+               op ? op : "stream", path ? path : "(unknown)",
+               snd_pcm_state_name(state), rc, snd_strerror(rc));
+    }
+    return rc;
+}
+
 static inline void audio_pcm_track_underrun(const char *path, const char *op) {
     audiox::audioHealth.recordXrun();
     audiox::adaptiveAudioBuffer.recordXrun(audiox::healthMonotonicMs(), BUFFER_FRAMES);
@@ -310,7 +321,7 @@ static inline int audio_pcm_open_configured(snd_pcm_t **pcmOut,
             *access = alternatives[i];
             return 0;
         }
-        snd_pcm_close(pcm);
+        audio_pcm_close(pcm, name, stream == SND_PCM_STREAM_PLAYBACK ? "playback probe" : "capture probe");
     }
 
     if (logFail) {

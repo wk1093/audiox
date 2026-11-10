@@ -113,10 +113,14 @@ before the next attempt; repeated unsuccessful attempts increase the wait to
 10 and then 15 minutes. This tracking is in-memory and resets when the runtime
 restarts. A notification accompanies an increase.
 The first 60 seconds after runtime startup are excluded from adaptive decisions
-and health warnings. Each buffer shift or successful PCM reopen also has a
-10-second settling period; events during settling do not trigger another shift
-or count as a failed downshift. All X-runs remain included in the diagnostic
-total, including startup and settling events.
+and health warnings. Buffer increases and PCM reopens normally have a
+10-second settling period before another increase. After a downshift, a
+one-second settling period follows the last successful reopen; five subsequent
+X-runs can immediately restore the previous level and count as a failed
+downshift. X-runs during settling postpone the next downshift even when they do
+not trigger an increase. All X-runs remain included in the diagnostic total,
+including startup and settling events. ALSA close failures include the stream,
+device path, pre-close state, and error code in the runtime log.
 
 Playback is primed before starting or restarting: at the base hardware period
 it still starts with one DSP block; larger hardware periods queue up to one

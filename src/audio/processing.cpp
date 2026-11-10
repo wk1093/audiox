@@ -522,7 +522,7 @@ static void closeCaptureStream(AlsaCaptureStream *s) {
         return;
     }
     if (s->pcm) {
-        snd_pcm_close(s->pcm);
+        audio_pcm_close(s->pcm, s->path, "capture");
         s->pcm = nullptr;
     }
     s->periodFrames = 0;
@@ -534,7 +534,7 @@ static void closePlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
         return;
     }
     if (s->pcm) {
-        snd_pcm_close(s->pcm);
+        audio_pcm_close(s->pcm, s->path, "playback");
         s->pcm = nullptr;
     }
     s->periodFrames = 0;

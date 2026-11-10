@@ -5,6 +5,43 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
 
+test('passthrough-only status, binding and toggle use the MIDI API and surface errors', async () => {
+  const elements = new Map(), calls = [], notices = [];
+  let active = false, fail = false;
+  const context = apiContext({
+    state: {},
+    document: { getElementById(id) {
+      if (!elements.has(id)) elements.set(id, { setAttribute(key, value) { this[key] = value; } });
+      return elements.get(id);
+    } },
+    renderStopAllMidiStatus() {}, renderSamplerToggleMidiStatus() {}, renderSoundboardGrid() {},
+    setStatus: (...args) => notices.push(args),
+    fetch: async (url, options) => {
+      calls.push({ url, ...options });
+      if (url === '/api/midi/actions') return { ok: true, text: async () =>
+        JSON.stringify({ actions: [{ note: 120, channel: 9, action: 'passthrough_toggle' }] }) };
+      assert.equal(url, '/api/midi/passthrough_only');
+      if (fail) return { ok: false, status: 409, text: async () => 'Enable USB MIDI first' };
+      if (options.method === 'POST') active = !active;
+      return { ok: true, text: async () => JSON.stringify({ active }) };
+    },
+  });
+  vm.runInContext(source.slice(source.indexOf('async function loadMidiActions('),
+    source.indexOf('async function saveActionMapping(')), context);
+  await context.loadMidiActions();
+  assert.equal(context.state.passthroughToggleMidiNote, 120);
+  assert.equal(elements.get('passthrough-toggle-midi').textContent, 'channel 9, note 120');
+  await context.loadPassthroughOnly();
+  assert.equal(elements.get('btn-passthrough-only')['aria-pressed'], 'false');
+  await context.loadPassthroughOnly(true);
+  assert.equal(elements.get('btn-passthrough-only')['aria-pressed'], 'true');
+  assert.equal(calls.at(-1).method, 'POST');
+  fail = true;
+  await context.loadPassthroughOnly(true);
+  assert.match(notices.at(-1)[0], /Enable USB MIDI first/);
+  assert.equal(elements.get('btn-passthrough-only').disabled, false);
+});
+
 test('USB keyboard settings remain backwards compatible', () => {
   const context = apiContext({});
   vm.runInContext(source.slice(source.indexOf('function parseConfigText('),
@@ -14,6 +51,41 @@ test('USB keyboard settings remain backwards compatible', () => {
   const output = context.formatConfigText(config);
   assert.match(output, /midi_passthrough=unmapped\nkeyboard_macros=1\n/);
   assert.equal(context.parseConfigText(output).keyboard_macros, 1);
+});
+
+test('passthrough binding saves the learned channel without changing note-only actions', async () => {
+  const calls = [];
+  const context = apiContext({
+    setStatus() {}, loadMappings: async () => {}, loadMidiActions: async () => {},
+    fetch: async (url, options) => {
+      calls.push({ url, ...options });
+      return { ok: true, text: async () => 'ok' };
+    },
+  });
+  vm.runInContext(source.slice(source.indexOf('async function saveActionMapping('),
+    source.indexOf('async function saveStopAllActionMapping(')), context);
+  assert.equal(await context.saveActionMapping(120, 'passthrough_toggle', 9), true);
+  assert.equal(calls[0].body, 'note=120&action=passthrough_toggle&channel=9');
+  await context.saveActionMapping(39, 'stop_all');
+  assert.equal(calls[1].body, 'note=39&action=stop_all');
+});
+
+test('passthrough toggle learns the next note as an action and reports capture failure', async () => {
+  const f = fixture(), bindings = [];
+  f.context.midiActionCaptureStatusEl = f.get('midi-action-capture-status');
+  f.context.saveActionMapping = async (...args) => { bindings.push(args); return true; };
+  f.state.mappingAssignTarget = '__action_passthrough_toggle__';
+  f.state.mappingLastSeq = 10;
+  f.note({ connected: true, last_seq: 11, last_note: 120, last_channel: 9 });
+  await f.context.pollMappingCapture();
+  assert.deepEqual(bindings, [[120, 'passthrough_toggle', 9]]);
+  assert.equal(f.state.mappingAssignTarget, null);
+  assert.match(f.get('midi-action-capture-status').textContent, /Assigned channel 9, note 120/);
+  f.state.mappingAssignTarget = '__action_passthrough_toggle__';
+  f.failLearn();
+  await f.context.pollMappingCapture();
+  assert.match(f.notices.at(-1)[0], /MIDI unavailable/);
+  assert.equal(f.state.mappingAssignTarget, null);
 });
 
 function fixture() {

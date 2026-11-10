@@ -2706,6 +2706,7 @@ static void *audioProcessingThreadMain(void *arg) {
 
         if (runtime.snapshot.generation > 0 && runtime.snapshot.thingCount > 0) {
             processGraphBlock(ctx, &runtime, &captureBackend, monotonicMs(), &native);
+            ctx->processingProgressAtMs.store(monotonicMs(), std::memory_order_release);
             maybeLogStats(&runtime, &captureBackend);
         }
 
@@ -2743,6 +2744,7 @@ int AudioContext::setupThreads() {
     }
 
     processingThreadRun.store(1, std::memory_order_release);
+    processingProgressAtMs.store(0, std::memory_order_release);
     if (pthread_create(&processingThread, nullptr, audioProcessingThreadMain, this) != 0) {
         processingThreadRun.store(0, std::memory_order_release);
         return RET_ERR;

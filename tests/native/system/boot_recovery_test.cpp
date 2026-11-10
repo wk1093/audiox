@@ -12,12 +12,52 @@
 namespace {
 
 int failures = 0;
+unsigned failSyncAt = 0;
+unsigned syncCalls = 0;
+unsigned failRenameAt = 0;
+unsigned renameCalls = 0;
+
+} // namespace
+
+extern "C" int __real_fsync(int);
+extern "C" int __wrap_fsync(int fd) {
+    if (failSyncAt && ++syncCalls == failSyncAt) {
+        errno = EIO;
+        return -1;
+    }
+    return __real_fsync(fd);
+}
+
+extern "C" int __real_rename(const char *, const char *);
+extern "C" int __wrap_rename(const char *oldPath, const char *newPath) {
+    if (failRenameAt && ++renameCalls == failRenameAt) {
+        errno = EIO;
+        return -1;
+    }
+    return __real_rename(oldPath, newPath);
+}
+
+namespace {
 
 void check(bool condition, const char *message) {
     if (!condition) {
         fprintf(stderr, "FAIL: %s\n", message);
         ++failures;
     }
+}
+
+void testTrialHealthGate() {
+    BootRecoveryHealthGate gate;
+    check(!gate.update(1000, 0), "trial requires first audio processing progress");
+    check(!gate.update(2000, 2000), "audio readiness begins healthy interval");
+    check(gate.update(62000, 62000), "trial confirms after sustained audio progress");
+
+    gate.reset();
+    check(!gate.update(1000, 1000), "stalled-thread trial begins with audio progress");
+    check(!gate.update(7001, 1000), "stalled audio thread cannot satisfy healthy interval");
+    check(!gate.update(8000, 8000), "audio recovery restarts confirmation interval");
+    check(!gate.update(67999, 67999), "recovered audio still needs full confirmation interval");
+    check(gate.update(68000, 68000), "recovered audio eventually satisfies confirmation interval");
 }
 
 void writeFile(const char *dir, const char *name, const char *text) {
@@ -199,6 +239,7 @@ int main() {
     mkdir(root, 0755);
     mkdir(boot, 0755);
     testMetadata();
+    testTrialHealthGate();
     testArchiveParse(base);
     installBootSet(boot, "old", "kernel8.img");
     writeFile(root, "stdout.log", "runtime crashed here\n");
@@ -207,6 +248,18 @@ int main() {
     check(bootRecoveryBeginBoot(root, "old", &attempts) == BOOT_TRIAL_NONE, "no trial before an update");
 
     // Update, then fail every trial boot until the bootloader reverts.
+    failSyncAt = 1;
+    syncCalls = 0;
+    check(bootRecoveryPrepareUpdate(root, boot, "1.0.0\n") < 0, "update backup aborts on interrupted file sync");
+    failSyncAt = syncCalls = 0;
+    check(!bootRecoveryHasBackup(root) && !bootRecoveryTrialPending(root),
+          "failed update backup does not publish an incomplete rollback set");
+    failRenameAt = 2;
+    renameCalls = 0;
+    check(bootRecoveryPrepareUpdate(root, boot, "1.0.0\n") < 0, "update aborts if backup publication is interrupted");
+    failRenameAt = renameCalls = 0;
+    check(!bootRecoveryHasBackup(root) && !bootRecoveryTrialPending(root),
+          "failed backup publication leaves no active trial");
     check(bootRecoveryPrepareUpdate(root, boot, "1.0.0\n") == 0, "prepare update");
     check(bootRecoveryHasBackup(root), "backup created");
     installNewBootSet(boot);
@@ -221,7 +274,13 @@ int main() {
         brAppendText((std::string(state) + "/" BOOT_RECOVERY_EVENTS_NAME).c_str(), "[WATCHDOG] trial boot failed: test\n");
     }
     check(bootRecoveryBeginBoot(root, "2.0.0", &attempts) == BOOT_TRIAL_REVERT, "revert after max attempts");
-    check(bootRecoveryRevert(root, boot, "2.0.0", attempts) == 0, "revert restores backup");
+    failRenameAt = 3;
+    renameCalls = 0;
+    check(bootRecoveryRevert(root, boot, "2.0.0", attempts) < 0, "interrupted rollback reports failure");
+    failRenameAt = renameCalls = 0;
+    check(bootRecoveryTrialPending(root) && bootRecoveryHasBackup(root),
+          "interrupted rollback preserves trial and backup state");
+    check(bootRecoveryRevert(root, boot, "2.0.0", attempts) == 0, "retry completes rollback");
     for (size_t i = 0; bootRecoveryFileName(i); ++i) {
         if (strcmp(bootRecoveryFileName(i), "config.txt") != 0) {
             check(fileEquals(boot, bootRecoveryFileName(i), "old"), "boot file restored");
@@ -243,6 +302,27 @@ int main() {
     check(strstr(report, ",config.txt\n") != NULL && strstr(report, "kernel8.img") != NULL,
           "report lists restored files with config.txt last");
     check(bootRecoveryBeginBoot(root, "1.0.0", &attempts) == BOOT_TRIAL_NONE, "restored image boots normally");
+
+    check(unlink((std::string(boot) + "/program.cpio.gz").c_str()) == 0, "remove required source boot file");
+    check(bootRecoveryPrepareUpdate(root, boot, "1.0.0\n") < 0,
+          "update refuses to create a backup without required source boot files");
+    check(!bootRecoveryHasBackup(root) && !bootRecoveryTrialPending(root),
+          "missing source boot file does not create backup or trial state");
+    writeFile(boot, "program.cpio.gz", "old");
+
+    check(bootRecoveryPrepareUpdate(root, boot, "1.0.0\n") == 0, "prepare incomplete-backup test");
+    installNewBootSet(boot);
+    check(bootRecoveryBeginBoot(root, "2.0.0", &attempts) == BOOT_TRIAL_ATTEMPT,
+          "incomplete-backup trial attempt");
+    char missingRequired[1100];
+    snprintf(missingRequired, sizeof(missingRequired), "%s/%s/cmdline.txt", state, BOOT_RECOVERY_BACKUP_NAME);
+    unlink(missingRequired);
+    check(!bootRecoveryHasBackup(root), "incomplete required boot files invalidate backup");
+    check(bootRecoveryRevert(root, boot, "2.0.0", attempts) < 0, "incomplete backup is rejected");
+    check(bootRecoveryTrialPending(root), "incomplete backup keeps trial pending");
+    writeFile((std::string(state) + "/" BOOT_RECOVERY_BACKUP_NAME).c_str(), "cmdline.txt", "old");
+    check(bootRecoveryRevert(root, boot, "2.0.0", attempts) == 0,
+          "complete backup can be retried after missing file is restored");
 
     // Switching kernel file names (pi4 kernel8.img -> kernel_2712.img) must restore the old kernel and config.
     check(bootRecoveryPrepareUpdate(root, boot, "1.0.0\n") == 0, "prepare kernel rename update");

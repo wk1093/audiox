@@ -16,6 +16,7 @@ bool g_trialResolved = false;
 time_t g_readySince = 0;
 bool g_startupStable = false;
 bool g_readyTimerStarted = false;
+BootRecoveryHealthGate g_trialHealthGate;
 
 time_t monotonicSeconds() {
     timespec now = {};
@@ -59,6 +60,7 @@ void initBootRecovery() {
     g_readySince = 0;
     g_readyTimerStarted = false;
     g_startupStable = false;
+    g_trialHealthGate.reset();
     const char *trialEnv = getenv(BOOT_RECOVERY_TRIAL_ENV);
     g_trialPendingAtStartup = trialEnv && strcmp(trialEnv, "1") == 0 && bootRecoveryTrialPending(ROOT_MOUNT_POINT);
     if (g_trialPendingAtStartup) {
@@ -67,7 +69,7 @@ void initBootRecovery() {
     }
 }
 
-void pollBootRecovery() {
+void pollBootRecovery(uint64_t audioProgressAtMs) {
     const time_t now = monotonicSeconds();
     if (now < 0) return;
     if (!g_readyTimerStarted) {
@@ -83,11 +85,17 @@ void pollBootRecovery() {
         g_trialResolved = true;
         return;
     }
-    if (!g_startupStable) {
+    const uint64_t nowMs = (uint64_t)now * 1000;
+    if (!g_trialHealthGate.update(nowMs, audioProgressAtMs)) {
         return;
     }
 
-    bootRecoveryConfirm(ROOT_MOUNT_POINT);
+    if (bootRecoveryConfirm(ROOT_MOUNT_POINT) < 0) {
+        printf("[RECOVERY] [WARN] trial passed health checks, but confirmation was not durable: %s\n",
+               strerror(errno));
+        g_trialResolved = true;
+        return;
+    }
     g_trialResolved = true;
     printf("[RECOVERY] new image confirmed healthy; removed backup boot set\n");
 }

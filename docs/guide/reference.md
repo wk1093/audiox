@@ -127,6 +127,7 @@ See [Routing](./routing) for connection syntax and graph limitations, and
 | `POST /api/soundboard/layout` | Set `mode`, `rows`/`columns`, a `corner`/`note`, or an `sfx`/`row`/`column` assignment (occupied cells swap); use `action=stop_all` or `action=sampler_toggle` instead of `sfx` for action tiles. `unassign=1` clears the element's cell and MIDI bindings |
 | `GET /api/midi/sampler_mode` | Read runtime sample-selection mode (`active`) |
 | `POST /api/midi/sampler_mode` | Toggle runtime sample-selection mode, also used by the sampler grid tile |
+| `GET /api/midi/passthrough_only`, `POST /api/midi/passthrough_only` | Read/toggle temporary passthrough-only mode (`active`); enabling requires USB MIDI passthrough configured |
 | `POST /api/soundboard/trigger/<target>` | Start a one-shot sound |
 | `POST /api/soundboard/press/<target>` | Start the shared held voice |
 | `POST /api/soundboard/release/<target>` | Release the held voice |
@@ -135,7 +136,7 @@ See [Routing](./routing) for connection syntax and graph limitations, and
 | `GET /api/soundboard/modes`, `POST /api/soundboard/mode/set` | Inspect/set per-sound playback mode |
 | `GET /api/midi/last_note`, `/api/midi/last_cc` | Latest input values, sequence counters, and connection status for learning |
 | `GET /api/midi/mappings`, `POST /api/midi/mapping/set`, `/delete` | Sound note bindings |
-| `GET /api/midi/actions`, `POST /api/midi/action/set`, `/delete` | Stop All / Sampler Toggle mappings |
+| `GET /api/midi/actions`, `POST /api/midi/action/set`, `/delete` | `stop_all`, `sampler_toggle`, and `passthrough_toggle` note mappings |
 | `GET` / `POST /api/midi/sampler_config` | Sampler keyboard enable, channel, and root note |
 | `GET` / `POST /api/midi/light_config` | Global LED output channel and state velocities |
 | `GET /api/midi/light_sounds`, `POST /api/midi/light_sound/set`, `/delete` | Per-sound light overrides |
@@ -143,6 +144,10 @@ See [Routing](./routing) for connection syntax and graph limitations, and
 | `GET` / `POST /api/midi/light_dim` | Inspect/change temporary dim state |
 | `GET /api/midi/cc_volumes`, `POST /api/midi/cc_volume/set`, `/delete` | Volume CC assignments |
 | `GET` / `POST /api/framebuffer/view` | Persistent meters/soundboard display choice |
+
+`passthrough_toggle` requires `channel=0-15` alongside `note` and `action` when
+setting a binding; action listings include its `channel`. Other global actions
+remain note-only. Saved passthrough bindings without a channel use channel 0.
 
 Soundboard trigger targets use the server's target encoding; the current WebUI
 encodes its filename using `encodeURIComponent` before appending it to the path.

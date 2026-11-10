@@ -14,7 +14,7 @@ or multi-controller patchbay.
 | Task | Page |
 | --- | --- |
 | Bind a sound to a pad | [Soundboard](./soundboard), Edit mode |
-| Map Stop All or Sampler Toggle | MIDI, Actions |
+| Map Stop All, Sampler Toggle, or Passthrough Only | MIDI, Actions |
 | Set sampler keyboard channel/root | MIDI, Sampler |
 | Set global controller colors and Dim lights | MIDI, Lighting |
 | Bind a knob to a volume | [Volume](./volume) |
@@ -31,7 +31,8 @@ Note numbers and CC numbers use **0-127**. The channel fields in AudioX use
 **0-15**; a controller that calls its first channel "1" corresponds to AudioX
 channel **0**.
 
-Soundboard, global actions, and effect bypass mappings are note-number-based.
+Soundboard, Stop All, Sampler Toggle, and effect bypass mappings are note-number-based.
+Passthrough Only uses both channel and note, captured together by Assign MIDI.
 Volume and effect parameter mappings are CC-number-based. These mappings are
 not channel-isolated in the same way that scripts and the sampler keyboard are.
 
@@ -59,6 +60,26 @@ Put it on an easy-to-reach pad when performing.
 **Sampler Toggle** toggles a runtime selection mode. While selection mode is on,
 pressing a sound-mapped pad selects that sound for pitched keyboard playback
 instead of playing it normally. It is not a MIDI recording function.
+
+**Passthrough Only** temporarily disables local MIDI actions and pauses all
+scripts, including timer and lifecycle hooks. It clears note-based lighting
+on all 16 channels, cancels pending scripts and held keyboard/media keys,
+and releases held soundboard playback. Existing one-shot clips and routed
+audio continue playing.
+
+Enable USB MIDI passthrough in Config (Unmapped or All) and restart first.
+Then use **Enable Passthrough Only**, or **Assign MIDI** beside Passthrough Only
+and press a pad. While active, every message on every channel is forwarded to
+the USB host except that toggle's note messages. The toggle has priority over
+sampler, scene, effect, soundboard and script bindings, even in All mode.
+Only the learned channel and note toggle this mode; the same note on a different
+channel is forwarded normally while the mode is active. Channels are shown as
+0-15. Older passthrough bindings without a channel default to channel 0;
+use Assign MIDI again to capture the desired button's channel.
+Press it again, or choose **Restore MIDI Controls**, to restore normal control
+and lighting. The binding is saved; the active mode resets at process restart.
+Controller reconnects retain the mode and clear lighting again. Exit the mode
+before learning other bindings.
 
 ## Play a sound at different pitches
 

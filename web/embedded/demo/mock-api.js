@@ -689,7 +689,14 @@
   on('POST', '/api/midi/action/set', ({ body }) => {
     const f = form(body);
     const note = Number(f.note);
-    S.actions = S.actions.filter((a) => a.note !== note && a.action !== f.action).concat({ note, action: f.action });
+    const mapping = { note, action: f.action };
+    if (f.action === 'passthrough_toggle') {
+      const channel = Number(f.channel);
+      if (f.channel === undefined || !Number.isInteger(channel) || channel < 0 || channel > 15)
+        return reply('passthrough toggle requires channel=0-15', 400);
+      mapping.channel = channel;
+    }
+    S.actions = S.actions.filter((a) => a.note !== note && a.action !== f.action).concat(mapping);
     return ok({ note, action: f.action });
   });
   on('POST', '/api/midi/action/delete', ({ body }) => {
@@ -706,6 +713,11 @@
     return ok(S.sampler);
   });
   on('GET', '/api/midi/sampler_mode', () => reply({ active: S.samplerActive }));
+  on('GET', '/api/midi/passthrough_only', () => reply({ active: !!S.passthroughOnly }));
+  on('POST', '/api/midi/passthrough_only', () => {
+    S.passthroughOnly = !S.passthroughOnly;
+    return reply({ active: S.passthroughOnly });
+  });
   on('POST', '/api/midi/sampler_mode', () => { S.samplerActive = !S.samplerActive; return reply({ active: S.samplerActive }); });
   on('GET', '/api/midi/light_config', () => reply(S.light));
   on('POST', '/api/midi/light_config', ({ body }) => {

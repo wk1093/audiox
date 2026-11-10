@@ -244,6 +244,9 @@ static uint8_t midiActionFromString(const char *value) {
     if (strcmp(value, "sampler_toggle") == 0) {
         return MIDI_ACTION_SAMPLER_TOGGLE;
     }
+    if (strcmp(value, "passthrough_toggle") == 0) {
+        return MIDI_ACTION_PASSTHROUGH_TOGGLE;
+    }
     return MIDI_ACTION_NONE;
 }
 
@@ -253,6 +256,8 @@ static const char *midiActionToString(uint8_t action) {
             return "stop_all";
         case MIDI_ACTION_SAMPLER_TOGGLE:
             return "sampler_toggle";
+        case MIDI_ACTION_PASSTHROUGH_TOGGLE:
+            return "passthrough_toggle";
         default:
             return NULL;
     }
@@ -614,6 +619,8 @@ static int parseMidiActionLine(const char *value,
 
     char *noteStr = trimLeft(buf);
     char *actionStr = trimLeft(comma + 1);
+    char *channelStr = strchr(actionStr, ',');
+    if (channelStr) *channelStr++ = '\0';
     trimRight(noteStr);
     trimRight(actionStr);
 
@@ -628,8 +635,17 @@ static int parseMidiActionLine(const char *value,
         return RET_ERR;
     }
 
+    long channel = 0;
+    if (channelStr) {
+        channelStr = trimLeft(channelStr);
+        trimRight(channelStr);
+        channel = strtol(channelStr, &endp, 10);
+        if (endp == channelStr || *endp || channel < 0 || channel > 15 ||
+            action != MIDI_ACTION_PASSTHROUGH_TOGGLE) return RET_ERR;
+    }
     out[*count_in_out].note = (uint8_t)note;
     out[*count_in_out].action = action;
+    out[*count_in_out].channel = (uint8_t)channel;
     ++(*count_in_out);
     return RET_OK;
 }
@@ -1090,16 +1106,19 @@ static int writeMidiMapPath(const char *path, MidiMapData *data, bool scriptsOnl
         actionCount = MIDI_ACTION_MAPPINGS_MAX;
     }
     if (actionCount > 0) {
-        fprintf(fd, "# action mappings: note,action(stop_all|sampler_toggle)\n");
+        fprintf(fd, "# action mappings: note,action; passthrough_toggle also stores ,channel (0-15)\n");
         for (uint32_t i = 0; i < actionCount; ++i) {
             const char *action = midiActionToString(data->actionMappings[i].action);
             if (!action) {
                 continue;
             }
             fprintf(fd,
-                    "note_action=%u,%s\n",
+                    "note_action=%u,%s",
                     (unsigned)data->actionMappings[i].note,
                     action);
+            if (data->actionMappings[i].action == MIDI_ACTION_PASSTHROUGH_TOGGLE)
+                fprintf(fd, ",%u", (unsigned)data->actionMappings[i].channel);
+            fprintf(fd, "\n");
         }
     }
 

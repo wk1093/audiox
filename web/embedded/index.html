@@ -351,6 +351,18 @@ end)
             </div>
           </div>
           <span class="small" id="midi-action-capture-status"></span>
+          <div class="midi-action-row">
+            <div class="midi-action-info">
+              <span class="midi-action-label">Passthrough Only</span>
+              <span class="small" id="passthrough-toggle-midi">unassigned</span>
+            </div>
+            <div class="grid-2">
+              <button id="btn-assign-passthrough-toggle">Assign MIDI</button>
+              <button id="btn-clear-passthrough-toggle" class="flat">Clear</button>
+            </div>
+          </div>
+          <button id="btn-passthrough-only" aria-pressed="false">Enable Passthrough Only</button>
+          <p class="small">Temporary: clears lights and pauses scripts and MIDI controls. All messages on every channel go to the USB host except this toggle. Enable USB MIDI in Config and restart first. Toggle again to restore controls.</p>
         </section>
 
         <section class="card stack">

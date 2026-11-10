@@ -103,7 +103,7 @@ struct MidiUsbOutput {
 
     ~MidiUsbOutput();
     void poll(uint64_t now, uint8_t passthrough, bool keyboard);
-    void forward(const uint8_t *bytes, size_t count, bool mapped);
+    void forward(const uint8_t *bytes, size_t count, bool mapped, bool forcePass = false);
     bool trigger(const char *keys);
     bool queueKeyboardReport(const uint8_t (&report)[8], bool hold = false);
     bool queueMediaReport(uint16_t usage, bool hold = false);

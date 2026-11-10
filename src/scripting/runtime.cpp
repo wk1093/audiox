@@ -93,6 +93,10 @@ bool ScriptContext::triggerMacro(unsigned index, uint8_t velocity,
 }
 
 bool ScriptContext::queueMacroEvent(unsigned index, ScriptEvent event) {
+  if (midi.passthroughOnly) {
+    if (event.fromWeb) printf("[SCRIPT] [WARN] Scripts are paused in MIDI passthrough-only mode\n");
+    return false;
+  }
   if (index >= compiledMacroCount || !macroValid[index]) {
     printf("[SCRIPT] [WARN] Cannot queue unavailable macro %u\n", index);
     return false;
@@ -116,6 +120,7 @@ bool ScriptContext::queueMacroEvent(unsigned index, ScriptEvent event) {
 }
 
 void ScriptContext::dispatchMacroEvent(ScriptEvent event) {
+  if (midi.passthroughOnly) return;
   const unsigned kind = static_cast<unsigned>(event.kind);
   if (kind >= SCRIPT_EVENT_COUNT) {
     printf("[SCRIPT] [WARN] Invalid macro event kind %u\n", kind);
@@ -208,6 +213,7 @@ void ScriptContext::pollDeviceActivity(uint64_t now) {
 }
 
 void ScriptContext::pollScriptLifecycle(uint64_t now, bool startupStable) {
+  if (midi.passthroughOnly) return;
   if (!startupStable)
     return;
   ScriptBluetoothSnapshot bluetooth{};
@@ -272,6 +278,7 @@ void ScriptContext::pollMacros(uint64_t now) {
     failMacro("controller MIDI output failed");
     return;
   }
+  if (midi.passthroughOnly) return;
   if (macroUsbGeneration != usb.sessionGeneration) {
     macroUsbGeneration = usb.sessionGeneration;
     if (activeMacro >= 0 && macroUsesKeyboard[activeMacro]) {

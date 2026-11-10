@@ -94,6 +94,7 @@
 #define HTTP_MIDI_LIGHT_DIM_PATH HTTP_API_PREFIX "midi/light_dim"
 #define HTTP_MIDI_SAMPLER_CONFIG_PATH HTTP_API_PREFIX "midi/sampler_config"
 #define HTTP_MIDI_SAMPLER_MODE_PATH HTTP_API_PREFIX "midi/sampler_mode"
+#define HTTP_MIDI_PASSTHROUGH_ONLY_PATH HTTP_API_PREFIX "midi/passthrough_only"
 #define HTTP_MIDI_LAST_CC_PATH HTTP_API_PREFIX "midi/last_cc"
 #define HTTP_MIDI_CC_VOLUMES_PATH HTTP_API_PREFIX "midi/cc_volumes"
 #define HTTP_MIDI_CC_VOLUME_SET_PATH HTTP_API_PREFIX "midi/cc_volume/set"
@@ -2026,6 +2027,9 @@ static uint8_t midi_action_from_string(const char *value) {
 	if (strcmp(value, "sampler_toggle") == 0) {
 		return MIDI_ACTION_SAMPLER_TOGGLE;
 	}
+	if (strcmp(value, "passthrough_toggle") == 0) {
+		return MIDI_ACTION_PASSTHROUGH_TOGGLE;
+	}
 	return MIDI_ACTION_NONE;
 }
 
@@ -2035,6 +2039,8 @@ static const char *midi_action_to_string(uint8_t action) {
 			return "stop_all";
 		case MIDI_ACTION_SAMPLER_TOGGLE:
 			return "sampler_toggle";
+		case MIDI_ACTION_PASSTHROUGH_TOGGLE:
+			return "passthrough_toggle";
 		default:
 			return NULL;
 	}
@@ -2160,6 +2166,21 @@ static int handleMidiSamplerMode(HttpServer *server, int cfd, const char *method
 	if (strcmp(method, "POST") == 0) server->app->midi->toggleSamplerMode();
 	const char *out = server->app->midi->samplerModeActive ? "{\"active\":true}\n" : "{\"active\":false}\n";
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
+}
+
+static int handleMidiPassthroughOnly(HttpServer *server, int cfd, const char *method) {
+	if (strcmp(method, "GET") && strcmp(method, "POST")) return sendMethodNotAllowed(server, cfd);
+	auto *midi = server->app->midi;
+	if (!midi) {
+		const char error[] = "MIDI is unavailable\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "text/plain", error, sizeof(error) - 1);
+	}
+	if (!strcmp(method, "POST") && midi->setPassthroughOnly(!midi->passthroughOnly) != RET_OK) {
+		const char error[] = "Enable USB MIDI passthrough and restart before using passthrough-only mode\n";
+		return server->sendResponse(cfd, "409 Conflict", "text/plain", error, sizeof(error) - 1);
+	}
+	const char *out = midi->passthroughOnly ? "{\"active\":true}\n" : "{\"active\":false}\n";
+	return server->sendResponse(cfd, "200 OK", "application/json", out, strlen(out));
 }
 
 static int handleMidiSamplerConfig(HttpServer *server,
@@ -3868,12 +3889,16 @@ static int handleMidiActions(HttpServer *server,
 		if (!action) {
 			continue;
 		}
+		char channelJson[32]{};
+		if (data.actionMappings[i].action == MIDI_ACTION_PASSTHROUGH_TOGGLE)
+			snprintf(channelJson, sizeof(channelJson), ",\"channel\":%u", (unsigned)data.actionMappings[i].channel);
 		n = snprintf(out + off,
 					 sizeof(out) - off,
-					 "%s{\"note\":%u,\"action\":\"%s\"}",
+					 "%s{\"note\":%u,\"action\":\"%s\"%s}",
 					 first ? "" : ",",
 					 (unsigned)data.actionMappings[i].note,
-					 action);
+					 action,
+					 channelJson);
 		if (n <= 0 || (size_t)n >= sizeof(out) - off) {
 			break;
 		}
@@ -3925,11 +3950,35 @@ static int handleMidiActionSet(HttpServer *server,
 		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
 	}
 
+	long channel = 0;
+	if (action == MIDI_ACTION_PASSTHROUGH_TOGGLE) {
+		char channel_buf[32]{};
+		if (!body_get_value(body, body_len, "channel", channel_buf, sizeof(channel_buf))) {
+			static const char bad[] = "passthrough toggle requires channel=0-15\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain", bad, sizeof(bad) - 1);
+		}
+		channel = strtol(channel_buf, &endp, 10);
+		if (endp == channel_buf || *endp || channel < 0 || channel > 15) {
+			static const char bad[] = "invalid MIDI channel (expected 0-15)\n";
+			return server->sendResponse(cfd, "400 Bad Request", "text/plain", bad, sizeof(bad) - 1);
+		}
+	}
+
 	MidiMapData data = server->app->config->readMidiMapFile();
 
 	uint32_t actionCount = data.actionMappingCount;
 	if (actionCount > MIDI_ACTION_MAPPINGS_MAX) {
 		actionCount = MIDI_ACTION_MAPPINGS_MAX;
+	}
+
+	if (action == MIDI_ACTION_PASSTHROUGH_TOGGLE) {
+		uint32_t kept = 0;
+		for (uint32_t i = 0; i < actionCount; ++i) {
+			if (data.actionMappings[i].action != action || data.actionMappings[i].note == note) {
+				data.actionMappings[kept++] = data.actionMappings[i];
+			}
+		}
+		data.actionMappingCount = actionCount = kept;
 	}
 
 	int found = -1;
@@ -3942,6 +3991,7 @@ static int handleMidiActionSet(HttpServer *server,
 
 	if (found >= 0) {
 		data.actionMappings[found].action = action;
+		data.actionMappings[found].channel = (uint8_t)channel;
 	} else {
 		if (actionCount >= MIDI_ACTION_MAPPINGS_MAX) {
 			static const char full[] = "action mapping table full\n";
@@ -3949,6 +3999,7 @@ static int handleMidiActionSet(HttpServer *server,
 		}
 		data.actionMappings[actionCount].note = (uint8_t)note;
 		data.actionMappings[actionCount].action = action;
+		data.actionMappings[actionCount].channel = (uint8_t)channel;
 		data.actionMappingCount = actionCount + 1U;
 	}
 
@@ -6179,6 +6230,9 @@ int handleApiRequest(HttpServer *server,
 	}
 	if (strcmp(path, HTTP_MIDI_SAMPLER_MODE_PATH) == 0) {
 		return handleMidiSamplerMode(server, cfd, method);
+	}
+	if (strcmp(path, HTTP_MIDI_PASSTHROUGH_ONLY_PATH) == 0) {
+		return handleMidiPassthroughOnly(server, cfd, method);
 	}
 
 	if (strcmp(path, HTTP_MIDI_LAST_CC_PATH) == 0) {

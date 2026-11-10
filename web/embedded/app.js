@@ -82,6 +82,8 @@ const state = {
   framebufferView: 'meters',
   stopAllMidiNote: null,
   samplerToggleMidiNote: null,
+  passthroughToggleMidiNote: null,
+  passthroughToggleMidiChannel: null,
   samplerKeyboardEnabled: true,
   samplerKeyboardChannel: 0,
   samplerRootNote: 60,
@@ -393,7 +395,7 @@ function bluetoothDeviceStatus(device) {
   const parts = [];
   if (outputUp) {
     parts.push((device.output_streaming ?? device.streaming) === false
-      ? 'Connected as audio output; paused while idle' : 'Connected as audio output');
+      ? 'Connected as audio output; audio paused' : 'Connected as audio output');
   }
   if (inputUp) {
     parts.push((device.input_streaming ?? device.streaming)
@@ -1852,6 +1854,7 @@ function startRoutingThingsPolling() {
   state.thingsPollTimer = setInterval(() => {
     pollRoutingThingsIfNeeded();
     pollEffectsIfNeeded();
+    if (state.activeTab === 'midi' && !document.hidden) loadPassthroughOnly();
   }, 1000);
 }
 
@@ -3744,10 +3747,12 @@ async function loadMidiActions() {
     const data = JSON.parse(txt);
     state.stopAllMidiNote = null;
     state.samplerToggleMidiNote = null;
+    state.passthroughToggleMidiNote = null;
+    state.passthroughToggleMidiChannel = null;
     const actions = Array.isArray(data?.actions) ? data.actions : [];
     for (const item of actions) {
       const action = String(item?.action || '');
-      if (action !== 'stop_all' && action !== 'sampler_toggle') {
+      if (action !== 'stop_all' && action !== 'sampler_toggle' && action !== 'passthrough_toggle') {
         continue;
       }
       const note = Number(item?.note);
@@ -3758,17 +3763,46 @@ async function loadMidiActions() {
         if (action === 'sampler_toggle' && state.samplerToggleMidiNote === null) {
           state.samplerToggleMidiNote = note;
         }
+        if (action === 'passthrough_toggle' && state.passthroughToggleMidiNote === null) {
+          state.passthroughToggleMidiNote = note;
+          state.passthroughToggleMidiChannel = item.channel;
+        }
       }
     }
     renderStopAllMidiStatus();
     renderSamplerToggleMidiStatus();
+    document.getElementById('passthrough-toggle-midi').textContent =
+      state.passthroughToggleMidiNote === null ? 'unassigned' :
+        `channel ${state.passthroughToggleMidiChannel}, note ${state.passthroughToggleMidiNote}`;
   } catch (error) {
     setStatus(`Could not load MIDI action mappings: ${error}`, 'warn');
   }
   renderSoundboardGrid();
 }
 
-async function saveActionMapping(note, actionName) {
+let passthroughRequestPending = false;
+async function loadPassthroughOnly(toggle = false) {
+  if (passthroughRequestPending) return;
+  passthroughRequestPending = true;
+  const button = document.getElementById('btn-passthrough-only');
+  button.disabled = true;
+  try {
+    const response = await apiFetch('/api/midi/passthrough_only', { method: toggle ? 'POST' : 'GET' });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`${response.status} ${text.trim()}`);
+    const { active } = JSON.parse(text);
+    button.setAttribute('aria-pressed', String(active));
+    button.textContent = active ? 'Restore MIDI Controls' : 'Enable Passthrough Only';
+    document.getElementById('btn-assign-passthrough-toggle').disabled = !!active;
+  } catch (error) {
+    setStatus(`Passthrough-only mode: ${error}`, 'warn', 'midi-passthrough');
+  } finally {
+    button.disabled = false;
+    passthroughRequestPending = false;
+  }
+}
+
+async function saveActionMapping(note, actionName, channel) {
   if (!Number.isFinite(note) || note < 0 || note > 127) {
     setStatus('invalid midi note, expected 0-127', 'warn');
     return;
@@ -3780,7 +3814,8 @@ async function saveActionMapping(note, actionName) {
   }
 
   try {
-    const body = `note=${note}&action=${actionName}`;
+    const body = `note=${note}&action=${actionName}` +
+      (actionName === 'passthrough_toggle' ? `&channel=${channel}` : '');
     const res = await apiFetch('/api/midi/action/set', {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
@@ -3795,6 +3830,7 @@ async function saveActionMapping(note, actionName) {
     await loadMappings();
     await loadMidiActions();
     setStatus(`mapped note ${note} -> ${actionName}`, 'ok');
+    return true;
   } catch (err) {
     setStatus(`action mapping save error: ${err}`, 'warn');
   }
@@ -3936,7 +3972,8 @@ async function pollMappingCapture() {
     const res = await apiFetch('/api/midi/last_note', { method: 'GET' });
     const txt = await res.text();
     if (!res.ok) {
-      if (targetAtStart === '__macro__' || String(targetAtStart).startsWith('__grid_'))
+      if (targetAtStart === '__macro__' || targetAtStart === '__action_passthrough_toggle__' ||
+          String(targetAtStart).startsWith('__grid_'))
         throw new Error(`${res.status}: ${txt}`);
       return;
     }
@@ -3950,7 +3987,8 @@ async function pollMappingCapture() {
     const isMacroTarget = state.mappingAssignTarget === '__macro__';
     const isGridTarget = state.mappingAssignTarget.startsWith('__grid_');
     const isSbTarget = !isMacroTarget && state.mappingAssignTarget !== '__action_stop_all__' &&
-                       state.mappingAssignTarget !== '__action_sampler_toggle__' && !isGridTarget;
+                       state.mappingAssignTarget !== '__action_sampler_toggle__' &&
+                       state.mappingAssignTarget !== '__action_passthrough_toggle__' && !isGridTarget;
     const statusEl2 = isMacroTarget ? document.getElementById('chord-learn-status') :
       (isGridTarget ? document.getElementById('sb-grid-learn-status') :
         (isSbTarget ? sbMappingStatusEl : midiActionCaptureStatusEl));
@@ -3983,6 +4021,12 @@ async function pollMappingCapture() {
       } else if (target === '__action_sampler_toggle__') {
         await saveSamplerToggleActionMapping(note);
         if (midiActionCaptureStatusEl) midiActionCaptureStatusEl.textContent = `Assigned note ${note} to sampler toggle.`;
+      } else if (target === '__action_passthrough_toggle__') {
+        if (!Number.isInteger(data.last_channel) || data.last_channel < 0 || data.last_channel > 15)
+          throw new Error('device did not report a valid MIDI channel');
+        if (await saveActionMapping(note, 'passthrough_toggle', data.last_channel) && midiActionCaptureStatusEl)
+          midiActionCaptureStatusEl.textContent =
+            `Assigned channel ${data.last_channel}, note ${note} to passthrough toggle.`;
       } else if (target.startsWith('__grid_')) {
         const corner = target.slice('__grid_'.length, -2);
         await saveSoundboardGridCorner(corner, note);
@@ -3996,6 +4040,11 @@ async function pollMappingCapture() {
     if (targetAtStart === '__macro__') {
       cancelChordLearn();
       setStatus(`MIDI learn failed: ${err}`, 'warn', 'midi-chords');
+    } else if (targetAtStart === '__action_passthrough_toggle__') {
+      state.mappingAssignTarget = null;
+      clearInterval(state.mappingPollTimer);
+      state.mappingPollTimer = null;
+      setStatus(`MIDI learn failed: ${err}`, 'warn', 'midi-passthrough');
     } else if (String(targetAtStart).startsWith('__grid_')) {
       document.getElementById('sb-grid-learn-status').textContent = `Grid MIDI learn failed: ${err}`;
       setStatus(`Grid MIDI learn failed: ${err}`, 'warn', 'soundboard-layout');
@@ -4070,6 +4119,7 @@ async function initializeGraphFromConfig() {
   await loadSoundboardLayout();
   await loadMappings();
   await loadMidiActions();
+  await loadPassthroughOnly();
   await loadSamplerConfig();
   await loadRoutingThings();
   await loadPluginCatalog();
@@ -4925,6 +4975,42 @@ document.getElementById('btn-sb-assign-sampler-toggle').addEventListener('click'
 
 document.getElementById('btn-sb-clear-sampler-toggle').addEventListener('click', async () => {
   await deleteSamplerToggleActionMapping();
+});
+
+document.getElementById('btn-passthrough-only').addEventListener('click', () => loadPassthroughOnly(true));
+document.getElementById('btn-assign-passthrough-toggle').addEventListener('click', async () => {
+  cancelChordLearn();
+  const target = '__action_passthrough_toggle__';
+  if (state.mappingAssignTarget === target) {
+    state.mappingAssignTarget = null;
+    clearInterval(state.mappingPollTimer);
+    state.mappingPollTimer = null;
+    midiActionCaptureStatusEl.textContent = 'Cancelled.';
+    return;
+  }
+  try {
+    const response = await apiFetch('/api/midi/last_note', { method: 'GET' });
+    if (!response.ok) throw new Error(await response.text());
+    state.mappingLastSeq = Number(JSON.parse(await response.text()).last_seq || 0);
+    state.mappingAssignTarget = target;
+    if (!state.mappingPollTimer) state.mappingPollTimer = setInterval(pollMappingCapture, 220);
+    midiActionCaptureStatusEl.textContent = 'Press a MIDI button to map passthrough-only toggle. Exit passthrough-only mode before learning.';
+  } catch (error) {
+    setStatus(`MIDI learn failed: ${error}`, 'warn');
+  }
+});
+document.getElementById('btn-clear-passthrough-toggle').addEventListener('click', async () => {
+  if (!Number.isInteger(state.passthroughToggleMidiNote)) return;
+  try {
+    const response = await apiFetch('/api/midi/action/delete', {
+      method: 'POST', headers: { 'Content-Type': 'text/plain' },
+      body: `note=${state.passthroughToggleMidiNote}`,
+    });
+    if (!response.ok) throw new Error(await response.text());
+    await loadMidiActions();
+  } catch (error) {
+    setStatus(`Could not clear passthrough toggle: ${error}`, 'warn');
+  }
 });
 
 document.getElementById('btn-vol-refresh').addEventListener('click', loadVolumes);

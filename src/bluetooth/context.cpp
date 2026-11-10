@@ -30,6 +30,9 @@
 #define BT_INPUT_ACCEPT_WAIT_MS 3000ULL
 #define BT_USER_DISCONNECT_REASON "disconnected by user"
 #define BT_OUTPUT_SILENCE_THRESHOLD 2500ULL
+#define BT_OUTPUT_BUSY_RETRY_MS 5000ULL
+// Yield before the 341 ms PCM ring fills; never play a backlog after a handoff.
+#define BT_OUTPUT_BLOCKED_MS 200ULL
 #define BT_AUTOCONNECT_RETRY_MIN_MS 5000ULL
 #define BT_AUTOCONNECT_RETRY_MAX_MS 60000ULL
 #define BT_ADAPTER_RETRY_MS 10000ULL
@@ -1721,12 +1724,31 @@ void BluetoothContext::handleAvdtpCommand(int index, const uint8_t *packet, size
         if (error) {
             break;
         }
+        // A peer handoff supersedes our opposite in-flight state change.
+        if (!link.pendingInput &&
+            ((stopOutput && link.pendingSignal == AVDTP_START) ||
+             (startOutput && link.pendingSignal == AVDTP_SUSPEND))) {
+            link.pendingSignal = 0;
+            link.commandLength = 0;
+            link.commandWritePending = false;
+        }
         if (startOutput) {
+            const bool wasWaiting = link.outRetryAtMs != 0;
+            link.outRetryAtMs = 0;
+            link.outBlockedSinceMs = 0;
+            link.statsNextMs = 0;
             link.outStartRequested = false;
+            link.outSuspendRequested = false;
             link.outStreaming = true;
             link.silenceSinceMs = bt::monotonicMs();
             if (outputSlot && !outputSlot->active.load(std::memory_order_acquire)) {
                 outputSlot->setActive(true);
+            }
+            if (wasWaiting) {
+                char label[BT_NAME_MAX] = {};
+                deviceLabel(link.address, label, sizeof(label));
+                setMessage("Connected to %s", label);
+                resetAutoConnectBackoff(link.address);
             }
         }
         if (stopOutput) {
@@ -1734,9 +1756,7 @@ void BluetoothContext::handleAvdtpCommand(int index, const uint8_t *packet, size
             link.outSuspendRequested = false;
             link.outStartRequested = false;
             link.silenceSinceMs = 0;
-            if (outputSlot) {
-                outputSlot->setActive(false);
-            }
+            waitForOutput(index, "device paused the output (multipoint handoff)");
         }
         if (startInput && !link.inStreaming) {
             startInputAudio(index);
@@ -1858,6 +1878,16 @@ void BluetoothContext::handleDiscoverResponse(int index, const uint8_t *payload,
     const bool wasConnecting = link.connecting;
     link.wantOutput = sinkSeid != 0;
     link.wantInput = sourceSeid != 0 || link.inConfigured;
+    if (link.wantOutput && sinkBusy && !link.outConfigured) {
+        link.discovered = false;
+        link.discoverAtMs = bt::monotonicMs() + BT_OUTPUT_BUSY_RETRY_MS;
+        link.deadlineMs = 0;
+        setMessage("%s is busy; waiting for its audio endpoint", label);
+        return;
+    }
+    if (link.wantOutput && link.connecting && link.deadlineMs == 0) {
+        link.deadlineMs = bt::monotonicMs() + BT_OUTPUT_CONNECT_TIMEOUT_MS;
+    }
     if (!link.wantOutput && !link.wantInput) {
         closeLink(index, "device has no A2DP audio endpoint");
         return;
@@ -1880,7 +1910,33 @@ void BluetoothContext::handleOutputResponse(int index, uint8_t messageType, uint
     BluetoothOutputStream *slot = app && app->audio ? &app->audio->bluetoothOutputs[index] : nullptr;
     if (messageType != 2) {
         const uint8_t error = length > 0 ? payload[length - 1] : 0;
+        if (messageType == 3 && signal == AVDTP_START && length == 2 &&
+            (payload[0] >> 2) == link.remoteSinkSeid && error == AVDTP_BAD_STATE &&
+            link.outOpened && link.outMediaFd >= 0) {
+            link.outUp = true;
+            link.outStreaming = false;
+            link.connecting = false;
+            link.deadlineMs = 0;
+            if (slot) {
+                slot->peer.store(bt::packAddress(link.address.b), std::memory_order_release);
+            }
+            waitForOutput(index, "device is not ready to start audio");
+            return;
+        }
+        if (messageType == 3 && signal == AVDTP_SET_CONFIGURATION && length == 2 &&
+            error == AVDTP_SEP_IN_USE) {
+            link.outStarting = false;
+            link.discovered = false;
+            link.discoverAtMs = bt::monotonicMs() + BT_OUTPUT_BUSY_RETRY_MS;
+            link.deadlineMs = 0;
+            setMessage("Device audio endpoint is busy; waiting to retry");
+            return;
+        }
         if (signal == AVDTP_SUSPEND) {
+            if (link.outRetryAtMs != 0) {
+                closeOutputStream(index, "blocked A2DP output could not be suspended safely");
+                return;
+            }
             link.outSuspendSupported = false;
             link.outSuspendRequested = false;
             link.silenceSinceMs = bt::monotonicMs();
@@ -1987,6 +2043,13 @@ void BluetoothContext::handleOutputResponse(int index, uint8_t messageType, uint
 
     if (signal == AVDTP_START) {
         const uint64_t nowMs = bt::monotonicMs();
+        const bool wasWaiting = link.outRetryAtMs != 0;
+        link.outRetryAtMs = 0;
+        link.outBlockedSinceMs = 0;
+        link.statsNextMs = 0;
+        if (slot) {
+            link.droppedAtStats = slot->dropped.load(std::memory_order_acquire);
+        }
         link.outStreaming = true;
         link.outStartRequested = false;
         link.outSuspendRequested = false;
@@ -1994,6 +2057,12 @@ void BluetoothContext::handleOutputResponse(int index, uint8_t messageType, uint
         if (link.outUp) {
             if (slot && !slot->active.load(std::memory_order_acquire)) {
                 slot->setActive(true);
+            }
+            if (wasWaiting) {
+                char label[BT_NAME_MAX] = {};
+                deviceLabel(link.address, label, sizeof(label));
+                setMessage("Connected to %s", label);
+                resetAutoConnectBackoff(link.address);
             }
             return;
         }
@@ -2028,6 +2097,8 @@ void BluetoothContext::handleOutputResponse(int index, uint8_t messageType, uint
         link.outSuspendSupported = true;
         link.outStartRequested = false;
         link.silenceSinceMs = 0;
+        link.packetLength = 0;
+        link.outBlockedSinceMs = 0;
         if (slot) {
             slot->setActive(false);
         }
@@ -2370,12 +2441,37 @@ void BluetoothContext::flushOutputPacket(int index) {
     const ssize_t sent = send(link.outMediaFd, link.packet, link.packetLength, MSG_NOSIGNAL);
     if (sent == (ssize_t)link.packetLength) {
         link.packetLength = 0;
+        link.outBlockedSinceMs = 0;
         return;
     }
     if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        if (link.outBlockedSinceMs == 0) {
+            link.outBlockedSinceMs = bt::monotonicMs();
+        }
+        return;
+    }
+    if (sent < 0 && errno == EINTR) {
         return;
     }
     closeOutputStream(index, sent < 0 ? strerror(errno) : "short A2DP media write");
+}
+
+void BluetoothContext::waitForOutput(int index, const char *reason) {
+    BluetoothLink &link = links[index];
+    link.outRetryAtMs = bt::monotonicMs() + BT_OUTPUT_BUSY_RETRY_MS;
+    link.outStartRequested = false;
+    link.packetLength = 0;
+    link.outBlockedSinceMs = 0;
+    link.statsNextMs = 0;
+    if (app && app->audio) {
+        BluetoothOutputStream &slot = app->audio->bluetoothOutputs[index];
+        slot.setActive(false);
+        link.droppedAtStats = slot.dropped.load(std::memory_order_acquire);
+    }
+    char label[BT_NAME_MAX] = {};
+    deviceLabel(link.address, label, sizeof(label));
+    setMessage("%s: waiting for audio availability", label);
+    printf("[BT] [INFO] A2DP output to %s waiting: %s\n", label, reason);
 }
 
 void BluetoothContext::pumpOutputAudio(int index) {
@@ -2389,6 +2485,27 @@ void BluetoothContext::pumpOutputAudio(int index) {
     // Input commands share the signaling channel but do not block audio.
     const bool outputCommandPending = link.pendingSignal != 0 && !link.pendingInput;
     const bool commandSlotBusy = link.pendingSignal != 0 || link.commandWritePending;
+    if (link.outBlockedSinceMs != 0 && nowMs - link.outBlockedSinceMs >= BT_OUTPUT_BLOCKED_MS) {
+        waitForOutput(index, "media transport is backpressured (device may be playing another source)");
+    }
+    if (link.outRetryAtMs != 0) {
+        if (link.outStreaming) {
+            if (!link.outSuspendSupported) {
+                closeOutputStream(index, "blocked A2DP output does not support safe suspension");
+            } else if (!commandSlotBusy) {
+                const uint8_t seid = (uint8_t)(link.remoteSinkSeid << 2);
+                link.outSuspendRequested = true;
+                sendCommand(index, AVDTP_SUSPEND, &seid, 1, false);
+            }
+            return;
+        }
+        if (nowMs < link.outRetryAtMs) {
+            return;
+        }
+    }
+    if (outputCommandPending || link.outSuspendRequested || link.outStartRequested) {
+        return;
+    }
     if (link.outStreaming) {
         if (signalActive) {
             link.silenceSinceMs = 0;
@@ -2423,6 +2540,10 @@ void BluetoothContext::pumpOutputAudio(int index) {
         const bool firstSample = link.statsNextMs == 0;
         link.statsNextMs = nowMs + 1000ULL;
         if (!firstSample && droppedThisSecond > SAMPLE_RATE / 20U) {
+            if (link.packetLength != 0 && link.outBlockedSinceMs != 0) {
+                waitForOutput(index, "PCM queue overrun while media transport is backpressured");
+                return;
+            }
             closeOutputStream(index, "PCM output queue is overrunning; stopping glitchy stream");
             return;
         }
@@ -2566,6 +2687,8 @@ void BluetoothContext::closeOutputStream(int index, const char *reason) {
     link.outStartRequested = false;
     link.packetLength = 0;
     link.silenceSinceMs = 0;
+    link.outBlockedSinceMs = 0;
+    link.outRetryAtMs = 0;
     link.statsNextMs = 0;
     link.wantOutput = false;
     link.connecting = false;

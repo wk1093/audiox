@@ -247,13 +247,15 @@ static uint8_t resolveSoundMode(const MidiMapData &data, const char *sfxPath) {
     return SOUNDBOARD_MODE_PLAY;
 }
 
-static uint8_t resolveMappedAction(const MidiMapData &data, uint8_t note) {
+static uint8_t resolveMappedAction(const MidiMapData &data, uint8_t note, uint8_t channel) {
     uint32_t count = data.actionMappingCount;
     if (count > MIDI_ACTION_MAPPINGS_MAX) {
         count = MIDI_ACTION_MAPPINGS_MAX;
     }
     for (uint32_t i = 0; i < count; ++i) {
-        if (data.actionMappings[i].note == note) {
+        if (data.actionMappings[i].note == note &&
+            (data.actionMappings[i].action != MIDI_ACTION_PASSTHROUGH_TOGGLE ||
+             data.actionMappings[i].channel == channel)) {
             return data.actionMappings[i].action;
         }
     }
@@ -415,6 +417,7 @@ void MidiContext::disconnect() {
     scripts.controllerOutputFailed = false;
     scripts.usb.closeDevices();
     usbStream = {};
+    memset(passthroughToggleDown, 0, sizeof(passthroughToggleDown));
     if (fd >= 0) {
         close(fd);
     }
@@ -461,6 +464,15 @@ void MidiContext::sendLightNote(uint8_t note, uint8_t channel, uint8_t velocity)
 
 void MidiContext::refreshAllLighting() {
     if (fd < 0 || !connected) {
+        return;
+    }
+    if (passthroughOnly) {
+        for (unsigned channel = 0; channel < 16; ++channel) {
+            for (unsigned note = 0; note < 128; ++note) {
+                sendLightNote(note, channel, 0);
+            }
+        }
+        memset(ledStateByNote, 0, sizeof(ledStateByNote));
         return;
     }
     for (int i = 0; i < 128; ++i) {
@@ -528,8 +540,27 @@ void MidiContext::toggleSamplerMode() {
     refreshLightingFromState();
 }
 
+int MidiContext::setPassthroughOnly(bool enabled) {
+    if (enabled && (!app || !app->config || !app->config->readConfigFile().midiPassthrough)) {
+        printf("[MIDI] [WARN] Passthrough-only requires USB MIDI passthrough enabled\n");
+        return RET_ERR;
+    }
+    if (enabled == passthroughOnly) return RET_OK;
+    passthroughOnly = enabled;
+    if (enabled) {
+        scripts.controllerPendingSize = 0;
+        scripts.stopMacros();
+        if (holdActive && app && app->audio) app->audio->stopHeldSfx();
+        holdActive = 0;
+        heldNote = 255;
+    }
+    refreshAllLighting();
+    printf("[MIDI] passthrough-only %s\n", enabled ? "enabled" : "disabled");
+    return RET_OK;
+}
+
 void MidiContext::refreshLightingFromState() {
-    if (fd < 0 || !connected) {
+    if (fd < 0 || !connected || passthroughOnly) {
         return;
     }
 
@@ -571,7 +602,8 @@ void MidiContext::refreshLightingFromState() {
     }
     for (uint32_t i = 0; i < actionCount; ++i) {
         const MidiActionMapping &a = cachedMidiMap.actionMappings[i];
-        if (a.action != MIDI_ACTION_STOP_ALL && a.action != MIDI_ACTION_SAMPLER_TOGGLE) {
+        if (a.action != MIDI_ACTION_STOP_ALL && a.action != MIDI_ACTION_SAMPLER_TOGGLE &&
+            a.action != MIDI_ACTION_PASSTHROUGH_TOGGLE) {
             continue;
         }
         uint8_t note = a.note & 0x7Fu;
@@ -630,6 +662,7 @@ void MidiContext::poll() {
     if (now >= nextUsbConfigMs) {
         ConfigData cfg = app->config->readConfigFile();
         passthroughMode = cfg.midiPassthrough;
+        if (!passthroughMode && passthroughOnly) setPassthroughOnly(false);
         bool enabled = cfg.keyboardMacros != 0;
         if (keyboardEnabled != enabled) {
             keyboardEnabled = enabled;
@@ -757,13 +790,31 @@ void MidiContext::poll() {
         ssize_t n = read(fd, buf, sizeof(buf));
         if (n > 0) {
             for (ssize_t i = 0; i < n; ++i) {
+                bool capturedToggle = false;
                 usbStream.feed(buf[i], [&](const uint8_t *message, size_t length) {
                     uint8_t kind = message[0] & 0xf0;
                     uint8_t channel = message[0] & 15;
                     uint8_t number = length > 1 ? message[1] : 0;
+                    const bool noteEvent = length == 3 && (kind == 0x80 || kind == 0x90);
+                    if ((kind == 0x80 || kind == 0x90 || kind == 0xa0) &&
+                        (resolveMappedAction(cachedMidiMap, number, channel) == MIDI_ACTION_PASSTHROUGH_TOGGLE ||
+                         passthroughToggleDown[channel][number])) {
+                        capturedToggle = true;
+                        if (noteEvent) {
+                            const bool pressed = kind == 0x90 && message[2] != 0;
+                            const bool wasDown = passthroughToggleDown[channel][number];
+                            passthroughToggleDown[channel][number] = pressed;
+                            if (pressed && !wasDown) setPassthroughOnly(!passthroughOnly);
+                        }
+                        return;
+                    }
+                    if (passthroughOnly) {
+                        scripts.usb.forward(message, length, false, true);
+                        return;
+                    }
                     bool mapped = false;
                     if (kind == 0x80 || kind == 0x90 || kind == 0xa0) {
-                        mapped = resolveMappedAction(cachedMidiMap, number) != MIDI_ACTION_NONE ||
+                        mapped = resolveMappedAction(cachedMidiMap, number, channel) != MIDI_ACTION_NONE ||
                                  resolveEffectToggleTarget(cachedMidiMap, number) != nullptr ||
                                  (cachedMidiMap.samplerKeyboardEnabled &&
                                   channel == cachedMidiMap.samplerKeyboardChannel);
@@ -808,6 +859,7 @@ void MidiContext::poll() {
                 if (!midiParseByte(this, buf[i], &status, &d0, &d1)) {
                     continue;
                 }
+                if (capturedToggle || passthroughOnly) continue;
 
                 const uint8_t kind = (uint8_t)(status & 0xF0);
                 const uint8_t channel = (uint8_t)(status & 0x0F);
@@ -936,7 +988,7 @@ void MidiContext::poll() {
                     continue;
                 }
 
-                uint8_t mappedAction = resolveMappedAction(cachedMidiMap, d0);
+                uint8_t mappedAction = resolveMappedAction(cachedMidiMap, d0, channel);
                 if (mappedAction == MIDI_ACTION_STOP_ALL) {
                     if (app->audio) {
                         app->audio->stopAllSfx();

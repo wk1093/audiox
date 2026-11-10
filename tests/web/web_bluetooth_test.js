@@ -180,6 +180,16 @@ test('connected devices report each direction and disconnect by address', async 
   assert.deepEqual(f.requests[0], ['/api/bluetooth/disconnect', 'address=00:11:22:33:44:02']);
 });
 
+test('paused output does not imply the routed audio is idle during a multipoint handoff', async () => {
+  const f = fixture([
+    device('Headphones', '01', { paired: true, connected: true, audio_sink: true,
+      output_connected: true, output_streaming: false }),
+  ]);
+  await f.load();
+  assert.match(f.root.text, /Headphones Connected as audio output; audio paused/);
+  assert.doesNotMatch(f.root.text, /paused while idle/);
+});
+
 test('Bluetooth page exposes a checked and labelled switch with an explanation', () => {
   const html = fs.readFileSync(require.resolve('../../web/embedded/index.html'), 'utf8');
   assert.match(html, /<label class="bluetooth-filter">\s*<input id="bluetooth-hide-unnamed"[^>]*role="switch"[^>]*checked[^>]*>\s*Hide unnamed devices\s*<\/label>/);

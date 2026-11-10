@@ -91,14 +91,14 @@ void MidiUsbOutput::closeDevices() {
     memset(notePolicy, 0, sizeof(notePolicy));
 }
 
-void MidiUsbOutput::forward(const uint8_t *bytes, size_t count, bool mapped) {
+void MidiUsbOutput::forward(const uint8_t *bytes, size_t count, bool mapped, bool forcePass) {
     if (!mode || midiFd < 0 || !count) return;
-    bool pass = mode == 2 || !mapped;
+    bool pass = forcePass || mode == 2 || !mapped;
     unsigned kind = bytes[0] & 0xf0, channel = bytes[0] & 15;
     if (count == 3 && (kind == 0x80 || kind == 0x90)) {
         bool on = kind == 0x90 && bytes[2] != 0;
         auto &policy = notePolicy[channel][bytes[1]];
-        if (!on && policy) pass = policy == 2;
+        if (!on && policy && !forcePass) pass = policy == 2;
         if (on) policy = pass ? 2 : 1;
         else policy = 0;
     }

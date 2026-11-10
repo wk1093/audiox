@@ -15,7 +15,7 @@ void flushLogsPeriodic(uint64_t nowMs);
 int mountRootfs(void *context) WARN_UNUSED;
 int prepareBootUpdateRecovery() WARN_UNUSED;
 void initBootRecovery();
-void pollBootRecovery();
+void pollBootRecovery(uint64_t audioProgressAtMs);
 bool bootStartupStable();
 int setupAudioGadget(void *context) WARN_UNUSED;
 int reloadAudioGadget(void *context) WARN_UNUSED;

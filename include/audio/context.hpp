@@ -182,6 +182,7 @@ struct AudioContext {
     pthread_t processingThread;
     int processingThreadStarted;
     std::atomic<int> processingThreadRun;
+    std::atomic<uint64_t> processingProgressAtMs{0};
     audiox::usb::GadgetVolume gadgetVolume;
 
     std::atomic<uint64_t> nextHotplugScanMs;

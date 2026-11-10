@@ -40,7 +40,8 @@ struct ScriptContext {
   bool macroWaitingController{false};
   uint64_t nextMacroEvalMs{0};
   uint64_t macroUsbGeneration{0};
-  uint8_t controllerPending[4096]{};
+  // Fits a complete 16-channel LED reset while controller writes are blocked.
+  uint8_t controllerPending[8192]{};
   size_t controllerPendingSize{0};
   bool controllerOutputFailed{false};
   bool macroMidiNotes[16][128]{};

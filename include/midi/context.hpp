@@ -40,6 +40,8 @@ struct MidiContext {
     MidiStream usbStream;
     uint64_t nextUsbConfigMs{0};
     uint8_t passthroughMode{0};
+    bool passthroughOnly{false};
+    bool passthroughToggleDown[16][128]{};
     bool keyboardEnabled{false};
     ScriptContext scripts{*this};
 
@@ -60,5 +62,6 @@ struct MidiContext {
     void setLightsDimmed(bool dimmed);
     void refreshLightingFromState();
     void toggleSamplerMode();
+    int setPassthroughOnly(bool enabled);
     int reloadSoundboardMappings();
 };

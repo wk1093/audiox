@@ -229,7 +229,7 @@ int main() {
         }
         mainContext.eventLoop();
         audiox::diagnostics::pollKernelLog();
-        pollBootRecovery();
+        pollBootRecovery(audio.processingProgressAtMs.load(std::memory_order_acquire));
         fb.checkForFramebuffer();
         if (fb.isReady()) {
             touch.checkForDevice();

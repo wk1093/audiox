@@ -1073,6 +1073,7 @@ int main() {
         chordRequest("PUT", "", "405 Method Not Allowed");
         ConfigData usbConfig = config.readConfigFile();
         assert(!usbConfig.midiPassthrough && !usbConfig.keyboardMacros);
+        assert(midi.setPassthroughOnly(true) == RET_ERR && !midi.passthroughOnly);
         usbConfig.midiPassthrough = 1;
         usbConfig.keyboardMacros = 1;
         assert(config.writeConfigFile(&usbConfig) == RET_OK);
@@ -1218,6 +1219,154 @@ int main() {
         midi.poll();
         assert(readKeyboardReport(usbKeyboard[1], keyReport, sizeof(keyReport)) == 8);
         for (auto byte : keyReport) assert(byte == 0);
+
+        {
+            auto saved = std::make_unique<MidiMapData>(config.readMidiMapFile());
+            auto response = [&](auto handler) {
+                int sockets[2];
+                assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+                assert(handler(sockets[0]) == 0);
+                char reply[8192]{};
+                assert(read(sockets[1], reply, sizeof(reply) - 1) > 0);
+                close(sockets[0]);
+                close(sockets[1]);
+                return std::string(reply);
+            };
+            const auto bind = [&](const char *body) {
+                return response([&](int fd) {
+                    return handleMidiActionSet(&http, fd, "POST", "", body, strlen(body));
+                });
+            };
+            assert(bind("note=120&action=passthrough_toggle").find("400 Bad Request") != std::string::npos);
+            for (const char *channel : {"-1", "16", "junk", "1junk", ""}) {
+                const std::string body = std::string("note=120&action=passthrough_toggle&channel=") + channel;
+                assert(bind(body.c_str()).find("400 Bad Request") != std::string::npos);
+            }
+            assert(bind("note=119&action=passthrough_toggle&channel=0").find("200 OK") != std::string::npos);
+            assert(bind("note=120&action=passthrough_toggle&channel=9").find("200 OK") != std::string::npos);
+            midi.cachedMidiMap = config.readMidiMapFile();
+            assert(midi.cachedMidiMap.actionMappings[midi.cachedMidiMap.actionMappingCount - 1].action ==
+                   MIDI_ACTION_PASSTHROUGH_TOGGLE);
+            assert(midi.cachedMidiMap.actionMappingCount == saved->actionMappingCount + 1);
+            assert(midi.cachedMidiMap.actionMappings[midi.cachedMidiMap.actionMappingCount - 1].channel == 9);
+            {
+                ConfigStore restartedConfig(&app);
+                const auto loaded = restartedConfig.readMidiMapFile();
+                assert(loaded.actionMappings[loaded.actionMappingCount - 1].channel == 9);
+            }
+            app.config = &config;
+            assert(response([&](int fd) { return handleMidiActions(&http, fd, "GET", ""); })
+                   .find("\"action\":\"passthrough_toggle\",\"channel\":9") != std::string::npos);
+            {
+                const std::string current = readMidiConfig();
+                std::string legacy = current;
+                const auto position = legacy.find("note_action=120,passthrough_toggle,9");
+                assert(position != std::string::npos);
+                legacy.replace(position, strlen("note_action=120,passthrough_toggle,9"),
+                               "note_action=120,passthrough_toggle");
+                { std::ofstream file("config/midi_map.txt"); file << legacy; assert(file.good()); }
+                ConfigStore legacyConfig(&app);
+                const auto loaded = legacyConfig.readMidiMapFile();
+                assert(loaded.actionMappings[loaded.actionMappingCount - 1].channel == 0);
+                { std::ofstream file("config/midi_map.txt"); file << current; assert(file.good()); }
+            }
+            app.config = &config;
+            assert(response([&](int fd) { return handleMidiPassthroughOnly(&http, fd, "GET"); })
+                   .find("\"active\":false") != std::string::npos);
+            assert(response([&](int fd) { return handleMidiPassthroughOnly(&http, fd, "DELETE"); })
+                   .find("405 Method Not Allowed") != std::string::npos);
+            uint8_t discard[16384];
+            while (read(midiInput[1], discard, sizeof(discard)) > 0) {}
+            auto collectLights = [&]() {
+                std::vector<uint8_t> bytes;
+                for (unsigned retry = 0; retry < 100; ++retry) {
+                    ssize_t size;
+                    while ((size = read(midiInput[1], discard, sizeof(discard))) > 0)
+                        bytes.insert(bytes.end(), discard, discard + size);
+                    if (!midi.scripts.controllerPendingSize) break;
+                    assert(midi.scripts.flushControllerMidi());
+                }
+                assert(!midi.scripts.controllerPendingSize);
+                return bytes;
+            };
+            collectLights();
+            const uint8_t wrongChannel[] = {0x90,120,100, 0x80,120,0};
+            assert(write(midiInput[1], wrongChannel, sizeof(wrongChannel)) == sizeof(wrongChannel));
+            midi.poll();
+            assert(!midi.passthroughOnly);
+            assert(read(usbMidi[1], discard, sizeof(discard)) == sizeof(wrongChannel));
+            assert(!memcmp(discard, wrongChannel, sizeof(wrongChannel)));
+            const uint8_t toggle[] = {0x99,120,100, 120,100, 120,0};
+            assert(write(midiInput[1], toggle, sizeof(toggle)) == sizeof(toggle));
+            midi.poll();
+            assert(midi.passthroughOnly); // Repeated note-on does not toggle twice.
+            const auto lights = collectLights();
+            assert(lights.size() == 16 * 128 * 3);
+            for (size_t i = 0; i < lights.size(); i += 3) {
+                assert(lights[i] == (0x90 | (i / 3 / 128)));
+                assert(lights[i + 1] == (i / 3 % 128) && lights[i + 2] == 0);
+            }
+            assert(read(usbMidi[1], discard, sizeof(discard)) == -1 && errno == EAGAIN);
+            assert(!midi.scripts.triggerMacro(0));
+            const auto notesBefore = midi.lastNoteSeq, ccBefore = midi.lastCcSeq;
+            const auto sfxBefore = audio.sfxQueueWrite.load();
+            audiox::effects::SlotParams effectBefore{};
+            assert(audio.getEffectParams("fx_7", &effectBefore) == RET_OK);
+            std::vector<uint8_t> messages;
+            for (uint8_t channel = 0; channel < 16; ++channel) {
+                for (uint8_t note : {uint8_t(38), uint8_t(39), uint8_t(40), uint8_t(62)}) {
+                    messages.insert(messages.end(), {uint8_t(0x90 | channel), note, 100,
+                                                    uint8_t(0x80 | channel), note, 0});
+                }
+                if (channel != 9) {
+                    messages.insert(messages.end(), {uint8_t(0x90 | channel), 120, 100,
+                                                    uint8_t(0x80 | channel), 120, 0});
+                }
+                messages.insert(messages.end(), {uint8_t(0xb0 | channel), 7, 80,
+                                                uint8_t(0xc0 | channel), 5,
+                                                uint8_t(0xd0 | channel), 10,
+                                                uint8_t(0xe0 | channel), 0, 64});
+            }
+            messages.insert(messages.end(), {0xf0, 0x7d, 1, 0xf7, 0xf8, 0xf2, 1, 2});
+            assert(write(midiInput[1], messages.data(), messages.size()) == ssize_t(messages.size()));
+            midi.poll();
+            std::vector<uint8_t> received;
+            ssize_t size;
+            while ((size = read(usbMidi[1], discard, sizeof(discard))) > 0)
+                received.insert(received.end(), discard, discard + size);
+            assert(received == messages);
+            assert(midi.passthroughOnly);
+            assert(midi.lastNoteSeq == notesBefore && midi.lastCcSeq == ccBefore);
+            assert(audio.sfxQueueWrite.load() == sfxBefore && midi.scripts.macroQueueCount == 0);
+            audiox::effects::SlotParams effectAfter{};
+            assert(audio.getEffectParams("fx_7", &effectAfter) == RET_OK);
+            assert(effectAfter.enabled == effectBefore.enabled);
+            midi.refreshLightingFromState();
+            assert(read(midiInput[1], discard, sizeof(discard)) == -1 && errno == EAGAIN);
+            midi.passthroughMode = midi.scripts.usb.mode = 2;
+            assert(write(midiInput[1], toggle, sizeof(toggle)) == sizeof(toggle));
+            midi.poll();
+            assert(!midi.passthroughOnly);
+            assert(!collectLights().empty());
+            assert(read(usbMidi[1], discard, sizeof(discard)) == -1 && errno == EAGAIN);
+            midi.passthroughMode = midi.scripts.usb.mode = 1;
+            midi.scripts.activeMacro = 0;
+            midi.scripts.macroQueueCount = 1;
+            assert(response([&](int fd) { return handleMidiPassthroughOnly(&http, fd, "POST"); })
+                   .find("\"active\":true") != std::string::npos);
+            assert(midi.scripts.activeMacro == -1 && midi.scripts.macroQueueCount == 0);
+            collectLights();
+            midi.scripts.pollScriptLifecycle(testNowMs, true);
+            assert(!midi.scripts.macroQueueCount);
+            assert(response([&](int fd) { return handleMidiPassthroughOnly(&http, fd, "POST"); })
+                   .find("\"active\":false") != std::string::npos);
+            collectLights();
+            assert(config.writeMidiMapFile(saved.get()) == RET_OK);
+            midi.cachedMidiMap = *saved;
+            MidiContext restarted(nullptr);
+            assert(!restarted.passthroughOnly);
+            app.midi = &midi;
+        }
 
         chordRequest("POST", "channel=0&note=62&keys=CTRL+A&idle_velocity=128", "400 Bad Request");
         chordRequest("POST", "channel=0&note=62&keys=&script_hex=00", "400 Bad Request");
@@ -1950,16 +2099,16 @@ int main() {
                       "state.ticks=(state.ticks or 0)+1 end)", "200 OK", true);
         assert(config.readMidiMapFile().chords[1].eventMask == 768);
         initBootRecovery();
-        pollBootRecovery();
+        pollBootRecovery(0);
         const uint64_t startupAt = testNowMs;
         midi.scripts.pollScriptLifecycle(testNowMs, bootStartupStable());
         assert(!midi.scripts.macroQueueCount && !midi.scripts.bootHooksDispatched);
         testNowMs = startupAt + (BOOT_RECOVERY_CONFIRM_SECONDS - 1) * 1000;
-        pollBootRecovery();
+        pollBootRecovery(0);
         midi.scripts.pollScriptLifecycle(testNowMs, bootStartupStable());
         assert(!midi.scripts.macroQueueCount && !bootStartupStable());
         testNowMs = startupAt + BOOT_RECOVERY_CONFIRM_SECONDS * 1000;
-        pollBootRecovery();
+        pollBootRecovery(0);
         assert(bootStartupStable());
         midi.scripts.pollScriptLifecycle(testNowMs, bootStartupStable());
         assert(midi.scripts.macroQueueCount == 1);

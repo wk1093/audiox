@@ -247,6 +247,17 @@ test-bluetooth-a2dp: $(OUT_DIR)/host/audiox-bluetooth-a2dp-test
 test-bluetooth-connect-log: $(OUT_DIR)/host/audiox-bluetooth-connect-log-test
 	@"$<"
 
+.PHONY: test-bluetooth-multipoint
+test-native: test-bluetooth-multipoint
+test-bluetooth-multipoint: $(OUT_DIR)/host/audiox-bluetooth-multipoint-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-bluetooth-multipoint-test: tests/native/bluetooth/bluetooth_multipoint_test.cpp src/bluetooth/context.cpp src/bluetooth/hci.cpp src/bluetooth/a2dp.cpp src/audio/plugin_host.cpp include/bluetooth/context.hpp include/audio/bluetooth_stream.hpp tests/Makefile
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-error=format-truncation -Iinclude -fno-access-control -ffunction-sections -fdata-sections \
+		-Wl,--gc-sections -Wl,--wrap=send \
+		-o "$@" tests/native/bluetooth/bluetooth_multipoint_test.cpp src/bluetooth/context.cpp src/bluetooth/hci.cpp src/bluetooth/a2dp.cpp src/audio/plugin_host.cpp -lsbc -pthread
+
 $(OUT_DIR)/host/audiox-bluetooth-connect-log-test: tests/native/bluetooth/bluetooth_connect_log_test.cpp src/bluetooth/context.cpp src/bluetooth/hci.cpp src/bluetooth/a2dp.cpp include/bluetooth/context.hpp tests/Makefile
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-error=format-truncation -Iinclude -fno-access-control -ffunction-sections -fdata-sections \
@@ -354,7 +365,7 @@ test-boot-recovery: $(OUT_DIR)/host/audiox-boot-recovery-test
 
 $(OUT_DIR)/host/audiox-boot-recovery-test: tests/native/system/boot_recovery_test.cpp include/boot_recovery.hpp include/defs.hpp include/update_archive.hpp
 	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" "$<"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -Wl,--wrap=fsync -Wl,--wrap=rename -o "$@" "$<"
 
 test-config-backup: $(OUT_DIR)/host/audiox-config-backup-test $(OUT_DIR)/host/audiox-config-backup-http-test
 	@"$(OUT_DIR)/host/audiox-config-backup-test"
@@ -370,7 +381,7 @@ $(OUT_DIR)/host/audiox-config-storage-test: tests/native/config/config_storage_t
 
 $(OUT_DIR)/host/audiox-config-backup-test: tests/native/config/config_backup_test.cpp src/config/backup.cpp $(wildcard include/config/*.hpp) include/update_archive.hpp include/watchdog_heartbeat.hpp
 	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/native/config/config_backup_test.cpp src/config/backup.cpp
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -Wl,--wrap=fsync -o "$@" tests/native/config/config_backup_test.cpp src/config/backup.cpp
 
 $(OUT_DIR)/host/audiox-config-backup-http-test: tests/native/config/config_backup_http_test.cpp src/config/backup.cpp src/http/server.cpp src/http/api.cpp $(wildcard include/config/*.hpp) include/http/context.hpp include/json.hpp include/update_archive.hpp include/watchdog_heartbeat.hpp $(wildcard include/midi/*.hpp include/scripting/*.hpp)
 	@mkdir -p "$(dir $@)"

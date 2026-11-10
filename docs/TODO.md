@@ -132,6 +132,7 @@ The above last two features are mainly to improve my setup, but could probably b
 ## Last few improvements - v1.12
 - [x] Add per-device Bluetooth auto-connect, saved-device reconnection retries, and pause idle A2DP streams so multipoint headsets can switch sources.
 - [x] Verify Bluetooth reconnection, multipoint handoff, and audio resume behavior with physical devices; continue improving connection reliability.
+- [x] Wait for busy multipoint audio endpoints and safely pause backpressured output without reconnect loops; retain the transmission-error safety fallback.
 - [x] Fix support for Bluetooth phone connection.
 - [x] Investigate using LV2 plugins for effects, and if possible, make it so that the user can upload their own LV2 plugins to the device and use them in the audio engine. This would allow for a lot more flexibility and customization for users who want to use their own effects.
   - LV2 is not a good fit for this project (for now), but I will make a custom plugin system tailored to the audio engine's requirements. It will be a simple dynamic library (along with some metadata, packed into a single custom file format), loaded at runtime by the audio engine.
@@ -216,10 +217,13 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Centralize persistent settings under `/audiox/config/` and separate script definitions from MIDI settings.
   - [x] Include script-owned data in backups, recover interrupted restores, and keep telemetry device-local.
   - [x] Use atomic MIDI/effect/routing and HTTP file replacement; extend newer-schema overwrite protection to raw Lua and HTTP writes.
-- [ ] Validate settings on a populated physical Pi: staged USB settings, routing, scripts and options, scenes, Bluetooth pairing, backup/restore, and reboot persistence.
-- [ ] Gate firmware trial confirmation on audio readiness and ongoing audio-thread progress, not only 60 seconds of main-loop uptime (`src/init/recovery.cpp`, `src/init/init.cpp`, `src/audio/processing.cpp`). Test a responsive main loop with a stalled audio thread.
-- [ ] Reject incomplete rollback boot backups and preserve trial/backup state when restoration is incomplete (`include/boot_recovery.hpp`). Required boot files currently may be skipped during both backup and revert.
-- [ ] Fault-inject interruption at update, rollback, configuration-save, and restore persistence boundaries; validate FAT boot-partition power-loss behavior on hardware before declaring 2.0 stable.
+- [x] Validate settings on a populated physical Pi: staged USB settings, routing, scripts and options, scenes, Bluetooth pairing, backup/restore, and reboot persistence.
+- [x] Gate firmware trial confirmation on audio readiness and ongoing audio-thread progress, not only 60 seconds of main-loop uptime (`src/init/recovery.cpp`, `src/init/init.cpp`, `src/audio/processing.cpp`). Test a responsive main loop with a stalled audio thread.
+- [x] Reject incomplete rollback boot backups and preserve trial/backup state when restoration is incomplete (`include/boot_recovery.hpp`).
+- [x] Fault-inject interruption at update, rollback, configuration-save, and restore persistence boundaries.
+- [ ] Validate FAT boot-partition power-loss behavior on hardware before declaring 2.0 stable.
+- [x] Add a channel-and-note-bindable, temporary passthrough-only toggle with MIDI learn: clear controller lighting, pause scripts and local MIDI actions, forward every channel except the toggle, and restore normal controls without restarting when USB MIDI is already enabled.
+
 
 ## Pre-2.0 validation
 - [ ] Have a friend use the setup daily for a week and report issues, feedback, or suggestions.

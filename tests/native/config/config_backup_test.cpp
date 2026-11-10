@@ -12,6 +12,17 @@
 #include <unistd.h>
 
 namespace fs = std::filesystem;
+static bool failSync = false;
+
+extern "C" int __real_fsync(int);
+extern "C" int __wrap_fsync(int fd) {
+    if (failSync) {
+        failSync = false;
+        errno = EIO;
+        return -1;
+    }
+    return __real_fsync(fd);
+}
 
 namespace {
 
@@ -180,6 +191,9 @@ void testRoundTrip() {
     assert(snapshot(target) == before);
     char error[256];
     assert(audiox::backup::stage(target.c_str(), fd, (uint64_t)lseek(fd, 0, SEEK_END), error, sizeof(error)) < 0);
+    failSync = true;
+    assert(audiox::backup::applyPending(target.c_str(), error, sizeof(error)) < 0);
+    assert(fs::exists(target / ".config-restore"));
     apply(target);
     assert(snapshot(target) == expected);
     assert(get(target / "config.txt") == "legacy must remain");

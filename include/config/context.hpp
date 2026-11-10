@@ -136,6 +136,7 @@ enum MidiActionType : uint8_t {
     MIDI_ACTION_NONE = 0,
     MIDI_ACTION_STOP_ALL = 1,
     MIDI_ACTION_SAMPLER_TOGGLE = 2,
+    MIDI_ACTION_PASSTHROUGH_TOGGLE = 3,
 };
 
 const char *soundboardModeToString(uint8_t mode);
@@ -194,6 +195,7 @@ struct SoundboardGridCell {
 struct MidiActionMapping {
     uint8_t note;
     uint8_t action; // MidiActionType
+    uint8_t channel{0}; // Used only by passthrough toggle; older bindings default to channel 0.
 };
 
 // Contents of midi_map.txt: note→sfx mappings plus lighting config.

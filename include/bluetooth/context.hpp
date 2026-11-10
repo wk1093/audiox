@@ -59,7 +59,7 @@ struct BluetoothLink {
     // Outgoing L2CAP connect still in progress.
     bool signalingConnecting;
     bool automaticConnect;
-    // User-visible "connecting": until the output starts, or the signaling
+    // User-visible "connecting": until the output is ready (possibly paused), or the signaling
     // channel is up for an input-only device.
     bool connecting;
     uint64_t deadlineMs;
@@ -133,6 +133,9 @@ struct BluetoothLink {
     uint32_t rtpSequence;
     uint32_t rtpTimestamp;
     uint64_t silenceSinceMs;
+    // Continuous media socket backpressure, then a paced retry after yielding.
+    uint64_t outBlockedSinceMs;
+    uint64_t outRetryAtMs;
     uint64_t statsNextMs;
     uint32_t droppedAtStats;
 };
@@ -294,6 +297,7 @@ private:
     void logInputStats(int index, uint64_t nowMs, bool force);
     void pumpOutputAudio(int index);
     void flushOutputPacket(int index);
+    void waitForOutput(int index, const char *reason);
     void closeInputStream(int index, const char *reason);
     void closeOutputStream(int index, const char *reason);
     void closeLink(int index, const char *reason, bool hold = false);

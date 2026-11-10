@@ -14,6 +14,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,12 +40,36 @@
 #ifndef BOOT_RECOVERY_CONFIRM_SECONDS
 #define BOOT_RECOVERY_CONFIRM_SECONDS 60
 #endif
+#ifndef BOOT_RECOVERY_AUDIO_STALE_MS
+#define BOOT_RECOVERY_AUDIO_STALE_MS 5000
+#endif
 #define BOOT_RECOVERY_LOG_TAIL_BYTES (32 * 1024)
 
 enum BootTrialAction {
     BOOT_TRIAL_NONE,
     BOOT_TRIAL_ATTEMPT,
     BOOT_TRIAL_REVERT,
+};
+
+class BootRecoveryHealthGate {
+public:
+    bool update(uint64_t now_ms, uint64_t audio_progress_at_ms) {
+        if (!audio_progress_at_ms || audio_progress_at_ms > now_ms ||
+            now_ms - audio_progress_at_ms > BOOT_RECOVERY_AUDIO_STALE_MS) {
+            healthySinceMs_ = 0;
+            return false;
+        }
+        if (!healthySinceMs_) {
+            healthySinceMs_ = now_ms;
+        }
+        return now_ms >= healthySinceMs_ &&
+               now_ms - healthySinceMs_ >= (uint64_t)BOOT_RECOVERY_CONFIRM_SECONDS * 1000;
+    }
+
+    void reset() { healthySinceMs_ = 0; }
+
+private:
+    uint64_t healthySinceMs_ = 0;
 };
 
 static inline const char *bootRecoveryFileName(size_t index) {
@@ -117,12 +142,13 @@ static inline int brWriteAll(int fd, const void *buf, size_t len) {
     return 0;
 }
 
-static inline void brFsyncDir(const char *path) {
+static inline int brFsyncDir(const char *path) {
     int fd = open(path, O_RDONLY | O_DIRECTORY);
-    if (fd >= 0) {
-        (void)fsync(fd);
-        close(fd);
-    }
+    if (fd < 0) return -1;
+    int rc = fsync(fd), saved = errno;
+    if (close(fd) < 0 && rc == 0) return -1;
+    errno = saved;
+    return rc;
 }
 
 static inline int brCopyFile(const char *src, const char *dst) {
@@ -156,8 +182,8 @@ static inline int brCopyFile(const char *src, const char *dst) {
         rc = -1;
     }
     int saved = errno;
-    close(out);
-    close(in);
+    if (close(out) < 0 && rc == 0) { rc = -1; saved = errno; }
+    if (close(in) < 0 && rc == 0) { rc = -1; saved = errno; }
     if (rc < 0) {
         unlink(dst);
         errno = saved;
@@ -184,15 +210,19 @@ static inline int brWriteFileAtomic(const char *dir, const char *name, const cha
         errno = saved;
         return -1;
     }
-    close(fd);
+    if (close(fd) < 0) {
+        int saved = errno;
+        unlink(tmp);
+        errno = saved;
+        return -1;
+    }
     if (rename(tmp, path) < 0) {
         int saved = errno;
         unlink(tmp);
         errno = saved;
         return -1;
     }
-    brFsyncDir(dir);
-    return 0;
+    return brFsyncDir(dir);
 }
 
 static inline ssize_t brReadSmallFile(const char *path, char *buf, size_t buf_sz) {
@@ -210,12 +240,20 @@ static inline ssize_t brReadSmallFile(const char *path, char *buf, size_t buf_sz
         if (nr < 0 && errno == EINTR) {
             continue;
         }
-        if (nr <= 0) {
+        if (nr < 0) {
+            int saved = errno;
+            close(fd);
+            errno = saved;
+            return -1;
+        }
+        if (nr == 0) {
             break;
         }
         have += (size_t)nr;
     }
-    close(fd);
+    int saved = errno;
+    if (close(fd) < 0) return -1;
+    errno = saved;
     buf[have] = '\0';
     return (ssize_t)have;
 }
@@ -230,7 +268,7 @@ static inline void brAppendText(const char *path, const char *text) {
     close(fd);
 }
 
-static inline void brRemoveFlatDir(const char *dir) {
+static inline int brRemoveFlatDir(const char *dir) {
     DIR *d = opendir(dir);
     if (d) {
         struct dirent *entry;
@@ -240,12 +278,17 @@ static inline void brRemoveFlatDir(const char *dir) {
             }
             char path[512];
             if (brPath(path, sizeof(path), dir, entry->d_name, NULL) == 0) {
-                unlink(path);
+                if (unlink(path) < 0 && errno != ENOENT) {
+                    int saved = errno;
+                    closedir(d);
+                    errno = saved;
+                    return -1;
+                }
             }
         }
-        closedir(d);
-    }
-    rmdir(dir);
+        if (closedir(d) < 0) return -1;
+    } else if (errno != ENOENT) return -1;
+    return rmdir(dir) < 0 && errno != ENOENT ? -1 : 0;
 }
 
 static inline int bootRecoveryEnsureStateDir(const char *root_dir, char *state_dir, size_t state_sz) {
@@ -259,13 +302,88 @@ static inline int bootRecoveryEnsureStateDir(const char *root_dir, char *state_d
     return 0;
 }
 
-static inline int bootRecoveryHasBackup(const char *root_dir) {
-    char version_path[512];
-    if (brPath(version_path, sizeof(version_path), root_dir, BOOT_RECOVERY_DIR_NAME "/" BOOT_RECOVERY_BACKUP_NAME,
-               BOOT_RECOVERY_VERSION_NAME) < 0) {
-        return 0;
+static inline int bootRecoveryBackupPresent(const char *root_dir, char *backup_dir, size_t backup_sz) {
+    if (brPath(backup_dir, backup_sz, root_dir, BOOT_RECOVERY_DIR_NAME "/" BOOT_RECOVERY_BACKUP_NAME, NULL) < 0) {
+        errno = ENAMETOOLONG;
+        return -1;
     }
-    return access(version_path, F_OK) == 0;
+    struct stat st{};
+    if (lstat(backup_dir, &st) == 0) {
+        if (!S_ISDIR(st.st_mode)) {
+            errno = EINVAL;
+            return -1;
+        }
+        return 1;
+    }
+    return errno == ENOENT ? 0 : -1;
+}
+
+static inline int bootRecoveryConfiguredKernel(const char *boot_dir, char *kernel_name, size_t kernel_sz) {
+    char config_path[512];
+    char config_text[16384];
+    if (brPath(config_path, sizeof(config_path), boot_dir, "config.txt", NULL) < 0) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    const ssize_t len = brReadSmallFile(config_path, config_text, sizeof(config_text));
+    if (len <= 0 || (size_t)len == sizeof(config_text) - 1) {
+        if (len >= 0) errno = EINVAL;
+        return -1;
+    }
+    audioxConfigKernelName(config_text, (size_t)len, kernel_name, kernel_sz);
+    if (!audioxUpdateValidKernelName(kernel_name)) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
+static inline int bootRecoveryRequiredFilesPresent(const char *dir, const char *kernel_name) {
+    for (size_t i = 0; i <= 3; ++i) {
+        char path[512];
+        struct stat st{};
+        if (brPath(path, sizeof(path), dir, bootRecoveryFileName(i), NULL) < 0) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        if (lstat(path, &st) < 0) return -1;
+        if (!S_ISREG(st.st_mode) || st.st_size <= 0) {
+            errno = EINVAL;
+            return -1;
+        }
+    }
+    char kernel_path[512];
+    struct stat kernel_st{};
+    if (brPath(kernel_path, sizeof(kernel_path), dir, kernel_name, NULL) < 0) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    if (lstat(kernel_path, &kernel_st) < 0) return -1;
+    if (!S_ISREG(kernel_st.st_mode) || kernel_st.st_size <= 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
+static inline int bootRecoveryValidateBackup(const char *backup_dir) {
+    char version_path[512];
+    char version_text[128];
+    char kernel_name[AUDIOX_UPDATE_VALUE_MAX];
+    if (brPath(version_path, sizeof(version_path), backup_dir, BOOT_RECOVERY_VERSION_NAME, NULL) < 0 ||
+        brReadSmallFile(version_path, version_text, sizeof(version_text)) <= 0 ||
+        bootRecoveryConfiguredKernel(backup_dir, kernel_name, sizeof(kernel_name)) < 0 ||
+        bootRecoveryRequiredFilesPresent(backup_dir, kernel_name) < 0) {
+        if (!errno) errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
+static inline int bootRecoveryHasBackup(const char *root_dir) {
+    char backup_dir[512];
+    return bootRecoveryBackupPresent(root_dir, backup_dir, sizeof(backup_dir)) == 1 &&
+           bootRecoveryValidateBackup(backup_dir) == 0;
 }
 
 static inline int bootRecoveryTrialPending(const char *root_dir) {
@@ -284,27 +402,31 @@ static inline int bootRecoveryPrepareUpdate(const char *root_dir, const char *bo
         return -1;
     }
 
-    if (!bootRecoveryHasBackup(root_dir)) {
-        char backup_dir[512];
-        char tmp_dir[512];
-        if (brPath(backup_dir, sizeof(backup_dir), state_dir, BOOT_RECOVERY_BACKUP_NAME, NULL) < 0 ||
-            brPath(tmp_dir, sizeof(tmp_dir), state_dir, BOOT_RECOVERY_BACKUP_NAME ".tmp", NULL) < 0) {
+    char backup_dir[512];
+    char tmp_dir[512];
+    int backup_present = bootRecoveryBackupPresent(root_dir, backup_dir, sizeof(backup_dir));
+    if (backup_present < 0) return -1;
+    if (backup_present && bootRecoveryValidateBackup(backup_dir) < 0) {
+        printf("[BOOT] [ERR] refusing update with an incomplete rollback backup: %s\n", strerror(errno));
+        return -1;
+    }
+    if (!backup_present) {
+        if (brPath(tmp_dir, sizeof(tmp_dir), state_dir, BOOT_RECOVERY_BACKUP_NAME ".tmp", NULL) < 0) {
             errno = ENAMETOOLONG;
             return -1;
         }
         brRemoveFlatDir(tmp_dir);
-        brRemoveFlatDir(backup_dir);
         if (mkdir(tmp_dir, 0755) < 0) {
             return -1;
         }
-        char config_path[512];
-        char config_text[16384];
         char kernel_name[AUDIOX_UPDATE_VALUE_MAX];
-        ssize_t config_len = -1;
-        if (brPath(config_path, sizeof(config_path), boot_dir, "config.txt", NULL) == 0) {
-            config_len = brReadSmallFile(config_path, config_text, sizeof(config_text));
+        if (bootRecoveryConfiguredKernel(boot_dir, kernel_name, sizeof(kernel_name)) < 0 ||
+            bootRecoveryRequiredFilesPresent(boot_dir, kernel_name) < 0) {
+            int saved = errno;
+            brRemoveFlatDir(tmp_dir);
+            errno = saved;
+            return -1;
         }
-        audioxConfigKernelName(config_text, config_len > 0 ? (size_t)config_len : 0, kernel_name, sizeof(kernel_name));
         const char *backup_names[] = {bootRecoveryFileName(0), bootRecoveryFileName(1), bootRecoveryFileName(2),
                                       bootRecoveryFileName(3), kernel_name};
         for (const char *name : backup_names) {
@@ -314,9 +436,6 @@ static inline int bootRecoveryPrepareUpdate(const char *root_dir, const char *bo
                 brPath(dst, sizeof(dst), tmp_dir, name, NULL) < 0) {
                 errno = ENAMETOOLONG;
                 return -1;
-            }
-            if (access(src, F_OK) < 0) {
-                continue;
             }
             if (brCopyFile(src, dst) < 0) {
                 int saved = errno;
@@ -331,13 +450,19 @@ static inline int bootRecoveryPrepareUpdate(const char *root_dir, const char *bo
             errno = saved;
             return -1;
         }
+        if (bootRecoveryValidateBackup(tmp_dir) < 0) {
+            int saved = errno;
+            brRemoveFlatDir(tmp_dir);
+            errno = saved;
+            return -1;
+        }
         if (rename(tmp_dir, backup_dir) < 0) {
             int saved = errno;
             brRemoveFlatDir(tmp_dir);
             errno = saved;
             return -1;
         }
-        brFsyncDir(state_dir);
+        if (brFsyncDir(state_dir) < 0) return -1;
     }
 
     char events_path[512];
@@ -433,7 +558,13 @@ static inline int bootRecoveryRevert(const char *root_dir, const char *boot_dir,
         return -1;
     }
 
-    const int has_backup = bootRecoveryHasBackup(root_dir);
+    const int backup_present = bootRecoveryBackupPresent(root_dir, backup_dir, sizeof(backup_dir));
+    if (backup_present < 0) return -1;
+    if (backup_present && bootRecoveryValidateBackup(backup_dir) < 0) {
+        printf("[BOOT] [ERR] refusing to restore an incomplete rollback backup: %s\n", strerror(errno));
+        return -1;
+    }
+    const int has_backup = backup_present;
     char restore_names[BOOT_RECOVERY_MAX_FILES][AUDIOX_UPDATE_VALUE_MAX];
     const size_t restore_count = has_backup ? bootRecoveryListBackup(backup_dir, restore_names) : 0;
     char restored_version[128] = "none";
@@ -500,12 +631,10 @@ static inline int bootRecoveryRevert(const char *root_dir, const char *boot_dir,
             rc = -1;
             continue;
         }
-        if (access(src, F_OK) < 0) {
-            continue;
-        }
         if (brCopyFile(src, tmp) < 0 || rename(tmp, dst) < 0) {
             unlink(tmp);
             rc = -1;
+            break;
         }
     }
     if (rc < 0) {
@@ -513,33 +642,33 @@ static inline int bootRecoveryRevert(const char *root_dir, const char *boot_dir,
         return -1;
     }
 
+    sync();
     char path[512];
-    if (brPath(path, sizeof(path), state_dir, BOOT_RECOVERY_TRIAL_NAME, NULL) == 0) {
-        unlink(path);
+    if (brPath(path, sizeof(path), state_dir, BOOT_RECOVERY_TRIAL_NAME, NULL) < 0 ||
+        (unlink(path) < 0 && errno != ENOENT) || brFsyncDir(state_dir) < 0) {
+        return -1;
     }
     if (brPath(path, sizeof(path), state_dir, BOOT_RECOVERY_EVENTS_NAME, NULL) == 0) {
-        unlink(path);
+        if (unlink(path) < 0 && errno != ENOENT) return -1;
     }
-    brRemoveFlatDir(backup_dir);
-    brFsyncDir(state_dir);
+    if (brRemoveFlatDir(backup_dir) < 0 || brFsyncDir(state_dir) < 0) return -1;
     return has_backup ? 0 : 1;
 }
 
 // Called by the runtime once a trial boot has stayed healthy; drops the safety copy.
-static inline void bootRecoveryConfirm(const char *root_dir) {
+static inline int bootRecoveryConfirm(const char *root_dir) {
     char state_dir[512];
     char path[512];
     if (brPath(state_dir, sizeof(state_dir), root_dir, BOOT_RECOVERY_DIR_NAME, NULL) < 0) {
-        return;
+        return -1;
     }
-    if (brPath(path, sizeof(path), state_dir, BOOT_RECOVERY_TRIAL_NAME, NULL) == 0) {
-        unlink(path);
-    }
+    if (brPath(path, sizeof(path), state_dir, BOOT_RECOVERY_TRIAL_NAME, NULL) < 0 ||
+        (unlink(path) < 0 && errno != ENOENT) || brFsyncDir(state_dir) < 0) return -1;
     if (brPath(path, sizeof(path), state_dir, BOOT_RECOVERY_EVENTS_NAME, NULL) == 0) {
-        unlink(path);
+        if (unlink(path) < 0 && errno != ENOENT) return -1;
     }
     if (brPath(path, sizeof(path), state_dir, BOOT_RECOVERY_BACKUP_NAME, NULL) == 0) {
-        brRemoveFlatDir(path);
+        if (brRemoveFlatDir(path) < 0) return -1;
     }
-    brFsyncDir(state_dir);
+    return brFsyncDir(state_dir);
 }

@@ -60,6 +60,15 @@ resumes automatically when routed audio returns. This releases the active
 audio stream for device multipoint selection where supported; the Bluetooth
 connection itself remains available.
 
+If multipoint headphones are playing another source, AudioX waits for a busy
+audio endpoint or pauses a backpressured stream instead of repeatedly
+disconnecting. It discards queued AudioX audio and retries at five-second
+intervals; playback resumes with current audio when the device accepts it.
+Pause the other source if the headphones do not switch automatically. Hard
+transport errors, signaling timeouts, and PCM overruns without transport
+backpressure still trigger the safety fallback. A blocked device that cannot
+acknowledge a safe pause also uses that fallback.
+
 **Hide unnamed devices** is on by default. It hides nearby results without a
 usable name (including names that are just the device address), but never hides
 saved Classic devices. Turn it off to inspect address-only results; the list
@@ -73,7 +82,7 @@ device can be discoverable without accepting a new pairing. Put the intended
 audio device into pairing mode before choosing Pair.
 
 Each device card reports both directions: **Connected as audio output** (with
-**paused while idle** while AudioX has paused the stream) and **Connected as
+**audio paused** while the stream is idle or waiting for the device) and **Connected as
 audio input**, followed by **receiving audio** while the device is playing or
 **waiting for audio** while it is connected but silent. Phones usually start
 the stream only while something is playing.

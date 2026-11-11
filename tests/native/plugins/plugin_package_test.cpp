@@ -1,7 +1,6 @@
 #include "audio/plugin_package.hpp"
 #include <cassert>
 #include <cstring>
-#include <elf.h>
 #include <filesystem>
 #include <fstream>
 #include <sys/stat.h>
@@ -10,24 +9,9 @@
 using namespace audiox::plugin;
 
 namespace {
-void putAt(std::vector<uint8_t> &bytes, size_t at, uint64_t value, size_t count) {
-    for (size_t i = 0; i < count; ++i) bytes[at + i] = static_cast<uint8_t>(value >> (i * 8));
-}
 std::vector<uint8_t> module() {
-    std::vector<uint8_t> bytes(120);
-    std::memcpy(bytes.data(), ELFMAG, SELFMAG);
-    bytes[EI_CLASS] = ELFCLASS64; bytes[EI_DATA] = ELFDATA2LSB; bytes[EI_VERSION] = EV_CURRENT;
-    putAt(bytes, 16, ET_DYN, 2);
-#if defined(__aarch64__)
-    putAt(bytes, 18, EM_AARCH64, 2);
-#else
-    putAt(bytes, 18, EM_X86_64, 2);
-#endif
-    putAt(bytes, 20, EV_CURRENT, 4); putAt(bytes, 32, 64, 8);
-    putAt(bytes, 52, 64, 2); putAt(bytes, 54, 56, 2); putAt(bytes, 56, 1, 2);
-    putAt(bytes, 64, PT_LOAD, 4); putAt(bytes, 96, bytes.size(), 8);
-    putAt(bytes, 104, bytes.size(), 8);
-    return bytes;
+    // Archive validation checks framing; LLVM validation belongs to the compiler.
+    return {'B', 'C', 0xc0, 0xde, 0, 0, 0, 0};
 }
 Entry textEntry(uint32_t kind, const char *name, const std::string &text) {
     return Entry{kind, name, std::vector<uint8_t>(text.begin(), text.end())};
@@ -35,7 +19,7 @@ Entry textEntry(uint32_t kind, const char *name, const std::string &text) {
 std::vector<Entry> entries(const std::string &id = "plugin_gain") {
     return {textEntry(Metadata, "axm.txt", "id=" + id +
             "\nname=Gain\nversion=1.0\napi=1\nparam=gain|Gain|0|2|1\n"),
-            Entry{Module, "module.so", module()}, textEntry(Asset, "index.html", "<p>Gain</p>"),
+            Entry{Module, "module.bc", module()}, textEntry(Asset, "index.html", "<p>Gain</p>"),
             textEntry(Asset, "controls.js", "window.gain=1;"),
             textEntry(Asset, "style.css", "body{color:white}")};
 }
@@ -115,7 +99,7 @@ int main() {
         assert(!parsePackage(bytes.data(), length, package, error));
     assert(!parsePackage(nullptr, bytes.size(), package, error));
     for (auto mutation : std::vector<std::pair<size_t, uint8_t>>{
-            {0, 'X'}, {8, 2}, {12, 0}, {12, 19}, {16, 99}, {20, 255},
+            {0, 'X'}, {8, 3}, {12, 0}, {12, 19}, {16, 99}, {20, 255},
             {24, 255}, {32, static_cast<uint8_t>(bytes[32] ^ 1)}}) {
         auto corrupt = bytes; corrupt[mutation.first] = mutation.second;
         assert(!parsePackage(corrupt.data(), corrupt.size(), package, error));
@@ -143,23 +127,20 @@ int main() {
     assert(!buildPackage(invalid, out, error));
     invalid = source; invalid[0].data = std::vector<uint8_t>{'a', 0, 'b'};
     assert(!buildPackage(invalid, out, error));
-    for (size_t at : {size_t(EI_CLASS), size_t(EI_DATA), size_t(16), size_t(18),
-                      size_t(32), size_t(52), size_t(54), size_t(56), size_t(96)}) {
+    for (size_t at : {size_t(0), size_t(1), size_t(2), size_t(3)}) {
         invalid = source; invalid[1].data[at] = 255;
         assert(!buildPackage(invalid, out, error));
     }
-    invalid = source; putAt(invalid[1].data, 40, 119, 8);
-    putAt(invalid[1].data, 58, 64, 2); putAt(invalid[1].data, 60, 1, 2);
+    invalid = source; invalid[1].name = "module.so";
     assert(!buildPackage(invalid, out, error));
-    invalid = source;
-#if defined(__aarch64__)
-    putAt(invalid[1].data, 18, EM_X86_64, 2);
-#else
-    putAt(invalid[1].data, 18, EM_AARCH64, 2);
-#endif
-    auto otherArch = encode(invalid);
-    assert(parsePackage(otherArch.data(), otherArch.size(), package, error));
-    assert(!parsePackage(otherArch.data(), otherArch.size(), package, error, true));
+    assert(error.find("rebuild required") != std::string::npos);
+    invalid = source; invalid[1].data = {0x7f, 'E', 'L', 'F'};
+    assert(!buildPackage(invalid, out, error));
+    assert(error.find("rebuild required") != std::string::npos);
+    auto legacy = bytes;
+    legacy[8] = 1;
+    assert(!parsePackage(legacy.data(), legacy.size(), package, error));
+    assert(error.find("rebuild required") != std::string::npos);
 
     const std::string base = "tests/.plugin-package-" + std::to_string(getpid());
     const std::string root = base + "/plugins";
@@ -170,13 +151,13 @@ int main() {
     assert(!std::filesystem::exists(base));
     assert(!listPackages(base + "/../bad", installed, error));
     assert(!listPackages(std::string("tests/bad\0hidden", 16), installed, error));
-    assert(!installPackage(otherArch.data(), otherArch.size(), root, error));
+    assert(!installPackage(legacy.data(), legacy.size(), root, error));
     assert(!std::filesystem::exists(base));
     const mode_t previousMask = umask(0077);
     assert(installPackage(bytes.data(), bytes.size(), root, error));
     umask(previousMask);
     struct stat installedMode{};
-    assert(stat((root + "/plugin_gain/module.so").c_str(), &installedMode) == 0);
+    assert(stat((root + "/plugin_gain/module.bc").c_str(), &installedMode) == 0);
     assert((installedMode.st_mode & 0777) == 0644);
     assert(stat(root.c_str(), &installedMode) == 0 && (installedMode.st_mode & 0777) == 0755);
     assert(stat((root + "/plugin_gain").c_str(), &installedMode) == 0 &&
@@ -184,10 +165,53 @@ int main() {
     assert(!installPackage(bytes.data(), bytes.size(), root, error));
     assert(listPackages(root, installed, error) && installed.size() == 1);
     assert(readPluginAsset("plugin_gain", "index.html", root, asset, error) && asset == "<p>Gain</p>");
-    assert(!readPluginAsset("plugin_gain", "module.so", root, asset, error));
+    assert(!readPluginAsset("plugin_gain", "module.bc", root, asset, error));
     assert(!readPluginAsset("../bad", "index.html", root, asset, error));
     assert(!readPluginAsset("plugin_gain", "../axm.txt", root, asset, error));
     const std::string plugin = root + "/plugin_gain";
+    const auto legacyInstalled = [&](const std::string &id) {
+        const auto archive = encode(entries(id));
+        assert(installPackage(archive.data(), archive.size(), root, error));
+        const std::string path = root + "/" + id;
+        std::ifstream input(path + "/.checksums", std::ios::binary);
+        std::string oldManifest{std::istreambuf_iterator<char>(input), {}};
+        assert(oldManifest.size() >= 16);
+        oldManifest[8] = 1;
+        const auto moduleName = oldManifest.find("module.bc");
+        assert(moduleName != std::string::npos);
+        oldManifest.replace(moduleName, 9, "module.so");
+        write(path + "/.checksums", oldManifest);
+        assert(rename((path + "/module.bc").c_str(), (path + "/module.so").c_str()) == 0);
+        write(path + "/module.so", "\177ELF legacy");
+        return path;
+    };
+    const auto oldPlugin = legacyInstalled("plugin_legacy");
+    assert(listPackages(root, installed, error) && error.empty() && installed.size() == 1);
+    assert(!std::filesystem::exists(oldPlugin) && std::filesystem::exists(plugin));
+    assert(listPackages(root, installed, error) && installed.size() == 1);
+    assert(readPluginAsset("plugin_gain", "index.html", root, asset, error));
+
+    // Installation also scans the catalog, so old modules cannot block replacements.
+    legacyInstalled("plugin_legacy");
+    auto replacement = encode(entries("plugin_legacy"));
+    assert(installPackage(replacement.data(), replacement.size(), root, error));
+    assert(std::filesystem::exists(oldPlugin + "/module.bc"));
+    assert(removePackage("plugin_legacy", root, error));
+
+    legacyInstalled("plugin_legacy");
+    assert(unlink((oldPlugin + "/module.so").c_str()) == 0);
+    assert(symlink("../../secret.html", (oldPlugin + "/module.so").c_str()) == 0);
+    assert(!listPackages(root, installed, error));
+    assert(error.find("cannot remove legacy plugin plugin_legacy") != std::string::npos);
+    assert(std::filesystem::exists(oldPlugin + "/axm.txt"));
+    assert(unlink((oldPlugin + "/module.so").c_str()) == 0);
+    write(oldPlugin + "/unknown.txt", "keep");
+    assert(!listPackages(root, installed, error));
+    assert(std::filesystem::exists(oldPlugin + "/axm.txt"));
+    assert(unlink((oldPlugin + "/unknown.txt").c_str()) == 0);
+    // A partially removed old package is still recognized by its format marker.
+    assert(listPackages(root, installed, error) && installed.size() == 1);
+    assert(!std::filesystem::exists(oldPlugin));
     write(plugin + "/controls.js", "corrupt");
     assert(!listPackages(root, installed, error));
     assert(!readPluginAsset("plugin_gain", "index.html", root, asset, error));
@@ -207,9 +231,10 @@ int main() {
     assert(!originalManifest.empty());
     write(manifest, originalManifest + "extra");
     assert(!listPackages(root, installed, error));
+    assert(std::filesystem::exists(plugin + "/module.bc"));
     write(manifest, originalManifest);
     assert(listPackages(root, installed, error));
-    write(plugin + "/module.so", "not ELF");
+    write(plugin + "/module.bc", "not bitcode");
     assert(!listPackages(root, installed, error));
     assert(removePackage("plugin_gain", root, error));
     assert(installPackage(bytes.data(), bytes.size(), root, error));
@@ -224,6 +249,9 @@ int main() {
     write(plugin + "/index.html", "<p>Gain</p>");
     assert(removePackage("plugin_gain", root, error));
     assert(!removePackage("plugin_gain", root, error));
+    legacyInstalled("plugin_legacy");
+    assert(listPackages(root, installed, error) && installed.empty() && error.empty());
+    assert(!std::filesystem::exists(oldPlugin));
     assert(symlink("plugins", (base + "/alias").c_str()) == 0);
     assert(!listPackages(base + "/alias", installed, error));
     assert(!installPackage(bytes.data(), bytes.size(), base + "/alias", error));

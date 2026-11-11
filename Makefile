@@ -21,10 +21,10 @@ CPP_SRCS := $(sort $(shell find src -type f -name '*.cpp' 2>/dev/null))
 BOOTLOADER_SRC := src/init/bootloader.cpp
 RUNTIME_MAIN_SRC := src/init/init.cpp
 WATCHDOG_SRC := src/init/watchdog.cpp
-PLUGIN_WORKER_SRC := src/plugin_worker/main.cpp
+AUDIO_WORKER_SRC := src/audio_worker/main.cpp
 DSP_BITCODE_SRCS := $(addprefix src/audio/effects/,gain.cpp distortion.cpp pitch.cpp reverb.cpp gate.cpp dynamics.cpp equalizer.cpp noise_reduction.cpp native_kernels.cpp native_graph.cpp)
 DSP_STATELESS_SRCS := $(addprefix src/audio/effects/,gain.cpp distortion.cpp reverb.cpp gate.cpp native_kernels.cpp native_graph.cpp)
-RUNTIME_CPP_SRCS := $(filter-out $(BOOTLOADER_SRC) $(RUNTIME_MAIN_SRC) $(WATCHDOG_SRC) $(PLUGIN_WORKER_SRC) $(DSP_STATELESS_SRCS),$(CPP_SRCS))
+RUNTIME_CPP_SRCS := $(filter-out $(BOOTLOADER_SRC) $(RUNTIME_MAIN_SRC) $(WATCHDOG_SRC) $(AUDIO_WORKER_SRC) $(DSP_STATELESS_SRCS),$(CPP_SRCS))
 RUNTIME_SRCS := $(RUNTIME_CPP_SRCS)
 RUNTIME_COMPILER := $(CXX)
 RUNTIME_FLAGS = $(CXXFLAGS)
@@ -115,7 +115,7 @@ RUNTIME_LIBS += $(LUA_STATIC_LIB) -lm
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 17
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.3
+AUDIOX_VERSION_PRERELEASE ?= beta.4
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
 $(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
@@ -309,9 +309,10 @@ BOOTLOADER_DEFINES = -DKERNEL_VERSION='"$(KV)"' -DAUDIOX_QEMU=$(AUDIOX_QEMU)
 
 RUNTIME_OBJS := $(patsubst src/%.cpp,$(RUNTIME_OBJ_DIR)/%.o,$(RUNTIME_CPP_SRCS))
 RUNTIME_MAIN_OBJ := $(patsubst src/%.cpp,$(RUNTIME_OBJ_DIR)/%.o,$(RUNTIME_MAIN_SRC))
+AUDIO_WORKER_OBJ := $(patsubst src/%.cpp,$(RUNTIME_OBJ_DIR)/%.o,$(AUDIO_WORKER_SRC))
 WATCHDOG_OBJ := $(patsubst src/%.cpp,$(RUNTIME_OBJ_DIR)/%.o,$(WATCHDOG_SRC))
 BOOTLOADER_OBJS := $(patsubst src/%.cpp,$(BOOTLOADER_OBJ_DIR)/%.o,$(BOOTLOADER_SRCS))
-RUNTIME_DEPS_FILES := $(RUNTIME_OBJS:.o=.d) $(RUNTIME_MAIN_OBJ:.o=.d) $(WATCHDOG_OBJ:.o=.d)
+RUNTIME_DEPS_FILES := $(RUNTIME_OBJS:.o=.d) $(RUNTIME_MAIN_OBJ:.o=.d) $(AUDIO_WORKER_OBJ:.o=.d) $(WATCHDOG_OBJ:.o=.d)
 RUNTIME_VERSION_FILE := $(RUNTIME_OBJ_DIR)/audiox-version
 
 .PHONY: force-runtime-version
@@ -322,7 +323,7 @@ $(RUNTIME_VERSION_FILE): force-runtime-version
 	@printf '%s\n' "$(AUDIOX_VERSION_STRING)" > "$@.tmp"
 	@if cmp -s "$@.tmp" "$@"; then rm -f "$@.tmp"; else mv "$@.tmp" "$@"; fi
 
-$(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ) $(WATCHDOG_OBJ): $(RUNTIME_VERSION_FILE)
+$(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ) $(AUDIO_WORKER_OBJ) $(WATCHDOG_OBJ): $(RUNTIME_VERSION_FILE)
 BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
 
@@ -571,7 +572,7 @@ $(RUNTIME_OBJ_DIR)/audio/effects/slot.o: RUNTIME_FLAGS += -ffp-contract=off
 $(addprefix $(RUNTIME_OBJ_DIR)/audio/effects/,dynamics.o equalizer.o noise_reduction.o): RUNTIME_FLAGS += -Wno-unused-function
 
 # Runtime objects include ALSA, SBC, and Lua headers, so their build-only
-$(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ): | $(RUNTIME_DEPS) $(SBC_STATIC_LIB) $(SBC_HEADER) $(LUA_STATIC_LIB) $(LUA_HEADERS)
+$(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ) $(AUDIO_WORKER_OBJ): | $(RUNTIME_DEPS) $(SBC_STATIC_LIB) $(SBC_HEADER) $(LUA_STATIC_LIB) $(LUA_HEADERS)
 
 $(BOOTLOADER_ROOTFS_DIR)/init: $(BOOTLOADER_OBJS)
 	@echo "Compiling bootloader init..."
@@ -592,21 +593,21 @@ $(ROOTFS_DIR)/sbin/audiox-main: $(RUNTIME_DEPS) $(RUNTIME_OBJS) $(RUNTIME_MAIN_O
 	$(RUNTIME_COMPILER) $(RUNTIME_FLAGS) \
 		-o $@ $(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ) $(RUNTIME_LIBS)
 
-$(ROOTFS_DIR)/sbin/audiox-plugin-worker: $(PLUGIN_WORKER_SRC) include/audio/plugin_api.h include/audio/plugin_ipc.hpp
+$(ROOTFS_DIR)/sbin/audiox-audio-worker: $(RUNTIME_DEPS) $(RUNTIME_OBJS) $(AUDIO_WORKER_OBJ) $(SBC_STATIC_LIB) $(LUA_STATIC_LIB)
 	@mkdir -p "$(dir $@)"
-	$(CXX) $(filter-out -static,$(CXXFLAGS)) $(RUNTIME_DEFINES) -o "$@" "$<" -ldl -lm
+	$(RUNTIME_COMPILER) $(RUNTIME_FLAGS) -o "$@" $(RUNTIME_OBJS) $(AUDIO_WORKER_OBJ) $(RUNTIME_LIBS)
 
 $(GRAPH_LLVM_ROOT)/ready: tools/build/build_graph_llvm.sh
 	bash "$<" "$(GRAPH_LLVM_ROOT)" "$(CC)" "$(CXX)"
 
-$(GRAPH_COMPILER_BIN): tools/build/graph-compiler.cpp include/audio/graph_native.hpp include/audio/graph_block.hpp include/audio/effects/native.hpp $(GRAPH_LLVM_ROOT)/ready Makefile
+$(GRAPH_COMPILER_BIN): tools/build/graph-compiler.cpp include/audio/graph_native.hpp include/audio/plugin_native.hpp include/audio/graph_block.hpp include/audio/effects/native.hpp $(GRAPH_LLVM_ROOT)/ready Makefile
 	@mkdir -p "$(dir $@)"
 	$(CXX) $(CXXFLAGS) -ffunction-sections -fdata-sections -Wl,--gc-sections \
 		-isystem "$(GRAPH_LLVM_ROOT)/source/llvm/include" \
 		-isystem "$(GRAPH_LLVM_ROOT)/build/include" -o "$@" "$<" \
 		-Wl,--start-group $(wildcard $(GRAPH_LLVM_ROOT)/build/lib/libLLVM*.a) -Wl,--end-group $(LIBS) -ldl
 
-$(HOST_GRAPH_COMPILER): tools/build/graph-compiler.cpp include/audio/graph_native.hpp include/audio/graph_block.hpp include/audio/effects/native.hpp
+$(HOST_GRAPH_COMPILER): tools/build/graph-compiler.cpp include/audio/graph_native.hpp include/audio/plugin_native.hpp include/audio/graph_block.hpp include/audio/effects/native.hpp
 	@mkdir -p "$(dir $@)"
 	@command -v "$(HOST_LLVM_CONFIG)" >/dev/null || { echo "LLVM development files required for native graph tests"; exit 1; }
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -isystem "$$($(HOST_LLVM_CONFIG) --includedir)" \
@@ -632,13 +633,15 @@ axm-pack: $(OUT_DIR)/host/axm-pack
 
 plugin-examples: $(OUT_DIR)/plugins/gain.axm $(OUT_DIR)/plugins/softclip.axm
 
-$(OUT_DIR)/plugins/gain.so: examples/plugins/gain/gain.c include/audio/plugin_api.h
-$(OUT_DIR)/plugins/softclip.so: examples/plugins/softclip/softclip.c include/audio/plugin_api.h
-$(OUT_DIR)/plugins/gain.so $(OUT_DIR)/plugins/softclip.so:
+$(OUT_DIR)/plugins/gain.bc: examples/plugins/gain/gain.c include/audio/plugin_api.h
+$(OUT_DIR)/plugins/softclip.bc: examples/plugins/softclip/softclip.c include/audio/plugin_api.h
+$(OUT_DIR)/plugins/gain.bc $(OUT_DIR)/plugins/softclip.bc:
 	@mkdir -p "$(dir $@)"
-	$(CC) -std=c11 -O2 -fPIC -shared -fvisibility=hidden -Iinclude -o "$@" "$<" -lm
+	$(DSP_CLANGXX) --target=aarch64-linux-gnu -x c -std=c11 -O1 -fPIC -fno-stack-protector \
+		-ffp-contract=off -fno-unwind-tables -fno-asynchronous-unwind-tables \
+		-Iinclude -emit-llvm -c -o "$@" "$<"
 
-$(OUT_DIR)/plugins/%.axm: $(OUT_DIR)/plugins/%.so examples/plugins/%/axm.txt $(OUT_DIR)/host/axm-pack
+$(OUT_DIR)/plugins/%.axm: $(OUT_DIR)/plugins/%.bc examples/plugins/%/axm.txt $(OUT_DIR)/host/axm-pack
 	@rm -f "$@"
 	"$(OUT_DIR)/host/axm-pack" "examples/plugins/$*/axm.txt" "$<" "$@" $(wildcard examples/plugins/$*/*.html examples/plugins/$*/*.js examples/plugins/$*/*.css)
 
@@ -686,8 +689,9 @@ $(CURDIR)/web/embedded/node_modules/.audiox-assets-installed: $(CURDIR)/web/embe
 	npm ci --prefix "$(CURDIR)/web/embedded" --ignore-scripts --no-audit --no-fund
 	touch "$@"
 
-rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(ROOTFS_DIR)/sbin/audiox-plugin-worker $(GRAPH_COMPILER_BIN) $(DSP_BITCODE_FILES) $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB) $(LUA_STAGED_LICENSE) $(DNSMASQ_BIN) check_dnsmasq_conf web_assets
+rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(ROOTFS_DIR)/sbin/audiox-audio-worker $(GRAPH_COMPILER_BIN) $(DSP_BITCODE_FILES) $(MODULE_LOAD_LIST) $(MODULE_LOAD_BASE_LIST) $(MODULE_LOAD_NORMAL_LIST) bluetooth_firmware $(SBC_STATIC_LIB) $(LUA_STAGED_LICENSE) $(DNSMASQ_BIN) check_dnsmasq_conf web_assets
 	@echo "Creating runtime rootfs structure..."
+	rm -f "$(ROOTFS_DIR)/sbin/audiox-plugin-worker"
 	mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/sbin $(ROOTFS_DIR)/etc
 	mkdir -p $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/dev $(ROOTFS_DIR)/tmp
 	mkdir -p $(ROOTFS_DIR)/etc/www

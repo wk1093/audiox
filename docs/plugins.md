@@ -1,9 +1,19 @@
-# Native effect plugins
+# LLVM bitcode effect plugins
 
-An `.axm` is an AudioX Module package containing a native mono effect, metadata,
-and optional HTML/CSS/JavaScript controls. Native code runs in an isolated worker,
-never in the HTTP server or audio parent process. Installing a package only parses
-data and checks ELF headers; it does not load or execute its module.
+An `.axm` is an AudioX Module package containing a mono effect as LLVM bitcode,
+metadata, and optional HTML/CSS/JavaScript controls. The audio worker compiles the
+bitcode to a private native image and executes it directly in its audio graph.
+The HTTP/control process never loads or executes plugin code. Installation only
+validates package framing, checksums, metadata, and bitcode magic.
+
+**Breaking format change:** format-1 packages and ELF `.so` modules are no longer
+supported. Rebuild them as format-2 packages containing `module.bc`; legacy
+uploads produce an explicit rebuild-required error. Previously installed format-1
+packages are automatically deleted during catalog scans (including startup), with
+a log entry, so they cannot block the Plugins list. Saved effects and parameters
+are retained as unavailable/bypassed until you install a rebuilt package and reload
+it. This cleanup does not delete corrupt current-format packages or unknown files;
+unsafe directory contents produce an explicit error instead.
 
 ## Install and use
 
@@ -16,9 +26,12 @@ WebUI numeric parameter updates preserve native float precision; values are not
 quantized to four decimal places. Custom controls are optional and open only when
 explicitly requested.
 
-Use **Reload** to restart a faulted plugin's workers. Crashes, forbidden syscalls,
-and repeated missed deadlines produce one device log and delayed dry bypass.
-Faulted workers are terminated on the control thread, without blocking audio.
+Use **Reload** to recreate plugin instances. Plugin crashes and hangs affect the
+whole audio worker, not a per-plugin process. The supervisor restarts that worker
+with backoff and disables **all** plugins after consecutive failures, showing a
+warning. Disabled plugins dry-bypass while built-in processing remains available.
+Effect cards report worker loading, readiness, and compilation/creation errors;
+metadata validation in the main program alone does not mean processing is ready.
 Remove every live and saved instance before **Remove**. Replacing an existing
 package requires removal first; changing already registered metadata also
 requires a runtime restart. There are 16 installed packages and 16 distinct
@@ -30,7 +43,7 @@ processing. Reinstall and reload to restore their saved parameter values.
 Packages live under `/audiox/plugins/`; normal configuration backups currently
 exclude plugin binaries/assets. Keep the original `.axm` files separately.
 This implementation is validated on Linux hosts and cross-built for AArch64;
-device kernel sandbox support and performance still need physical testing.
+device performance still needs physical testing.
 
 Management HTTP endpoints:
 
@@ -39,7 +52,7 @@ Management HTTP endpoints:
 | GET | `/api/plugins` | Installed IDs, metadata, parameter ranges, UI availability |
 | PUT | `/api/plugins/install` | Binary `.axm`, nonempty and at most 12 MiB |
 | POST | `/api/plugins/remove` | `id=plugin_gain`, rejects references from live/saved effects |
-| POST | `/api/plugins/reload` | `id=plugin_gain`, prepares replacement workers |
+| POST | `/api/plugins/reload` | `id=plugin_gain`, prepares replacement instances |
 | GET | `/api/plugins/plugin_gain/assets/index.html` | Validated flat assets with sandbox CSP |
 
 Installation is a trusted-local administrative operation, not a signed-package
@@ -47,28 +60,32 @@ marketplace. Do not expose the existing unauthenticated HTTP interface publicly.
 
 ## Build an example
 
-From the repository root (a C++17 compiler and Linux headers are required):
+From the repository root (Clang matching the device compiler's LLVM major,
+a C++17 compiler, and Linux headers are required):
 
 ```sh
 mkdir -p build/plugins
 c++ -std=c++17 -O2 -Iinclude tools/plugins/axm-pack.cpp src/audio/plugin_package.cpp \
   -o build/plugins/axm-pack
-cc -std=c11 -O2 -fPIC -shared -fvisibility=hidden -Iinclude \
-  examples/plugins/gain/gain.c -o build/plugins/gain.so
-build/plugins/axm-pack examples/plugins/gain/axm.txt build/plugins/gain.so \
+clang -std=c11 -O2 -fPIC -fno-stack-protector -emit-llvm -c -Iinclude \
+  examples/plugins/gain/gain.c -o build/plugins/gain.bc
+build/plugins/axm-pack examples/plugins/gain/axm.txt build/plugins/gain.bc \
   build/plugins/gain.axm examples/plugins/gain/index.html \
   examples/plugins/gain/controls.js examples/plugins/gain/style.css
-cc -std=c11 -O2 -fPIC -shared -fvisibility=hidden -Iinclude \
-  examples/plugins/softclip/softclip.c -o build/plugins/softclip.so
+clang -std=c11 -O2 -fPIC -fno-stack-protector -emit-llvm -c -Iinclude \
+  examples/plugins/softclip/softclip.c -o build/plugins/softclip.bc
 build/plugins/axm-pack examples/plugins/softclip/axm.txt \
-  build/plugins/softclip.so build/plugins/softclip.axm
+  build/plugins/softclip.bc build/plugins/softclip.axm
 ```
 
 The packer refuses to overwrite its output. Delete an old `.axm` explicitly before
-repacking. For an AArch64 device, use your AArch64 cross-compiler in place of `cc`.
-The host packer accepts both x86_64 and AArch64 ELF64 modules; installation requires
-the device's native architecture. No dependencies or build commands run during
-installation. Do not package executables, ELF32, or big-endian binaries.
+repacking. For an AArch64 device, add
+`--target=aarch64-linux-gnu --gcc-toolchain=/usr` to Clang (with the cross headers
+installed). Bitcode remains architecture-specific: its target triple must match
+the audio worker. The worker's separate graph compiler validates LLVM IR,
+architecture, the ABI entry point, and all external references; incompatible
+LLVM versions or unresolved imports fail explicitly. No build commands execute
+during installation. Packages must not contain ELF objects or shared libraries.
 
 ## ABI version 1
 
@@ -104,40 +121,32 @@ block in `process`, `reset`, or `tail`. Zero-input processing should drain effec
 history; `tail` should then return zero. Effects without history always return zero.
 Callbacks must not throw C++ exceptions across the C ABI.
 
-Enabled native processing has exactly one block of latency. The first output
-block is silence. At the next callback, the parent uses the preceding block's
-processed output only if ready; otherwise it uses the preceding dry input.
-Late processed results are discarded, never replayed. No callback waits for the
-worker, and an unacknowledged request is never overwritten. After 32 callbacks
-without acknowledgement the host faults and stays in delayed dry bypass until
-explicit reload. Control-side polling also detects exited workers. Reset discards
-pending wet/dry history and tails; its next output block is silence.
+Plugin callbacks execute synchronously inside the audio worker, with no
+additional per-plugin IPC block or initial silent block. `reset` clears instance
+history before the next block; `tail` receives the requested threshold. The
+worker prepares and destroys code/instances on its control thread, outside graph
+processing; instance retirement waits for the audio thread to release its graph.
 
-The worker requires seccomp, pidfds, `close_range`, and filesystem isolation;
-unsupported systems fail closed. Landlock allows read-only module and system
-library access. On stock Pi kernels without Landlock, the root worker instead
-creates a private mount namespace and a read-only tmpfs root containing only
-the module and system libraries, then enters it with `chroot`. No host temporary
-files, devices, or `/proc` remain inside this root. This path requires mount
-namespaces, tmpfs, and a mounted `/proc` during setup; Landlock is built into the
-kernel, not a loadable module. Before loading module code, root workers drop to
-UID/GID 65534. Both filesystem isolation paths retain seccomp; the initial
-syscall policy denies network access, filesystem writes, and process creation
-even in constructors. A tighter policy applies after initialization, with a
-64 MiB address-space cap. Startup handshake time is bounded (1750 ms, plus bounded
-cleanup). Module and library files must be readable by the unprivileged worker;
-with Landlock, their parent directories must also be traversable.
-Native plugins remain untrusted: CRC32 is corruption
-detection, not a signature or guarantee of plugin safety.
+Native images have separate executable and writable pages, never writable
+executable mappings. Global constructors/destructors, thread-local globals, and
+unresolved external symbols are rejected. Supported imports are C allocation,
+memory routines, common scalar math functions, and `abort`; there is no dynamic
+library loading or arbitrary host symbol lookup. C++ plugins should use
+`-fno-exceptions -fno-rtti -fno-stack-protector` and avoid runtime initialization.
+This is crash isolation, **not a security sandbox**: plugins execute native code
+and must come from trusted authors. CRC32 detects corruption, not authenticity.
 
-The dynamic helper is built/staged separately from the static AudioX runtime,
-along with its glibc/libstdc++ dependencies. `make plugin-examples` creates
-AArch64 packages under `out/plugins/`; `make axm-pack` builds the host packer.
-`make test-plugin-namespace` runs the worker regression suite in an AArch64 QEMU
-guest with Landlock disabled and the bootloader's directory chroot layout,
-including a missing `/tmp`, filesystem escape and mount cleanup checks.
-The runtime image stages `/tmp`; the worker also creates it when absent for
-compatibility with older runtime layouts, rejecting non-directory paths.
+`PluginHost` defaults to control-only mode. Only the exec'd audio worker calls
+`audiox::plugin::setPluginExecutionEnabled(true)` before preparing hosts. The main
+process can retain metadata handles and saved values without executing callbacks.
+Setting the process-local flag false bypasses all plugin processing.
+The graph compiler is a short-lived compilation helper, not a plugin process;
+it never invokes plugin callbacks. LLVM is not linked into the main/audio worker.
+
+`make plugin-examples` creates AArch64 packages under `out/plugins/`;
+`make axm-pack` builds the host packer. `make test-plugin-host` exercises compiled
+bitcode, same-block processing, channel independence, reset/tail, metadata/ABI
+mismatch, unresolved imports, invalid bitcode, and process-level crash isolation.
 
 ## Metadata
 
@@ -209,7 +218,7 @@ All integers are unsigned little-endian. No alignment or padding is present:
 
 ```text
 8 bytes  magic "AXMODULE"
-u32      format version = 1
+u32      format version = 2
 u32      entry count = 2..18
 repeat entry count times:
   u32    kind (1=metadata, 2=module, 3=asset)
@@ -222,7 +231,7 @@ repeat entry count times:
 
 CRC32 uses polynomial `0xedb88320`, initial value `0xffffffff`, and final XOR
 `0xffffffff` (the standard IEEE/ZIP CRC32). Entries may be in any order, but
-exactly one metadata entry named `axm.txt` and one module entry named `module.so`
+exactly one metadata entry named `axm.txt` and one module entry named `module.bc`
 are required. Every name must be unique. Unknown kinds, wrong reserved names,
 truncation, bad checksums, and bytes after the last entry are errors.
 
@@ -232,7 +241,7 @@ Limits:
 | --- | --- |
 | Entire archive, including headers and names | 12 MiB |
 | Metadata | 16 KiB |
-| Native module | 8 MiB |
+| LLVM bitcode module | 8 MiB |
 | Assets | 16 |
 | Each asset | 256 KiB |
 | Entry name | 63 bytes |
@@ -241,9 +250,8 @@ Limits:
 Asset names are flat lowercase identifiers with exactly one `.js`, `.css`, or
 `.html` suffix (e.g. `index.html`, `controls_2.js`). Paths, backslashes, leading
 dots, additional dots, uppercase characters, and traversal are rejected.
-The ELF checks require ELF64, little-endian, current ELF version, `ET_DYN`,
-a supported machine, and bounded headers/segments/sections with a load segment.
-These checks are not a complete ELF linker validation.
+The archive parser checks raw/wrapped LLVM bitcode magic. Full LLVM verification
+and native architecture validation occur only in the worker's compiler helper.
 
 ## Storage API
 
@@ -262,7 +270,8 @@ for tests. A missing root lists as empty without creating it. Installation creat
 the root if necessary and stages files in a private directory. It syncs files and
 directories, then atomically renames the staged directory to the full plugin ID,
 without replacing an existing package. Explicitly delete an old package first.
-Module paths are `root/id/module.so`.
+Module paths are `root/id/module.bc`. The compatibility `requireNative` argument
+to `parsePackage` is retained but ignored; native compatibility requires LLVM.
 
 All filesystem components are traversed through directory descriptors with
 `O_NOFOLLOW`; package and asset files must be regular files without hard links.
@@ -270,7 +279,7 @@ Directory scans and file reads are bounded. A root lock serializes storage API
 operations. Installation saves an internal `.checksums` manifest containing the
 archive header and entry headers/names, without their payloads. It is not an asset.
 Listing and asset access recheck the exact installed entry set, all file sizes and
-CRCs, metadata, and native ELF bounds against that manifest. Corrupted packages
+CRCs, metadata, and bitcode magic against that manifest. Corrupted packages
 can be explicitly removed; removal refuses symlinks, subdirectories, and unexpected
 entries rather than traversing them. After a crash, `.stage-*` directories are
 ignored (but count toward the bounded directory scan); administrative cleanup may
@@ -279,7 +288,7 @@ be needed if many incomplete stages accumulate.
 ## Optional custom controls
 
 A package may provide `index.html` with relative references to flat JS/CSS assets.
-The host serves only package assets, not `module.so`, `axm.txt`, or `.checksums`.
+The host serves only package assets, not `module.bc`, `axm.txt`, or `.checksums`.
 Custom controls run in an opaque-origin iframe with `sandbox="allow-scripts"`
 and a restrictive CSP: no network connections, external resources, form
 submissions, popups, or parent DOM access. Never add `allow-same-origin`.
@@ -305,7 +314,7 @@ Standard metadata-driven parameter controls remain available without assets.
 ## Host regression test
 
 Run `make test-plugin-package test-plugin-host test-plugin-integration test-audio-runtime`
-for archive validation, sandbox/fault/cleanup checks, real persistent HTTP effect
+for archive validation, worker-local compilation/fault checks, real persistent HTTP effect
 lifecycle, and planar DSP/bypass/sleep/retirement regressions.
 
 ```sh
@@ -315,6 +324,7 @@ c++ -std=c++17 -Wall -Wextra -Werror -Iinclude \
 build/plugins/plugin_package_test
 ```
 
-Tests cover malformed archives/ELFs, cross-architecture packing, bounds and
+Package tests cover malformed archives, legacy ELF rejection, bounds and
 checksums, traversal/symlink rejection, installed corruption, install limits,
-asset reads, and explicit deletion. They never load native code.
+asset reads, and explicit deletion. Package tests never load native code;
+worker-local loader tests deliberately opt in and execute compiled fixture code.

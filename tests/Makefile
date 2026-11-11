@@ -130,7 +130,7 @@ AUDIO_EFFECT_SRCS = \
 	src/audio/effects/pitch.cpp \
 	src/audio/effects/reverb.cpp
 
-HOST_CXXFLAGS += -DAUDIOX_PLUGIN_WORKER_PATH='"$(OUT_DIR)/host/audiox-plugin-worker"'
+HOST_CXXFLAGS += -DAUDIOX_GRAPH_COMPILER_PATH='"$(HOST_GRAPH_COMPILER)"'
 HOST_CXXFLAGS += -DAUDIOX_ENABLE_STRESS_TEST=$(AUDIOX_ENABLE_STRESS_TEST)
 
 .PHONY: test-builtin-effects
@@ -159,60 +159,34 @@ $(OUT_DIR)/host/plugin-package-test: tests/native/plugins/plugin_package_test.cp
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/native/plugins/plugin_package_test.cpp src/audio/plugin_package.cpp
 
-$(OUT_DIR)/host/audiox-plugin-worker: src/plugin_worker/main.cpp include/audio/plugin_api.h include/audio/plugin_ipc.hpp
+PLUGIN_FIXTURES := $(addprefix $(OUT_DIR)/host/plugins/plugin-fixture-,$(addsuffix .bc,0 1 2 3 4 5 6 7 9 12))
+
+$(OUT_DIR)/host/plugins/plugin-fixture-%.bc: tests/native/plugins/plugin_host_test.cpp include/audio/plugin_api.h tests/Makefile
 	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" "$<" -ldl -lm
+	$(HOST_CLANGXX) -std=c++17 -O1 -Iinclude -fPIC -fno-exceptions -fno-rtti \
+		-fno-stack-protector -ffp-contract=off -fno-unwind-tables -fno-asynchronous-unwind-tables \
+		-DAUDIOX_PLUGIN_TEST_FIXTURE=$* -emit-llvm -c -o "$@" "$<"
 
-PLUGIN_FIXTURES := $(addprefix $(OUT_DIR)/host/plugins/plugin-fixture-,$(addsuffix .so,0 1 2 3 4 5 6 7 8 9 10 12))
+test-plugin-host: $(OUT_DIR)/host/plugin-host-test $(HOST_GRAPH_COMPILER) $(PLUGIN_FIXTURES)
+	@"$<" "$(HOST_GRAPH_COMPILER)" "$(OUT_DIR)/host/plugins"
 
-$(OUT_DIR)/host/plugins/plugin-fixture-%.so: tests/native/plugins/plugin_host_test.cpp include/audio/plugin_api.h
-	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -fPIC -shared -DAUDIOX_PLUGIN_TEST_FIXTURE=$* -o "$@" "$<"
-
-test-plugin-host: $(OUT_DIR)/host/plugin-host-test $(OUT_DIR)/host/audiox-plugin-worker $(PLUGIN_FIXTURES) $(OUT_DIR)/host/plugins/softclip.so
-	@"$<" "$(OUT_DIR)/host/audiox-plugin-worker" "$(OUT_DIR)/host/plugins"
-
-.PHONY: test-plugin-namespace
-PLUGIN_NAMESPACE_DIR = $(OUT_DIR)/plugin-namespace-test/runtime
-PLUGIN_NAMESPACE_FIXTURES := $(addprefix $(PLUGIN_NAMESPACE_DIR)/plugins/plugin-fixture-,$(addsuffix .so,0 1 2 3 4 5 6 7 8 9 10 11 12))
-
-$(PLUGIN_NAMESPACE_DIR)/plugins/plugin-fixture-%.so: tests/native/plugins/plugin_host_test.cpp include/audio/plugin_api.h
-	@mkdir -p "$(dir $@)"
-	$(CXX) $(filter-out -static,$(CXXFLAGS)) -fPIC -shared -DAUDIOX_PLUGIN_TEST_FIXTURE=$* -o "$@" "$<"
-
-$(PLUGIN_NAMESPACE_DIR)/init: tests/native/plugins/plugin_host_test.cpp src/audio/plugin_host.cpp src/audio/plugin_package.cpp include/audio/plugin_host.hpp include/audio/plugin_ipc.hpp include/audio/plugin_api.h
-	@mkdir -p "$(dir $@)"
-	$(CXX) $(CXXFLAGS) -DAUDIOX_PLUGIN_NAMESPACE_TEST -o "$@" tests/native/plugins/plugin_host_test.cpp src/audio/plugin_host.cpp src/audio/plugin_package.cpp -pthread -lm
-
-test-plugin-namespace: $(PLUGIN_NAMESPACE_DIR)/init $(PLUGIN_NAMESPACE_FIXTURES) rootfs plugin-examples qemu_kernel
-	mkdir -p "$(PLUGIN_NAMESPACE_DIR)/dev" "$(PLUGIN_NAMESPACE_DIR)/proc" "$(PLUGIN_NAMESPACE_DIR)/tmp" "$(PLUGIN_NAMESPACE_DIR)/sbin" "$(PLUGIN_NAMESPACE_DIR)/lib"
-	cp "$(ROOTFS_DIR)/sbin/audiox-plugin-worker" "$(PLUGIN_NAMESPACE_DIR)/sbin/"
-	cp "$(ROOTFS_DIR)"/lib/*.so* "$(PLUGIN_NAMESPACE_DIR)/lib/"
-	cp "$(OUT_DIR)/plugins/softclip.so" "$(PLUGIN_NAMESPACE_DIR)/plugins/"
-	cp "$(PLUGIN_NAMESPACE_DIR)/init" "$(PLUGIN_NAMESPACE_DIR)/../init"
-	bash -o pipefail -c 'cd "$(PLUGIN_NAMESPACE_DIR)/.." && find init runtime -print0 | cpio --null -o -H newc --owner=0:0 | gzip > "$(OUT_DIR)/plugin-namespace-test.cpio.gz"'
-	@timeout 90 qemu-system-aarch64 -M virt -cpu max -m 256 -smp 2 -display none -monitor none -serial stdio -no-reboot \
-		-kernel "$(QEMU_KERNEL_IMAGE)" -initrd "$(OUT_DIR)/plugin-namespace-test.cpio.gz" \
-		-append "console=ttyAMA0 rdinit=/init panic=1 lsm=capability,yama" > "$(OUT_DIR)/plugin-namespace-test.log" 2>&1 || { tail -n 30 "$(OUT_DIR)/plugin-namespace-test.log"; exit 1; }
-	@grep -q '^plugin_namespace_test: ok' "$(OUT_DIR)/plugin-namespace-test.log" || { tail -n 30 "$(OUT_DIR)/plugin-namespace-test.log"; exit 1; }
-	@echo "plugin_namespace_test: ok (AArch64 guest without Landlock)"
-
-$(OUT_DIR)/host/plugin-host-test: tests/native/plugins/plugin_host_test.cpp src/audio/plugin_host.cpp src/audio/plugin_package.cpp include/audio/plugin_host.hpp include/audio/plugin_ipc.hpp include/audio/plugin_api.h
+$(OUT_DIR)/host/plugin-host-test: tests/native/plugins/plugin_host_test.cpp src/audio/plugin_host.cpp src/audio/plugin_package.cpp include/audio/plugin_host.hpp include/audio/plugin_native.hpp include/audio/plugin_api.h
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/native/plugins/plugin_host_test.cpp src/audio/plugin_host.cpp src/audio/plugin_package.cpp -pthread -lm
 
-$(OUT_DIR)/host/plugins/gain.so: examples/plugins/gain/gain.c include/audio/plugin_api.h
-$(OUT_DIR)/host/plugins/softclip.so: examples/plugins/softclip/softclip.c include/audio/plugin_api.h
-$(OUT_DIR)/host/plugins/gain.so $(OUT_DIR)/host/plugins/softclip.so:
+$(OUT_DIR)/host/plugins/gain.bc: examples/plugins/gain/gain.c include/audio/plugin_api.h tests/Makefile
+$(OUT_DIR)/host/plugins/softclip.bc: examples/plugins/softclip/softclip.c include/audio/plugin_api.h tests/Makefile
+$(OUT_DIR)/host/plugins/gain.bc $(OUT_DIR)/host/plugins/softclip.bc:
 	@mkdir -p "$(dir $@)"
-	cc -std=c11 -O2 -fPIC -shared -fvisibility=hidden -Iinclude -o "$@" "$<"
+	$(HOST_CLANGXX) -x c -std=c11 -O1 -fPIC -fno-stack-protector -ffp-contract=off \
+		-fno-unwind-tables -fno-asynchronous-unwind-tables -Iinclude -emit-llvm -c -o "$@" "$<"
 
-$(OUT_DIR)/host/plugins/gain.axm: $(OUT_DIR)/host/plugins/gain.so $(OUT_DIR)/host/axm-pack $(wildcard examples/plugins/gain/*)
+$(OUT_DIR)/host/plugins/gain.axm: $(OUT_DIR)/host/plugins/gain.bc $(OUT_DIR)/host/axm-pack $(wildcard examples/plugins/gain/*)
 	@rm -f "$@"
 	"$(OUT_DIR)/host/axm-pack" examples/plugins/gain/axm.txt "$<" "$@" examples/plugins/gain/index.html examples/plugins/gain/controls.js examples/plugins/gain/style.css
 
-test-plugin-integration: $(OUT_DIR)/host/audiox-soundboard-config-test $(OUT_DIR)/host/audiox-plugin-worker $(OUT_DIR)/host/plugins/gain.axm $(OUT_DIR)/host/plugins/plugin-fixture-9.so
-	@AUDIOX_TEST_PLUGIN_PACKAGE="$(OUT_DIR)/host/plugins/gain.axm" AUDIOX_TEST_PLUGIN_HANG_MODULE="$(OUT_DIR)/host/plugins/plugin-fixture-9.so" "$(OUT_DIR)/host/audiox-soundboard-config-test"
+test-plugin-integration: $(OUT_DIR)/host/audiox-soundboard-config-test $(OUT_DIR)/host/plugins/gain.axm $(OUT_DIR)/host/plugins/plugin-fixture-9.bc
+	@AUDIOX_TEST_PLUGIN_PACKAGE="$(OUT_DIR)/host/plugins/gain.axm" AUDIOX_TEST_PLUGIN_HANG_MODULE="$(OUT_DIR)/host/plugins/plugin-fixture-9.bc" "$(OUT_DIR)/host/audiox-soundboard-config-test"
 
 .PHONY: test-midi-usb test-display-hotplug test-soundboard-config \
 	test-boot-recovery test-config-backup test-audio-pcm-recover test-system-logs test-system \
@@ -323,7 +297,7 @@ SOUNDBOARD_CONFIG_TEST_SRCS = tests/native/config/soundboard_config_test.cpp src
     src/config/scenes.cpp src/http/scenes.cpp src/system/hardware_telemetry.cpp \
 	src/system/usage_telemetry_store.cpp src/system/usage_telemetry.cpp \
 	src/config/basic.cpp src/config/midi_map.cpp src/config/backup.cpp src/config/storage.cpp \
-	src/midi/midi.cpp src/scripting/runtime.cpp src/midi/usb.cpp src/scripting/keyboard.cpp src/scripting/script.cpp src/scripting/storage.cpp src/scripting/utilities.cpp src/audio/setup.cpp src/audio/plugins.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp \
+	src/midi/midi.cpp src/scripting/runtime.cpp src/midi/usb.cpp src/scripting/keyboard.cpp src/scripting/script.cpp src/scripting/storage.cpp src/scripting/utilities.cpp src/audio/setup.cpp src/audio/worker.cpp src/audio/plugins.cpp src/audio/gadget_volume.cpp src/audio/processing_fx.cpp \
 	src/http/server.cpp src/http/logs.cpp src/init/recovery.cpp src/touch/touch.cpp src/bluetooth/hci.cpp \
 	$(AUDIO_EFFECT_SRCS)
 
@@ -363,9 +337,11 @@ $(OUT_DIR)/host/audiox-soundboard-config-test: $(SOUNDBOARD_CONFIG_TEST_SRCS) sr
 test-boot-recovery: $(OUT_DIR)/host/audiox-boot-recovery-test
 	@"$<"
 
-$(OUT_DIR)/host/audiox-boot-recovery-test: tests/native/system/boot_recovery_test.cpp include/boot_recovery.hpp include/defs.hpp include/update_archive.hpp
+$(OUT_DIR)/host/audiox-boot-recovery-test: tests/native/system/boot_recovery_test.cpp src/init/recovery.cpp include/init.hpp include/system.hpp include/boot_recovery.hpp include/defs.hpp include/update_archive.hpp tests/Makefile
 	@mkdir -p "$(dir $@)"
-	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -Wl,--wrap=fsync -Wl,--wrap=rename -o "$@" "$<"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -DROOT_MOUNT_POINT='"."' \
+		-Wl,--wrap=fsync -Wl,--wrap=rename -Wl,--wrap=clock_gettime \
+		-o "$@" "$<" src/init/recovery.cpp
 
 test-config-backup: $(OUT_DIR)/host/audiox-config-backup-test $(OUT_DIR)/host/audiox-config-backup-http-test
 	@"$(OUT_DIR)/host/audiox-config-backup-test"
@@ -437,9 +413,57 @@ $(OUT_DIR)/host/audiox-mdns-test: tests/native/system/mdns_test.cpp src/http/mdn
 test-gadget-volume: $(OUT_DIR)/host/audiox-gadget-volume-test
 	@"$<"
 
-test-audio-runtime: $(OUT_DIR)/host/audiox-audio-runtime-test $(OUT_DIR)/host/audiox-audio-runtime-native-test $(OUT_DIR)/host/audiox-plugin-worker $(OUT_DIR)/host/plugins/plugin-fixture-0.so $(HOST_GRAPH_COMPILER) $(HOST_DSP_BITCODE_FILES)
+test-audio-runtime: $(OUT_DIR)/host/audiox-audio-runtime-test $(OUT_DIR)/host/audiox-audio-runtime-native-test $(OUT_DIR)/host/plugins/plugin-fixture-0.bc $(HOST_GRAPH_COMPILER) $(HOST_DSP_BITCODE_FILES)
 	@"$<" "$(HOST_GRAPH_COMPILER)" "$(HOST_DSP_BITCODE_DIR)"
 	@"$(OUT_DIR)/host/audiox-audio-runtime-native-test" "$(HOST_GRAPH_COMPILER)" "$(HOST_DSP_BITCODE_DIR)"
+
+.PHONY: test-audio-worker
+test-native: test-audio-worker
+test-audio-worker: $(OUT_DIR)/host/audiox-audio-worker-test $(OUT_DIR)/host/audiox-audio-worker-fixture $(OUT_DIR)/host/audiox-audio-worker-api-test
+	@"$<" "$(OUT_DIR)/host/audiox-audio-worker-fixture"
+	@"$(OUT_DIR)/host/audiox-audio-worker-api-test" "$(OUT_DIR)/host/audiox-audio-worker-fixture"
+
+$(OUT_DIR)/host/audiox-audio-worker-test: tests/native/audio/audio_worker_test.cpp src/audio/worker.cpp src/audio/plugin_registry.cpp $(wildcard include/audio/*.hpp)
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-parameter -Iinclude -ffunction-sections -fdata-sections -Wl,--gc-sections \
+		-o "$@" tests/native/audio/audio_worker_test.cpp src/audio/worker.cpp src/audio/plugin_registry.cpp -pthread -lm
+
+$(OUT_DIR)/host/audiox-audio-worker-fixture: tests/native/audio/audio_worker_fixture.cpp $(wildcard include/audio/*.hpp)
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" "$<" -pthread
+
+$(OUT_DIR)/host/audiox-audio-worker-api-test: tests/native/audio/audio_worker_api_test.cpp src/audio/worker.cpp src/audio/plugin_registry.cpp src/http/api.cpp src/http/server.cpp $(wildcard include/audio/*.hpp)
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-function -Wno-unused-parameter -Wno-format-truncation -Iinclude \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections \
+		-o "$@" tests/native/audio/audio_worker_api_test.cpp src/audio/worker.cpp src/audio/plugin_registry.cpp src/http/server.cpp -pthread -lm
+
+.PHONY: test-audio-worker-plugins
+test-native: test-audio-worker-plugins
+test-audio-worker-plugins: $(OUT_DIR)/host/audiox-audio-worker-plugin-test $(PLUGIN_FIXTURES) $(HOST_GRAPH_COMPILER) $(HOST_DSP_BITCODE_FILES)
+	@"$<" "$(OUT_DIR)/host/plugins"
+
+$(OUT_DIR)/host/audiox-audio-worker-plugin-test: tests/native/audio/audio_worker_plugin_test.cpp \
+		$(filter-out tests/native/config/soundboard_config_test.cpp,$(SOUNDBOARD_CONFIG_TEST_SRCS)) \
+		src/audio/processing.cpp src/audio/graph_native.cpp src/audio/graph.cpp src/audio/hotplug.cpp src/config/router.cpp \
+		$(wildcard include/audio/*.hpp include/audio/*.h include/audio/effects/*.hpp) $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS) tests/Makefile
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-function -Wno-format-truncation -Wno-unused-parameter -Iinclude -I$(HOST_LUA_INCLUDE_DIR) \
+		-DAUDIOX_DSP_RUNTIME_ONLY -DAUDIOX_DSP_BITCODE_DIR='"$(HOST_DSP_BITCODE_DIR)"' \
+		-DAUDIOX_SAMPLE_RATE=$(AUDIOX_SAMPLE_RATE) -DAUDIOX_BUFFER_FRAMES=$(AUDIOX_BUFFER_FRAMES) \
+		-DROOT_MOUNT_POINT='"."' -ffp-contract=off -ffunction-sections -fdata-sections -Wl,--gc-sections \
+		-o "$@" tests/native/audio/audio_worker_plugin_test.cpp \
+		$(filter-out tests/native/config/soundboard_config_test.cpp,$(SOUNDBOARD_CONFIG_TEST_SRCS)) \
+		src/audio/processing.cpp src/audio/graph_native.cpp src/audio/graph.cpp src/audio/hotplug.cpp src/config/router.cpp \
+		$(HOST_LUA_STATIC_LIB) $(shell pkg-config --cflags --libs alsa) -pthread -lm
+
+.PHONY: test-audio-worker-arm
+test-audio-worker-arm: $(OUT_DIR)/host/audiox-audio-worker-smoke-test $(ROOTFS_DIR)/sbin/audiox-audio-worker
+	@"$<" qemu-aarch64 "$(ROOTFS_DIR)/sbin/audiox-audio-worker"
+
+$(OUT_DIR)/host/audiox-audio-worker-smoke-test: tests/native/audio/audio_worker_smoke_test.cpp $(wildcard include/audio/*.hpp)
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" "$<" -pthread
 
 $(OUT_DIR)/host/audiox-audio-runtime-test $(OUT_DIR)/host/audiox-audio-runtime-native-test: tests/native/audio/audio_runtime_test.cpp src/audio/processing.cpp src/audio/processing_fx.cpp src/audio/gadget_volume.cpp src/audio/graph_native.cpp $(AUDIO_EFFECT_SRCS) $(wildcard include/audio/*.hpp include/audio/*.h include/audio/effects/*.hpp) $(AUDIOX_CONFIG_FILE) tests/Makefile
 	@mkdir -p "$(dir $@)"

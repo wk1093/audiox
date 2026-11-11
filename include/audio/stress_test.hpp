@@ -125,6 +125,16 @@ public:
         return now >= expiry ? 0U : static_cast<uint32_t>((expiry - now + 999999ULL) / 1000000ULL);
     }
 
+    uint64_t audioExpiryNs() const {
+        return mode() == AudioThread ? expiresAtNs_.load(std::memory_order_relaxed) : 0;
+    }
+    uint64_t audioWorkNs() const { return workNsPerBlock_.load(std::memory_order_relaxed); }
+    void mirrorAudioControl(uint64_t expiry, uint64_t work) {
+        workNsPerBlock_.store(work, std::memory_order_relaxed);
+        expiresAtNs_.store(expiry, std::memory_order_relaxed);
+        mode_.store(expiry && expiry > nowNs() ? AudioThread : Idle, std::memory_order_release);
+    }
+
     static const char *modeName(uint32_t mode) {
         switch (mode) {
         case AudioThread: return "audio";

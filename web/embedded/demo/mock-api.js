@@ -359,6 +359,8 @@
           saved_curve: curve(S.fan), active_curve: curve(S.fan), saved_matches_active: true,
         },
       },
+      audio_worker: { running: true, pid: 123, plugins_disabled: false,
+        restarts: 0, consecutive_failures: 0, last_exit_status: 0 },
       audio_health: { xruns, warning_id: '0', warning_active: false },
       audio_buffer: {
         base_block_frames: 64, target_period_frames: 128, largest_period_frames: 256, largest_buffer_frames: 768,
@@ -463,6 +465,12 @@
   on('POST', '/api/telemetry', () => reply({ error: 'Telemetry is disabled in the demo.' }, 403));
   on('POST', '/api/telemetry/ack', () => reply({ error: 'Telemetry is disabled in the demo.' }, 403));
   on('GET', '/api/system/info', () => reply(systemInfo()));
+  on('GET', '/api/system/audio-worker', () => reply(systemInfo().audio_worker));
+  on('POST', '/api/system/audio-worker', () => {
+    voices.length = 0;
+    log('AUDIO', 'info', 'Audio worker restarted; effect tails and playing sounds reset.');
+    return reply({ ok: true, restart_requested: true }, 202);
+  });
   on('GET', '/api/system/history', ({ query }) => {
     const limit = clamp(Number(query.get('limit')) || 600, 1, 1000);
     return reply({ runtime_id: runtimeId, sample_interval_ms: 1000, capacity: 600, retention_ms: 600000,

@@ -62,13 +62,14 @@ struct Package {
 bool validId(const std::string &id);
 bool validAssetName(const std::string &name);
 bool parseMetadata(const std::string &text, PackageMetadata &metadata, std::string &error);
-// Both supported machines can be inspected; install always requires native ELF.
+// Packages contain LLVM bitcode only; machine/LLVM validation occurs in the compiler.
 bool parsePackage(const uint8_t *data, size_t size, Package &package, std::string &error,
                   bool requireNative = false);
 bool buildPackage(const std::vector<Entry> &entries, std::vector<uint8_t> &data,
                   std::string &error);
 bool installPackage(const uint8_t *data, size_t size, const std::string &root,
                     std::string &error);
+// Catalog scans remove installed format-1 packages under the plugin-root lock.
 bool listPackages(const std::string &root, std::vector<PackageMetadata> &packages,
                   std::string &error);
 bool removePackage(const std::string &id, const std::string &root, std::string &error);

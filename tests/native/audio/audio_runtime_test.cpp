@@ -1,5 +1,6 @@
 #include "../../../src/audio/processing.cpp"
 #include "audio/routing_compile.hpp"
+#include "audio/plugin_host.hpp"
 
 #include <cassert>
 #include <limits>
@@ -43,10 +44,33 @@ static snd_pcm_state_t modeledState = SND_PCM_STATE_PREPARED;
 static snd_pcm_uframes_t modeledQueued = 0, modeledBuffer = 0;
 static snd_pcm_uframes_t modeledStartThreshold = 0;
 static unsigned modeledStarts = 0, modeledRecoveries = 0;
-static int16_t modeledMmapSamples[BUFFER_FRAMES * 2U]{};
+static int32_t modeledMmapSamples[BUFFER_FRAMES * 2U]{};
+static bool modeledS32 = false, modeledBlocked = false, modeledContinuity = false;
+static unsigned modeledWriteLimit = BUFFER_FRAMES, modeledCommitLimit = BUFFER_FRAMES;
+static bool modeledHavePrevious = false;
+static double modeledPrevious = 0.0, modeledMaxJump = 0.0;
+static uint64_t modeledAccepted = 0;
 static snd_pcm_channel_area_t modeledAreas[2] = {
     {modeledMmapSamples, 0, 32}, {modeledMmapSamples, 16, 32}
 };
+
+static void acceptModeledSamples(const void *buffer, unsigned frames) {
+    if (!modeledContinuity) return;
+    for (unsigned i = 0; i < frames; ++i) {
+        const double sample = modeledS32
+            ? static_cast<const int32_t *>(buffer)[i * 2U] / 2147483648.0
+            : static_cast<const int16_t *>(buffer)[i * 2U] / 32768.0;
+        const double other = modeledS32
+            ? static_cast<const int32_t *>(buffer)[i * 2U + 1U] / 2147483648.0
+            : static_cast<const int16_t *>(buffer)[i * 2U + 1U] / 32768.0;
+        assert(std::abs(sample + other) < 0.0001);
+        if (modeledHavePrevious)
+            modeledMaxJump = std::max(modeledMaxJump, std::abs(sample - modeledPrevious));
+        modeledPrevious = sample;
+        modeledHavePrevious = true;
+        ++modeledAccepted;
+    }
+}
 
 extern "C" snd_pcm_sframes_t snd_pcm_readi(snd_pcm_t *pcm, void *buffer, snd_pcm_uframes_t frames) {
     assert(pcm == &testPcm);
@@ -58,10 +82,13 @@ extern "C" snd_pcm_sframes_t snd_pcm_readi(snd_pcm_t *pcm, void *buffer, snd_pcm
 extern "C" snd_pcm_sframes_t snd_pcm_writei(snd_pcm_t *pcm, const void *buffer, snd_pcm_uframes_t frames) {
     assert(pcm == &testPcm);
     ++playbackWrites;
-    playbackSample = static_cast<const int16_t *>(buffer)[0];
+    playbackSample = static_cast<const int16_t *>(buffer)[(frames - 1U) * 2U];
     if (modelPlayback) {
         if (modeledState == SND_PCM_STATE_XRUN) return -EPIPE;
+        if (modeledBlocked) return -EAGAIN;
+        frames = std::min<snd_pcm_uframes_t>(frames, modeledWriteLimit);
         if (modeledQueued + frames > modeledBuffer) return -EAGAIN;
+        acceptModeledSamples(buffer, frames);
         modeledQueued += frames;
     }
     return static_cast<snd_pcm_sframes_t>(frames);
@@ -72,7 +99,7 @@ extern "C" snd_pcm_state_t snd_pcm_state(snd_pcm_t *) {
 }
 
 extern "C" snd_pcm_sframes_t snd_pcm_avail_update(snd_pcm_t *) {
-    assert(modelPlayback);
+    if (!modelPlayback) return BUFFER_FRAMES * 4U;
     return modeledState == SND_PCM_STATE_XRUN ? -EPIPE
         : static_cast<snd_pcm_sframes_t>(modeledBuffer - modeledQueued);
 }
@@ -90,21 +117,26 @@ extern "C" int snd_pcm_recover(snd_pcm_t *, int err, int) {
     ++modeledRecoveries;
     modeledState = SND_PCM_STATE_PREPARED;
     modeledQueued = 0;
+    modeledHavePrevious = false;
     return 0;
 }
 
 extern "C" int snd_pcm_mmap_begin(snd_pcm_t *, const snd_pcm_channel_area_t **areas,
                                   snd_pcm_uframes_t *offset, snd_pcm_uframes_t *frames) {
     assert(modelPlayback);
+    if (modeledBlocked) return -EAGAIN;
     *areas = modeledAreas;
     *offset = 0;
-    *frames = std::min(*frames, modeledBuffer - modeledQueued);
+    *frames = std::min({*frames, modeledBuffer - modeledQueued,
+                       static_cast<snd_pcm_uframes_t>(modeledWriteLimit)});
     return 0;
 }
 
 extern "C" snd_pcm_sframes_t snd_pcm_mmap_commit(snd_pcm_t *, snd_pcm_uframes_t,
                                                 snd_pcm_uframes_t frames) {
     assert(modelPlayback);
+    frames = std::min<snd_pcm_uframes_t>(frames, modeledCommitLimit);
+    acceptModeledSamples(modeledMmapSamples, frames);
     modeledQueued += frames;
     return static_cast<snd_pcm_sframes_t>(frames);
 }
@@ -123,6 +155,10 @@ static void testAdaptivePlaybackPriming() {
     runtime->inputs[0][1] = runtime->silence;
 
     modelPlayback = true;
+    modeledS32 = false;
+    modeledAreas[0].first = 0;
+    modeledAreas[1].first = 16;
+    modeledAreas[0].step = modeledAreas[1].step = 32;
     for (bool mmap : {false, true}) {
         output.mmapAccess = mmap;
         for (unsigned period = BUFFER_FRAMES; period <= 1024; period *= 2) {
@@ -132,9 +168,8 @@ static void testAdaptivePlaybackPriming() {
             modeledQueued = 0;
             modeledState = SND_PCM_STATE_PREPARED;
             modeledStarts = modeledRecoveries = 0;
-            output.pendingFrames = output.pendingOffsetFrames = 0;
-            const snd_pcm_uframes_t target = period == BUFFER_FRAMES
-                ? BUFFER_FRAMES : period * 3U;
+            resetPlaybackSrc(output);
+            const snd_pcm_uframes_t target = period * 3U;
             assert(audio_pcm_playback_start_frames(period, modeledBuffer) == target);
             modeledStartThreshold = target;
             unsigned runningBlocks = 0;
@@ -164,6 +199,154 @@ static void testAdaptivePlaybackPriming() {
     }
     modelPlayback = false;
     puts("Adaptive playback primes and recovers at every tier through RW and MMAP");
+}
+
+static void testPlaybackClockDrift() {
+    auto context = std::make_unique<AudioContext>(nullptr);
+    auto runtime = std::make_unique<RuntimeGraph>();
+    runtime->snapshot.thingCount = 1;
+    runtime->snapshot.things[0].inputs = 2;
+    runtime->playbackCount = 1;
+    auto &output = runtime->playback[0];
+    output.pcm = &testPcm;
+    output.channels = 2;
+    runtime->inputs[0][0] = runtime->inputStorage[0][0];
+    runtime->inputs[0][1] = runtime->inputStorage[0][1];
+    modelPlayback = modeledContinuity = true;
+    for (bool mmap : {false, true}) {
+        for (unsigned rate : {32000U, 44100U, 48000U, 96000U}) {
+            for (int ppm : {-750, 750}) {
+                modeledS32 = ppm > 0;
+                output.format = modeledS32 ? SND_PCM_FORMAT_S32_LE : SND_PCM_FORMAT_S16_LE;
+                output.mmapAccess = mmap;
+                output.sampleRate = rate;
+                output.periodFrames = (mmap ? BUFFER_FRAMES * 4U : BUFFER_FRAMES) *
+                    std::max(1U, (rate + SAMPLE_RATE - 1U) / SAMPLE_RATE);
+                output.bufferFrames = output.periodFrames * 4U;
+                output.queueOverflows = output.xruns = 0;
+                resetPlaybackSrc(output);
+                modeledAreas[1].first = modeledS32 ? 32 : 16;
+                modeledAreas[0].step = modeledAreas[1].step = modeledS32 ? 64 : 32;
+                modeledState = SND_PCM_STATE_PREPARED;
+                modeledBuffer = output.bufferFrames;
+                modeledStartThreshold = audio_pcm_playback_start_frames(output.periodFrames, modeledBuffer);
+                modeledQueued = modeledStarts = modeledRecoveries = 0;
+                modeledHavePrevious = false;
+                modeledMaxJump = 0.0;
+                modeledAccepted = 0;
+                modeledWriteLimit = 37;
+                modeledCommitLimit = 23;
+                double elapsedFrames = 0.0;
+                unsigned minimum = modeledBuffer, maximum = 0;
+                unsigned maximumBacklog = 0;
+                unsigned measured = 0;
+                double correctionSum = 0.0;
+                unsigned correctionCount = 0;
+                const double base = static_cast<double>(SAMPLE_RATE) / rate;
+                for (unsigned block = 0; block < 40000; ++block) {
+                    if (modeledState == SND_PCM_STATE_RUNNING) {
+                        // Bursty period-pointer updates plus bounded scheduler jitter.
+                        const double jitter = (block % 4U == 0 ? 0.25 :
+                                               block % 4U == 2 ? -0.25 : 0.0);
+                        elapsedFrames += BUFFER_FRAMES / base * (1.0 + ppm / 1e6) *
+                                         (1.0 + jitter);
+                        while (elapsedFrames >= output.periodFrames) {
+                            if (modeledQueued < output.periodFrames)
+                                fprintf(stderr, "Underrun %s rate=%u ppm=%d block=%u queue=%lu source=%u step=%.9f\n",
+                                        mmap ? "MMAP" : "RW", rate, ppm, block, modeledQueued,
+                                        output.sourceCount, output.sourceStep);
+                            assert(modeledQueued >= output.periodFrames);
+                            modeledQueued -= output.periodFrames;
+                            elapsedFrames -= output.periodFrames;
+                        }
+                    }
+                    if (block == 20000) {
+                        modeledState = SND_PCM_STATE_XRUN;
+                        elapsedFrames = 0.0;
+                    }
+                    for (unsigned frame = 0; frame < BUFFER_FRAMES; ++frame) {
+                        const double phase = (static_cast<uint64_t>(block) * BUFFER_FRAMES + frame) *
+                                             (6.283185307179586 / 4096.0);
+                        const float sample = static_cast<float>(std::sin(phase) * 0.7);
+                        runtime->inputStorage[0][0][frame] = sample;
+                        runtime->inputStorage[0][1][frame] = -sample;
+                    }
+                    modeledBlocked = block % 97U == 40U; // Preserve this block through EAGAIN.
+                    servicePlaybackIo(context.get(), runtime.get());
+                    assert(output.sourceCount <= kPlaybackRingFrames);
+                    assert(output.queueOverflows == 0);
+                    assert(std::abs(output.sourceStep / base - 1.0) <= 0.030001);
+                    if ((block > 15000 && block < 20000) || block > 35000) {
+                        minimum = std::min<unsigned>(minimum, modeledQueued);
+                        maximum = std::max<unsigned>(maximum, modeledQueued);
+                        maximumBacklog = std::max(maximumBacklog, output.sourceCount);
+                        ++measured;
+                    }
+                    if (block > 35000) {
+                        correctionSum += output.sourceStep / base - 1.0;
+                        ++correctionCount;
+                    }
+                }
+                assert(measured > 9000);
+                assert(modeledStarts == 2 && modeledRecoveries == 1 && output.xruns == 1);
+                assert(minimum >= output.periodFrames);
+                assert(maximum <= modeledBuffer);
+                assert(maximumBacklog < BUFFER_FRAMES * 4U);
+                assert(output.sourceCount < BUFFER_FRAMES * 4U);
+                // A skipped/replayed graph block jumps ~0.1; interpolation is <0.002/frame.
+                assert(modeledMaxJump < 0.0021);
+                assert(modeledAccepted > static_cast<uint64_t>(39000.0 * BUFFER_FRAMES / base));
+                const double correction = correctionSum / correctionCount;
+                assert(std::abs(correction + ppm / 1e6) < 0.0001);
+                printf("Playback %s %uHz %+dppm: queue=%u..%u/%lu, backlog<=%u, correction=%+.0fppm, jump=%.5f\n",
+                       mmap ? "MMAP" : "RW", rate, ppm, minimum, maximum, modeledBuffer,
+                       maximumBacklog, correction * 1e6, modeledMaxJump);
+            }
+        }
+    }
+    modeledWriteLimit = modeledCommitLimit = BUFFER_FRAMES;
+    modeledBlocked = modeledContinuity = modelPlayback = false;
+}
+
+static void testPlaybackResamplingContinuity() {
+    auto runtime = std::make_unique<RuntimeGraph>();
+    auto &output = runtime->playback[0];
+    output.channels = 2;
+    float *inputs[] = {runtime->inputStorage[0][0], runtime->inputStorage[0][1]};
+    for (unsigned rate : {32000U, 44100U, 48000U, 96000U}) {
+        for (auto format : {SND_PCM_FORMAT_S16_LE, SND_PCM_FORMAT_S32_LE}) {
+            output.sampleRate = rate;
+            output.format = format;
+            resetPlaybackSrc(output);
+            double position = 0.0;
+            const double base = static_cast<double>(SAMPLE_RATE) / rate;
+            for (unsigned block = 0; block < 128; ++block) {
+                for (unsigned frame = 0; frame < BUFFER_FRAMES; ++frame) {
+                    inputs[0][frame] = (block * BUFFER_FRAMES + frame) / 65536.0f;
+                    inputs[1][frame] = -inputs[0][frame];
+                }
+                preparePlaybackBlock(output, inputs, 2, 1.0f);
+                output.sourceStep = base * (1.0 + 0.01 * std::sin(block * 0.1));
+                do {
+                    resamplePlaybackBlock(output);
+                    for (unsigned frame = 0; frame < output.pendingFrames; ++frame) {
+                        for (unsigned channel = 0; channel < 2; ++channel) {
+                            const double sample = format == SND_PCM_FORMAT_S32_LE
+                                ? output.pendingBlock32[frame * 2U + channel] / 2147483648.0
+                                : output.pendingBlock[frame * 2U + channel] / 32768.0;
+                            const double expected = position / 65536.0 * (channel ? -1.0 : 1.0);
+                            assert(std::abs(sample - expected) <
+                                   (format == SND_PCM_FORMAT_S32_LE ? 1e-7 : 2.0 / 32768.0));
+                        }
+                        position += output.sourceStep;
+                    }
+                } while (output.pendingFrames);
+                assert(position + 1.0 >= (block + 1U) * BUFFER_FRAMES);
+                assert(output.sourceCount <= 2);
+            }
+        }
+    }
+    puts("Playback interpolation matches a continuous fractional-position oracle across blocks and ratio changes");
 }
 
 AudioContext::AudioContext(Audiox *context) : app(context) {}
@@ -840,7 +1023,8 @@ static void testMultichannelCut() {
     puts("Sixteen-channel Cut toggles between direct aliases and disconnections without DSP");
 }
 
-static void testNativePlugin() {
+static void testNativePlugin(const char *compiler) {
+    audiox::plugin::setPluginExecutionEnabled(true);
     audiox::plugin::PackageMetadata metadata{};
     strcpy(metadata.id, "plugin_fixture");
     strcpy(metadata.name, "Runtime fixture");
@@ -854,8 +1038,8 @@ static void testNativePlugin() {
     metadata.params[0].defaultValue = 1;
     std::string error;
     assert(audiox::plugin::registerPackage(metadata, error));
-    const std::string worker = AUDIOX_PLUGIN_WORKER_PATH;
-    const std::string module = worker.substr(0, worker.find_last_of('/')) + "/plugins/plugin-fixture-0.so";
+    const std::string worker = compiler;
+    const std::string module = worker.substr(0, worker.find_last_of('/')) + "/plugins/plugin-fixture-0.bc";
     auto host = std::make_unique<audiox::plugin::PluginHost>();
     assert(host->prepare(module.c_str(), metadata, SAMPLE_RATE, BUFFER_FRAMES, 2, error, worker.c_str()));
     auto context = std::make_unique<AudioContext>(nullptr);
@@ -879,14 +1063,18 @@ static void testNativePlugin() {
     std::fill_n(runtime->inputs[0][0], BUFFER_FRAMES, 0.1f);
     std::fill_n(runtime->inputs[0][1], BUFFER_FRAMES, 0.3f);
     processNode(context.get(), runtime.get(), 0);
-    assert(runtime->outputs[0][0][0] == 0);
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    processNode(context.get(), runtime.get(), 0);
     assert(fabsf(runtime->outputs[0][0][0] - 0.2f) < 0.00001f);
     assert(fabsf(runtime->outputs[0][1][0] - 0.6f) < 0.00001f);
     assert(idleEffectsPending(runtime.get()));
     assert(idleEffectsPending(runtime.get()));
     assert(host->hasPendingAudio(0.01f));
+    std::fill_n(runtime->inputs[0][0], BUFFER_FRAMES, 0.0f);
+    std::fill_n(runtime->inputs[0][1], BUFFER_FRAMES, 0.0f);
+    processNode(context.get(), runtime.get(), 0);
+    assert(fabsf(runtime->outputs[0][0][0] - 0.025f) < 0.00001f);
+    assert(fabsf(runtime->outputs[0][1][0] - 0.075f) < 0.00001f);
+    std::fill_n(runtime->inputs[0][0], BUFFER_FRAMES, 0.1f);
+    std::fill_n(runtime->inputs[0][1], BUFFER_FRAMES, 0.3f);
     params.enabled = 0;
     processNode(context.get(), runtime.get(), 0);
     assert(runtime->outputs[0][0][0] == 0.1f && runtime->outputs[0][1][0] == 0.3f);
@@ -896,7 +1084,7 @@ static void testNativePlugin() {
     beginAudioSleep(runtime.get());
     assert(!host->hasPendingAudio(0.01f));
     processNode(context.get(), runtime.get(), 0);
-    assert(runtime->outputs[0][0][0] == 0);
+    assert(fabsf(runtime->outputs[0][0][0] - 0.2f) < 0.00001f);
     context->effectStates[thing.id] = params;
     context->effectStatesSeq.store(7);
     updateIdleControls(context.get(), runtime.get());
@@ -992,6 +1180,12 @@ static void testCompiledSchedule(const char *compiler, const char *bitcode) {
 }
 
 int main(int argc, char **argv) {
+    if (argc == 2 && strcmp(argv[1], "--playback-only") == 0) {
+        testAdaptivePlaybackPriming();
+        testPlaybackClockDrift();
+        testPlaybackResamplingContinuity();
+        return 0;
+    }
     assert(argc == 3);
 #ifdef AUDIOX_DSP_RUNTIME_ONLY
     audiox::graph::NativeGraph dspOwner(argv[1], argv[2]);
@@ -1051,12 +1245,14 @@ int main(int argc, char **argv) {
         puts("Scene sink fades preserve shared source aliases and acknowledge exact silence");
     }
     testAdaptivePlaybackPriming();
+    testPlaybackClockDrift();
+    testPlaybackResamplingContinuity();
     testDirectProcessing();
     testGraphFastPaths();
     testSilentRelease();
     testMultichannelCut();
     testIdleSleep();
-    testNativePlugin();
+    testNativePlugin(argv[1]);
     auto context = std::make_unique<AudioContext>(nullptr);
     auto runtime = std::make_unique<RuntimeGraph>();
     auto capture = std::make_unique<AlsaCaptureBackend>();

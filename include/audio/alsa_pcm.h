@@ -101,10 +101,9 @@ static inline void audio_pcm_track_underrun(const char *path, const char *op) {
 
 static inline snd_pcm_uframes_t audio_pcm_playback_start_frames(
     snd_pcm_uframes_t periodFrames, snd_pcm_uframes_t bufferFrames) {
-    // Preserve the base startup latency, but actually prime the larger adaptive queue.
-    const snd_pcm_uframes_t target = periodFrames > BUFFER_FRAMES
-        ? std::max(periodFrames, bufferFrames > periodFrames ? bufferFrames - periodFrames : 0U)
-        : BUFFER_FRAMES;
+    // Keep a real scheduling/drift reserve even at the smallest adaptive tier.
+    const snd_pcm_uframes_t target =
+        std::max(periodFrames, bufferFrames > periodFrames ? bufferFrames - periodFrames : 0U);
     return std::min(target, bufferFrames);
 }
 
@@ -362,4 +361,11 @@ static inline int audio_pcm_recover_capture(snd_pcm_t *pcm, int err,
         }
     }
     return rc;
+}
+
+static inline int audio_pcm_recover_playback(snd_pcm_t *pcm, int err,
+                                            const char *path) {
+    // ALSA's suspend recovery retries resume with sleeps; re-prepare instead on the RT path.
+    if (err == -ESTRPIPE) return pcm ? snd_pcm_prepare(pcm) : -EINVAL;
+    return audio_pcm_recover(pcm, err, path, "playback");
 }

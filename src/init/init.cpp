@@ -198,7 +198,7 @@ int main() {
 
     // starts the initial worker threads
     // these might get removed or new threads added based on config, and auto device discovery
-    fb.bootStatus("Starting audio manager thread...");
+    fb.bootStatus("Starting audio worker...");
     HANDLE_ERROR(audio.setupThreads());
 
     fb.bootStatus("Starting bluetooth thread...");

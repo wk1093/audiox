@@ -4,9 +4,9 @@
 #include <array>
 #include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <dirent.h>
-#include <elf.h>
 #include <fcntl.h>
 #include <limits>
 #include <set>
@@ -92,51 +92,12 @@ bool floatValue(const std::string &s, float &v) {
     stream >> v;
     return !stream.fail() && std::isfinite(v);
 }
-bool elf(const std::vector<uint8_t> &data, bool native, std::string &error) {
-    if (data.size() < 64 || std::memcmp(data.data(), ELFMAG, SELFMAG) ||
-        data[EI_CLASS] != ELFCLASS64 || data[EI_DATA] != ELFDATA2LSB ||
-        data[EI_VERSION] != EV_CURRENT || le(data.data() + 16, 2) != ET_DYN ||
-        le(data.data() + 20, 4) != EV_CURRENT || le(data.data() + 52, 2) != 64)
-        return fail(error, "module must be a little-endian ELF64 shared object");
-    const uint64_t machine = le(data.data() + 18, 2);
-    if (machine != EM_X86_64 && machine != EM_AARCH64)
-        return fail(error, "unsupported module architecture");
-#if defined(__x86_64__)
-    constexpr uint64_t hostMachine = EM_X86_64;
-#elif defined(__aarch64__)
-    constexpr uint64_t hostMachine = EM_AARCH64;
-#else
-    constexpr uint64_t hostMachine = 0;
-#endif
-    if (native && machine != hostMachine) return fail(error, "module architecture does not match host");
-    const uint64_t phoff = le(data.data() + 32, 8), shoff = le(data.data() + 40, 8);
-    const uint64_t phsize = le(data.data() + 54, 2), phnum = le(data.data() + 56, 2);
-    const uint64_t shsize = le(data.data() + 58, 2), shnum = le(data.data() + 60, 2);
-    if (!phnum || phnum == PN_XNUM || phsize != 56 || phoff < 64 ||
-        phoff > data.size() || phnum > (data.size() - phoff) / phsize)
-        return fail(error, "invalid ELF program header bounds");
-    if ((shnum && (shsize != 64 || shoff < 64 || shoff > data.size() ||
-                   shnum > (data.size() - shoff) / shsize)) || (!shnum && shoff))
-        return fail(error, "invalid ELF section header bounds");
-    bool load = false;
-    for (uint64_t i = 0; i < phnum; ++i) {
-        const uint8_t *p = data.data() + phoff + i * phsize;
-        uint64_t offset = le(p + 8, 8), bytes = le(p + 32, 8);
-        if (offset > data.size() || bytes > data.size() - offset)
-            return fail(error, "invalid ELF segment bounds");
-        if (le(p, 4) == PT_LOAD) {
-            if (le(p + 40, 8) < bytes) return fail(error, "invalid ELF load segment");
-            load = true;
-        }
-    }
-    if (!load) return fail(error, "ELF has no load segment");
-    for (uint64_t i = 0; i < shnum; ++i) {
-        const uint8_t *s = data.data() + shoff + i * shsize;
-        uint64_t offset = le(s + 24, 8), bytes = le(s + 32, 8);
-        if (le(s + 4, 4) != SHT_NOBITS &&
-            (offset > data.size() || bytes > data.size() - offset))
-            return fail(error, "invalid ELF section bounds");
-    }
+bool bitcode(const std::vector<uint8_t> &data, std::string &error) {
+    if (data.size() >= 4 && !std::memcmp(data.data(), "\177ELF", 4))
+        return fail(error, "legacy ELF plugin: rebuild required as LLVM module.bc");
+    if (data.size() < 4 || (std::memcmp(data.data(), "BC\300\336", 4) &&
+                          std::memcmp(data.data(), "\336\300\027\013", 4)))
+        return fail(error, "module must be LLVM bitcode (module.bc); rebuild required");
     return true;
 }
 int openRoot(const std::string &root, bool create, std::string &error) {
@@ -249,8 +210,8 @@ bool metadataAt(int dir, const std::string &id, PackageMetadata &metadata, std::
     std::string manifest;
     if (!readFile(dir, ".checksums", 2048, manifest, error)) return false;
     const auto *raw = reinterpret_cast<const uint8_t *>(manifest.data());
-    if (manifest.size() < 16 || std::memcmp(raw, "AXMODULE", 8) || le(raw + 8, 4) != 1)
-        return fail(error, "invalid installed checksum manifest");
+    if (manifest.size() < 16 || std::memcmp(raw, "AXMODULE", 8) || le(raw + 8, 4) != 2)
+        return fail(error, "legacy or invalid installed package: rebuild required as LLVM bitcode");
     uint64_t count = le(raw + 12, 4);
     if (count < 2 || count > kMaxEntries) return fail(error, "invalid installed manifest count");
     size_t pos = 16, total = 16;
@@ -268,7 +229,7 @@ bool metadataAt(int dir, const std::string &id, PackageMetadata &metadata, std::
         pos += static_cast<size_t>(nameSize);
         size_t limit = 0;
         if (kind == Metadata && name == "axm.txt") limit = kMaxMetadataBytes;
-        else if (kind == Module && name == "module.so") limit = kMaxModuleBytes;
+        else if (kind == Module && name == "module.bc") limit = kMaxModuleBytes;
         else if (kind == Asset && validAssetName(name)) limit = kMaxAssetBytes;
         else return fail(error, "invalid installed manifest entry");
         if (bytes > limit || bytes + nameSize + 20 > kMaxPackageBytes - total ||
@@ -293,6 +254,33 @@ bool metadataAt(int dir, const std::string &id, PackageMetadata &metadata, std::
     if (id != metadata.id) return fail(error, "installed plugin id mismatch");
     return true;
 }
+bool removeAt(int root, int package, const std::string &id, std::string &error) {
+    std::vector<std::string> names;
+    if (!directoryNames(package, names, error)) return false;
+    if (names.size() > kMaxEntries + 1) return fail(error, "invalid installed package entry count");
+    for (const auto &name : names) {
+        if (name != "axm.txt" && name != "module.bc" && name != "module.so" &&
+            name != ".checksums" && !validAssetName(name))
+            return fail(error, "unexpected file in plugin directory");
+        struct stat st{};
+        if (fstatat(package, name.c_str(), &st, AT_SYMLINK_NOFOLLOW) < 0)
+            return systemFail(error, "stat plugin removal entry");
+        if (!S_ISREG(st.st_mode)) return fail(error, "plugin removal refuses non-regular files");
+    }
+    // Keep the format marker until last so interrupted legacy cleanup can retry.
+    for (const auto &name : names) {
+        if (name == ".checksums") continue;
+        if (unlinkat(package, name.c_str(), 0) < 0) return systemFail(error, "remove plugin file");
+    }
+    if (fsync(package) < 0) return systemFail(error, "sync removed plugin files");
+    if (std::find(names.begin(), names.end(), ".checksums") != names.end() &&
+        unlinkat(package, ".checksums", 0) < 0)
+        return systemFail(error, "remove plugin manifest");
+    if (fsync(package) < 0) return systemFail(error, "sync removed plugin manifest");
+    if (unlinkat(root, id.c_str(), AT_REMOVEDIR) < 0) return systemFail(error, "remove plugin directory");
+    if (fsync(root) < 0) return systemFail(error, "sync removed plugin root");
+    return true;
+}
 bool listAt(int root, std::vector<PackageMetadata> &packages, std::string &error) {
     std::vector<std::string> names;
     if (!directoryNames(root, names, error)) return false;
@@ -300,9 +288,21 @@ bool listAt(int root, std::vector<PackageMetadata> &packages, std::string &error
         if (name == ".lock" || name.compare(0, 7, ".stage-") == 0 ||
             name.compare(0, 8, ".remove-") == 0) continue;
         if (!validId(name)) return fail(error, "unexpected entry in plugin root");
-        if (packages.size() == kMaxInstalled) return fail(error, "installed plugin limit exceeded");
         Fd dir(openat(root, name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
         if (dir.value < 0) return systemFail(error, "open installed plugin");
+        std::string manifest;
+        if (!readFile(dir.value, ".checksums", 2048, manifest, error)) return false;
+        if (manifest.size() >= 16 && !std::memcmp(manifest.data(), "AXMODULE", 8) &&
+            le(reinterpret_cast<const uint8_t *>(manifest.data()) + 8, 4) == 1) {
+            if (!removeAt(root, dir.value, name, error)) {
+                error = "cannot remove legacy plugin " + name + ": " + error;
+                return false;
+            }
+            printf("[PLUGIN] [INFO] Removed legacy plugin %s; rebuild and reinstall as LLVM bitcode\n",
+                   name.c_str());
+            continue;
+        }
+        if (packages.size() == kMaxInstalled) return fail(error, "installed plugin limit exceeded");
         PackageMetadata metadata;
         if (!metadataAt(dir.value, name, metadata, error)) return false;
         packages.push_back(metadata);
@@ -458,11 +458,12 @@ bool parseMetadata(const std::string &text, PackageMetadata &metadata, std::stri
 }
 
 bool parsePackage(const uint8_t *data, size_t size, Package &package, std::string &error,
-                  bool requireNative) {
+                  bool /*requireNative*/) {
     error.clear();
     if (!data || size < 16 || size > kMaxPackageBytes) return fail(error, "invalid package size");
     if (std::memcmp(data, "AXMODULE", 8)) return fail(error, "invalid package magic");
-    if (le(data + 8, 4) != 1) return fail(error, "unsupported package format version");
+    if (le(data + 8, 4) == 1) return fail(error, "legacy .axm package: rebuild required as LLVM bitcode");
+    if (le(data + 8, 4) != 2) return fail(error, "unsupported package format version");
     uint64_t count = le(data + 12, 4);
     if (count < 2 || count > kMaxEntries) return fail(error, "invalid package entry count");
     Package result;
@@ -484,10 +485,12 @@ bool parsePackage(const uint8_t *data, size_t size, Package &package, std::strin
         size_t limit = 0;
         if (entry.kind == Metadata && entry.name == "axm.txt" && !hasMetadata) {
             limit = kMaxMetadataBytes; hasMetadata = true;
-        } else if (entry.kind == Module && entry.name == "module.so" && !hasModule) {
+        } else if (entry.kind == Module && entry.name == "module.bc" && !hasModule) {
             limit = kMaxModuleBytes; hasModule = true;
         } else if (entry.kind == Asset && validAssetName(entry.name)) limit = kMaxAssetBytes;
-        else return fail(error, "invalid package entry kind or name");
+        else return fail(error, entry.name == "module.so" ?
+                         "legacy ELF plugin: rebuild required as LLVM module.bc" :
+                         "invalid package entry kind or name");
         if (bytes > limit || bytes > size - pos) return fail(error, "invalid package entry size");
         if (crc(data + pos, static_cast<size_t>(bytes)) != checksum)
             return fail(error, "package checksum mismatch");
@@ -495,7 +498,7 @@ bool parsePackage(const uint8_t *data, size_t size, Package &package, std::strin
         pos += static_cast<size_t>(bytes);
         if (entry.kind == Metadata &&
             !parseMetadata(std::string(entry.data.begin(), entry.data.end()), result.metadata, error)) return false;
-        if (entry.kind == Module && !elf(entry.data, requireNative, error)) return false;
+        if (entry.kind == Module && !bitcode(entry.data, error)) return false;
         result.entries.push_back(std::move(entry));
     }
     if (!hasMetadata || !hasModule) return fail(error, "package requires metadata and module");
@@ -517,7 +520,7 @@ bool buildPackage(const std::vector<Entry> &entries, std::vector<uint8_t> &data,
     std::vector<uint8_t> result;
     result.reserve(size);
     for (char c : std::string("AXMODULE")) result.push_back(static_cast<uint8_t>(c));
-    put(result, 1, 4);
+    put(result, 2, 4);
     put(result, entries.size(), 4);
     for (const auto &entry : entries) {
         put(result, entry.kind, 4); put(result, entry.name.size(), 4);
@@ -595,23 +598,7 @@ bool removePackage(const std::string &id, const std::string &root, std::string &
     if (!lockRoot(dir.value, lock, error)) return false;
     Fd package(openat(dir.value, id.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
     if (package.value < 0) return systemFail(error, "open plugin to remove");
-    std::vector<std::string> names;
-    if (!directoryNames(package.value, names, error)) return false;
-    if (names.size() > kMaxEntries + 1) return fail(error, "invalid installed package entry count");
-    for (const auto &name : names) {
-        if (name != "axm.txt" && name != "module.so" && name != ".checksums" && !validAssetName(name))
-            return fail(error, "unexpected file in plugin directory");
-        struct stat st{};
-        if (fstatat(package.value, name.c_str(), &st, AT_SYMLINK_NOFOLLOW) < 0)
-            return systemFail(error, "stat plugin removal entry");
-        if (!S_ISREG(st.st_mode)) return fail(error, "plugin removal refuses non-regular files");
-    }
-    for (const auto &name : names)
-        if (unlinkat(package.value, name.c_str(), 0) < 0) return systemFail(error, "remove plugin file");
-    if (fsync(package.value) < 0) return systemFail(error, "sync removed plugin files");
-    if (unlinkat(dir.value, id.c_str(), AT_REMOVEDIR) < 0) return systemFail(error, "remove plugin directory");
-    if (fsync(dir.value) < 0) return systemFail(error, "sync removed plugin root");
-    return true;
+    return removeAt(dir.value, package.value, id, error);
 }
 bool readPluginAsset(const std::string &id, const std::string &name,
                      const std::string &root, std::string &data, std::string &error) {

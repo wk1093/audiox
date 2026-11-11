@@ -3,15 +3,17 @@
 #include <algorithm>
 #include <cstring>
 
-#ifndef AUDIOX_PLUGIN_WORKER_PATH
-#define AUDIOX_PLUGIN_WORKER_PATH "/sbin/audiox-plugin-worker"
+#ifndef AUDIOX_GRAPH_COMPILER_PATH
+#define AUDIOX_GRAPH_COMPILER_PATH "/sbin/audiox-graph-compiler"
 #endif
 
 std::unique_ptr<audiox::plugin::PluginHost>
-AudioContext::preparePlugin(const char *id, uint8_t type) {
+AudioContext::preparePlugin(const char *id, uint8_t type, std::string *error) {
+    if (error) error->clear();
     const auto *metadata = audiox::plugin::metadataFor(type);
     if (!metadata || !audiox::plugin::available(type)) {
         printf("[PLUGIN] [WARN] Effect %s: package unavailable\n", id);
+        if (error) *error = "Plugin package unavailable";
         return nullptr;
     }
     AudioxParameterV1 specifications[AUDIOX_PLUGIN_MAX_PARAMS]{};
@@ -22,11 +24,12 @@ AudioContext::preparePlugin(const char *id, uint8_t type) {
     }
     auto host = std::make_unique<audiox::plugin::PluginHost>();
     const std::string module =
-        std::string(audiox::plugin::ROOT) + "/" + metadata->id + "/module.so";
+        std::string(audiox::plugin::ROOT) + "/" + metadata->id + "/module.bc";
     if (!host->prepare(module.c_str(), metadata->id, specifications,
                        metadata->paramCount, SAMPLE_RATE, BUFFER_FRAMES, 2,
-                       AUDIOX_PLUGIN_WORKER_PATH)) {
+                       AUDIOX_GRAPH_COMPILER_PATH)) {
         printf("[PLUGIN] [WARN] Effect %s: %s\n", id, host->error());
+        if (error) *error = host->error();
         return nullptr;
     }
     return host;
@@ -44,6 +47,7 @@ void AudioContext::attachPlugin(
 }
 
 void AudioContext::retirePlugin(const char *id) {
+    pluginRuntimeStates.erase(id);
     auto found = pluginHosts.find(id);
     if (found == pluginHosts.end())
         return;

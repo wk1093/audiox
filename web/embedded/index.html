@@ -43,6 +43,16 @@
         </div>
       </section>
 
+      <section id="audio-worker-warning" class="boot-failure-banner" role="alert" hidden>
+        <div class="boot-failure-text">
+          <strong>Audio recovery: all plugins have been bypassed.</strong>
+          <span>Audio repeatedly crashed or stopped responding. Your routing and effect settings are preserved. Remove or update faulty plugins before trying them again.</span>
+        </div>
+        <div class="boot-failure-actions">
+          <button id="btn-audio-retry-plugins" class="warn">Retry audio with plugins</button>
+        </div>
+      </section>
+
       <nav class="tabs" id="tabs" aria-label="Main navigation">
         <button class="tab-btn active" data-tab="routing">Routing</button>
         <button class="tab-btn" data-tab="bluetooth">Bluetooth</button>
@@ -601,6 +611,9 @@ end)
           <h2>Audio Buffer</h2>
           <div class="value" id="sysinfo-audio-buffer">—</div>
           <div class="small" id="sysinfo-audio-buffer-detail"></div>
+          <p class="small" id="audio-worker-status" role="status">Waiting for audio worker.</p>
+          <button id="btn-audio-restart" class="warn">Restart Audio</button>
+          <p class="small">Restarts audio only. Playing sounds stop and effect tails reset; routing and settings are retained.</p>
           <div class="metric"><div class="label">FFmpeg</div><div class="value" id="sysinfo-ffmpeg">—</div></div>
         </section>
         <section class="stack" id="system-audio-stress" hidden>

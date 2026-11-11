@@ -861,6 +861,25 @@ int main() {
             const std::string effectId = effect.effectId;
             const auto effectsResponse = pluginRequest("GET", "/api/effects", "");
             assert(effectsResponse.find("\"plugin_status\":\"ready\"") != std::string::npos);
+            {
+                std::lock_guard<std::mutex> lock(audio.effectsMutex);
+                auto &runtime = audio.pluginRuntimeStates[effectId];
+                runtime.revision = audio.effectStates.at(effectId).pluginHost->revision();
+                runtime.status = audiox::plugin::PluginHost::Status::Fault;
+                strcpy(runtime.error, "plugin create failed");
+            }
+            const auto failedPlugin = pluginRequest("GET", "/api/effects", "");
+            assert(failedPlugin.find("\"plugin_status\":\"fault\"") != std::string::npos);
+            assert(failedPlugin.find("\"plugin_error\":\"plugin create failed\"") != std::string::npos);
+            {
+                std::lock_guard<std::mutex> lock(audio.effectsMutex);
+                ++audio.pluginRuntimeStates[effectId].revision;
+            }
+            assert(pluginRequest("GET", "/api/effects", "").find("\"plugin_status\":\"ready\"") != std::string::npos);
+            {
+                std::lock_guard<std::mutex> lock(audio.effectsMutex);
+                audio.pluginRuntimeStates.erase(effectId);
+            }
             const std::string expectedName = std::string(package.metadata.name) + " " + effectId.substr(3);
             assert(effectsResponse.find("\"name\":\"" + expectedName + "\"") != std::string::npos);
             assert(effectsResponse.find("\"description\":\"" +
@@ -966,23 +985,13 @@ int main() {
                 assert(audiox::plugin::buildPackage(package.entries, hanging, error));
                 assert(pluginRequest("PUT", "/api/plugins/install",
                     std::string(hanging.begin(), hanging.end())).find("200 OK") != std::string::npos);
-                std::atomic<bool> finished{false};
-                std::thread creation([&]() {
-                    char createdId[64]{};
-                    assert(audio.createEffect(id.c_str(), createdId, sizeof(createdId)) == RET_ERR);
-                    finished.store(true);
-                });
-                unsigned reads = 0;
-                while (!finished.load()) {
-                    const auto start = std::chrono::steady_clock::now();
-                    audiox::effects::SlotParams ignored{};
-                    (void)audio.getEffectParams("missing", &ignored);
-                    assert(std::chrono::steady_clock::now() - start < std::chrono::milliseconds(50));
-                    ++reads;
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                }
-                creation.join();
-                assert(reads > 10);
+                // The application's host is metadata-only, even for code whose create hangs.
+                char createdId[64]{};
+                const auto started = std::chrono::steady_clock::now();
+                assert(audio.createEffect(id.c_str(), createdId, sizeof(createdId)) == RET_OK);
+                assert(std::chrono::steady_clock::now() - started < std::chrono::seconds(1));
+                assert(audio.deleteEffect(createdId) == RET_OK);
+                audio.pollPlugins();
                 assert(pluginRequest("POST", "/api/plugins/remove", "id=" + id).find("200 OK") != std::string::npos);
             }
             assert(config.writeMidiMapFile(&savedBefore) == RET_OK);

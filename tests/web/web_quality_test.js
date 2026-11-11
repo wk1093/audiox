@@ -143,6 +143,62 @@ test('audio health remembers disconnected devices without presenting old streams
   assert.throws(() => monitor.deviceRows({}), /Invalid/);
 });
 
+test('audio health includes the gadget real ALSA IDs and both directions', () => {
+  const streams = [
+    { id: 'alsa_uac2gadget_dev0_in', capture: true, xruns: 0 },
+    { id: 'alsa_uac2gadget_dev0_out', capture: false, xruns: 5 },
+  ];
+  const rows = monitor.deviceRows({ detected: { devices: [
+    { gadget: 1, stableCardId: 'uac2gadget', device: 0, name: 'UAC2Gadget' },
+  ] }, streams });
+  assert.equal(rows.size, 1);
+  assert.equal(rows.get('uac2gadget_dev0').name, 'USB audio gadget');
+  assert.deepEqual(rows.get('uac2gadget_dev0').streams, streams);
+});
+
+test('worker recovery warning persists until plugin recovery; restart requests do not claim readiness', async () => {
+  const nodes = new Map(), calls = [], notices = [];
+  const node = (id) => {
+    if (!nodes.has(id)) nodes.set(id, { hidden: false, dataset: {}, listeners: {},
+      addEventListener(type, fn) { this.listeners[type] = fn; } });
+    return nodes.get(id);
+  };
+  let success = true, confirmed = false;
+  const context = { document: { getElementById: node }, AbortSignal, Map,
+    confirm: () => confirmed,
+    AudioxUI: { notify: (...args) => notices.push(args), resolve() {} },
+    fetch: async (url, options) => {
+      calls.push({ url, options });
+      return { ok: success, status: 503, json: async () => ({ restart_requested: true }),
+        text: async () => 'supervisor unavailable' };
+    },
+  };
+  context.window = context;
+  vm.runInContext(fs.readFileSync(require.resolve('../../web/embedded/system-monitor.js'), 'utf8'), apiContext(context));
+  const ui = context.AudioxSystemMonitor;
+  ui.updateWorker({ running: true, pid: 100, plugins_disabled: true });
+  assert.equal(node('audio-worker-warning').hidden, false);
+  assert.match(node('audio-worker-status').textContent, /all plugins bypassed/);
+  ui.updateWorker(null);
+  assert.equal(node('audio-worker-warning').hidden, false);
+  await node('btn-audio-restart').listeners.click();
+  assert.equal(calls[0].url, '/api/system/audio-worker');
+  assert.equal(calls[0].options.body, 'enable_plugins=0');
+  assert.match(node('audio-worker-status').textContent, /waiting for the worker/);
+  assert.equal(node('audio-worker-warning').hidden, false);
+  await node('btn-audio-retry-plugins').listeners.click();
+  assert.equal(calls.length, 1);
+  confirmed = true;
+  await node('btn-audio-retry-plugins').listeners.click();
+  assert.equal(calls[1].options.body, 'enable_plugins=1');
+  success = false;
+  await node('btn-audio-restart').listeners.click();
+  assert.match(String(notices.at(-1)[0]), /supervisor unavailable/);
+  assert.equal(node('btn-audio-restart').disabled, false);
+  ui.updateWorker({ running: true, pid: 200, plugins_disabled: false });
+  assert.equal(node('audio-worker-warning').hidden, true);
+});
+
 test('offline assets use pinned packages, local scripts/styles/fonts and retain licenses', () => {
   const html = fs.readFileSync(require.resolve('../../web/embedded/index.html'), 'utf8');
   const css = fs.readFileSync(require.resolve('../../web/embedded/styles.css'), 'utf8');

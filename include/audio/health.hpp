@@ -32,6 +32,9 @@ public:
     void bufferChanged(uint64_t now = healthMonotonicMs()) {
         extendGrace(now + kBufferGraceMs);
     }
+    void workerRestarted(uint64_t now = healthMonotonicMs()) {
+        extendGrace(now + kGraceMs);
+    }
 
     // Called by the audio processing thread: bounded atomics only, no allocation or log parsing.
     bool recordXrun(uint64_t now = healthMonotonicMs()) {
@@ -48,6 +51,11 @@ public:
     }
 
     uint64_t total() const { return total_.load(std::memory_order_relaxed); }
+    void recordWorkerXruns(uint64_t count, uint64_t now = healthMonotonicMs()) {
+        const uint64_t recent = std::min<uint64_t>(count, kThreshold);
+        total_.fetch_add(count - recent, std::memory_order_relaxed);
+        for (uint64_t i = 0; i < recent; ++i) recordXrun(now);
+    }
     uint64_t warningAt() const { return warningAt_.load(std::memory_order_acquire); }
     bool warningActive(uint64_t now = healthMonotonicMs()) const {
         const uint64_t warning = warningAt();
@@ -96,7 +104,22 @@ public:
     }
 
     uint32_t level() const { return level_.load(std::memory_order_acquire); }
-    uint64_t instanceId() const { return instanceId_; }
+    uint64_t instanceId() const {
+        const uint64_t remote = remoteInstance_.load(std::memory_order_acquire);
+        return remote ? remote : instanceId_;
+    }
+
+    void mirrorWorker(uint64_t instance, uint32_t level, uint32_t streams,
+                      uint32_t period, uint32_t buffer, uint64_t change,
+                      uint64_t increase, uint32_t delay, uint32_t failures) {
+        level_.store(level, std::memory_order_relaxed);
+        publishObserved(streams, period, buffer);
+        changeId_.store(change, std::memory_order_relaxed);
+        increaseId_.store(increase, std::memory_order_relaxed);
+        remoteDelay_.store(delay, std::memory_order_relaxed);
+        downshiftFailures_.store(failures, std::memory_order_relaxed);
+        remoteInstance_.store(instance, std::memory_order_release);
+    }
 
     uint32_t targetPeriodFrames(uint32_t baseFrames) const {
         uint32_t frames = baseFrames;
@@ -182,6 +205,8 @@ public:
         return downshiftFailures_.load(std::memory_order_acquire);
     }
     uint32_t downshiftDelayMs() const {
+        if (remoteInstance_.load(std::memory_order_acquire))
+            return remoteDelay_.load(std::memory_order_relaxed);
         if (!level()) return 0;
         const uint64_t quietPeriod =
             recentBurstCount_.load(std::memory_order_relaxed) >= kXrunsToIncrease
@@ -205,6 +230,8 @@ private:
     }
 
     const uint64_t instanceId_;
+    std::atomic<uint64_t> remoteInstance_{0};
+    std::atomic<uint32_t> remoteDelay_{0};
     const uint64_t startupGraceUntil_;
     uint64_t graceUntil_;
     std::atomic<uint32_t> level_{0};

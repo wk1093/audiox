@@ -1,4 +1,5 @@
 #include "audio/graph_native.hpp"
+#include "audio/plugin_native.hpp"
 
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitReader.h>
@@ -41,13 +42,17 @@ bool transfer(int fd, const void *data, size_t size, bool writing) {
 // libc addresses. No generated code or constructors execute in this process.
 class RemoteImage final : public llvm::RTDyldMemoryManager {
     const CompileRequest &request_;
+    audiox::plugin::PluginNativeHeader *plugin_;
   public:
     std::vector<uint8_t> bytes = std::vector<uint8_t>(kMaxNativeBytes);
     std::vector<uint8_t *> sections;
     size_t size{};
     bool invalid{};
-    explicit RemoteImage(const CompileRequest &request) : request_(request) {}
-    uint8_t *allocate(uintptr_t length, unsigned alignment) {
+    explicit RemoteImage(const CompileRequest &request,
+                         audiox::plugin::PluginNativeHeader *plugin = nullptr)
+        : request_(request), plugin_(plugin) {}
+    uint8_t *allocate(uintptr_t length, unsigned alignment, bool executable = false) {
+        if (plugin_) alignment = std::max(alignment, static_cast<unsigned>(sysconf(_SC_PAGESIZE)));
         alignment = std::max(alignment, 16U);
         const size_t offset = (size + alignment - 1) & ~(static_cast<size_t>(alignment) - 1);
         if (offset > bytes.size() || length > bytes.size() - offset) {
@@ -56,14 +61,23 @@ class RemoteImage final : public llvm::RTDyldMemoryManager {
         }
         auto *memory = bytes.data() + offset;
         size = offset + length;
+        if (plugin_) {
+            if (plugin_->sectionCount == audiox::plugin::kMaxPluginSections) {
+                invalid = true;
+                return memory;
+            }
+            plugin_->sections[plugin_->sectionCount++] = {
+                static_cast<uint32_t>(offset), static_cast<uint32_t>(length),
+                static_cast<uint32_t>(executable)};
+        }
         sections.push_back(memory);
         return memory;
     }
     uint8_t *allocateCodeSection(uintptr_t size, unsigned alignment, unsigned,
-                                 llvm::StringRef) override { return allocate(size, alignment); }
+                                 llvm::StringRef) override { return allocate(size, alignment, true); }
     uint8_t *allocateDataSection(uintptr_t size, unsigned alignment, unsigned,
                                  llvm::StringRef name, bool readOnly) override {
-        if (!readOnly && size && name != ".got") {
+        if (!plugin_ && !readOnly && size && name != ".got") {
             std::fprintf(stderr, "[GRAPH] mutable DSP section rejected: %s\n", name.str().c_str());
             invalid = true;
         }
@@ -80,6 +94,114 @@ class RemoteImage final : public llvm::RTDyldMemoryManager {
         return 0;
     }
 };
+
+bool compilePlugin(const CompileRequest &request, const char *path) {
+    if (LLVMInitializeNativeTarget() || LLVMInitializeNativeAsmPrinter()) return false;
+    LLVMContextRef context = LLVMContextCreate();
+    LLVMMemoryBufferRef input{};
+    LLVMModuleRef module{};
+    char *error{};
+    bool ok = !LLVMCreateMemoryBufferWithContentsOfFile(path, &input, &error);
+    if (!ok) {
+        std::fprintf(stderr, "[PLUGIN] bitcode input: %s\n", error);
+        LLVMDisposeMessage(error);
+    }
+    if (ok) {
+        ok = !LLVMParseBitcodeInContext2(context, input, &module);
+        LLVMDisposeMemoryBuffer(input);
+        if (!ok) std::fprintf(stderr, "[PLUGIN] invalid LLVM bitcode\n");
+    }
+    char *triple = LLVMGetDefaultTargetTriple();
+    LLVMTargetRef target{};
+    LLVMTargetMachineRef machine{};
+    if (ok) {
+        const std::string native = triple, supplied = LLVMGetTarget(module);
+        ok = supplied.substr(0, supplied.find('-')) == native.substr(0, native.find('-'));
+        if (!ok) std::fprintf(stderr, "[PLUGIN] bitcode architecture mismatch; rebuild required\n");
+    }
+    if (ok) {
+        const auto entry = LLVMGetNamedFunction(module, "audiox_plugin_v1");
+        ok = entry && LLVMCountBasicBlocks(entry) &&
+             LLVMGetTypeKind(LLVMGetReturnType(LLVMGlobalGetValueType(entry))) == LLVMPointerTypeKind &&
+             LLVMCountParams(entry) == 0;
+        if (!ok) std::fprintf(stderr, "[PLUGIN] missing or invalid audiox_plugin_v1 ABI entry\n");
+        if (LLVMGetNamedGlobal(module, "llvm.global_ctors") ||
+            LLVMGetNamedGlobal(module, "llvm.global_dtors")) {
+            std::fprintf(stderr, "[PLUGIN] global constructors/destructors are unsupported\n");
+            ok = false;
+        }
+        for (auto global = LLVMGetFirstGlobal(module); global; global = LLVMGetNextGlobal(global))
+            if (LLVMIsThreadLocal(global)) {
+                std::fprintf(stderr, "[PLUGIN] thread-local globals are unsupported\n");
+                ok = false;
+            }
+    }
+    if (ok) {
+        error = nullptr;
+        ok = !LLVMVerifyModule(module, LLVMReturnStatusAction, &error);
+        if (!ok) std::fprintf(stderr, "[PLUGIN] invalid bitcode IR: %s\n", error);
+        LLVMDisposeMessage(error);
+    }
+    if (ok) {
+        error = nullptr;
+        ok = !LLVMGetTargetFromTriple(triple, &target, &error);
+        if (!ok) {
+            std::fprintf(stderr, "[PLUGIN] native target: %s\n", error);
+            LLVMDisposeMessage(error);
+        }
+    }
+    if (ok) {
+        char *cpu = LLVMGetHostCPUName(), *features = LLVMGetHostCPUFeatures();
+        machine = LLVMCreateTargetMachine(target, triple, cpu, features,
+            LLVMCodeGenLevelAggressive, LLVMRelocPIC, LLVMCodeModelLarge);
+        LLVMDisposeMessage(cpu);
+        LLVMDisposeMessage(features);
+        ok = machine;
+        for (auto fn = LLVMGetFirstFunction(module); fn; fn = LLVMGetNextFunction(fn)) {
+            LLVMRemoveStringAttributeAtIndex(fn, LLVMAttributeFunctionIndex, "target-cpu", 10);
+            LLVMRemoveStringAttributeAtIndex(fn, LLVMAttributeFunctionIndex, "target-features", 15);
+        }
+    }
+    LLVMMemoryBufferRef object{};
+    if (ok) {
+        error = nullptr;
+        ok = !LLVMTargetMachineEmitToMemoryBuffer(machine, module, LLVMObjectFile, &error, &object);
+        if (!ok) std::fprintf(stderr, "[PLUGIN] native emission: %s\n", error);
+        LLVMDisposeMessage(error);
+    }
+    if (ok) {
+        auto parsed = llvm::object::ObjectFile::createObjectFile(
+            llvm::MemoryBufferRef(llvm::StringRef(LLVMGetBufferStart(object), LLVMGetBufferSize(object)), "plugin"));
+        if (!parsed) {
+            llvm::logAllUnhandledErrors(parsed.takeError(), llvm::errs(), "[PLUGIN] object: ");
+            ok = false;
+        } else {
+            audiox::plugin::PluginNativeHeader header{};
+            RemoteImage image(request, &header);
+            llvm::RuntimeDyld linker(image, image);
+            linker.loadObject(**parsed);
+            for (auto *section : image.sections)
+                linker.mapSectionAddress(section, request.address + (section - image.bytes.data()));
+            linker.resolveRelocations();
+            const auto entry = linker.getSymbol("audiox_plugin_v1").getAddress();
+            ok = !image.invalid && !linker.hasError() && entry >= request.address &&
+                 entry - request.address < image.size;
+            if (linker.hasError())
+                std::fprintf(stderr, "[PLUGIN] relocation failure: %s\n", linker.getErrorString().str().c_str());
+            header.magic = audiox::plugin::kPluginNativeMagic;
+            header.size = static_cast<uint32_t>(image.size);
+            header.entryOffset = static_cast<uint32_t>(entry - request.address);
+            if (ok) ok = transfer(STDOUT_FILENO, &header, sizeof(header), true) &&
+                         transfer(STDOUT_FILENO, image.bytes.data(), image.size, true);
+        }
+    }
+    if (object) LLVMDisposeMemoryBuffer(object);
+    if (machine) LLVMDisposeTargetMachine(machine);
+    if (module) LLVMDisposeModule(module);
+    LLVMDisposeMessage(triple);
+    LLVMContextDispose(context);
+    return ok;
+}
 
 bool compile(const CompileRequest &request, const char *directory) {
     const auto &schedule = request.schedule;
@@ -263,6 +385,13 @@ int main(int argc, char **argv) {
         return 1;
     }
     CompileRequest request{};
+    if (argc == 3 && !std::strcmp(argv[1], "--plugin")) {
+        if (!transfer(STDIN_FILENO, &request, sizeof(request), false) ||
+            !request.address || request.importCount > kMaxImports) return 1;
+        for (unsigned i = 0; i < request.importCount; ++i)
+            if (!std::memchr(request.imports[i].name, 0, sizeof(request.imports[i].name))) return 1;
+        return compilePlugin(request, argv[2]) ? 0 : 1;
+    }
     if (argc != 2 || !transfer(STDIN_FILENO, &request, sizeof(request), false) ||
         !request.schedule.generation || request.schedule.count > kMaxOperations || !request.schedule.frames ||
         !request.address || request.importCount > kMaxImports) {

@@ -142,6 +142,7 @@
   };
 
   const pluginStatusText = {
+    starting: 'Plugin loading in the audio worker.',
     ready: 'Plugin running.',
     fault: 'Plugin fault: processing stopped. Reload the plugin from Plugins after fixing the cause.',
     unavailable: 'Plugin unavailable: it is not installed or failed to load. Install or reload it from Plugins.',

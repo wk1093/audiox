@@ -65,9 +65,8 @@
       throw new Error('Invalid audio device health response.');
     for (const row of remembered.values()) row.connected = false;
     for (const device of data.detected.devices) {
-      if (device.gadget) continue;
       const key = `${device.stableCardId || `card${device.card}`}_dev${device.device}`;
-      remembered.set(key, { key, name: String(device.name || device.node || key), connected: true,
+      remembered.set(key, { key, name: device.gadget ? 'USB audio gadget' : String(device.name || device.node || key), connected: true,
         streams: data.streams.filter((stream) => stream.id === `alsa_${key}_in`
           || stream.id === `alsa_${key}_out` || stream.id === `alsa_card${device.card}_dev${device.device}_in`
           || stream.id === `alsa_card${device.card}_dev${device.device}_out`) });
@@ -123,7 +122,39 @@
     let loading = false;
     let historyLoading = false, historyNeedsFull = true;
     let lastHardwareWarning = '';
+    let restarting = false;
     const text = (id, value) => { document.getElementById(id).textContent = value; };
+    const updateWorker = (worker) => {
+      if (!worker || typeof worker.plugins_disabled !== 'boolean') return;
+      document.getElementById('audio-worker-warning').hidden = !worker.plugins_disabled;
+      text('audio-worker-status', worker.running
+        ? `Audio worker running (PID ${worker.pid})${worker.plugins_disabled ? '; all plugins bypassed' : ''}.`
+        : 'Audio worker unavailable; automatic recovery is in progress.');
+    };
+    async function restartAudio(enablePlugins) {
+      if (restarting) return;
+      if (enablePlugins && !root.confirm('Retry audio with all plugins enabled? A faulty plugin may crash audio again.')) return;
+      restarting = true;
+      const buttons = ['btn-audio-restart', 'btn-audio-retry-plugins'].map((id) => document.getElementById(id));
+      for (const button of buttons) button.disabled = true;
+      try {
+        const response = await apiFetch('/api/system/audio-worker', { method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: `enable_plugins=${enablePlugins ? '1' : '0'}`, signal: AbortSignal.timeout(10000) });
+        if (!response.ok) throw new Error(`Audio restart failed (${response.status}): ${(await response.text()).trim()}`);
+        const result = await response.json();
+        if (result.restart_requested !== true) throw new Error('Invalid audio restart response.');
+        text('audio-worker-status', 'Audio restart requested; waiting for the worker.');
+        root.AudioxUI.notify('Audio restart requested. Playing sounds and effect tails will reset.', 'warn', 'audio-restart');
+      } catch (error) {
+        root.AudioxUI.notify(error, 'warn', 'audio-restart');
+      } finally {
+        restarting = false;
+        for (const button of buttons) button.disabled = false;
+      }
+    }
+    document.getElementById('btn-audio-restart').addEventListener('click', () => restartAudio(false));
+    document.getElementById('btn-audio-retry-plugins').addEventListener('click', () => restartAudio(true));
     async function loadHistory() {
       if (historyLoading || !advanced.open) return;
       historyLoading = true;
@@ -209,7 +240,9 @@
       } catch (error) { root.AudioxUI.notify(error, 'warn', 'diagnostics'); }
     });
     return {
+      updateWorker,
       update(data) {
+        updateWorker(data.audio_worker);
         const hardware = data.hardware;
         text('sysinfo-undervoltage', flagSummary(hardware?.undervoltage));
         text('sysinfo-throttling', flagSummary(hardware?.throttling));

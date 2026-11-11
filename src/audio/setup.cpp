@@ -1,6 +1,7 @@
 #include "audio/context.hpp"
 #include "audio/plugin_registry.hpp"
 #include "audio/alsa_pcm.h"
+#include "audio/worker.hpp"
 
 #include <time.h>
 #include <stdio.h>
@@ -239,6 +240,7 @@ static int queueSfxByPath(AudioContext *ctx, const char *sfxPath, int holdStart,
     if (!ctx || !sfxPath || !sfxPath[0]) {
         return RET_ERR;
     }
+    std::lock_guard<std::mutex> lifecycle(ctx->workerStateMutex);
 
     char basename[MIDI_SFX_PATH_MAX];
     if (buildSfxBasename(sfxPath, basename, sizeof(basename)) != RET_OK) {
@@ -250,6 +252,8 @@ static int queueSfxByPath(AudioContext *ctx, const char *sfxPath, int holdStart,
     {
         std::lock_guard<std::mutex> lock(ctx->sfxBankMutex);
         slotIndex = findLoadedSfxSlot(ctx, basename);
+        if (slotIndex >= 0)
+            ctx->sfxSlotRefs[(uint32_t)slotIndex].fetch_add(1U, std::memory_order_acq_rel);
     }
 
     if (slotIndex < 0) {
@@ -267,9 +271,6 @@ static int queueSfxByPath(AudioContext *ctx, const char *sfxPath, int holdStart,
             printf("[AUDIO] [WARN] SFX not preloaded: %s\n", basename);
             return RET_WARN;
         }
-        ctx->sfxSlotRefs[(uint32_t)slotIndex].fetch_add(1U, std::memory_order_acq_rel);
-    } else {
-        std::lock_guard<std::mutex> lock(ctx->sfxBankMutex);
         ctx->sfxSlotRefs[(uint32_t)slotIndex].fetch_add(1U, std::memory_order_acq_rel);
     }
 
@@ -296,7 +297,9 @@ static int queueSfxByPath(AudioContext *ctx, const char *sfxPath, int holdStart,
 
 }
 
-AudioContext::AudioContext(Audiox *context) : app(context) {
+AudioContext::AudioContext(Audiox *context) : AudioContext(context, true) {}
+
+AudioContext::AudioContext(Audiox *context, bool initializeState) : app(context) {
     audio_pcm_install_error_handler();
 
     if (app) {
@@ -336,6 +339,7 @@ AudioContext::AudioContext(Audiox *context) : app(context) {
         nodeGainAtomics[i].store(1.0f, std::memory_order_relaxed);
     }
     nextEffectId = 1;
+    if (!initializeState) return;
     std::string pluginError;
     if (!audiox::plugin::loadCatalog(pluginError))
         printf("[PLUGIN] [WARN] %s\n", pluginError.c_str());
@@ -354,6 +358,7 @@ AudioContext::AudioContext(Audiox *context) : app(context) {
 }
 
 AudioContext::~AudioContext() {
+    stopAudioWorker();
     processingThreadRun.store(0, std::memory_order_release);
     if (processingThreadStarted) {
         pthread_join(processingThread, nullptr);
@@ -460,6 +465,7 @@ int AudioContext::reloadSfxBank() {
         }
 
         sfxSlots[targetSlot] = loaded;
+        ++sfxBankRevision[targetSlot];
         seen[targetSlot] = 1U;
     }
 

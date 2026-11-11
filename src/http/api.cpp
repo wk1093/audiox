@@ -2834,13 +2834,28 @@ static int handleEffects(HttpServer *server,
 		std::string pluginFields;
 		if (audiox::plugin::isPluginType(params.type)) {
 		    const bool ui = audiox::plugin::hasUi(params.type);
-		    const auto status = params.pluginHost ? params.pluginHost->status() :
-		        audiox::plugin::PluginHost::Status::Stopped;
+		    auto *audio = server->app->audio;
+		    std::lock_guard<std::mutex> lock(audio->effectsMutex);
+		    const auto effect = audio->effectStates.find(slots[i].thingId);
+		    const auto *host = effect == audio->effectStates.end() ? nullptr : effect->second.pluginHost;
+		    auto status = host ? host->status() : audiox::plugin::PluginHost::Status::Stopped;
+		    std::string error = host ? host->error() : "Plugin unavailable in audio worker";
+		    const auto runtime = audio->pluginRuntimeStates.find(slots[i].thingId);
+		    if (runtime != audio->pluginRuntimeStates.end() &&
+		        runtime->second.revision == (host ? host->revision() : 0)) {
+		        status = runtime->second.status;
+		        error = runtime->second.error;
+		    } else if (audio->workerSupervisor && host &&
+		               status == audiox::plugin::PluginHost::Status::Ready) {
+		        status = audiox::plugin::PluginHost::Status::Starting;
+		        error = "Waiting for audio worker to load plugin";
+		    }
 		    const char *state = status == audiox::plugin::PluginHost::Status::Ready ? "ready" :
-		        status == audiox::plugin::PluginHost::Status::Fault ? "fault" : "unavailable";
+		        status == audiox::plugin::PluginHost::Status::Fault ? "fault" :
+		        status == audiox::plugin::PluginHost::Status::Starting ? "starting" : "unavailable";
 		    pluginFields = ",\"plugin_ui\":" + std::string(ui ? "true" : "false") +
 		        ",\"plugin_status\":\"" + state + "\",\"plugin_error\":\"" +
-		        audiox::json::escape(params.pluginHost ? params.pluginHost->error() : "Plugin worker unavailable") + "\"";
+		        audiox::json::escape(error.c_str()) + "\"";
 		}
 		n = snprintf(out + off,
 					 sizeof(out) - off,
@@ -4760,6 +4775,8 @@ static int buildSystemInfo(HttpServer *server, char *out, size_t capacity) {
 	const char *stressAvailable = "false";
 #endif
 	const std::string hardware = audiox::system::hardwareTelemetryJson();
+	const std::string worker = server->app && server->app->audio
+		? server->app->audio->audioWorkerStatusJson() : "null";
 	int n = snprintf(out, capacity,
 					 "{\"version\":\"%s\",\"kernel\":\"%s\","
 					 "\"board\":\"%s\","
@@ -4775,6 +4792,7 @@ static int buildSystemInfo(HttpServer *server, char *out, size_t capacity) {
 					 "\"ffmpeg\":\"%s\","
 					 "\"storage\":%s,"
 					 "\"hardware\":%s,"
+					 "\"audio_worker\":%s,"
 					 "\"audio_health\":{\"xruns\":%llu,\"warning_id\":\"%llu\","
 					 "\"warning_active\":%s},"
 					 "\"audio_buffer\":{\"base_block_frames\":%u,\"target_period_frames\":%u,"
@@ -4789,7 +4807,7 @@ static int buildSystemInfo(HttpServer *server, char *out, size_t capacity) {
 					 version_str, kernel_buf, audioxDetectBoard(), model_buf, cpu_freq_mhz,
 					 cpu_count, cpu_times_json, temperature_json,
 					 uptime_secs, mem_total_mb, mem_avail_mb, load1,
-					 ffmpeg_version, storage_json, hardware.c_str(),
+					 ffmpeg_version, storage_json, hardware.c_str(), worker.c_str(),
 					 (unsigned long long)audiox::audioHealth.total(),
 					 (unsigned long long)warningAt,
 					 audiox::audioHealth.warningActive(now) ? "true" : "false",
@@ -4820,7 +4838,33 @@ static int handleSystemInfo(HttpServer *server, int cfd, const char *, const cha
 		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain",
 									error, sizeof(error) - 1);
 	}
+
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
+}
+
+static int handleAudioWorker(HttpServer *server, int cfd, const char *method,
+							 const char *body, size_t bodyLength) {
+	if (strcmp(method, "GET") && strcmp(method, "POST")) return sendMethodNotAllowed(server, cfd);
+	if (!server->app || !server->app->audio) {
+		static const char unavailable[] = "audio supervisor unavailable\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "text/plain", unavailable, sizeof(unavailable) - 1);
+	}
+	if (!strcmp(method, "GET")) {
+		const auto status = server->app->audio->audioWorkerStatusJson();
+		return server->sendResponse(cfd, "200 OK", "application/json", status.data(), status.size());
+	}
+	char enable[8]{};
+	const bool provided = body_get_value(body, bodyLength, "enable_plugins", enable, sizeof(enable));
+	if ((bodyLength && !provided) || (provided && strcmp(enable, "0") && strcmp(enable, "1"))) {
+		static const char invalid[] = "enable_plugins must be 0 or 1\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain", invalid, sizeof(invalid) - 1);
+	}
+	if (server->app->audio->restartAudio(provided && !strcmp(enable, "1")) != RET_OK) {
+		static const char failed[] = "could not request audio restart\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "text/plain", failed, sizeof(failed) - 1);
+	}
+	static const char accepted[] = "{\"ok\":true,\"restart_requested\":true}";
+	return server->sendResponse(cfd, "202 Accepted", "application/json", accepted, sizeof(accepted) - 1);
 }
 
 static int handleSystemHistory(HttpServer *server, int cfd, const char *method, const char *query) {
@@ -5897,6 +5941,7 @@ int handleApiRequest(HttpServer *server,
 	if (strcmp(path, "/api/scenes") == 0 || strncmp(path, "/api/scenes/", 12) == 0)
 		return handleSceneRequest(server, cfd, method, path, query);
 	if (strcmp(path, "/api/system/audio-devices") == 0) return handleAudioDeviceHealth(server, cfd, method);
+	if (strcmp(path, "/api/system/audio-worker") == 0) return handleAudioWorker(server, cfd, method, body, body_len);
 	if (strcmp(path, "/api/system/history") == 0) return handleSystemHistory(server, cfd, method, query);
 	if (strcmp(path, "/api/system/diagnostics") == 0) return handleDiagnosticSummary(server, cfd, method);
 	if (strcmp(path, "/api/telemetry") == 0 || strcmp(path, "/api/telemetry/batch") == 0 ||

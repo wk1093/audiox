@@ -311,6 +311,17 @@ test('plugin effects render explicit statuses and errors without raw HTML', asyn
   assert.equal(findAll(f.panel, el => el.className === 'fx-plugin-ui').length, 1);
 });
 
+test('plugins report worker loading rather than readiness before execution is acknowledged', async () => {
+  const f = fixture({ plugins: [catalogEntry], effects: [
+    { ...pluginFx, plugin_status: 'starting', plugin_ui: false },
+  ] });
+  await f.plugins.load();
+  await f.effects.loadEffects();
+  const status = find(f.panel, el => el.className === 'small fx-plugin-status starting');
+  assert.match(status.textContent, /loading in the audio worker/);
+  assert.equal(findAll(f.panel, el => el.className === 'fx-plugin-ui').length, 0);
+});
+
 test('custom UI is opt-in, sandboxed, and bridges only validated parameter changes', async () => {
   const f = fixture({ plugins: [catalogEntry], effects: [pluginFx] });
   await f.plugins.load();

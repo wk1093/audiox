@@ -1,10 +1,12 @@
 #include "boot_recovery.hpp"
+#include "init.hpp"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <fcntl.h>
+#include <time.h>
 
 #include <string>
 #include <vector>
@@ -16,8 +18,20 @@ unsigned failSyncAt = 0;
 unsigned syncCalls = 0;
 unsigned failRenameAt = 0;
 unsigned renameCalls = 0;
+bool mockClock = false;
+uint64_t clockMs = 0;
 
 } // namespace
+
+extern "C" int __real_clock_gettime(clockid_t, struct timespec *);
+extern "C" int __wrap_clock_gettime(clockid_t clock, struct timespec *now) {
+    if (mockClock && clock == CLOCK_MONOTONIC) {
+        now->tv_sec = clockMs / 1000;
+        now->tv_nsec = (clockMs % 1000) * 1000000;
+        return 0;
+    }
+    return __real_clock_gettime(clock, now);
+}
 
 extern "C" int __real_fsync(int);
 extern "C" int __wrap_fsync(int fd) {
@@ -81,6 +95,56 @@ bool exists(const char *dir, const char *name) {
     char path[1100];
     snprintf(path, sizeof(path), "%s/%s", dir, name);
     return access(path, F_OK) == 0;
+}
+
+void testRuntimeConfirmation(const char *root) {
+    const int cwd = open(".", O_RDONLY | O_DIRECTORY);
+    check(cwd >= 0, "save working directory for runtime recovery test");
+    if (cwd < 0) return;
+    if (chdir(root) < 0) {
+        check(false, "enter runtime recovery root");
+        close(cwd);
+        return;
+    }
+    check(setenv(BOOT_RECOVERY_TRIAL_ENV, "1", 1) == 0, "set trial boot environment");
+    mockClock = true;
+    clockMs = 1234;
+    initBootRecovery();
+    pollBootRecovery(0);
+    check(!bootStartupStable(), "startup grace begins at first runtime poll");
+    clockMs += (uint64_t)BOOT_RECOVERY_CONFIRM_SECONDS * 1000;
+    pollBootRecovery(0);
+    check(bootStartupStable(), "startup grace completes independently of audio readiness");
+    check(bootRecoveryTrialPending("."), "main-loop uptime alone cannot confirm a trial");
+
+    clockMs += 1000;
+    const uint64_t stalledProgress = clockMs - 1;
+    pollBootRecovery(stalledProgress);
+    clockMs += BOOT_RECOVERY_AUDIO_STALE_MS + 1;
+    pollBootRecovery(stalledProgress);
+    check(bootRecoveryTrialPending("."), "stalled audio leaves runtime trial pending");
+
+    clockMs += 1000;
+    const uint64_t confirmAt = clockMs + (uint64_t)BOOT_RECOVERY_CONFIRM_SECONDS * 1000;
+    for (; clockMs < confirmAt; clockMs += 10) {
+        pollBootRecovery(clockMs - 1);
+        if (!bootRecoveryTrialPending(".")) {
+            check(false, "runtime must wait a full healthy interval after audio recovers");
+            break;
+        }
+    }
+    clockMs = confirmAt - 1;
+    pollBootRecovery(clockMs - 1);
+    check(bootRecoveryTrialPending("."), "runtime cannot confirm one millisecond early");
+    clockMs = confirmAt;
+    pollBootRecovery(clockMs - 1);
+    check(!bootRecoveryTrialPending("."), "runtime confirms healthy audio at millisecond precision");
+    check(!bootRecoveryHasBackup("."), "runtime confirmation durably removes rollback backup");
+
+    mockClock = false;
+    check(unsetenv(BOOT_RECOVERY_TRIAL_ENV) == 0, "clear trial boot environment");
+    check(fchdir(cwd) == 0, "restore working directory after runtime recovery test");
+    close(cwd);
 }
 
 void installBootSet(const char *boot, const char *text, const char *kernel) {
@@ -339,7 +403,7 @@ int main() {
     check(bootRecoveryPrepareUpdate(root, boot, "1.0.0\n") == 0, "prepare healthy update");
     installNewBootSet(boot);
     check(bootRecoveryBeginBoot(root, "3.0.0", &attempts) == BOOT_TRIAL_ATTEMPT, "healthy trial attempt");
-    bootRecoveryConfirm(root);
+    testRuntimeConfirmation(root);
     check(!bootRecoveryTrialPending(root), "trial cleared after confirm");
     check(!bootRecoveryHasBackup(root), "backup removed after confirm");
     check(!exists(state, BOOT_RECOVERY_EVENTS_NAME), "events removed after confirm");

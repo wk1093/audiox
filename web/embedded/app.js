@@ -163,7 +163,11 @@ const loadLogs = () => document.getElementById('system-advanced').open ? logView
 document.getElementById('system-advanced').addEventListener('toggle', () => {
   if (document.getElementById('system-advanced').open && state.activeTab === 'system') loadLogs();
 });
-const showAudioHealth = AudioxLogs.createHealthNotifier(setStatus);
+const notifyAudioHealth = AudioxLogs.createHealthNotifier(setStatus);
+const showAudioHealth = (data) => {
+  notifyAudioHealth(data);
+  window.AudioxSystemMonitor?.updateWorker(data?.audio_worker);
+};
 
 async function pollSystemIfNeeded() {
   if (AudioxUI.isBusy()) return;

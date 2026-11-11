@@ -52,7 +52,7 @@ bool writeOutput(const char *path, const std::vector<uint8_t> &data, std::string
 int main(int argc, char **argv) {
     using namespace audiox::plugin;
     if (argc < 4 || argc > 4 + static_cast<int>(kMaxAssets)) {
-        std::fprintf(stderr, "usage: axm-pack axm.txt module.so output.axm [asset.js|asset.css|asset.html ...]\n");
+        std::fprintf(stderr, "usage: axm-pack axm.txt module.bc output.axm [asset.js|asset.css|asset.html ...]\n");
         return 2;
     }
     std::vector<Entry> entries;
@@ -61,7 +61,7 @@ int main(int argc, char **argv) {
         if (i == 3) continue;
         Entry entry;
         entry.kind = i == 1 ? Metadata : i == 2 ? Module : Asset;
-        entry.name = i == 1 ? "axm.txt" : i == 2 ? "module.so" : argv[i];
+        entry.name = i == 1 ? "axm.txt" : i == 2 ? "module.bc" : argv[i];
         if (i > 3) {
             size_t slash = entry.name.find_last_of('/');
             if (slash != std::string::npos) entry.name.erase(0, slash + 1);

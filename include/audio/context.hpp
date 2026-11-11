@@ -174,6 +174,8 @@ struct AudioEffectSlotState {
     float paramValues[audiox::effects::EFFECT_PARAM_MAX];
 };
 
+class AudioWorkerSupervisor;
+
 struct AudioContext {
     Audiox *app;
     audiox::DeviceHealthMailbox deviceHealth;
@@ -183,6 +185,10 @@ struct AudioContext {
     int processingThreadStarted;
     std::atomic<int> processingThreadRun;
     std::atomic<uint64_t> processingProgressAtMs{0};
+    std::atomic<uint32_t> processingGraphGeneration{0};
+    AudioWorkerSupervisor *workerSupervisor{nullptr};
+    bool workerProcess{false};
+    mutable std::mutex workerStateMutex;
     audiox::usb::GadgetVolume gadgetVolume;
 
     std::atomic<uint64_t> nextHotplugScanMs;
@@ -192,7 +198,9 @@ struct AudioContext {
     std::atomic<uint32_t> pendingSfxHoldStops;
     std::atomic<uint32_t> pendingSfxStopAll;
     AudioSfxClipSlot sfxSlots[AUDIO_SFX_SLOT_COUNT];
-    std::atomic<uint32_t> sfxSlotRefs[AUDIO_SFX_SLOT_COUNT];
+    uint64_t sfxBankRevision[AUDIO_SFX_SLOT_COUNT]{};
+    std::atomic<uint32_t> localSfxSlotRefs[AUDIO_SFX_SLOT_COUNT]{};
+    std::atomic<uint32_t> *sfxSlotRefs = localSfxSlotRefs;
     AudioSfxTriggerEvent sfxQueue[AUDIO_SFX_QUEUE_CAP];
     std::atomic<uint32_t> sfxQueueWrite;
     std::atomic<uint32_t> sfxQueueRead;
@@ -252,8 +260,10 @@ struct AudioContext {
     std::atomic<float> nodeChannelLevels[AUDIO_GRAPH_MAX_THINGS][16];
 
     // One slot per Bluetooth link; a slot's peer selects which bt_<MAC> node it feeds.
-    BluetoothInputStream bluetoothInputs[AUDIO_BT_MAX_LINKS];
-    BluetoothOutputStream bluetoothOutputs[AUDIO_BT_MAX_LINKS];
+    BluetoothInputStream localBluetoothInputs[AUDIO_BT_MAX_LINKS];
+    BluetoothOutputStream localBluetoothOutputs[AUDIO_BT_MAX_LINKS];
+    BluetoothInputStream *bluetoothInputs = localBluetoothInputs;
+    BluetoothOutputStream *bluetoothOutputs = localBluetoothOutputs;
 
     // Per-thing output gain (0.0-1.0). Indexed by current routing snapshot node index.
     // Updated atomically so the audio thread reads without locking.
@@ -264,6 +274,9 @@ struct AudioContext {
     std::mutex sceneMutex;
     std::atomic<bool> sceneMuted{false};
     std::atomic<bool> sceneSilent{false};
+    std::atomic<uint64_t> sceneMuteEpoch{0};
+    std::atomic<uint64_t> processedSceneEpoch{0};
+    std::atomic<uint64_t> releasedSceneEpoch{0};
     std::atomic<uint32_t> sceneReleaseGeneration{0};
     std::string activeSceneId;
     std::atomic<uint32_t> sceneRecallSeq{0};
@@ -273,6 +286,12 @@ struct AudioContext {
     uint32_t nextEffectId;
     mutable std::mutex effectsMutex;
     std::unordered_map<std::string, std::unique_ptr<audiox::plugin::PluginHost>> pluginHosts;
+    struct PluginRuntimeStatus {
+        uint64_t revision{};
+        audiox::plugin::PluginHost::Status status{audiox::plugin::PluginHost::Status::Starting};
+        char error[256]{};
+    };
+    std::unordered_map<std::string, PluginRuntimeStatus> pluginRuntimeStates;
     std::unordered_map<std::string, bool> pluginFaultReported;
     struct RetiredPlugin {
         uint32_t sequence;
@@ -282,9 +301,14 @@ struct AudioContext {
     std::atomic<uint32_t> pluginObservedSeq{0};
 
     AudioContext(Audiox *context);
+    AudioContext(Audiox *context, bool initializeState);
     ~AudioContext();
 
     int setupThreads() WARN_UNUSED;
+    int startProcessingThread() WARN_UNUSED;
+    int restartAudio(bool enablePlugins = false) WARN_UNUSED;
+    void stopAudioWorker();
+    std::string audioWorkerStatusJson() const;
     int triggerSfx(const char *sfxPath) WARN_UNUSED;
     int triggerSfxPitch(const char *sfxPath, float pitchRatio) WARN_UNUSED;
     int triggerPreloadedSfxPitch(const char *sfxPath, float pitchRatio) WARN_UNUSED;
@@ -319,7 +343,8 @@ struct AudioContext {
 
     void loadEffectsFromConfig();
     // Worker startup must not hold the mutex read by the audio thread.
-    std::unique_ptr<audiox::plugin::PluginHost> preparePlugin(const char *id, uint8_t type);
+    std::unique_ptr<audiox::plugin::PluginHost> preparePlugin(const char *id, uint8_t type,
+                                                            std::string *error = nullptr);
     void attachPlugin(const char *id, audiox::effects::SlotParams &params,
                       std::unique_ptr<audiox::plugin::PluginHost> host);
     void retirePlugin(const char *id);

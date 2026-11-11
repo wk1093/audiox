@@ -21,6 +21,8 @@ unsigned recoveryStartCalls = 0;
 snd_pcm_sframes_t playbackAvailable = 0;
 int closeResult = 0;
 unsigned closeCalls = 0;
+unsigned prepareCalls = 0;
+int prepareResult = 0;
 
 }
 
@@ -48,6 +50,11 @@ extern "C" snd_pcm_sframes_t snd_pcm_avail_update(snd_pcm_t*) {
 extern "C" int snd_pcm_close(snd_pcm_t*) {
     ++closeCalls;
     return closeResult;
+}
+
+extern "C" int snd_pcm_prepare(snd_pcm_t*) {
+    ++prepareCalls;
+    return prepareResult;
 }
 
 int main() {
@@ -168,7 +175,7 @@ int main() {
     closeResult = -EBADFD;
     assert(audio_pcm_close(&pcm, "test", "playback") == -EBADFD);
     assert(closeCalls == 2);
-    assert(audio_pcm_playback_start_frames(128, 512) == 128);
+    assert(audio_pcm_playback_start_frames(128, 512) == 384);
     assert(audio_pcm_playback_start_frames(1024, 4096) == 3072);
     assert(audio_pcm_playback_start_frames(1024, 1024) == 1024);
     for (snd_pcm_uframes_t period : {128U, 256U, 512U, 1024U}) {
@@ -194,6 +201,14 @@ int main() {
     assert(recoveryStartCalls == 2);
     recoveryStartResult = 0;
     recoveryCalls = 0;
+    assert(audio_pcm_recover_playback(nullptr, -ESTRPIPE, "test") == -EINVAL);
+    assert(prepareCalls == 0);
+    assert(audio_pcm_recover_playback(&pcm, -ESTRPIPE, "test") == 0);
+    assert(prepareCalls == 1 && recoveryCalls == 0 && recoveryStartCalls == 2);
+    prepareResult = -ENODEV;
+    assert(audio_pcm_recover_playback(&pcm, -ESTRPIPE, "test") == -ENODEV);
+    assert(prepareCalls == 2 && recoveryCalls == 0);
+    prepareResult = 0;
 
     for (const int error : {-EPIPE, -ESTRPIPE, -EINTR}) {
         if (audio_pcm_recover(&pcm, error, "test", "playback") != 0 ||

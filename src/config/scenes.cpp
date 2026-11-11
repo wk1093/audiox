@@ -381,6 +381,7 @@ bool recall(Audiox *app, const Scene &scene, std::string &error) {
     std::copy(scene.params.begin(), scene.params.end(), map.effectParams);
     // Fade all sinks before inventory/topology changes, then release after the
     // audio thread has consumed the new graph and its gain snapshot.
+    audio.sceneMuteEpoch.fetch_add(1, std::memory_order_acq_rel);
     audio.sceneSilent.store(false, std::memory_order_release);
     audio.sceneReleaseGeneration.store(0, std::memory_order_release);
     audio.sceneMuted.store(true, std::memory_order_release);

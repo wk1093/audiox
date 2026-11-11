@@ -175,6 +175,7 @@ struct BluetoothOutputStream {
     std::atomic<uint32_t> dropped{0};
     std::atomic<int> active{0};
     std::atomic<int> signalActive{0};
+    std::atomic<bool> flushRequested{false};
     int16_t ring[AUDIO_BT_PCM_RING_FRAMES][2] = {};
 
     // Bluetooth-worker state.
@@ -207,7 +208,14 @@ struct BluetoothOutputStream {
         return accepted;
     }
 
-    uint32_t available() const {
+    uint32_t available() {
+        if (flushRequested.exchange(false, std::memory_order_acq_rel)) {
+            read.store(write.load(std::memory_order_acquire), std::memory_order_release);
+            readFraction = rateIntegral = filteredFill = 0.0f;
+            rateRatio = 1.0f;
+            rateLastUpdateMs = 0;
+            rateInitialized = 0;
+        }
         const uint32_t writeIndex = write.load(std::memory_order_acquire);
         const uint32_t readIndex = read.load(std::memory_order_acquire);
         return writeIndex - readIndex;
@@ -264,6 +272,7 @@ struct BluetoothOutputStream {
         if (!stereoFrames || outputFrames == 0) {
             return 0;
         }
+        (void)available();
         const uint32_t readIndex = read.load(std::memory_order_relaxed);
         const uint32_t fill = write.load(std::memory_order_acquire) - readIndex;
         const float ratio = rateRatio;

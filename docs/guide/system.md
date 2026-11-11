@@ -122,16 +122,53 @@ not trigger an increase. All X-runs remain included in the diagnostic total,
 including startup and settling events. ALSA close failures include the stream,
 device path, pre-close state, and error code in the runtime log.
 
-Playback is primed before starting or restarting: at the base hardware period
-it still starts with one DSP block; larger hardware periods queue up to one
-buffer minus one period before starting, so the extra capacity provides actual
-scheduling headroom. The RW and MMAP paths use the same startup threshold.
+Playback is primed with a queue reserve before starting or restarting, including
+at the base hardware period. Continuous sample-rate conversion tracks each
+ALSA playback device's negotiated rate and slowly corrects clock drift against
+the engine clock. Partial writes retain their unwritten audio. The RW and
+MMAP paths use the same startup and drift-correction policy.
 The host test suite verifies policy behavior, but the effective X-run reduction
 and audible latency tradeoff still require testing with the intended Raspberry Pi,
 devices, and workloads. Larger buffers do not resolve sustained CPU overload.
 ALSA buffer capacity is headroom available to the PCM stream; actual latency
 also depends on period scheduling, capture and playback paths, USB/device
 buffering, and the host.
+
+### Restarting audio and plugin crash recovery
+
+The main program owns routing, gains, effect parameters, scenes, plugin
+configuration, and the soundboard bank. Audio processing runs in a separate
+`audiox-audio-worker` program. Bluetooth PCM and soundboard samples cross the
+process boundary through bounded shared-memory buffers; no pointers to main
+program objects are passed to the worker.
+
+Use **Health and Logs → Audio Buffer → Restart Audio** to restart only audio.
+The web interface, MIDI, configuration, and Bluetooth connections remain up.
+The worker receives the current configuration again. Currently playing sounds
+stop, queued triggers are discarded, and effect tails and other DSP state reset.
+This is not a device reboot or firmware update.
+
+The main program detects worker exits and stalled processing, then restarts
+audio with exponential backoff (250 ms through 8 seconds). After three
+consecutive failures without a full minute of stable operation, it bypasses
+**all plugins** and restarts audio again. A prominent warning beside the
+firmware and failed-boot banners remains visible on every tab. Saved effect
+parameters and bypass settings are not overwritten.
+
+An ordinary audio restart keeps that safety bypass. After removing or updating
+faulty plugins, **Retry audio with plugins** explicitly lifts it and restarts
+audio. Repeated failures will reapply the bypass. If audio also fails with plugins
+bypassed, automatic retries continue with bounded backoff and the warning stays
+visible. The bypass is retained for the main program's lifetime, not saved as
+an edit to your setup.
+
+`GET /api/system/audio-worker` reports worker readiness, PID, restart count,
+consecutive failures, last exit status, and `plugins_disabled`. The same object
+is included as `audio_worker` in system information. `POST` to that endpoint
+requests a restart and returns HTTP 202; it does not claim the worker is ready.
+An optional form field `enable_plugins=1` explicitly retries plugins; the
+default preserves the current safety bypass. Per-stream counters reset with
+the worker; the main program retains the cumulative global X-run count.
 
 ### Optional audio stress controls
 
@@ -316,7 +353,7 @@ This protects update paths including complete AXU, runtime-only, and individual 
 
 1. Before changing boot files, the runtime saves a confirmed boot set in `/audiox/system/boot-backup/` and arms `boot-trial` with zero attempts. An existing backup is retained rather than overwritten by another unconfirmed update.
 2. The bootloader counts subsequent trial boots. The watchdog reboots instead of merely restarting a failed/stalled runtime during the trial.
-3. After the runtime stays healthy for 60 seconds, it removes trial state and the backup boot set.
+3. After 60 consecutive healthy seconds with ongoing audio-thread progress, the runtime removes trial state and the backup boot set. Audio progress must remain within five seconds of the current monotonic clock, measured at millisecond precision; missing or stale progress restarts the health timer. Main-loop uptime alone does not confirm a trial.
 4. If a boot starts with three attempts already used, the bootloader restores the saved boot files, writes `last-boot-failure.txt`, clears trial state, and reboots.
 
 The report includes failed/restored versions, attempts, restored files, trial events, and runtime-log tails. It lives under `/audiox/system/`.

@@ -46,6 +46,32 @@ definitions live in `/audiox/config/scripts.txt`, with options and custom files
 under `/audiox/config/scripts/`. `make test-script`, `test-script-storage`, and
 `test-script-docs` cover scripting.
 
+### ALSA playback clocks
+
+Every ALSA sink, including USB gadget playback, continuously resamples the graph's
+fixed-rate float audio to the negotiated hardware rate. A slow, queue-targeted PI
+controller corrects independent device clock drift in either direction (up to 3%
+around that nominal rate conversion). Fractional interpolation history survives
+graph boundaries; S16/S32 conversion happens after resampling.
+
+RW and MMAP share a fixed 32-graph-block source backlog and retain unwritten
+resampled samples across partial writes and `EAGAIN`. Each service call performs
+at most 64 write attempts, without allocating or waiting. Playback starts with
+the hardware buffer minus one period queued, including at the smallest buffer
+tier, rather than a starvation-prone single-block reserve. The controller measures
+hardware, pending-write and source backlog together, smoothing period-pointer
+and scheduling jitter. Hardware buffer size still limits tolerable scheduling gaps.
+
+Recovery, reopening and idle entry reset interpolation and controller state;
+recovered devices must prime again. If a device stalls beyond the bounded source
+backlog, its stale software backlog is explicitly reset and its overflow counter
+increments; indefinite stalls cannot be made lossless with bounded RT memory.
+`make test-audio-runtime test-audio-pcm-recover` covers long-run positive/negative
+drift, negotiated-rate mismatches, jitter, short writes, `EAGAIN`, recovery and
+sample continuity through both access modes.
+For playback-only simulations after building the runtime test binary, run
+`out/host/audiox-audio-runtime-test --playback-only`.
+
 The AArch64 graph compiler statically links LLVM with linker garbage collection
 to discard unused code. Runtime packaging strips all shipped executables,
 including the graph compiler, in `out/program_stage/`; the corresponding
@@ -379,6 +405,8 @@ Those packaging tests require tools such as `jq` and `xz`. Packet/parser/browser
 
 ```bash
 make test-audio-runtime test-gadget-volume test-audio-pcm-recover
+make test-audio-worker test-audio-worker-plugins
+make test-audio-worker-arm
 ```
 
 Audio tests compile the same direct processing code used by the Pi, with
@@ -386,6 +414,14 @@ simulated device I/O. They cover route mixing, effect controls, channel isolatio
 soundboard playback, Bluetooth buffers, host gain/mute, and five-second DSP idle
 sleep, including silent sleep/wake transitions. They do not play through host ALSA or validate
 physical gadget timing; use the target board for listening and latency checks.
+
+Worker tests cover exec/shared-memory transport, configuration replay, HTTP
+restart contracts, stalled-worker detection, and malformed telemetry. The plugin
+integration test executes real LLVM bitcode alongside native built-ins, reloads
+instances, deliberately crashes the audio worker, and verifies automatic
+restart, all-plugin bypass, and explicit retry without losing control state.
+The ARM smoke test runs the production worker under `qemu-aarch64`; it does not
+establish physical ALSA or USB timing.
 
 ## Documentation and release tooling
 

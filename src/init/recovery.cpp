@@ -13,18 +13,18 @@ namespace {
 bool g_trialPendingAtStartup = false;
 bool g_trialArmedThisBoot = false;
 bool g_trialResolved = false;
-time_t g_readySince = 0;
+int64_t g_readySince = 0;
 bool g_startupStable = false;
 bool g_readyTimerStarted = false;
 BootRecoveryHealthGate g_trialHealthGate;
 
-time_t monotonicSeconds() {
+int64_t monotonicMilliseconds() {
     timespec now = {};
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
         printf("[RECOVERY] [WARN] Cannot capture startup clock: %s\n", strerror(errno));
         return -1;
     }
-    return now.tv_sec;
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
 
 } // namespace
@@ -70,13 +70,13 @@ void initBootRecovery() {
 }
 
 void pollBootRecovery(uint64_t audioProgressAtMs) {
-    const time_t now = monotonicSeconds();
+    const int64_t now = monotonicMilliseconds();
     if (now < 0) return;
     if (!g_readyTimerStarted) {
         g_readySince = now;
         g_readyTimerStarted = true;
     }
-    g_startupStable = now - g_readySince >= BOOT_RECOVERY_CONFIRM_SECONDS;
+    g_startupStable = now - g_readySince >= (int64_t)BOOT_RECOVERY_CONFIRM_SECONDS * 1000;
     if (!g_trialPendingAtStartup || g_trialResolved) {
         return;
     }
@@ -85,7 +85,7 @@ void pollBootRecovery(uint64_t audioProgressAtMs) {
         g_trialResolved = true;
         return;
     }
-    const uint64_t nowMs = (uint64_t)now * 1000;
+    const uint64_t nowMs = (uint64_t)now;
     if (!g_trialHealthGate.update(nowMs, audioProgressAtMs)) {
         return;
     }

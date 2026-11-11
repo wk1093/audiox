@@ -21,8 +21,13 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "audio/worker.hpp"
+
 #ifndef AUDIOX_GRAPH_COMPILER_PATH
 #define AUDIOX_GRAPH_COMPILER_PATH "/sbin/audiox-graph-compiler"
+#endif
+#ifndef AUDIOX_DSP_BITCODE_DIR
+#define AUDIOX_DSP_BITCODE_DIR "/usr/share/audiox/dsp"
 #endif
 
 namespace {
@@ -34,6 +39,7 @@ constexpr float kSrcP = 0.035f;
 constexpr float kSrcI = 0.003f;
 constexpr uint32_t kMaxCaptureStreams = 4;
 constexpr uint32_t kMaxPlaybackStreams = 4;
+constexpr uint32_t kPlaybackRingFrames = BUFFER_FRAMES * 32U;
 constexpr uint32_t kCaptureRingFrames = BUFFER_FRAMES * 16U;
 constexpr uint32_t kMaxAlsaPeriodFrames = audiox::AdaptiveAudioBuffer::kMaxPeriodFrames;
 using CaptureRing = audiox::capture::PcmCaptureRing<kCaptureRingFrames, kMaxChannelsPerThing>;
@@ -99,6 +105,14 @@ struct RuntimeGraph {
         uint32_t reopenRetryBlocks;
         uint32_t pendingFrames;
         uint32_t pendingOffsetFrames;
+        uint32_t sourceRead;
+        uint32_t sourceCount;
+        double sourcePhase;
+        double sourceStep;
+        double clockIntegral;
+        double queueError;
+        uint64_t queueOverflows;
+        float sourceRing[kPlaybackRingFrames][kMaxChannelsPerThing];
         snd_pcm_format_t format;
         int mmapAccess;
         uint64_t xruns;
@@ -194,6 +208,14 @@ struct AlsaCaptureBackend {
 };
 
 using AlsaCaptureStream = AlsaCaptureBackend::Stream;
+
+static void resetPlaybackSrc(RuntimeGraph::AlsaPlaybackStream &s) {
+    s.pendingFrames = s.pendingOffsetFrames = 0;
+    s.sourceRead = s.sourceCount = 0;
+    s.sourcePhase = 0.0;
+    s.sourceStep = static_cast<double>(SAMPLE_RATE) / (s.sampleRate ? s.sampleRate : SAMPLE_RATE);
+    s.clockIntegral = s.queueError = 0.0;
+}
 
 static uint64_t monotonicMs() {
     struct timespec ts;
@@ -539,6 +561,7 @@ static void closePlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
     }
     s->periodFrames = 0;
     s->bufferFrames = 0;
+    resetPlaybackSrc(*s);
 }
 
 static bool openCaptureStream(AlsaCaptureStream *s) {
@@ -807,8 +830,7 @@ static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
                     s->bufferLevel = bufferLevel;
                     s->mmapAccess = (access == SND_PCM_ACCESS_MMAP_INTERLEAVED);
                     s->reopenRetryBlocks = 0;
-                    s->pendingFrames = 0;
-                    s->pendingOffsetFrames = 0;
+                    resetPlaybackSrc(*s);
                     audiox::adaptiveAudioBuffer.bufferChanged();
                     audiox::audioHealth.bufferChanged();
                     printf("[AUDIO] [INFO] playback stream opened %s (%uch, %u Hz, fmt=%s, period=%u, buffer=%u frames)\n",
@@ -949,7 +971,7 @@ static snd_pcm_sframes_t playbackMmapWrite(RuntimeGraph::AlsaPlaybackStream *s,
 
     const snd_pcm_channel_area_t *areas = nullptr;
     snd_pcm_uframes_t offset = 0;
-    snd_pcm_uframes_t frames = requestedFrames;
+    snd_pcm_uframes_t frames = std::min<snd_pcm_uframes_t>(requestedFrames, available);
     int rc = snd_pcm_mmap_begin(s->pcm, &areas, &offset, &frames);
     if (rc < 0) {
         return rc;
@@ -1068,9 +1090,27 @@ static void serviceCaptureIo(AlsaCaptureBackend *backend) {
 static void preparePlaybackBlock(RuntimeGraph::AlsaPlaybackStream &stream,
                                  float *const *inputs, uint8_t inputChannels, float gain) {
     for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+        float *destination = stream.sourceRing[(stream.sourceRead + stream.sourceCount) %
+                                               kPlaybackRingFrames];
         for (uint8_t channel = 0; channel < stream.channels; ++channel) {
             uint8_t sourceChannel = channel < inputChannels ? channel : inputChannels - 1;
-            float sample = inputs[sourceChannel][frame] * gain;
+            destination[channel] = inputs[sourceChannel][frame] * gain;
+        }
+        ++stream.sourceCount;
+    }
+}
+
+static void resamplePlaybackBlock(RuntimeGraph::AlsaPlaybackStream &stream) {
+    stream.pendingFrames = stream.pendingOffsetFrames = 0;
+    while (stream.pendingFrames < BUFFER_FRAMES &&
+           stream.sourcePhase + 1.0 < stream.sourceCount) {
+        const uint32_t first = static_cast<uint32_t>(stream.sourcePhase);
+        const double fraction = stream.sourcePhase - first;
+        const float *a = stream.sourceRing[(stream.sourceRead + first) % kPlaybackRingFrames];
+        const float *b = stream.sourceRing[(stream.sourceRead + first + 1U) % kPlaybackRingFrames];
+        const uint32_t frame = stream.pendingFrames++;
+        for (uint8_t channel = 0; channel < stream.channels; ++channel) {
+            const float sample = static_cast<float>(a[channel] + (b[channel] - a[channel]) * fraction);
             const size_t index = static_cast<size_t>(frame) * stream.channels + channel;
             if (stream.format == SND_PCM_FORMAT_S32_LE) {
                 stream.pendingBlock32[index] = audiox::pcm::toS32(sample);
@@ -1078,7 +1118,35 @@ static void preparePlaybackBlock(RuntimeGraph::AlsaPlaybackStream &stream,
                 stream.pendingBlock[index] = audiox::pcm::toS16(sample);
             }
         }
+        stream.sourcePhase += stream.sourceStep;
     }
+    // Keep interpolation history and fractional phase across graph blocks and short writes.
+    const uint32_t consumed = std::min(static_cast<uint32_t>(stream.sourcePhase), stream.sourceCount);
+    stream.sourceRead = (stream.sourceRead + consumed) % kPlaybackRingFrames;
+    stream.sourceCount -= consumed;
+    stream.sourcePhase -= consumed;
+}
+
+static void updatePlaybackClock(RuntimeGraph::AlsaPlaybackStream &s,
+                                snd_pcm_sframes_t available) {
+    const double base = static_cast<double>(SAMPLE_RATE) / (s.sampleRate ? s.sampleRate : SAMPLE_RATE);
+    if (s.bufferFrames == 0 || snd_pcm_state(s.pcm) != SND_PCM_STATE_RUNNING) {
+        s.sourceStep = base;
+        s.clockIntegral = s.queueError = 0.0;
+        return;
+    }
+    const double block = BUFFER_FRAMES / base;
+    const double target = audio_pcm_playback_start_frames(s.periodFrames, s.bufferFrames) +
+        s.periodFrames * 0.5;
+    const double queued = s.bufferFrames - std::min<double>(s.bufferFrames, available) +
+        s.pendingFrames - s.pendingOffsetFrames + (s.sourceCount - s.sourcePhase) / base;
+    const double error = (queued - target) / std::max(block, target);
+    s.queueError += (error - s.queueError) / 32.0;
+    // Slow integral action tracks oscillator drift; proportional action restores reserve.
+    const double tickSeconds = static_cast<double>(BUFFER_FRAMES) / SAMPLE_RATE;
+    s.clockIntegral = std::clamp(s.clockIntegral + s.queueError * tickSeconds * 0.00075,
+                               -0.01, 0.01);
+    s.sourceStep = base * (1.0 + std::clamp(s.queueError * 0.005 + s.clockIntegral, -0.03, 0.03));
 }
 
 static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
@@ -1158,78 +1226,60 @@ static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
             continue;
         }
 
-        if (s.pendingFrames == 0) {
-            const AudioGraphThingInfo &thing = rt->snapshot.things[s.nodeIndex];
-            uint8_t inChannels = thing.inputs;
-            if (inChannels == 0 || inChannels > kMaxChannelsPerThing) {
-                continue;
+        snd_pcm_sframes_t available = snd_pcm_avail_update(s.pcm);
+        if (available == -EAGAIN || available == -EINTR) available = 0;
+        if (available >= 0) {
+            const uint8_t inChannels = rt->snapshot.things[s.nodeIndex].inputs;
+            if (inChannels == 0 || inChannels > kMaxChannelsPerThing) continue;
+            if (s.sourceCount + BUFFER_FRAMES > kPlaybackRingFrames) {
+                // A device stalled beyond the bounded backlog: discard stale audio explicitly.
+                ++s.queueOverflows;
+                resetPlaybackSrc(s);
             }
-
+            if (s.sourceStep == 0.0) resetPlaybackSrc(s);
             const float gain = s.isGadget
                 ? ctx->gadgetVolume.playbackGain.load(std::memory_order_relaxed) : 1.0f;
             preparePlaybackBlock(s, rt->inputs[s.nodeIndex], inChannels, gain);
-
-            s.pendingFrames = BUFFER_FRAMES;
-            s.pendingOffsetFrames = 0;
+            updatePlaybackClock(s, available);
         }
 
-        if (s.pendingFrames <= s.pendingOffsetFrames) {
-            s.pendingFrames = 0;
-            s.pendingOffsetFrames = 0;
-            continue;
-        }
-
-        snd_pcm_sframes_t framesWritten;
-        if (s.mmapAccess) {
-            framesWritten = playbackMmapWrite(&s, s.pendingFrames - s.pendingOffsetFrames);
-        } else {
-            const void *writeBuf = (s.format == SND_PCM_FORMAT_S32_LE)
-                           ? static_cast<const void *>(&s.pendingBlock32[s.pendingOffsetFrames * s.channels])
-                           : static_cast<const void *>(&s.pendingBlock[s.pendingOffsetFrames * s.channels]);
-            framesWritten = snd_pcm_writei(s.pcm,
-                                     writeBuf,
-                                     s.pendingFrames - s.pendingOffsetFrames);
-        }
-
-        if (framesWritten > 0) {
-            if (audio_pcm_start_playback_if_ready(s.pcm, s.periodFrames, s.bufferFrames,
-                                                  s.path) < 0) {
-                closePlaybackStream(&s);
-                s.reopenRetryBlocks = kReopenRetryBlocks;
-                s.pendingFrames = 0;
-                s.pendingOffsetFrames = 0;
+        // Bound syscall work, but drain multiple short writes without losing this graph block.
+        for (unsigned attempt = 0; attempt < 64; ++attempt) {
+            snd_pcm_sframes_t written = available;
+            if (available >= 0) {
+                if (s.pendingFrames == 0) resamplePlaybackBlock(s);
+                if (s.pendingFrames == 0 || available == 0) break;
+                const uint32_t request = std::min<uint32_t>(
+                    s.pendingFrames - s.pendingOffsetFrames, static_cast<uint32_t>(available));
+                const void *buffer = s.format == SND_PCM_FORMAT_S32_LE
+                    ? static_cast<const void *>(&s.pendingBlock32[s.pendingOffsetFrames * s.channels])
+                    : static_cast<const void *>(&s.pendingBlock[s.pendingOffsetFrames * s.channels]);
+                written = s.mmapAccess ? playbackMmapWrite(&s, request)
+                                      : snd_pcm_writei(s.pcm, buffer, request);
+            }
+            if (written > 0) {
+                s.pendingOffsetFrames += static_cast<uint32_t>(written);
+                if (s.pendingOffsetFrames == s.pendingFrames)
+                    s.pendingFrames = s.pendingOffsetFrames = 0;
+                const int start = audio_pcm_start_playback_if_ready(s.pcm, s.periodFrames,
+                                                                    s.bufferFrames, s.path);
+                available = start < 0 ? start : snd_pcm_avail_update(s.pcm);
                 continue;
             }
-            s.pendingOffsetFrames += (uint32_t)framesWritten;
-            if (s.pendingOffsetFrames >= s.pendingFrames) {
-                s.pendingFrames = 0;
-                s.pendingOffsetFrames = 0;
-            }
-            continue;
-        }
-
-        if (framesWritten == 0 || framesWritten == -EAGAIN) {
-            continue;
-        }
-
-        int err = (framesWritten < 0) ? (int)(-framesWritten) : EIO;
-        if (err == EPIPE) ++s.xruns;
-        if (err == EPIPE || err == ESTRPIPE || err == EIO) {
-            if (audio_pcm_recover(s.pcm, -err, s.path, "playback") < 0) {
+            if (written == 0 || written == -EAGAIN || written == -EINTR) break;
+            const int err = static_cast<int>(-written);
+            if (err == EPIPE) ++s.xruns;
+            if (err == EPIPE || err == ESTRPIPE || err == EIO) {
+                if (audio_pcm_recover_playback(s.pcm, -err, s.path) < 0) {
+                    closePlaybackStream(&s);
+                    s.reopenRetryBlocks = kReopenRetryBlocks;
+                }
+                resetPlaybackSrc(s);
+            } else if (err == ENODEV || err == ENXIO || err == ENOENT || err == EBADFD) {
                 closePlaybackStream(&s);
                 s.reopenRetryBlocks = kReopenRetryBlocks;
             }
-            s.pendingFrames = 0;
-            s.pendingOffsetFrames = 0;
-            continue;
-        }
-
-        if (err == ENODEV || err == ENXIO || err == ENOENT || err == EBADFD) {
-            closePlaybackStream(&s);
-            s.reopenRetryBlocks = kReopenRetryBlocks;
-            s.pendingFrames = 0;
-            s.pendingOffsetFrames = 0;
-            continue;
+            break;
         }
     }
 }
@@ -2461,8 +2511,7 @@ static void beginAudioSleep(RuntimeGraph *rt) {
         }
     }
     for (uint16_t i = 0; i < rt->playbackCount; ++i) {
-        rt->playback[i].pendingFrames = 0;
-        rt->playback[i].pendingOffsetFrames = 0;
+        resetPlaybackSrc(rt->playback[i]);
     }
     rt->sleeping = true;
 }
@@ -2676,9 +2725,10 @@ static void *audioProcessingThreadMain(void *arg) {
     timespec nextDeadline = monotonicNow();
     addNs(&nextDeadline, blockPeriodNs());
 
-    audiox::graph::NativeGraph native(AUDIOX_GRAPH_COMPILER_PATH);
+    audiox::graph::NativeGraph native(AUDIOX_GRAPH_COMPILER_PATH, AUDIOX_DSP_BITCODE_DIR);
     configureRealtimeScheduling();
     while (ctx->processingThreadRun.load(std::memory_order_acquire)) {
+        const uint64_t sceneEpoch = ctx->sceneMuteEpoch.load(std::memory_order_acquire);
         AudioGraphState graphSnapshot = runtime.snapshot;
         if (tryReadPublishedGraph(ctx, &graphSnapshot, runtime.snapshot.generation == 0)) {
             if (graphSnapshot.generation != lastGraphGeneration) {
@@ -2702,13 +2752,16 @@ static void *audioProcessingThreadMain(void *arg) {
         if (release && runtime.snapshot.generation >= release) {
             ctx->sceneMuted.store(false, std::memory_order_release);
             ctx->sceneReleaseGeneration.store(0, std::memory_order_release);
+            ctx->releasedSceneEpoch.store(sceneEpoch, std::memory_order_release);
         }
 
         if (runtime.snapshot.generation > 0 && runtime.snapshot.thingCount > 0) {
             processGraphBlock(ctx, &runtime, &captureBackend, monotonicMs(), &native);
-            ctx->processingProgressAtMs.store(monotonicMs(), std::memory_order_release);
             maybeLogStats(&runtime, &captureBackend);
         }
+        ctx->processingGraphGeneration.store(runtime.snapshot.generation, std::memory_order_release);
+        ctx->processedSceneEpoch.store(sceneEpoch, std::memory_order_release);
+        ctx->processingProgressAtMs.store(monotonicMs(), std::memory_order_release);
 
         const uint64_t healthAt = monotonicMs();
         if (healthAt - lastHealthAt >= 500) {
@@ -2739,6 +2792,18 @@ int AudioContext::setupThreads() {
         return RET_ERR;
     }
 
+    workerSupervisor = new AudioWorkerSupervisor(*this);
+    if (!workerSupervisor->start()) {
+        stopAudioWorker();
+        return RET_ERR;
+    }
+    processingThreadRun.store(1, std::memory_order_release);
+    processingThreadStarted = 1;
+    return initGraphRc;
+}
+
+int AudioContext::startProcessingThread() {
+    if (processingThreadStarted) return RET_OK;
     if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
         printf("[AUDIO] [WARN] failed to lock process memory: %s\n", strerror(errno));
     }
@@ -2751,5 +2816,5 @@ int AudioContext::setupThreads() {
     }
 
     processingThreadStarted = 1;
-    return (initGraphRc == RET_WARN) ? RET_WARN : RET_OK;
+    return RET_OK;
 }

@@ -3,7 +3,7 @@ const { apiContext } = require('./support/api-context.js');
 const { test } = require('node:test');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+const source = require('./support/app-source.js').appSource();
 
 test('passthrough-only status, binding and toggle use the MIDI API and surface errors', async () => {
   const elements = new Map(), calls = [], notices = [];
@@ -158,8 +158,7 @@ function fixture() {
         url === '/api/scripts/control' ? 'setting saved and config_change queued' : '' };
     },
   });
-  vm.runInContext(source.slice(source.indexOf('let editingMacroId ='),
-    source.indexOf('async function reloadConfig(')), context);
+  vm.runInContext(fs.readFileSync(require.resolve('../../web/embedded/app/scripts.js'), 'utf8'), context);
   vm.runInContext(source.slice(source.indexOf('async function pollMappingCapture('),
     source.indexOf('async function loadSamplerConfig(')), context);
   context.resetMacroEditor();

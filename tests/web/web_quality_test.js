@@ -236,7 +236,7 @@ test('fan feedback does not report intentionally stopped fans as stalled and ide
 });
 
 test('active routing refresh retains drafts on failed reads and resets history only after success', async () => {
-  const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+  const source = require('./support/app-source.js').appSource();
   const draft = [{ src: 'draft', dst: 'output', srcChannel: 0, dstChannel: 0 }];
   const active = [{ ...draft[0], src: 'active' }];
   const state = { edges: draft, dormantEdges: [], sceneRoutingConflict: true };
@@ -267,7 +267,7 @@ test('active routing refresh retains drafts on failed reads and resets history o
 });
 
 test('external scene conflicts pause graph polling and block stale routing saves', async () => {
-  const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+  const source = require('./support/app-source.js').appSource();
   const notices = [];
   const context = apiContext({ state: { sceneRoutingConflict: true },
     setStatus: (...args) => notices.push(args) });

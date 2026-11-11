@@ -1,9 +1,8 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { readFileSync } = require('node:fs');
 const vm = require('node:vm');
 
-const source = readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+const source = require('./support/app-source.js').appSource();
 const helpers = source.slice(source.indexOf('async function loadLegacyConfigStatus()'),
   source.indexOf('async function loadConfig()'));
 

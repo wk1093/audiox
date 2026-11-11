@@ -54,7 +54,7 @@ function fixture() {
       return { ok: true, json: async () => context.response };
     },
   });
-  const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+  const source = require('./support/app-source.js').appSource();
   vm.runInContext(source.slice(source.indexOf('const volumeMeters ='),
     source.indexOf('async function loadVolumes()')), context);
   const add = id => {

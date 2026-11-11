@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const fs = require('node:fs');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+const source = require('./support/app-source.js').appSource();
 
 function fixture(gain = 1, volumes = [{ id: 'phone', name: 'Phone', gain }]) {
   class Element {

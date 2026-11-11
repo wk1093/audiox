@@ -98,7 +98,7 @@ test('panning and resizing retain logical visible bounds without constraining po
 });
 
 test('display density changes resize the graph and rearm the resolution listener', () => {
-  const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+  const source = require('./support/app-source.js').appSource();
   const queries = [];
   let resized = 0;
   const context = apiContext({ window: { devicePixelRatio: 1,
@@ -116,7 +116,7 @@ test('display density changes resize the graph and rearm the resolution listener
 });
 
 test('advanced effect templates remain registered when the Cut template already exists', () => {
-  const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+  const source = require('./support/app-source.js').appSource();
   const registered = { 'effects/cut': function () {} };
   const context = apiContext({ window: { LiteGraph: { registered_node_types: registered,
     registerNodeType: (key, node) => { registered[key] = node; } } } });
@@ -143,7 +143,7 @@ test('routing channels use mono, left/right, or one-based channel names', () => 
 });
 
 test('routing is graph-only with no technical sidebar or Details toggle', () => {
-  const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+  const source = require('./support/app-source.js').appSource();
   const html = fs.readFileSync(require.resolve('../../web/embedded/index.html'), 'utf8');
   const css = fs.readFileSync(require.resolve('../../web/embedded/styles.css'), 'utf8');
   const page = html.split('data-page="routing"')[1].split('data-page="bluetooth"')[0];
@@ -156,7 +156,7 @@ test('routing is graph-only with no technical sidebar or Details toggle', () => 
 });
 
 test('clicking a graph wire still removes it and marks routing unsaved without a sidebar', () => {
-  const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+  const source = require('./support/app-source.js').appSource();
   const notices = [], unsaved = [];
   let redraws = 0;
   const state = { graph: { getNodeOnPos: () => null }, graphCanvas: { ds: { scale: 1 } },
@@ -255,7 +255,7 @@ test('screenshot-style microphone chain keeps compact vertical effect pairs', ()
 });
 
 test('wire paths stay stable when unrelated panels move and refresh when sockets move', () => {
-  const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+  const source = require('./support/app-source.js').appSource();
   const boxes = [{ ...box('src'), x: 40, y: 60 }, { ...box('dst'), x: 600, y: 60 }];
   const destination = [600, 75];
   const state = { edges: [edge('src', 'dst')], nodeByThingId: new Map([
@@ -286,7 +286,7 @@ test('wire paths stay stable when unrelated panels move and refresh when sockets
 });
 
 test('curved routes highlight selected node connections and restore canvas state', () => {
-  const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+  const source = require('./support/app-source.js').appSource();
   const routes = [edge('src', 'dst'), edge('src', 'other'), edge('other', 'src'),
     { ...edge('src', 'dst'), srcChannel: 1, dstChannel: 1 }, edge('other', 'unrelated')];
   const state = { edges: routes, selectedEdgeIdx: 4, graphCanvas: {} };
@@ -428,7 +428,7 @@ test('cyclic groups, disconnected patches and unused nodes remain finite and sep
 });
 
 test('Arrange uses current unsaved routes without overwriting manually positioned nodes', () => {
-  const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+  const source = require('./support/app-source.js').appSource();
   const graphNodes = new Map(['a', 'b'].map(id => [id, { pos: [0, 0], size: [260, 100] }]));
   const state = { nodeByThingId: graphNodes, edges: [edge('b', 'a')], autoArrange: true,
     positions: {}, activeTab: 'routing' };
@@ -502,7 +502,7 @@ test('fit remains contained for tiny viewports and very large layouts', () => {
 });
 
 test('saving routing preserves capacity warnings instead of overwriting them with success', async () => {
-  const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+  const source = require('./support/app-source.js').appSource();
   const notices = [];
   const unsaved = [];
   let graph = { ok: true, skippedEdges: 16, status: 'routing helper capacity: 128 active paths, 16 skipped path(s)' };

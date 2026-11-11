@@ -33,7 +33,7 @@ function fixture(devices) {
   }
   const elements = new Map(['bluetooth-hide-unnamed', 'bluetooth-devices', 'bluetooth-status',
     'btn-bluetooth-scan', 'bluetooth-scan-hint'].map(id => [id, new Element()]));
-  const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+  const source = require('./support/app-source.js').appSource();
   let fetches = 0;
   const requests = [];
   const notices = [];
@@ -197,7 +197,7 @@ test('Bluetooth page exposes a checked and labelled switch with an explanation',
 });
 
 function routingFixture(thingIds) {
-  const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+  const source = require('./support/app-source.js').appSource();
   const slice = (start, end) => source.slice(source.indexOf(start), source.indexOf(end));
   const nodeByThingId = new Map(thingIds.map(([id, inputs, outputs]) => [id, {
     inputs: Array.from({ length: inputs }), outputs: Array.from({ length: outputs }),

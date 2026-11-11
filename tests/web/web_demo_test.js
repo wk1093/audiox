@@ -56,7 +56,8 @@ test('demo gateway answers every API path the UI requests', async () => {
   const context = demoContext();
   assert.equal(context.AudioxApi.demo, true);
   const paths = new Set();
-  for (const name of fs.readdirSync(embedded).filter((file) => file.endsWith('.js'))) {
+  for (const name of fs.readdirSync(embedded, { recursive: true })
+    .filter((file) => /^(?:app\/)?[^/]+\.js$/.test(file))) {
     for (const [, literal] of read(name).matchAll(/'(\/api\/[^'?]+)'/g)) paths.add(literal);
   }
   // Templated paths built at runtime by the UI.

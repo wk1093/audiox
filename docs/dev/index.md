@@ -79,6 +79,13 @@ The source in `web/embedded/` builds two variants from the same UI:
 - The **demo** variant substitutes `demo/mock-api.js` and simulated state so
   the public Live Demo can run without a device.
 
+Application code is split by feature under `web/embedded/app/` (routing,
+Bluetooth, soundboard, MIDI, scripts, volume, configuration, and system tools).
+`app/state.js` defines shared state and DOM references; `app.js` wires up the
+managers, navigation, controls, and startup. These remain classic scripts with
+shared globals, like the existing UI helpers. Keep their source load order in
+`index.html`: state first, features next, and `app.js` last.
+
 When adding an API call, route it through the shared API gateway (`apiFetch`,
 `AudioxApi.upload`, or `AudioxApi.download`) rather than calling `fetch` from a
 feature module. Implement the corresponding behavior in `demo/mock-api.js`
@@ -91,11 +98,26 @@ Build the device assets with:
 make web_assets
 ```
 
+Alternatively, run `npm ci --prefix web/embedded` once, then
+`npm run build --prefix web/embedded` or `npm run build:demo --prefix web/embedded`.
+Both targets bundle all page scripts (including LiteGraph) into `app.js` and
+styles into `styles.css`, preserving source order. Production builds minify
+JavaScript, CSS, HTML (including inline handlers/styles), and SVG branding.
+Already-compressed PNG images and WOFF2 fonts are copied unchanged, along with
+third-party license files. Only the bundles, page, and required static assets
+are shipped; splitting source files does not add browser requests.
+
 For readable local output, the build script also supports an unminified build:
 
 ```sh
 node web/embedded/build.js --target device --out out/web-device --no-minify
 ```
+
+This keeps bundles readable, with source-file headings, and leaves HTML and
+SVGs unminified. `make web_assets WEB_MINIFY=0` does the same. Custom device
+index pages are compiled via `--index FILE` (`WEB_INDEX_HTML` when using Make)
+instead of being copied over the compiled page afterward. Their local script
+and stylesheet paths are resolved from `web/embedded/`.
 
 Run focused browser regressions with Node's built-in test runner:
 

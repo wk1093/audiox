@@ -12,17 +12,23 @@ static int openError = 0;
 static long captureVolume = 96, playbackVolume = 96;
 static long captureSwitch = 1, playbackSwitch = 1;
 static unsigned reads = 0;
-static int16_t outputSample = 0;
+static int32_t outputSample = 0;
+static snd_pcm_format_t outputFormat = SND_PCM_FORMAT_S16_LE;
+static unsigned outputWrites = 0;
 
 AudioContext::AudioContext(Audiox *context) : app(context) {}
 AudioContext::~AudioContext() {}
 
 extern "C" snd_pcm_sframes_t snd_pcm_writei(snd_pcm_t *, const void *buffer, snd_pcm_uframes_t frames) {
-    outputSample = static_cast<const int16_t *>(buffer)[0];
+    ++outputWrites;
+    outputSample = outputFormat == SND_PCM_FORMAT_S32_LE
+        ? static_cast<const int32_t *>(buffer)[0] : static_cast<const int16_t *>(buffer)[0];
     return static_cast<snd_pcm_sframes_t>(frames);
 }
 
 extern "C" snd_pcm_state_t snd_pcm_state(snd_pcm_t *) { return SND_PCM_STATE_RUNNING; }
+
+extern "C" snd_pcm_sframes_t snd_pcm_avail_update(snd_pcm_t *) { return BUFFER_FRAMES * 4U; }
 
 extern "C" int snd_ctl_open(snd_ctl_t **ctl, const char *, int mode) {
     assert(mode == SND_CTL_NONBLOCK);
@@ -119,17 +125,23 @@ int main() {
     for (snd_pcm_format_t format : {SND_PCM_FORMAT_S16_LE, SND_PCM_FORMAT_S32_LE}) {
         playback.format = format;
         for (float gain : {1.0f, 0.5f, 0.0f}) {
+            resetPlaybackSrc(playback);
             for (unsigned frame = 0; frame < BUFFER_FRAMES; ++frame) {
                 data[0][frame] = 0.25f;
                 data[1][frame] = -0.25f;
             }
             preparePlaybackBlock(playback, channels, 2, gain);
-            if (format == SND_PCM_FORMAT_S16_LE) {
-                assert(playback.pendingBlock[0] == audiox::pcm::toS16(0.25f * gain));
-                assert(playback.pendingBlock[1] == audiox::pcm::toS16(-0.25f * gain));
-            } else {
-                assert(playback.pendingBlock32[0] == audiox::pcm::toS32(0.25f * gain));
-                assert(playback.pendingBlock32[1] == audiox::pcm::toS32(-0.25f * gain));
+            assert(playback.sourceCount == BUFFER_FRAMES);
+            resamplePlaybackBlock(playback);
+            assert(playback.pendingFrames == BUFFER_FRAMES - 1U);
+            for (unsigned frame = 0; frame < playback.pendingFrames; ++frame) {
+                if (format == SND_PCM_FORMAT_S16_LE) {
+                    assert(playback.pendingBlock[frame * 2U] == audiox::pcm::toS16(0.25f * gain));
+                    assert(playback.pendingBlock[frame * 2U + 1U] == audiox::pcm::toS16(-0.25f * gain));
+                } else {
+                    assert(playback.pendingBlock32[frame * 2U] == audiox::pcm::toS32(0.25f * gain));
+                    assert(playback.pendingBlock32[frame * 2U + 1U] == audiox::pcm::toS32(-0.25f * gain));
+                }
             }
         }
         // Exercise the real boundary call sites as well as their conversion helpers.
@@ -152,7 +164,12 @@ int main() {
         graph.playback[0].pcm = &testPcm;
         graph.playback[0].channels = 2;
         graph.playback[0].isGadget = 1;
-        graph.playback[0].format = SND_PCM_FORMAT_S16_LE;
+        graph.playback[0].format = format;
+        outputFormat = format;
+        const auto expectedSample = [format](float sample) -> int32_t {
+            return format == SND_PCM_FORMAT_S32_LE
+                ? audiox::pcm::toS32(sample) : audiox::pcm::toS16(sample);
+        };
         for (float gain : {1.0f, 0.1f, 0.0f}) {
             context->gadgetVolume.captureGain.store(gain);
             auto &source = backend.streams[0];
@@ -162,12 +179,18 @@ int main() {
             renderSourceNode(context.get(), &graph, &backend, 0);
             assert(std::fabs(data[0][0] - 0.25f * gain) < 0.000001f);
             context->gadgetVolume.playbackGain.store(1.0f);
+            resetPlaybackSrc(graph.playback[0]);
+            unsigned previousWrites = outputWrites;
             servicePlaybackIo(context.get(), &graph);
-            assert(outputSample == audiox::pcm::toS16(0.25f * gain));
+            assert(outputWrites > previousWrites);
+            assert(outputSample == expectedSample(0.25f * gain));
             context->gadgetVolume.playbackGain.store(gain);
-            data[0][0] = 0.25f;
+            std::fill_n(data[0], BUFFER_FRAMES, 0.25f);
+            resetPlaybackSrc(graph.playback[0]);
+            previousWrites = outputWrites;
             servicePlaybackIo(context.get(), &graph);
-            assert(outputSample == audiox::pcm::toS16(0.25f * gain));
+            assert(outputWrites > previousWrites);
+            assert(outputSample == expectedSample(0.25f * gain));
         }
     }
     puts("USB volume, mute, reconnect, PCM and underrun tests passed");

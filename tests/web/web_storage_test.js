@@ -1,10 +1,9 @@
 const assert = require('node:assert/strict');
 const { apiContext } = require('./support/api-context.js');
 const { test } = require('node:test');
-const fs = require('node:fs');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+const source = require('./support/app-source.js').appSource();
 
 function fixture() {
   const meter = () => ({

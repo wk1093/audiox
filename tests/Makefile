@@ -83,7 +83,7 @@ $(OUT_DIR)/host/audiox-pcm-rate-test: tests/native/audio/pcm_rate_test.cpp inclu
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-parameter -Iinclude -o "$@" "$<" -lasound -pthread
 
-test-web:
+test-web: $(CURDIR)/web/embedded/node_modules/.audiox-assets-installed
 	node --test tests/web/*.js
 	node --test tools/telemetry/worker.test.js
 

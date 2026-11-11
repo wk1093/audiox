@@ -4,7 +4,7 @@ const { readFileSync } = require('node:fs');
 const { test } = require('node:test');
 const vm = require('node:vm');
 
-const source = readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+const source = require('./support/app-source.js').appSource();
 
 test('USB reload has destructive styling and a persistent accessible instability warning', () => {
   const html = readFileSync(require.resolve('../../web/embedded/index.html'), 'utf8');

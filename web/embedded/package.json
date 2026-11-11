@@ -12,6 +12,8 @@
     "litegraph.js": "0.7.18"
   },
   "devDependencies": {
-    "esbuild": "0.28.2"
+    "esbuild": "0.28.2",
+    "html-minifier-terser": "7.2.0",
+    "svgo": "4.0.0"
   }
 }

@@ -669,7 +669,7 @@ WEB_BUILD_FLAGS := $(if $(filter 0,$(WEB_MINIFY)),--no-minify,)
 
 .PHONY: web_assets
 web_assets: $(CURDIR)/web/embedded/node_modules/.audiox-assets-installed
-	node "$(CURDIR)/web/embedded/build.js" --target device --out "$(OUT_DIR)/web-device" $(WEB_BUILD_FLAGS)
+	node "$(CURDIR)/web/embedded/build.js" --target device --out "$(OUT_DIR)/web-device" --index "$(WEB_INDEX_HTML)" $(WEB_BUILD_FLAGS)
 
 # Public website (download page, docs and Live Demo), staged like the Pages
 # workflow minus the release-archive mirror. Served at http://127.0.0.1:$(SITE_PORT)/audiox/
@@ -746,15 +746,7 @@ rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(ROOTFS_DIR)/sbin/aud
 	@echo "Staging compiled web UI from $(OUT_DIR)/web-device/..."
 	mkdir -p "$(ROOTFS_DIR)/etc/www"
 	cp -a "$(OUT_DIR)/web-device/." "$(ROOTFS_DIR)/etc/www/"
-	@if [ "$(WEB_INDEX_HTML)" != "$(CURDIR)/web/embedded/index.html" ]; then \
-		if [ -f "$(WEB_INDEX_HTML)" ]; then \
-			echo "Staging web index override from $(WEB_INDEX_HTML)..."; \
-			cp "$(WEB_INDEX_HTML)" "$(ROOTFS_DIR)/etc/www/index.html"; \
-		else \
-			echo "Warning: web index file not found at $(WEB_INDEX_HTML)"; \
-		fi; \
-	fi
-	@if [ -f "$(WEB_LOGO_SVG)" ]; then \
+	@if [ "$(WEB_LOGO_SVG)" != "$(CURDIR)/assets/branding/logo.svg" ] && [ -f "$(WEB_LOGO_SVG)" ]; then \
 		echo "Staging web logo svg from $(WEB_LOGO_SVG)..."; \
 		cp "$(WEB_LOGO_SVG)" "$(ROOTFS_DIR)/etc/www/logo.svg"; \
 	fi
@@ -762,10 +754,10 @@ rootfs: $(ROOTFS_DIR)/init $(ROOTFS_DIR)/sbin/audiox-main $(ROOTFS_DIR)/sbin/aud
 		echo "Staging web logo png from $(WEB_LOGO_PNG)..."; \
 		cp "$(WEB_LOGO_PNG)" "$(ROOTFS_DIR)/etc/www/logo.png"; \
 	fi
-	@if [ -f "$(WEB_FAVICON_SVG)" ]; then \
+	@if [ "$(WEB_FAVICON_SVG)" != "$(CURDIR)/assets/branding/logo_small.svg" ] && [ -f "$(WEB_FAVICON_SVG)" ]; then \
 		echo "Staging web favicon svg from $(WEB_FAVICON_SVG)..."; \
 		cp "$(WEB_FAVICON_SVG)" "$(ROOTFS_DIR)/etc/www/logo_small.svg"; \
-	else \
+	elif [ ! -f "$(WEB_FAVICON_SVG)" ]; then \
 		echo "Warning: web favicon svg not found at $(WEB_FAVICON_SVG)"; \
 	fi
 	@if [ -f "$(WEB_FAVICON_PNG)" ]; then \

@@ -1,5 +1,5 @@
 // Single gateway for every request the UI makes to the AudioX device.
-// The device build ships this file; the public demo build swaps it for
+// The device bundle includes this gateway; the public demo build swaps it for
 // demo/mock-api.js, which implements the same interface with simulated data.
 (function (root) {
   'use strict';

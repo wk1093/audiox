@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const pluginsSource = fs.readFileSync(require.resolve('../../web/embedded/plugins.js'), 'utf8');
 const effectsSource = fs.readFileSync(require.resolve('../../web/embedded/effects.js'), 'utf8');
 const html = fs.readFileSync(require.resolve('../../web/embedded/index.html'), 'utf8');
-const app = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+const app = require('./support/app-source.js').appSource();
 
 class Element {
   constructor(tag) {

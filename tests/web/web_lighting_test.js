@@ -1,11 +1,10 @@
 const assert = require('node:assert/strict');
 const { apiContext } = require('./support/api-context.js');
 const { test } = require('node:test');
-const fs = require('node:fs');
 const vm = require('node:vm');
 
 function fixture(initiallyDimmed = false) {
-  const source = fs.readFileSync(require.resolve('../../web/embedded/app.js'), 'utf8');
+  const source = require('./support/app-source.js').appSource();
   const script = source.slice(source.indexOf("const lightDimButton ="),
     source.indexOf('async function loadLightConfig()'));
   const button = {

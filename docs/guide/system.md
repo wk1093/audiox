@@ -71,6 +71,17 @@ unavailable values are `null`. Requests never add samples. The browser fills the
 chart with up to 600 readings on opening, then merges the latest 50 by sample ID.
 After a long gap it refills history; a new runtime ID discards old browser data.
 
+CPU utilization compares cumulative idle-plus-I/O-wait time with elapsed
+monotonic time multiplied by online CPU count. This avoids the phase-dependent
+busy-tick accounting of periodic realtime audio on the Pi's tickless kernel.
+The System page, local display, history, and telemetry share this calculation.
+Reported CPU usage may therefore be consistently higher than older firmware's
+low readings without an actual workload increase. System information retains raw
+`cpu_times.total_ticks` / `idle_ticks` and adds `capacity_ticks` / `cpu_count`.
+CPU-count changes or invalid counter intervals restart sampling rather than
+inventing a percentage. Older firmware without capacity counters still uses
+the browser's legacy tick-delta calculation.
+
 **Audio Device Health** shows detected ALSA devices and routed stream state,
 the actual negotiated sample rate, MMAP or RW transfer mode, period/buffer
 sizes, and per-stream X-runs since stream setup. Stream telemetry is published

@@ -284,7 +284,7 @@ $(OUT_DIR)/host/audiox-audio-meters-test: tests/native/audio/audio_meters_test.c
 $(OUT_DIR)/host/audiox-display-hotplug-test: tests/native/hardware/display_hotplug_test.cpp src/context.cpp \
 		src/audio/plugin_host.cpp \
 		src/framebuffer/hardware.cpp src/framebuffer/drawing.cpp src/framebuffer/ui.cpp src/touch/touch.cpp \
-		$(wildcard include/framebuffer/*.hpp include/touch/*.hpp include/audio/*.hpp include/config/*.hpp include/midi/*.hpp include/scripting/*.hpp) include/context.hpp include/defs.hpp
+		$(wildcard include/framebuffer/*.hpp include/touch/*.hpp include/audio/*.hpp include/config/*.hpp include/midi/*.hpp include/scripting/*.hpp) include/context.hpp include/defs.hpp include/system_history.hpp
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-parameter -Iinclude \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections \
@@ -316,7 +316,7 @@ $(OUT_DIR)/host/audiox-scenes-test: tests/native/config/scenes_test.cpp $(filter
 test-audio-graph: $(OUT_DIR)/host/audiox-audio-graph-test
 	@"$<"
 
-$(OUT_DIR)/host/audiox-audio-graph-test: tests/native/audio/audio_graph_test.cpp $(filter-out tests/native/config/soundboard_config_test.cpp,$(SOUNDBOARD_CONFIG_TEST_SRCS)) \
+$(OUT_DIR)/host/audiox-audio-graph-test: tests/native/audio/audio_graph_test.cpp $(filter-out tests/native/config/soundboard_config_test.cpp,$(SOUNDBOARD_CONFIG_TEST_SRCS)) include/system_history.hpp \
 		tests/native/script_device_stubs.hpp src/http/api.cpp src/audio/graph.cpp src/audio/hotplug.cpp src/config/router.cpp include/json.hpp include/usage_telemetry.hpp \
 		$(wildcard include/audio/*.hpp include/config/*.hpp include/bluetooth/*.hpp) $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
 	@mkdir -p "$(dir $@)"
@@ -327,7 +327,7 @@ $(OUT_DIR)/host/audiox-audio-graph-test: tests/native/audio/audio_graph_test.cpp
 		src/audio/graph.cpp src/audio/hotplug.cpp src/config/router.cpp $(HOST_LUA_STATIC_LIB) \
 		$(shell pkg-config --cflags --libs alsa) -pthread -lm
 
-$(OUT_DIR)/host/audiox-soundboard-config-test: $(SOUNDBOARD_CONFIG_TEST_SRCS) src/audio/graph.cpp src/audio/hotplug.cpp src/config/router.cpp tests/native/script_device_stubs.hpp src/http/api.cpp src/framebuffer/ui.cpp $(wildcard include/config/*.hpp include/midi/*.hpp include/scripting/*.hpp include/bluetooth/*.hpp include/audio/*.hpp include/audio/effects/*.hpp include/http/*.hpp include/touch/*.hpp include/framebuffer/*.hpp) include/defs.hpp include/json.hpp include/watchdog_heartbeat.hpp include/usage_telemetry.hpp $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
+$(OUT_DIR)/host/audiox-soundboard-config-test: $(SOUNDBOARD_CONFIG_TEST_SRCS) src/audio/graph.cpp src/audio/hotplug.cpp src/config/router.cpp tests/native/script_device_stubs.hpp src/http/api.cpp src/framebuffer/ui.cpp $(wildcard include/config/*.hpp include/midi/*.hpp include/scripting/*.hpp include/bluetooth/*.hpp include/audio/*.hpp include/audio/effects/*.hpp include/http/*.hpp include/touch/*.hpp include/framebuffer/*.hpp) include/defs.hpp include/json.hpp include/watchdog_heartbeat.hpp include/usage_telemetry.hpp include/system_history.hpp $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-format-truncation -Wno-unused-parameter -Iinclude -I$(HOST_LUA_INCLUDE_DIR) \
 		-DROOT_MOUNT_POINT='"."' -ffunction-sections -fdata-sections \

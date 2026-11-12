@@ -166,6 +166,7 @@ int main() {
         assert(systemInfo.find("\"temperature_c\":") != std::string::npos);
         assert(systemInfo.find("\"cpu_count\":") != std::string::npos);
         assert(systemInfo.find("\"cpu_times\":") != std::string::npos);
+        assert(systemInfo.find("\"capacity_ticks\":") != std::string::npos);
         assert(systemInfo.find("\"audio_health\":{") != std::string::npos);
         assert(systemInfo.find("\"audio_buffer\":{\"base_block_frames\":") != std::string::npos);
         assert(systemInfo.find("\"largest_period_frames\":") != std::string::npos);

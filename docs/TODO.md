@@ -223,6 +223,13 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Fault-inject interruption at update, rollback, configuration-save, and restore persistence boundaries.
 - [ ] Validate FAT boot-partition power-loss behavior on hardware before declaring 2.0 stable.
 - [x] Add a channel-and-note-bindable, temporary passthrough-only toggle with MIDI learn: clear controller lighting, pause scripts and local MIDI actions, forward every channel except the toggle, and restore normal controls without restarting when USB MIDI is already enabled.
+- [x] Add clock-drift correction for ALSA playback devices; improve playback priming and partial-write recovery, and stabilize buffer-size transitions.
+- [x] Run audio processing in a supervised, restartable worker; expose worker status and restart controls, and bypass repeatedly failing plugins with an explicit retry path.
+- [x] Move AXM plugins to worker-local LLVM bitcode execution; keep plugin status/errors accurate and remove incompatible legacy plugins that block the catalog.
+- [x] Keep configuration, scenes, and plugin reloads synchronized across worker restarts; show USB gadget streams in device health.
+- [x] Prevent soundboard slot invalidation while queued triggers are pending.
+- [x] Fix Bluetooth reconnect loops, stale audio during handoffs, and overlapping start/suspend requests; report paused Bluetooth output accurately.
+- [x] Split the embedded WebUI into feature files and minify it; update USB gadget-volume tests for resampling and verify 16-bit/32-bit playback.
 
 
 ## Pre-2.0 validation
@@ -238,6 +245,10 @@ The above last two features are mainly to improve my setup, but could probably b
 - [ ] Validate live WebUI/MIDI scene recall with different effect inventories, audible transition quality, and recall latency on hardware.
 - [x] Validate audio-device disconnect/reconnect health and the offline WebUI on the deployed appliance.
 - [x] Validate X-run reduction, recovery interruptions, and latency tradeoffs on Raspberry Pi hardware under representative workloads.
+- [ ] Validate worker restart/status, plugin failure bypass and retry, and configuration/scene/plugin recovery across worker restarts on physical Pi hardware.
+- [ ] Validate clock-drift correction and resampled playback with multiple ALSA outputs, USB gadget streams, and supported sample formats under sustained mixed workloads.
+- [ ] Validate Bluetooth multipoint-busy reconnects, handoffs, and overlapping start/suspend requests with supported hardware.
+- [ ] Test the 1.17 release-candidate upgrade from the previous stable release, including legacy configuration migration, backup/restore, and reboot persistence on Pi 4 and Pi 5.
 
 
 ## Release - v2.0+
@@ -254,6 +265,13 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Framebuffer UI: row-fill rects, cached pre-scaled logo, idle frame cap.
   - [x] Throttle log fsyncs on the heartbeat; remove fixed boot sleeps.
 - [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)
+
+### Before announcing the main release
+- [ ] Complete or explicitly defer every open pre-release hardware validation item above; document any known limitations.
+- [ ] Build the release candidate from a clean checkout, run the full regression suite, and smoke-test the packaged AArch64 release on Pi 4 and Pi 5.
+- [ ] Verify fresh install, upgrade, backup/restore, and interrupted-update recovery with the exact release-candidate image; confirm configuration and audio services survive reboot.
+- [ ] Publish release notes and user guidance for supported hardware/software, configuration migration, plugin compatibility, recovery, HTTP API access, and opt-in telemetry/privacy.
+- [ ] Verify each feature and compatibility claim planned for demos or promotional materials against the final release candidate.
 
 
 ## Future

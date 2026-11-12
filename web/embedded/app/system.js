@@ -92,7 +92,15 @@ function calculateCpuUtilization(previous, current) {
   if (!previous || !current
       || !Number.isSafeInteger(previous.total_ticks) || !Number.isSafeInteger(previous.idle_ticks)
       || !Number.isSafeInteger(current.total_ticks) || !Number.isSafeInteger(current.idle_ticks)) return null;
-  const totalDelta = current.total_ticks - previous.total_ticks;
+  if (current.total_ticks < previous.total_ticks) return null;
+  const hasCapacity = previous.capacity_ticks !== undefined || current.capacity_ticks !== undefined;
+  if (hasCapacity && (!Number.isSafeInteger(previous.capacity_ticks)
+      || !Number.isSafeInteger(current.capacity_ticks)
+      || !Number.isSafeInteger(current.cpu_count) || current.cpu_count < 1
+      || current.cpu_count !== previous.cpu_count)) return null;
+  // Older firmware only supplies raw tick counters.
+  const totalDelta = hasCapacity ? current.capacity_ticks - previous.capacity_ticks
+    : current.total_ticks - previous.total_ticks;
   const idleDelta = current.idle_ticks - previous.idle_ticks;
   if (totalDelta <= 0 || idleDelta < 0 || idleDelta > totalDelta) return null;
   return Math.max(0, Math.min(100, (totalDelta - idleDelta) / totalDelta * 100));

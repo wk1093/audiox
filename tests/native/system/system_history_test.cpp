@@ -5,18 +5,18 @@ int main() {
     using namespace audiox::system;
     static_assert(sizeof(SystemHistory) < 65536, "history must stay within 64 KiB");
     SystemHistory history(42);
-    CpuTimes cpu{100, 50};
+    CpuTimes cpu{100, 50, 100, 4};
     assert(history.size() == 0 && history.runtime() == 42);
     history.add(1000, 55, &cpu, 10, 1);
     assert(std::isnan(history.latest().cpu) && !history.latest().xrunsValid);
-    cpu = {200, 70};
+    cpu = {200, 70, 200, 4};
     history.add(1999, 55, &cpu, 11, 1);
     assert(history.size() == 1);
     history.add(2000, 56, &cpu, 12, 1);
     assert(history.latest().cpu == 80 && history.latest().xruns == 2 && history.latest().xrunsValid);
     history.add(10000, 60, &cpu, 20, 1);
     assert(std::isnan(history.latest().cpu) && !history.latest().xrunsValid);
-    cpu = {300, 90};
+    cpu = {300, 90, 300, 4};
     history.add(11000, 61, &cpu, 0, 2);
     assert(!history.latest().xrunsValid && history.latest().cpu == 80);
     history.add(12000, NAN, nullptr, 1, 2);
@@ -24,11 +24,11 @@ int main() {
     assert(history.latest().xrunsValid && history.latest().xruns == 1);
     history.add(13000, 60, &cpu, 2, 2);
     assert(std::isnan(history.latest().cpu));
-    cpu = {1, 0};
+    cpu = {1, 0, 1, 4};
     history.add(14000, 60, &cpu, 1, 2);
     assert(std::isnan(history.latest().cpu) && !history.latest().xrunsValid);
     for (uint64_t i = 0; i < 2000; ++i) {
-        cpu.total += 100; cpu.idle += 25;
+        cpu.total += 100; cpu.idle += 25; cpu.capacity += 100;
         history.add(15000 + i * 1000, 62, &cpu, i + 2, 2);
     }
     assert(history.size() == 600);
@@ -44,6 +44,15 @@ int main() {
     assert(history.size() == 0);
     history.add(last + 601000, 62, &cpu, 2003, 2);
     assert(history.size() == 1 && !history.latest().xrunsValid && std::isnan(history.latest().cpu));
+    const CpuTimes before{1000, 800, 1200, 4};
+    const CpuTimes lowTicks{1345, 1127, 1600, 4};
+    const CpuTimes highTicks{1392, 1127, 1600, 4};
+    assert(cpuUtilization(before, lowTicks) == 18.25);
+    assert(cpuUtilization(before, highTicks) == 18.25);
+    assert(std::isnan(cpuUtilization(before, CpuTimes{1392, 1127, 1600, 3})));
+    assert(std::isnan(cpuUtilization(before, CpuTimes{1392, 1201, 1600, 4})));
+    assert(std::isnan(cpuUtilization(before, CpuTimes{1392, 1127, 1200, 4})));
+    assert(std::isnan(cpuUtilization(before, CpuTimes{1, 0, 1600, 4})));
 
     SystemHistory sparse;
     sparse.add(1000, 55, &cpu, 0, 1);

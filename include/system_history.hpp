@@ -6,11 +6,15 @@
 #include <cstdio>
 #include <limits>
 #include <string_view>
+#include <time.h>
+#include <unistd.h>
 
 namespace audiox::system {
 
 struct CpuTimes {
     uint64_t total{0}, idle{0};
+    uint64_t capacity{0};
+    long cpuCount{0};
 };
 
 inline bool readCpuTimes(CpuTimes &times) {
@@ -23,8 +27,27 @@ inline bool readCpuTimes(CpuTimes &times) {
                              label, &user, &nice, &system, &idle, &iowait, &irq, &softirq, &steal);
     fclose(file);
     if (count != 9 || std::string_view(label) != "cpu") return false;
-    times = {user + nice + system + idle + iowait + irq + softirq + steal, idle + iowait};
+    const long cpus = sysconf(_SC_NPROCESSORS_ONLN), hz = sysconf(_SC_CLK_TCK);
+    timespec now{};
+    if (cpus <= 0 || hz <= 0 || clock_gettime(CLOCK_MONOTONIC, &now) != 0) return false;
+    // Tick-sampled busy time aliases with periodic realtime work. NO_HZ idle time
+    // is elapsed time, so compare it with elapsed capacity rather than busy ticks.
+    const uint64_t ticksPerSecond = static_cast<uint64_t>(cpus) * static_cast<uint64_t>(hz);
+    const uint64_t capacity = static_cast<uint64_t>(now.tv_sec) * ticksPerSecond +
+        static_cast<uint64_t>(now.tv_nsec) * ticksPerSecond / 1000000000ULL;
+    times = {user + nice + system + idle + iowait + irq + softirq + steal,
+             idle + iowait, capacity, cpus};
     return true;
+}
+
+inline double cpuUtilization(const CpuTimes &previous, const CpuTimes &current) {
+    if (previous.cpuCount <= 0 || current.cpuCount != previous.cpuCount ||
+        current.capacity <= previous.capacity || current.total < previous.total ||
+        current.idle < previous.idle) return std::numeric_limits<double>::quiet_NaN();
+    const uint64_t capacity = current.capacity - previous.capacity;
+    const uint64_t idle = current.idle - previous.idle;
+    if (idle > capacity) return std::numeric_limits<double>::quiet_NaN();
+    return 100.0 * (capacity - idle) / capacity;
 }
 
 inline double readCpuTemperature() {
@@ -66,12 +89,7 @@ public:
         sample.temperature = temperature;
         sample.cpu = std::numeric_limits<double>::quiet_NaN();
         const bool continuous = size_ && now - latest().now <= 5000;
-        if (continuous && cpu && previousCpuValid_ && cpu->total > previousCpu_.total &&
-            cpu->idle >= previousCpu_.idle) {
-            const uint64_t total = cpu->total - previousCpu_.total;
-            const uint64_t idle = cpu->idle - previousCpu_.idle;
-            if (idle <= total) sample.cpu = 100.0 * (total - idle) / total;
-        }
+        if (continuous && cpu && previousCpuValid_) sample.cpu = cpuUtilization(previousCpu_, *cpu);
         sample.xrunsValid = continuous && audioRuntime == previousAudioRuntime_ && xruns >= previousXruns_;
         if (sample.xrunsValid) sample.xruns = xruns - previousXruns_;
         samples_[next_] = sample;

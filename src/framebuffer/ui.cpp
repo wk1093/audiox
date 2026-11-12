@@ -6,6 +6,7 @@
 #include "config/context.hpp"
 #include "midi/context.hpp"
 #include "touch/context.hpp"
+#include "system_history.hpp"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -35,8 +36,7 @@ static constexpr int kMeterTopPad = 3;
 
 struct SystemMetricsState {
     uint64_t lastUpdateMs{0};
-    uint64_t prevTotalTicks{0};
-    uint64_t prevIdleTicks{0};
+    audiox::system::CpuTimes previousCpu;
     uint64_t memTotalKb{0};
     uint64_t memUsedKb{0};
     float cpuUsage{0.0f};
@@ -445,48 +445,19 @@ static inline void refreshSystemMetrics() {
     }
     systemMetricsState.lastUpdateMs = nowMs;
 
-    FILE *statFile = fopen("/proc/stat", "r");
-    if (statFile) {
-        char line[256];
-        if (fgets(line, sizeof(line), statFile)) {
-            unsigned long long user = 0;
-            unsigned long long nice = 0;
-            unsigned long long system = 0;
-            unsigned long long idle = 0;
-            unsigned long long iowait = 0;
-            unsigned long long irq = 0;
-            unsigned long long softirq = 0;
-            unsigned long long steal = 0;
-            if (sscanf(line,
-                       "cpu %llu %llu %llu %llu %llu %llu %llu %llu",
-                       &user,
-                       &nice,
-                       &system,
-                       &idle,
-                       &iowait,
-                       &irq,
-                       &softirq,
-                       &steal) >= 4) {
-                uint64_t idleTicks = idle + iowait;
-                uint64_t totalTicks = user + nice + system + idle + iowait + irq + softirq + steal;
-                if (systemMetricsState.hasCpuSample && totalTicks > systemMetricsState.prevTotalTicks) {
-                    uint64_t deltaTotal = totalTicks - systemMetricsState.prevTotalTicks;
-                    uint64_t deltaIdle = 0;
-                    if (idleTicks > systemMetricsState.prevIdleTicks) {
-                        deltaIdle = idleTicks - systemMetricsState.prevIdleTicks;
-                    }
-
-                    if (deltaTotal > 0 && deltaIdle <= deltaTotal) {
-                        float busy = (float)(deltaTotal - deltaIdle) / (float)deltaTotal;
-                        systemMetricsState.cpuUsage = clampFloat(busy, 0.0f, 1.0f);
-                    }
-                }
-                systemMetricsState.prevIdleTicks = idleTicks;
-                systemMetricsState.prevTotalTicks = totalTicks;
-                systemMetricsState.hasCpuSample = true;
-            }
+    audiox::system::CpuTimes cpu;
+    if (audiox::system::readCpuTimes(cpu)) {
+        if (systemMetricsState.hasCpuSample) {
+            const double utilization = audiox::system::cpuUtilization(systemMetricsState.previousCpu, cpu);
+            if (std::isfinite(utilization)) systemMetricsState.cpuUsage = utilization / 100.0;
         }
-        fclose(statFile);
+        systemMetricsState.previousCpu = cpu;
+        systemMetricsState.hasCpuSample = true;
+    } else {
+        systemMetricsState.hasCpuSample = false;
+        static bool warned = false;
+        if (!warned) printf("[SYSTEM] [WARN] display CPU counters unavailable\n");
+        warned = true;
     }
 
     FILE *memFile = fopen("/proc/meminfo", "r");

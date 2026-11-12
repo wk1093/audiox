@@ -118,3 +118,19 @@ test('CPU utilization is calculated from valid cumulative tick deltas', () => {
     assert.equal(cpuUtilization({ total_ticks: 100, idle_ticks: 50 }, current), null);
   }
 });
+
+test('CPU utilization uses elapsed capacity despite realtime tick aliasing', () => {
+  const { cpuUtilization } = fixture();
+  const before = { total_ticks: 1000, idle_ticks: 800, capacity_ticks: 1200, cpu_count: 4 };
+  const current = { total_ticks: 1345, idle_ticks: 1127, capacity_ticks: 1600, cpu_count: 4 };
+  assert.equal(cpuUtilization(before, current), 18.25);
+  assert.equal(cpuUtilization(before, { ...current, total_ticks: 1392 }), 18.25);
+  for (const invalid of [
+    { ...current, cpu_count: 3 },
+    { ...current, capacity_ticks: 1200 },
+    { ...current, capacity_ticks: NaN },
+    { ...current, idle_ticks: 1201 },
+    { ...current, total_ticks: 1 },
+    { total_ticks: 1392, idle_ticks: 1127 },
+  ]) assert.equal(cpuUtilization(before, invalid), null);
+});

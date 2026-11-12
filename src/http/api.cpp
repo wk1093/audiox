@@ -4725,12 +4725,13 @@ static int buildSystemInfo(HttpServer *server, char *out, size_t capacity) {
 	}
 	long cpu_count = sysconf(_SC_NPROCESSORS_ONLN);
 	if (cpu_count < 1) cpu_count = 1;
-	char cpu_times_json[128] = "null";
+	char cpu_times_json[256] = "null";
 	audiox::system::CpuTimes cpuTimes;
 	if (audiox::system::readCpuTimes(cpuTimes))
 		snprintf(cpu_times_json, sizeof(cpu_times_json),
-				 "{\"total_ticks\":%llu,\"idle_ticks\":%llu}",
-				 (unsigned long long)cpuTimes.total, (unsigned long long)cpuTimes.idle);
+				 "{\"total_ticks\":%llu,\"idle_ticks\":%llu,\"capacity_ticks\":%llu,\"cpu_count\":%ld}",
+				 (unsigned long long)cpuTimes.total, (unsigned long long)cpuTimes.idle,
+				 (unsigned long long)cpuTimes.capacity, cpuTimes.cpuCount);
 	char temperature_json[24] = "null";
 	const double temperature = audiox::system::readCpuTemperature();
 	if (std::isfinite(temperature)) snprintf(temperature_json, sizeof(temperature_json), "%.1f", temperature);

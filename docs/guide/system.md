@@ -133,6 +133,14 @@ not trigger an increase. All X-runs remain included in the diagnostic total,
 including startup and settling events. ALSA close failures include the stream,
 device path, pre-close state, and error code in the runtime log.
 
+PCM opens and format negotiation run on a background thread, so a device that
+is slow to open or refuses to open (for example, an output with no sink
+attached) does not stall audio processing. When a device fails to open, AudioX
+retries it after 1 second and then doubles the wait, up to 60 seconds. Each
+failure is logged with the next retry delay. Once the wait reaches 60 seconds,
+only every tenth failure is logged. Adding or removing an audio device resets
+the backoff.
+
 Playback is primed with a queue reserve before starting or restarting, including
 at the base hardware period. Continuous sample-rate conversion tracks each
 ALSA playback device's negotiated rate and slowly corrects clock drift against

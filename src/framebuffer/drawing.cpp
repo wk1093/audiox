@@ -229,6 +229,11 @@ void FramebufferContext::present() {
         return;
     }
 
+    if (backend == DisplayBackend::Kms) {
+        (void)kmsPresent();
+        return;
+    }
+
     uint8_t *target = buffer + draw_offset;
     memcpy(target, stagingBuffer, page_len);
 

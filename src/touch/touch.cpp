@@ -59,7 +59,27 @@ static inline int touchIsCandidateDevice(int fd, int *score_out) {
         return 0;
     }
 
-    if (touchQueryBits(fd, EV_KEY, key_bits, sizeof(key_bits)) == 0 && touchTestBit(key_bits, BTN_TOUCH)) {
+    // Only screens: a direct-input device (touchscreen, pen display) or one that
+    // reports touches. Touchpads, tablets, joysticks and gamepads also have
+    // absolute axes but do not map onto the display.
+    unsigned long prop_bits[(INPUT_PROP_MAX / (8 * sizeof(unsigned long))) + 2];
+    memset(prop_bits, 0, sizeof(prop_bits));
+    int have_props = ioctl(fd, EVIOCGPROP(sizeof(prop_bits)), prop_bits) >= 0;
+    int direct = have_props && touchTestBit(prop_bits, INPUT_PROP_DIRECT);
+    int pointer = have_props && touchTestBit(prop_bits, INPUT_PROP_POINTER);
+    int has_keys = touchQueryBits(fd, EV_KEY, key_bits, sizeof(key_bits)) >= 0;
+    int btn_touch = has_keys && touchTestBit(key_bits, BTN_TOUCH);
+    if (has_keys && (touchTestBit(key_bits, BTN_JOYSTICK) || touchTestBit(key_bits, BTN_GAMEPAD))) {
+        return 0;
+    }
+    if (!direct && (pointer || !btn_touch)) {
+        return 0;
+    }
+
+    if (direct) {
+        score += 8;
+    }
+    if (btn_touch) {
         score += 3;
     }
     if (has_mt_xy) {
@@ -86,6 +106,8 @@ static inline int getTouchDevice(TouchContext *touch) {
         return -1;
     }
 
+    int best_fd = -1;
+    int best_score = 0;
     for (int i = 0; i < 32; ++i) {
         char path[32];
         int path_len = snprintf(path, sizeof(path), "/dev/input/event%d", i);
@@ -99,15 +121,21 @@ static inline int getTouchDevice(TouchContext *touch) {
         }
 
         int score = 0;
-        if (touchIsCandidateDevice(fd, &score)) {
-            touch->fd = fd;
-            return RET_OK;
+        if (touchIsCandidateDevice(fd, &score) && score > best_score) {
+            if (best_fd >= 0) close(best_fd);
+            best_fd = fd;
+            best_score = score;
+            continue;
         }
 
         close(fd);
     }
 
-    return RET_ERR;
+    if (best_fd < 0) {
+        return RET_ERR;
+    }
+    touch->fd = best_fd;
+    return RET_OK;
 }
 
 static inline int touchProbeAbsAxis(int fd, unsigned int axis, int *min_out, int *max_out) {
@@ -122,6 +150,18 @@ static inline int touchProbeAbsAxis(int fd, unsigned int axis, int *min_out, int
         *max_out = abs_info.maximum;
     }
     return 0;
+}
+
+// Maps a raw axis value onto [0, size) of the display; touch digitizers report
+// their own resolution (e.g. 0..4095 on USB touchscreens).
+static inline int touchScale(int value, int min, int max, uint32_t size) {
+    if (size == 0 || max <= min) {
+        return value;
+    }
+    long long scaled = (long long)(value - min) * (long long)(size - 1) / (long long)(max - min);
+    if (scaled < 0) scaled = 0;
+    if (scaled > (long long)size - 1) scaled = (long long)size - 1;
+    return (int)scaled;
 }
 
 TouchContext::TouchContext(Audiox *context) : app(context) {
@@ -206,6 +246,10 @@ void TouchContext::poll() {
         if (slot_active[i]) {
             state.x = slot_x[i];
             state.y = slot_y[i];
+            if (has_range && app->fb && app->fb->isReady()) {
+                state.x = touchScale(slot_x[i], min_x, max_x, app->fb->width);
+                state.y = touchScale(slot_y[i], min_y, max_y, app->fb->height);
+            }
             state.is_pressed = true;
             break;
         }
@@ -228,10 +272,11 @@ void TouchContext::checkForDevice() {
     int ret = getTouchDevice(this);
     if (ret == RET_OK) {
         printf("[TOUCH] Touch input device found during runtime: fd=%d\n", fd);
-        int ok_x = (touchProbeAbsAxis(fd, ABS_X, &min_x, &max_x) == 0) ||
-                   (touchProbeAbsAxis(fd, ABS_MT_POSITION_X, &min_x, &max_x) == 0);
-        int ok_y = (touchProbeAbsAxis(fd, ABS_Y, &min_y, &max_y) == 0) ||
-                   (touchProbeAbsAxis(fd, ABS_MT_POSITION_Y, &min_y, &max_y) == 0);
+        // Positions come from the MT axes when the device has them.
+        int ok_x = (touchProbeAbsAxis(fd, ABS_MT_POSITION_X, &min_x, &max_x) == 0) ||
+                   (touchProbeAbsAxis(fd, ABS_X, &min_x, &max_x) == 0);
+        int ok_y = (touchProbeAbsAxis(fd, ABS_MT_POSITION_Y, &min_y, &max_y) == 0) ||
+                   (touchProbeAbsAxis(fd, ABS_Y, &min_y, &max_y) == 0);
         has_range = ok_x && ok_y && (max_x > min_x) && (max_y > min_y);
         printf("[TOUCH] Touch input device range: x=[%d, %d], y=[%d, %d]\n", min_x, max_x, min_y, max_y);
 

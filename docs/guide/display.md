@@ -9,9 +9,12 @@ was performed without a connected screen. Display rendering, touch interaction,
 and display hotplug still need validation on that board; audio and WebUI
 operation have been tested.
 
-Display compatibility depends on the framebuffer device, touch input, firmware
-overlays, and build configuration. Do not assume that every HDMI or DSI panel
-is plug-and-play: start with [hardware guidance](./hardware).
+The UI draws through the kernel's KMS (DRM) display driver on both Pi 4 and
+Pi 5, so DSI panels, DPI panels and HDMI monitors all work the same way; a
+plain framebuffer (`/dev/fb*`) is only used for displays without a KMS driver,
+such as some SPI panels. Drivers for the connected display and touch hardware
+are loaded automatically. Panels that need a firmware overlay still need it
+configured; see [hardware guidance](./hardware).
 
 ## Meter view
 
@@ -74,13 +77,25 @@ AudioX checks for missing or changed display/touch devices periodically
 reopening them. It releases framebuffer/touch resources when unavailable and
 tries to reconnect. The audio path does not require the display to remain open.
 
+HDMI connects and disconnects are reported by the kernel immediately, and the
+UI moves to whichever display is connected (a built-in DSI/DPI panel is
+preferred over HDMI when both are present). Large monitors run at their
+preferred mode up to 1920×1200; above that the largest smaller mode is used.
+USB touchscreens can be plugged in at any time. Touch coordinates are scaled to
+the display, so a touch digitizer with its own resolution still lines up.
+
 This is resource management, not a promise that a particular panel supports
-physical hotplug: some panels/overlays still need a reboot to appear correctly.
+physical hotplug. DSI and DPI panels are not hot-pluggable: connect them, and
+keep them powered, before the Pi boots. If such a panel loses power while
+AudioX runs, reboot to bring it back.
 
 ## Troubleshooting
 
 - **WebUI works, display is blank:** check the Sleep state, panel power/cabling,
-  framebuffer/overlay support, and boot logs.
+  and overlay support. The runtime log shows `[FBUI] KMS display ... initialized`
+  for the display in use and `[MODULES] loaded ...` for each driver loaded for
+  detected hardware; the kernel log (`/api/rootfs/kernel.log`) shows driver
+  probe errors.
 - **Touch does not follow the screen:** verify compatible touch input and
   calibration/orientation at the driver/overlay level; there is no general
   calibration wizard on the WebUI.

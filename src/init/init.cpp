@@ -10,6 +10,8 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <sys/types.h>
+#include <sys/utsname.h>
+#include <string>
 
 #include "defs.hpp"
 #include "context.hpp"
@@ -25,6 +27,7 @@
 #include "bluetooth/context.hpp"
 #include "watchdog_heartbeat.hpp"
 #include "diagnostics.hpp"
+#include "hardware_modules.hpp"
 #include "hardware_power_button.hpp"
 #include "system_history.hpp"
 #include "usage_telemetry.hpp"
@@ -134,12 +137,47 @@ int main() {
     Audiox mainContext;
 
     HANDLE_ERROR(mountFilesystems());
-    HANDLE_ERROR(loadBaseModules()); // mostly just framebuffer and touchscreen drivers.
+
+    // Display, touch, backlight and bus drivers are loaded for the hardware that is
+    // actually present (device modaliases), both now and whenever it is hotplugged.
+    HardwareModules hardware;
+    {
+        struct utsname uts{};
+        std::string modulesDir = "/lib/modules/";
+        if (uname(&uts) == 0) modulesDir += uts.release;
+        hardware.configure(modulesDir.c_str());
+    }
+    if (!hardware.openUevents()) {
+        printf("[INIT] [WARN] Kernel uevents unavailable; hotplugged hardware will not load drivers.\n");
+    }
+    HANDLE_ERROR(loadBaseModules());
+    printf("[INIT] Hardware coldplug loaded %d module(s).\n", hardware.coldplug());
 
     // framebuffer should start asap so it can show boot logo and status
     FramebufferContext fb(&mainContext);
 
-    fb.waitForFramebuffer(1); // wait max of 1 second for framebuffer to be ready.
+    // The firmware's simple framebuffer is usually up immediately, but it only drives
+    // the display the firmware chose; wait briefly for the KMS driver to bind
+    // (it replaces simplefb and drives every connected display).
+    {
+        const uint64_t startMs = monotonicMs();
+        uint64_t lastProbeMs = 0;
+        while (!fb.usingKms()) {
+            const uint64_t nowMs = monotonicMs();
+            if (nowMs - startMs >= 3000) break;
+            // The KMS driver is up but nothing is connected (headless, or a non-KMS
+            // panel that fbdev serves); later connections arrive as hotplug events.
+            if (nowMs - startMs >= 1000 && fb.kms.idleCard) break;
+            HardwareModules::PollResult events = hardware.poll();
+            if (events.displayChanged || nowMs - lastProbeMs >= 100) {
+                fb.displayEvent();
+                lastProbeMs = nowMs;
+            }
+            fb.checkForFramebuffer();
+            usleep(20000);
+        }
+        if (!fb.isReady()) printf("[INIT] No display yet; it will be picked up when connected.\n");
+    }
 
     // disable cursor
     fprintf(stdout, "\e[?25l");
@@ -148,6 +186,8 @@ int main() {
 
     fb.bootStatus("Loading kernel modules...");
     HANDLE_ERROR(loadAllModules()); // all the audio and usb drivers.
+    // Devices created by those drivers (e.g. USB touchscreens) need their modules too.
+    (void)hardware.coldplug();
 
     fb.bootStatus("Setting up filesystem...");
     HANDLE_ERROR(mountRootfs(&mainContext));
@@ -230,6 +270,7 @@ int main() {
         mainContext.eventLoop();
         audiox::diagnostics::pollKernelLog();
         pollBootRecovery(audio.processingProgressAtMs.load(std::memory_order_acquire));
+        if (hardware.poll().displayChanged) fb.displayEvent();
         fb.checkForFramebuffer();
         if (fb.isReady()) {
             touch.checkForDevice();

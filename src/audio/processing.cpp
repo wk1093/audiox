@@ -9,6 +9,7 @@
 #include "audio/processing_fx.hpp"
 #include "audio/pcm_convert.hpp"
 #include "audio/capture_ring.hpp"
+#include "audio/pcm_opener.hpp"
 #include "audio/scene_fade.hpp"
 #include "bluetooth/route_id.hpp"
 
@@ -43,7 +44,6 @@ constexpr uint32_t kPlaybackRingFrames = BUFFER_FRAMES * 32U;
 constexpr uint32_t kCaptureRingFrames = BUFFER_FRAMES * 16U;
 constexpr uint32_t kMaxAlsaPeriodFrames = audiox::AdaptiveAudioBuffer::kMaxPeriodFrames;
 using CaptureRing = audiox::capture::PcmCaptureRing<kCaptureRingFrames, kMaxChannelsPerThing>;
-constexpr uint32_t kReopenRetryBlocks = 200;
 constexpr float kSoundboardClipGain = 0.35f;
 constexpr float kBluetoothOutputPeakLimit = 0.2511886f;
 constexpr uint32_t kMaxSoundboardVoices = 64;
@@ -102,7 +102,7 @@ struct RuntimeGraph {
         uint32_t periodFrames;
         uint32_t bufferFrames;
         uint32_t bufferLevel;
-        uint32_t reopenRetryBlocks;
+        uint32_t openTicket;
         uint32_t pendingFrames;
         uint32_t pendingOffsetFrames;
         uint32_t sourceRead;
@@ -187,7 +187,7 @@ struct AlsaCaptureBackend {
         uint32_t periodFrames;
         uint32_t bufferFrames;
         uint32_t bufferLevel;
-        uint32_t reopenRetryBlocks;
+        uint32_t openTicket;
         snd_pcm_format_t format;
         int mmapAccess;
         uint64_t xruns;
@@ -564,23 +564,32 @@ static void closePlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
     resetPlaybackSrc(*s);
 }
 
-static bool openCaptureStream(AlsaCaptureStream *s) {
-    if (!s || !s->active) {
-        return false;
+static audiox::PcmOpener *gPcmOpener = nullptr;
+static audiox::PcmRetryRegistry gPcmRetry;
+
+// Runs on the PCM opener thread (or inline when no opener is running).
+static void performPcmOpen(const audiox::PcmOpenRequest &request, audiox::PcmOpenResult *out) {
+    const snd_pcm_stream_t direction = request.capture ? SND_PCM_STREAM_CAPTURE : SND_PCM_STREAM_PLAYBACK;
+
+    // A device that refuses to open at all (e.g. HDMI without a sink) fails the
+    // same way for every format/rate, so skip the negotiation sweep.
+    snd_pcm_t *probe = nullptr;
+    int probeRc = snd_pcm_open(&probe, request.path, direction, SND_PCM_NONBLOCK);
+    if (probeRc < 0 || !probe) {
+        out->err = probeRc < 0 ? probeRc : -ENODEV;
+        return;
     }
+    audio_pcm_close(probe, request.path, request.capture ? "capture probe" : "playback probe");
 
     PcmTimingProfile profiles[8]{};
-    const uint32_t bufferLevel = audiox::adaptiveAudioBuffer.level();
-    const uint32_t targetPeriod = audiox::adaptiveAudioBuffer.targetPeriodFrames(BUFFER_FRAMES);
-    const size_t profileCount = buildPcmTimingProfiles(targetPeriod, profiles,
+    const size_t profileCount = buildPcmTimingProfiles(request.targetPeriod, profiles,
                                                         sizeof(profiles) / sizeof(profiles[0]));
 
     const unsigned rates[] = {SAMPLE_RATE, AUDIO_INPUT_FALLBACK_RATE};
     uint8_t chAttempts[3] = {};
     size_t chCount = 0;
-
-    if (s->channels > 0 && s->channels <= kMaxChannelsPerThing) {
-        chAttempts[chCount++] = s->channels;
+    if (request.channels > 0 && request.channels <= kMaxChannelsPerThing) {
+        chAttempts[chCount++] = request.channels;
     }
     if (chCount == 0 || chAttempts[0] != 2) {
         chAttempts[chCount++] = 2;
@@ -589,22 +598,18 @@ static bool openCaptureStream(AlsaCaptureStream *s) {
         chAttempts[chCount++] = 1;
     }
 
-    int lastErr = 0;
-    const char *lastAttemptPath = s->path;
-    snd_pcm_format_t lastAttemptFormat = SND_PCM_FORMAT_UNKNOWN;
-    static const snd_pcm_format_t formats[] = {
-        SND_PCM_FORMAT_S16_LE,
-        SND_PCM_FORMAT_S32_LE,
-    };
+    static const snd_pcm_format_t captureFormats[] = {SND_PCM_FORMAT_S16_LE, SND_PCM_FORMAT_S32_LE};
+    static const snd_pcm_format_t playbackFormats[] = {SND_PCM_FORMAT_S32_LE, SND_PCM_FORMAT_S16_LE};
+    const snd_pcm_format_t *formats = request.capture ? captureFormats : playbackFormats;
 
+    int lastErr = 0;
     for (size_t r = 0; r < (sizeof(rates) / sizeof(rates[0])); ++r) {
         for (size_t c = 0; c < chCount; ++c) {
-            uint8_t ch = chAttempts[c];
+            const uint8_t ch = chAttempts[c];
             if (ch == 0 || ch > kMaxChannelsPerThing) {
                 continue;
             }
-
-            for (size_t f = 0; f < (sizeof(formats) / sizeof(formats[0])); ++f) {
+            for (size_t f = 0; f < 2; ++f) {
                 for (size_t p = 0; p < profileCount; ++p) {
                     snd_pcm_t *pcm = nullptr;
                     snd_pcm_uframes_t period = 0;
@@ -613,8 +618,8 @@ static bool openCaptureStream(AlsaCaptureStream *s) {
                     unsigned int negotiatedRate = 0;
                     snd_pcm_access_t access = SND_PCM_ACCESS_MMAP_INTERLEAVED;
                     int openRc = audio_pcm_open_configured(&pcm,
-                                                           s->path,
-                                                           SND_PCM_STREAM_CAPTURE,
+                                                           request.path,
+                                                           direction,
                                                            rates[r],
                                                            ch,
                                                            formats[f],
@@ -629,47 +634,151 @@ static bool openCaptureStream(AlsaCaptureStream *s) {
                                                            &negotiatedRate);
                     if (openRc != 0 || !pcm) {
                         lastErr = openRc;
-                        lastAttemptPath = s->path;
-                        lastAttemptFormat = formats[f];
+                        out->format = formats[f];
                         continue;
                     }
-
-                    s->pcm = pcm;
-                    s->format = formats[f];
-                    s->channels = ch;
-                    s->sampleRate = negotiatedRate;
-                    s->periodFrames = static_cast<uint32_t>(period);
-                    s->bufferFrames = static_cast<uint32_t>(buffer);
-                    s->bufferLevel = bufferLevel;
-                    s->mmapAccess = (access == SND_PCM_ACCESS_MMAP_INTERLEAVED);
-                    s->reopenRetryBlocks = 0;
-                    captureRingReset(s);
-                    float baseRatio = (float)s->sampleRate / (float)SAMPLE_RATE;
-                    initAdaptiveSrc(&s->src, 0.50f, baseRatio);
-                    if (snd_pcm_start(s->pcm) < 0) {
-                        // Capture may auto-start on first read depending on driver.
-                    }
-                    audiox::adaptiveAudioBuffer.bufferChanged();
-                    audiox::audioHealth.bufferChanged();
-                    // VERBOSE: Uncomment this for debugging capture stream open issues.
-                    // printf("[AUDIO] [INFO] capture stream opened %s (%uch, %u Hz, fmt=%s period=%u periods=%u)\n",
-                    //        s->path,
-                    //        (unsigned)s->channels,
-                    //        (unsigned)s->sampleRate,
-                    //        snd_pcm_format_name(s->format),
-                    //        profiles[p].periodFrames,
-                    //        profiles[p].periods);
-                    return true;
+                    out->err = 0;
+                    out->pcm = pcm;
+                    out->format = formats[f];
+                    out->channels = ch;
+                    out->sampleRate = negotiatedRate;
+                    out->periodFrames = static_cast<uint32_t>(period);
+                    out->bufferFrames = static_cast<uint32_t>(buffer);
+                    out->bufferLevel = request.bufferLevel;
+                    out->mmap = (access == SND_PCM_ACCESS_MMAP_INTERLEAVED);
+                    return;
                 }
             }
         }
     }
+    out->err = lastErr ? lastErr : -EINVAL;
+}
 
-    printf("[AUDIO] [WARN] capture stream open failed: %s fmt=%s (%s)\n",
-           lastAttemptPath ? lastAttemptPath : s->path,
-           snd_pcm_format_name(lastAttemptFormat),
-           snd_strerror(lastErr));
-    return false;
+static void discardPcmOpen(audiox::PcmOpenResult &result) {
+    if (result.pcm) {
+        audio_pcm_close(result.pcm, result.path, result.capture ? "capture" : "playback");
+        result.pcm = nullptr;
+    }
+}
+
+static void installOpenedStream(AlsaCaptureStream &s, const audiox::PcmOpenResult &r) {
+    s.pcm = r.pcm;
+    s.format = r.format;
+    s.channels = r.channels;
+    s.sampleRate = r.sampleRate;
+    s.periodFrames = r.periodFrames;
+    s.bufferFrames = r.bufferFrames;
+    s.bufferLevel = r.bufferLevel;
+    s.mmapAccess = r.mmap ? 1 : 0;
+    captureRingReset(&s);
+    initAdaptiveSrc(&s.src, 0.50f, (float)s.sampleRate / (float)SAMPLE_RATE);
+    if (snd_pcm_start(s.pcm) < 0) {
+        // Capture may auto-start on first read depending on driver.
+    }
+}
+
+static void installOpenedStream(RuntimeGraph::AlsaPlaybackStream &s, const audiox::PcmOpenResult &r) {
+    s.pcm = r.pcm;
+    s.format = r.format;
+    s.channels = r.channels;
+    s.sampleRate = r.sampleRate;
+    s.periodFrames = r.periodFrames;
+    s.bufferFrames = r.bufferFrames;
+    s.bufferLevel = r.bufferLevel;
+    s.mmapAccess = r.mmap ? 1 : 0;
+    s.pendingFrames = 0;
+    s.pendingOffsetFrames = 0;
+    resetPlaybackSrc(s);
+    printf("[AUDIO] [INFO] playback stream opened %s (%uch, %u Hz, fmt=%s, period=%u, buffer=%u frames)\n",
+           s.path,
+           (unsigned)s.channels,
+           (unsigned)s.sampleRate,
+           snd_pcm_format_name(s.format),
+           s.periodFrames,
+           s.bufferFrames);
+}
+
+template <typename Stream>
+static void completeStreamOpen(Stream &s, const audiox::PcmOpenResult &r, bool capture) {
+    s.openTicket = 0;
+    if (r.pcm) {
+        installOpenedStream(s, r);
+        gPcmRetry.recordSuccess(s.path, capture);
+        audiox::adaptiveAudioBuffer.bufferChanged();
+        audiox::audioHealth.bufferChanged();
+        return;
+    }
+    const uint64_t delayMs = gPcmRetry.recordFailure(s.path, capture, monotonicMs());
+    const uint32_t failures = gPcmRetry.failures(s.path, capture);
+    // Log while backing off, then only every tenth attempt once at the cap.
+    if (delayMs < audiox::PcmRetryRegistry::kMaxDelayMs || failures % 10 == 0) {
+        printf("[AUDIO] [WARN] %s stream open failed: %s fmt=%s (%s); retry in %llus\n",
+               capture ? "capture" : "playback",
+               s.path,
+               snd_pcm_format_name(r.format),
+               snd_strerror(r.err),
+               (unsigned long long)(delayMs / 1000ULL));
+    }
+}
+
+// Starts (or, without an opener thread, performs) an open for an offline stream
+// once its device is out of retry backoff.
+template <typename Stream>
+static void maybeReopenStream(Stream *s, bool capture) {
+    if (!s || !s->active || s->pcm || s->openTicket) {
+        return;
+    }
+    if (!gPcmRetry.shouldAttempt(s->path, capture, monotonicMs())) {
+        return;
+    }
+    audiox::PcmOpenRequest request{};
+    request.capture = capture;
+    request.channels = s->channels;
+    request.bufferLevel = audiox::adaptiveAudioBuffer.level();
+    request.targetPeriod = audiox::adaptiveAudioBuffer.targetPeriodFrames(BUFFER_FRAMES);
+    snprintf(request.path, sizeof(request.path), "%s", s->path);
+    if (gPcmOpener) {
+        s->openTicket = gPcmOpener->submit(request);
+        return;
+    }
+    audiox::PcmOpenResult result{};
+    result.capture = capture;
+    snprintf(result.path, sizeof(result.path), "%s", s->path);
+    performPcmOpen(request, &result);
+    completeStreamOpen(*s, result, capture);
+}
+
+template <typename Stream>
+static Stream *findOpenOwner(Stream *streams, uint16_t count, const audiox::PcmOpenResult &r) {
+    for (uint16_t i = 0; i < count; ++i) {
+        if (streams[i].active && streams[i].openTicket == r.ticket) return &streams[i];
+    }
+    // The stream was rebuilt while the open was in flight: let an offline stream
+    // for the same device adopt the handle instead of failing on EBUSY.
+    if (!r.pcm) return nullptr;
+    for (uint16_t i = 0; i < count; ++i) {
+        if (streams[i].active && !streams[i].pcm && strcmp(streams[i].path, r.path) == 0) return &streams[i];
+    }
+    return nullptr;
+}
+
+static void collectPcmOpens(RuntimeGraph *rt, AlsaCaptureBackend *capture) {
+    if (!gPcmOpener) return;
+    audiox::PcmOpenResult result{};
+    while (gPcmOpener->poll(&result)) {
+        if (result.capture && capture) {
+            if (AlsaCaptureStream *s = findOpenOwner(capture->streams, capture->count, result)) {
+                completeStreamOpen(*s, result, true);
+                continue;
+            }
+        } else if (!result.capture && rt) {
+            if (auto *s = findOpenOwner(rt->playback, rt->playbackCount, result)) {
+                completeStreamOpen(*s, result, false);
+                continue;
+            }
+        }
+        discardPcmOpen(result);
+    }
 }
 
 void AlsaCaptureBackend::reset() {
@@ -717,9 +826,7 @@ bool AlsaCaptureBackend::attachSource(AudioContext *ctx,
     snprintf(stream.path, sizeof(stream.path), "hw:%u,%u", static_cast<unsigned>(card), static_cast<unsigned>(device));
     initAdaptiveSrc(&stream.src, 0.50f, 1.0f);
     captureRingReset(&stream);
-    if (!openCaptureStream(&stream)) {
-        stream.reopenRetryBlocks = kReopenRetryBlocks;
-    }
+    maybeReopenStream(&stream, true);
     nodeToStream[nodeIndex] = static_cast<int16_t>(count);
     ++count;
     return true;
@@ -752,142 +859,14 @@ void AlsaCaptureBackend::mapGraphSources(AudioContext *ctx, const RuntimeGraph *
     }
 }
 
-static bool openPlaybackStream(RuntimeGraph::AlsaPlaybackStream *s) {
-    if (!s || !s->active) {
-        return false;
-    }
-
-    PcmTimingProfile profiles[8]{};
-    const uint32_t bufferLevel = audiox::adaptiveAudioBuffer.level();
-    const uint32_t targetPeriod = audiox::adaptiveAudioBuffer.targetPeriodFrames(BUFFER_FRAMES);
-    const size_t profileCount = buildPcmTimingProfiles(targetPeriod, profiles,
-                                                        sizeof(profiles) / sizeof(profiles[0]));
-
-    const unsigned rates[] = {SAMPLE_RATE, AUDIO_INPUT_FALLBACK_RATE};
-    uint8_t chAttempts[4] = {};
-    size_t chCount = 0;
-    if (s->channels > 0 && s->channels <= kMaxChannelsPerThing) {
-        chAttempts[chCount++] = s->channels;
-    }
-    if (chCount == 0 || chAttempts[0] != 2) {
-        chAttempts[chCount++] = 2;
-    }
-    if (chAttempts[0] != 1 && (chCount < 2 || chAttempts[1] != 1)) {
-        chAttempts[chCount++] = 1;
-    }
-
-    int lastErr = 0;
-    const char *lastAttemptPath = s->path;
-    snd_pcm_format_t lastAttemptFormat = SND_PCM_FORMAT_UNKNOWN;
-    static const snd_pcm_format_t formats[] = {
-        SND_PCM_FORMAT_S32_LE,
-        SND_PCM_FORMAT_S16_LE,
-    };
-
-    for (size_t r = 0; r < (sizeof(rates) / sizeof(rates[0])); ++r) {
-        for (size_t c = 0; c < chCount; ++c) {
-            uint8_t ch = chAttempts[c];
-            if (ch == 0 || ch > kMaxChannelsPerThing) {
-                continue;
-            }
-
-            for (size_t f = 0; f < (sizeof(formats) / sizeof(formats[0])); ++f) {
-                for (size_t p = 0; p < profileCount; ++p) {
-                    snd_pcm_t *pcm = nullptr;
-                    snd_pcm_uframes_t period = 0;
-                    snd_pcm_uframes_t buffer = 0;
-                    size_t frameBytes = 0;
-                    unsigned int negotiatedRate = 0;
-                    snd_pcm_access_t access = SND_PCM_ACCESS_MMAP_INTERLEAVED;
-                    int openRc = audio_pcm_open_configured(&pcm,
-                                                           s->path,
-                                                           SND_PCM_STREAM_PLAYBACK,
-                                                           rates[r],
-                                                           ch,
-                                                           formats[f],
-                                                           &access,
-                                                           profiles[p].periodFrames,
-                                                           profiles[p].periods,
-                                                           &period,
-                                                           &buffer,
-                                                           &frameBytes,
-                                                           profiles[p].configureTiming,
-                                                           0,
-                                                           &negotiatedRate);
-                    if (openRc != 0 || !pcm) {
-                        lastErr = openRc;
-                        lastAttemptPath = s->path;
-                        lastAttemptFormat = formats[f];
-                        continue;
-                    }
-
-                    s->pcm = pcm;
-                    s->format = formats[f];
-                    s->channels = ch;
-                    s->sampleRate = negotiatedRate;
-                    s->periodFrames = static_cast<uint32_t>(period);
-                    s->bufferFrames = static_cast<uint32_t>(buffer);
-                    s->bufferLevel = bufferLevel;
-                    s->mmapAccess = (access == SND_PCM_ACCESS_MMAP_INTERLEAVED);
-                    s->reopenRetryBlocks = 0;
-                    resetPlaybackSrc(*s);
-                    audiox::adaptiveAudioBuffer.bufferChanged();
-                    audiox::audioHealth.bufferChanged();
-                    printf("[AUDIO] [INFO] playback stream opened %s (%uch, %u Hz, fmt=%s, period=%u, buffer=%u frames)\n",
-                           s->path,
-                           (unsigned)s->channels,
-                           (unsigned)s->sampleRate,
-                           snd_pcm_format_name(s->format),
-                           s->periodFrames,
-                           s->bufferFrames);
-                    return true;
-                }
-            }
-        }
-    }
-
-    printf("[AUDIO] [WARN] playback stream open failed: %s fmt=%s (%s)\n",
-           lastAttemptPath ? lastAttemptPath : s->path,
-           snd_pcm_format_name(lastAttemptFormat),
-           snd_strerror(lastErr));
-    return false;
-}
-
-static void maybeReopenCapture(AlsaCaptureStream *s) {
-    if (!s || !s->active || s->pcm) {
-        return;
-    }
-    if (s->reopenRetryBlocks > 0) {
-        --s->reopenRetryBlocks;
-        return;
-    }
-    if (!openCaptureStream(s)) {
-        s->reopenRetryBlocks = kReopenRetryBlocks;
-    }
-}
-
 static void syncCaptureBuffer(AlsaCaptureStream *s) {
     if (!s || !s->active) return;
     const uint32_t targetLevel = audiox::adaptiveAudioBuffer.level();
     if (s->pcm && s->bufferLevel != targetLevel) {
         closeCaptureStream(s);
         captureRingReset(s);
-        s->reopenRetryBlocks = 0;
     }
-    maybeReopenCapture(s);
-}
-
-static void maybeReopenPlayback(RuntimeGraph::AlsaPlaybackStream *s) {
-    if (!s || !s->active || s->pcm) {
-        return;
-    }
-    if (s->reopenRetryBlocks > 0) {
-        --s->reopenRetryBlocks;
-        return;
-    }
-    if (!openPlaybackStream(s)) {
-        s->reopenRetryBlocks = kReopenRetryBlocks;
-    }
+    maybeReopenStream(s, true);
 }
 
 static void syncPlaybackBuffer(RuntimeGraph::AlsaPlaybackStream *s) {
@@ -897,9 +876,8 @@ static void syncPlaybackBuffer(RuntimeGraph::AlsaPlaybackStream *s) {
         closePlaybackStream(s);
         s->pendingFrames = 0;
         s->pendingOffsetFrames = 0;
-        s->reopenRetryBlocks = 0;
     }
-    maybeReopenPlayback(s);
+    maybeReopenStream(s, false);
 }
 
 static const char *mmapSampleAddress(const snd_pcm_channel_area_t *area,
@@ -1071,14 +1049,12 @@ static void serviceCaptureIo(AlsaCaptureBackend *backend) {
             if (err == EPIPE || err == ESTRPIPE || err == EIO) {
                 if (audio_pcm_recover_capture(s.pcm, -err, s.path) < 0) {
                     closeCaptureStream(&s);
-                    s.reopenRetryBlocks = kReopenRetryBlocks;
                 }
                 break;
             }
 
             if (err == ENODEV || err == ENXIO || err == ENOENT || err == EBADFD) {
                 closeCaptureStream(&s);
-                s.reopenRetryBlocks = kReopenRetryBlocks;
                 break;
             }
 
@@ -1272,12 +1248,10 @@ static void servicePlaybackIo(AudioContext *ctx, RuntimeGraph *rt) {
             if (err == EPIPE || err == ESTRPIPE || err == EIO) {
                 if (audio_pcm_recover_playback(s.pcm, -err, s.path) < 0) {
                     closePlaybackStream(&s);
-                    s.reopenRetryBlocks = kReopenRetryBlocks;
                 }
                 resetPlaybackSrc(s);
             } else if (err == ENODEV || err == ENXIO || err == ENOENT || err == EBADFD) {
                 closePlaybackStream(&s);
-                s.reopenRetryBlocks = kReopenRetryBlocks;
             }
             break;
         }
@@ -2128,6 +2102,8 @@ static void rebuildRuntimeGraph(AudioContext *ctx,
     if (topologyChanged) {
         closeAllStreams(rt, captureBackend);
         rt->playbackCount = 0;
+        // Device changes may have fixed (or replaced) a device that failed to open.
+        gPcmRetry.clear();
 
         for (uint16_t i = 0; i < AUDIO_GRAPH_MAX_THINGS; ++i) {
             rt->nodeToPlaybackStream[i] = -1;
@@ -2176,9 +2152,7 @@ static void rebuildRuntimeGraph(AudioContext *ctx,
                     s.sampleRate = SAMPLE_RATE;
                     s.channels = (thing.inputs == 0) ? 1U : ((thing.inputs > kMaxChannelsPerThing) ? kMaxChannelsPerThing : thing.inputs);
                     snprintf(s.path, sizeof(s.path), "hw:%u,%u", (unsigned)card, (unsigned)device);
-                    if (!openPlaybackStream(&s)) {
-                        s.reopenRetryBlocks = kReopenRetryBlocks;
-                    }
+                    maybeReopenStream(&s, false);
                     rt->nodeToPlaybackStream[i] = (int16_t)rt->playbackCount;
                     ++rt->playbackCount;
                 }
@@ -2524,6 +2498,7 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt, AlsaCaptureBa
     }
 
     (void)audiox::adaptiveAudioBuffer.tick(nowMs);
+    collectPcmOpens(rt, captureBackend);
     const bool triggered = ctx->sfxQueueRead.load(std::memory_order_relaxed) !=
         ctx->sfxQueueWrite.load(std::memory_order_acquire);
     consumeSoundboardTriggers(ctx, rt);
@@ -2655,33 +2630,14 @@ static void maybeLogStats(RuntimeGraph *rt, const AlsaCaptureBackend *captureBac
     //        (unsigned)rt->snapshot.generation,
     //        peak);
 
-    for (uint16_t i = 0; i < captureBackend->count; ++i) {
-        const AlsaCaptureStream &s = captureBackend->streams[i];
-        // VERBOSE
-        // printf("[AUDIO] [INFO] capture[%u] ratio=%.5f ring_fill=%u/%u path=%s\n",
-        //        (unsigned)i,
-        //        s.src.ratio,
-        //        (unsigned)s.ring.count(),
-        //        (unsigned)kCaptureRingFrames,
-        //        s.path);
-        if (!s.pcm) {
-            printf("[AUDIO] [WARN] capture[%u] offline: %s\n", (unsigned)i, s.path);
-        }
-    }
-
-    for (uint16_t i = 0; i < rt->playbackCount; ++i) {
-        const RuntimeGraph::AlsaPlaybackStream &p = rt->playback[i];
-        if (!p.pcm) {
-            printf("[AUDIO] [WARN] playback[%u] offline: %s\n", (unsigned)i, p.path);
-        } else {
-            // VERBOSE
-            // printf("[AUDIO] [INFO] playback[%u] active: %s (%uch @ %u)\n",
-            //        (unsigned)i,
-            //        p.path,
-            //        (unsigned)p.channels,
-            //        (unsigned)p.sampleRate);
-        }
-    }
+    // VERBOSE
+    // for (uint16_t i = 0; i < captureBackend->count; ++i) {
+    //     const AlsaCaptureStream &s = captureBackend->streams[i];
+    //     printf("[AUDIO] [INFO] capture[%u] ratio=%.5f ring_fill=%u/%u path=%s\n",
+    //            (unsigned)i, s.src.ratio, (unsigned)s.ring.count(),
+    //            (unsigned)kCaptureRingFrames, s.path);
+    // }
+    // Offline streams are reported when an open attempt fails (with its retry backoff).
 }
 
 static void publishDeviceHealth(AudioContext *ctx, const RuntimeGraph &runtime,
@@ -2726,6 +2682,13 @@ static void *audioProcessingThreadMain(void *arg) {
     addNs(&nextDeadline, blockPeriodNs());
 
     audiox::graph::NativeGraph native(AUDIOX_GRAPH_COMPILER_PATH, AUDIOX_DSP_BITCODE_DIR);
+    // Created before realtime scheduling so the opener thread stays normal priority.
+    audiox::PcmOpener pcmOpener(performPcmOpen, discardPcmOpen);
+    if (pcmOpener.started()) {
+        gPcmOpener = &pcmOpener;
+    } else {
+        printf("[AUDIO] [WARN] PCM opener thread unavailable; opening devices on the audio thread\n");
+    }
     configureRealtimeScheduling();
     while (ctx->processingThreadRun.load(std::memory_order_acquire)) {
         const uint64_t sceneEpoch = ctx->sceneMuteEpoch.load(std::memory_order_acquire);
@@ -2772,6 +2735,7 @@ static void *audioProcessingThreadMain(void *arg) {
     }
 
     closeAllStreams(&runtime, &captureBackend);
+    gPcmOpener = nullptr;
     publishDeviceHealth(ctx, runtime, captureBackend, monotonicMs());
 
     return nullptr;

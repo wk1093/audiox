@@ -9,7 +9,7 @@ power.
 
 | Board | Repository status | Build defaults |
 | --- | --- | --- |
-| Raspberry Pi 4 Model B | Hardware-tested target; not a claim that every peripheral or host combination is tested | `make pi4_defconfig` (also `make defconfig`), `kernel8.img`, `fe980000.usb`, `vc4-fkms-v3d-pi4` |
+| Raspberry Pi 4 Model B | Hardware-tested target; not a claim that every peripheral or host combination is tested | `make pi4_defconfig` (also `make defconfig`), `kernel8.img`, `fe980000.usb`, `vc4-kms-v3d-pi4` |
 | Raspberry Pi 5 | Hardware-tested target; framebuffer UI remains untested with a connected display | `make pi5_defconfig`, `kernel_2712.img`, `1000480000.usb`, `vc4-kms-v3d-pi5` |
 | Other Raspberry Pi models/Compute Modules | No matching board preset or release path documented here | Do not assume the Pi 4 image is compatible |
 
@@ -79,15 +79,19 @@ A display is optional: audio, MIDI, and the Web UI continue running headlessly.
 - For a DSI panel, use the cable/adapter appropriate to the board and panel. Pi 4 and Pi 5 camera/display ribbon connectors are not interchangeable without the correct cable.
 - Connect ribbons only with power removed. Follow the panel's orientation, latch, and power instructions.
 
-The build includes Raspberry Pi display/touchscreen and selected USB/I²C touch driver families. An optional `CONFIG_DSI_TOUCH_OVERLAY` can add a panel overlay; its default is empty. Inclusion of a driver or automatic detection does not certify every panel.
+The build ships the kernel's DRM display, panel, bridge, backlight, fbdev/SPI display, I²C/SPI bus, and touchscreen (I²C, SPI, USB HID multitouch) driver families. They are not loaded unconditionally: at boot and on every hotplug AudioX matches each device's modalias against the shipped modules (as udev does) and loads only the drivers for the hardware that is present.
 
-Pi 4 defaults to FKMS; Pi 5 defaults to full KMS. Do not transfer a Pi 4 display overlay blindly to Pi 5.
+Both boards always use full KMS (`vc4-kms-v3d-pi4` / `vc4-kms-v3d-pi5`, chosen by board); FKMS is not supported. HDMI audio is disabled (`noaudio`), so HDMI ports do not appear as audio devices; use a USB audio interface for output. `config.txt` sets `display_auto_detect=1` so the firmware loads the overlay for a detected official DSI panel (Touch Display 1 and 2 and their variants); those overlays are included in the boot files. An optional `CONFIG_DSI_TOUCH_OVERLAY` (for example `vc4-kms-dsi-7inch`) can name a panel overlay explicitly instead; its default is empty. Third-party DSI/DPI/SPI panels need their overlay named in `CONFIG_DSI_TOUCH_OVERLAY` (it is copied to the boot partition and added to `config.txt`; automatic detection is then disabled). HDMI monitors and USB touchscreens need no overlay. Inclusion of a driver or automatic detection does not certify every panel.
 
 ### Headless and reconnect behavior
 
-The local UI checks availability at roughly 500 ms intervals. On detected display loss, it releases framebuffer resources, suspends touch scanning, cancels gestures, and releases a sound held by touch. It reopens a usable display when it returns, without restarting audio.
+The local UI drives one KMS output directly (DRM master, double-buffered page flips). It picks a connected built-in panel (DSI, DPI, SPI, LVDS) first, then an external monitor (HDMI, DP, DVI), and uses the preferred mode up to 1920×1200. Kernel DRM hotplug events trigger an immediate re-check; otherwise the cached connector state is checked at roughly 500 ms intervals. On display loss it releases display resources, suspends touch scanning, cancels gestures, and releases a sound held by touch. It moves to another connected output, or reopens the display when it returns, without restarting audio. During boot it waits up to three seconds for the KMS driver to replace the firmware's boot framebuffer.
 
-Cable-loss detection depends on the framebuffer's driver. DRM connector status is used when available; on non-DRM panels, a still-present framebuffer may not reveal that the physical cable is absent. Shared framebuffer devices remain active if any relevant connector reports connected. Physical HDMI/DSI reconnect behavior still needs target-side validation.
+Displays without a KMS driver fall back to a framebuffer device (`/dev/fb*`). There, cable-loss detection depends on the driver: on non-DRM panels a still-present framebuffer may not reveal that the physical cable is absent.
+
+The touch device is the best direct-input (touchscreen) device found; touchpads, tablets and game controllers are ignored. Its coordinates are scaled from the digitizer's range to the display size. Rotation and calibration are left to the driver/overlay.
+
+DSI and DPI panels are not hot-pluggable; they must be connected and powered at boot, and a panel that loses power while running needs a reboot. Physical HDMI reconnect behavior on Pi 5 still needs target-side validation.
 
 ## Hardware health and the Pi 5 power button
 

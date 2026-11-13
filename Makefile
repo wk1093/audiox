@@ -115,7 +115,7 @@ RUNTIME_LIBS += $(LUA_STATIC_LIB) -lm
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 17
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.5
+AUDIOX_VERSION_PRERELEASE ?= 
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
 $(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
@@ -157,10 +157,17 @@ BOARD_FIRMWARE_FILES ?= $(call config_str,BOARD_FIRMWARE_FILES)
 AUDIOX_USB_GADGET_UDC ?= $(call config_str,USB_GADGET_UDC)
 AUDIOX_DEVICE_IP ?= $(call config_str,DEVICE_IP)
 KERNEL_CMDLINE ?= $(call config_str,KERNEL_CMDLINE)
-VC4_OVERLAY ?= $(call config_str,VC4_OVERLAY)
+# Full KMS on both boards: the kernel's vc4 driver owns every display (DSI, DPI,
+# HDMI) so AudioX can hotplug and re-initialize them. FKMS is not supported.
+# HDMI audio is disabled (noaudio): its ALSA cards fail to open without an
+# HDMI sink, and the audio engine's reopen attempts then cause xruns.
+VC4_OVERLAY := $(if $(filter y,$(CONFIG_BOARD_PI5)),vc4-kms-v3d-pi5,vc4-kms-v3d-pi4)
 DSI_TOUCH_OVERLAY ?= $(call config_str,DSI_TOUCH_OVERLAY)
 BOARD_OVERLAYS ?= $(call config_str,BOARD_OVERLAYS)
-BOOT_OVERLAYS = $(VC4_OVERLAY) $(DSI_TOUCH_OVERLAY) dwc2 $(if $(filter y,$(CONFIG_BT_MINIUART)),miniuart-bt) $(BOARD_OVERLAYS)
+# Panels the firmware recognises with display_auto_detect=1; their overlays must
+# be on the boot partition for detection to apply them.
+DISPLAY_AUTO_DETECT_OVERLAYS = vc4-kms-dsi-7inch vc4-kms-dsi-ili9881-5inch vc4-kms-dsi-ili9881-7inch vc4-kms-dsi-ili79600-10-1inch
+BOOT_OVERLAYS = $(VC4_OVERLAY) $(DSI_TOUCH_OVERLAY) $(if $(DSI_TOUCH_OVERLAY),,$(DISPLAY_AUTO_DETECT_OVERLAYS)) dwc2 $(if $(filter y,$(CONFIG_BT_MINIUART)),miniuart-bt) $(BOARD_OVERLAYS)
 
 # Auto-detected from firmware after fetch_deps runs, using the uname file that
 # matches the kernel image (kernel_2712.img -> uname_string_2712).
@@ -223,7 +230,8 @@ BOOT_CONFIG_LINES = \
 	$(if $(filter y,$(CONFIG_BOOT_CD_FIRMWARE)),'start_cd=1') \
 	'boot_delay=0' \
 	'disable_splash=1' \
-	'dtoverlay=$(VC4_OVERLAY)' \
+	'dtoverlay=$(VC4_OVERLAY),noaudio' \
+	$(if $(DSI_TOUCH_OVERLAY),,'display_auto_detect=1') \
 	$(if $(filter y,$(CONFIG_BT_MINIUART)),'dtoverlay=miniuart-bt') \
 	'enable_uart=1' \
 	$(if $(filter y,$(CONFIG_BT_MINIUART)),'core_freq=250' 'core_freq_min=250') \

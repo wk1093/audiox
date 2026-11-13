@@ -95,9 +95,10 @@ while IFS= read -r MOD; do
     [[ "$MOD" == drivers/pwm/pwm-rp1 ]] && continue
     mkdir -p "$FAN_ROOT/$KV/kernel/$(dirname "$MOD")"
     printf 'fake module\n' > "$FAN_ROOT/$KV/kernel/$MOD.ko"
-done < <(sed -E 's/#.*//; s/^(base|normal)(\([^)]*\))?:[[:space:]]*//; /^[[:space:]]*$/d' \
+done < <(sed -E 's/#.*//; s/^(base|normal|auto)(\([^)]*\))?:[[:space:]]*//; s/\*/fake/g; /^[[:space:]]*$/d' \
     "$ROOT/config/modules/bootmod.txt" "$ROOT/config/modules/depmod.txt" | sort -u)
 printf 'kernel/drivers/pwm/pwm-rp1.ko\n' > "$FAN_ROOT/$KV/modules.builtin"
+printf 'alias of:N*T*Cbrcm,brcmstb-i2c i2c_brcmstb\n' > "$FAN_ROOT/$KV/modules.alias"
 xz "$FAN_ROOT/$KV/kernel/drivers/hwmon/pwm-fan.ko"
 
 for SEEDS in bootmod depmod; do
@@ -126,4 +127,62 @@ for SEEDS in bootmod depmod; do
     grep -Fq 'module not found for drivers/hwmon/pwm-fan' "$WORK/missing-fan.log"
 done
 
+# Hardware-loaded (auto) seeds: staged with their metadata but not listed.
+AUTO_ROOT="$WORK/auto-modules"
+for MOD in drivers/gpu/drm/vc4 drivers/gpu/drm/panel/panel-simple drivers/input/ts/edt-ft5x06 drivers/listed drivers/other/x; do
+    mkdir -p "$AUTO_ROOT/$KV/kernel/$(dirname "$MOD")"
+    printf 'fake module\n' > "$AUTO_ROOT/$KV/kernel/$MOD.ko"
+done
+cat > "$AUTO_ROOT/$KV/modules.alias" <<'EOF'
+# Aliases extracted from modules themselves.
+alias of:N*T*Cbrcm,bcm2711-vc5 vc4
+alias of:N*T*Cpanel-simple panel_simple
+alias i2c:edt-ft5406 edt_ft5x06
+alias of:N*T*Cother x
+EOF
+cat > "$AUTO_ROOT/$KV/modules.softdep" <<'EOF'
+softdep vc4 pre: snd-soc-hdmi-codec
+softdep x pre: y
+EOF
+cat > "$WORK/auto-seeds.txt" <<'EOF'
+auto(pi4): drivers/gpu/drm/*
+auto: drivers/input/ts/edt-ft5x06
+auto(pi5): drivers/other/*
+normal: drivers/listed
+normal: drivers/gpu/drm/vc4
+EOF
+bash "$ROOT/tools/build/resolve_modules.sh" "$KV" "$WORK/out" "$WORK/auto-seeds.txt" module-load modules_staging pi4 "$AUTO_ROOT" >/dev/null
+STAGE="$WORK/out/modules_staging/$KV"
+[[ ! -s "$WORK/out/module-load.base.list" ]]
+expect_list module-load.normal.list drivers/listed drivers/gpu/drm/vc4
+[[ -f "$STAGE/kernel/drivers/gpu/drm/panel/panel-simple.ko" ]]
+[[ -f "$STAGE/kernel/drivers/input/ts/edt-ft5x06.ko" ]]
+[[ ! -e "$STAGE/kernel/drivers/other/x.ko" ]]
+grep -Fxq 'alias of:N*T*Cpanel-simple panel_simple' "$STAGE/modules.alias"
+grep -Fxq 'alias i2c:edt-ft5406 edt_ft5x06' "$STAGE/modules.alias"
+grep -Fxq 'alias of:N*T*Cbrcm,bcm2711-vc5 vc4' "$STAGE/modules.alias"
+! grep -q ' x$' "$STAGE/modules.alias"
+grep -Fxq 'kernel/drivers/gpu/drm/panel/panel-simple.ko:' "$STAGE/modules.dep"
+grep -Fxq 'kernel/drivers/listed.ko:' "$STAGE/modules.dep"
+grep -Fxq 'softdep vc4 pre: snd-soc-hdmi-codec' "$STAGE/modules.softdep"
+! grep -q 'softdep x' "$STAGE/modules.softdep"
+[[ ! -e "$STAGE/modules.alias.bin" && ! -e "$STAGE/modules.dep.bin" ]]
+grep -q '^Hardware-Loaded (auto) Count: 2$' "$WORK/out/module-load.summary.txt"
+grep -q 'auto-seed  ] drivers/gpu/drm/panel/panel-simple' "$WORK/out/module-load.summary.txt"
+
+expect_auto_fail() {
+    local name="$1" seed="$2"
+    printf '%s\n' "$seed" > "$WORK/bad.txt"
+    if bash "$ROOT/tools/build/resolve_modules.sh" "$KV" "$WORK/out" "$WORK/bad.txt" module-load modules_staging pi4 "$AUTO_ROOT" >/dev/null 2>&1; then
+        echo "FAIL: $name was accepted" >&2
+        exit 1
+    fi
+}
+expect_auto_fail "glob matching nothing" "auto: drivers/nothing/*"
+expect_auto_fail "glob in base seed" "base: drivers/gpu/*"
+expect_auto_fail "glob in normal seed" "normal: drivers/gpu/*"
+rm "$AUTO_ROOT/$KV/modules.alias"
+expect_auto_fail "auto seed without modules.alias" "auto: drivers/listed"
+
 echo "resolve_modules tests passed"
+

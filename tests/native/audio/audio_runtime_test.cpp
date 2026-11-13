@@ -1179,6 +1179,103 @@ static void testCompiledSchedule(const char *compiler, const char *bitcode) {
            static_cast<long long>(fallbackNs), static_cast<long long>(nativeNs));
 }
 
+static std::atomic<unsigned> fakeOpenCalls{0};
+static std::atomic<bool> fakeOpenSucceeds{false};
+
+static void fakeSlowOpen(const audiox::PcmOpenRequest &request, audiox::PcmOpenResult *out) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    if (fakeOpenSucceeds.load()) {
+        out->pcm = &testPcm;
+        out->format = SND_PCM_FORMAT_S16_LE;
+        out->channels = request.channels;
+        out->sampleRate = SAMPLE_RATE;
+        out->periodFrames = BUFFER_FRAMES;
+        out->bufferFrames = BUFFER_FRAMES * 4U;
+        out->bufferLevel = request.bufferLevel;
+    } else {
+        out->err = -524;
+    }
+    fakeOpenCalls.fetch_add(1);
+}
+
+static void fakeDiscard(audiox::PcmOpenResult &result) { result.pcm = nullptr; }
+
+static void testPcmOpenBackoff() {
+    audiox::PcmRetryRegistry registry;
+    assert(registry.shouldAttempt("hw:4,0", false, 0));
+    assert(registry.recordFailure("hw:4,0", false, 0) == 1000);
+    assert(!registry.shouldAttempt("hw:4,0", false, 999));
+    assert(registry.shouldAttempt("hw:4,0", false, 1000));
+    assert(registry.shouldAttempt("hw:4,0", true, 0));
+    assert(registry.recordFailure("hw:4,0", false, 1000) == 2000);
+    for (unsigned i = 0; i < 20; ++i) (void)registry.recordFailure("hw:4,0", false, 0);
+    assert(registry.recordFailure("hw:4,0", false, 0) == audiox::PcmRetryRegistry::kMaxDelayMs);
+    registry.recordSuccess("hw:4,0", false);
+    assert(registry.failures("hw:4,0", false) == 0 && registry.shouldAttempt("hw:4,0", false, 0));
+
+    auto context = std::make_unique<AudioContext>(nullptr);
+    auto runtime = std::make_unique<RuntimeGraph>();
+    runtime->playbackCount = 1;
+    auto &output = runtime->playback[0];
+    output.active = 1;
+    output.channels = 2;
+    snprintf(output.path, sizeof(output.path), "hw:4,0");
+    gPcmRetry.clear();
+    fakeOpenCalls = 0;
+    fakeOpenSucceeds = false;
+    {
+        audiox::PcmOpener opener(fakeSlowOpen, fakeDiscard);
+        assert(opener.started());
+        gPcmOpener = &opener;
+        const auto waitForOpen = [&](unsigned calls) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (fakeOpenCalls.load() < calls || output.openTicket != 0) {
+                assert(std::chrono::steady_clock::now() < deadline);
+                collectPcmOpens(runtime.get(), nullptr);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        };
+
+        // A slow, failing device must not hold up the audio thread.
+        const auto start = std::chrono::steady_clock::now();
+        servicePlaybackIo(context.get(), runtime.get());
+        assert(std::chrono::steady_clock::now() - start < std::chrono::milliseconds(20));
+        assert(output.openTicket != 0 && !output.pcm);
+        waitForOpen(1);
+        assert(!output.pcm && gPcmRetry.failures("hw:4,0", false) == 1);
+
+        // While backing off, blocks do not retry the device.
+        for (unsigned block = 0; block < 200; ++block) servicePlaybackIo(context.get(), runtime.get());
+        assert(output.openTicket == 0 && fakeOpenCalls.load() == 1);
+
+        // Once allowed again, a successful open is installed and clears the backoff.
+        gPcmRetry.recordSuccess("hw:4,0", false);
+        fakeOpenSucceeds = true;
+        servicePlaybackIo(context.get(), runtime.get());
+        assert(output.openTicket != 0);
+        waitForOpen(2);
+        assert(output.pcm == &testPcm && gPcmRetry.failures("hw:4,0", false) == 0);
+        output.pcm = nullptr;
+
+        // A stream rebuilt mid-open adopts the in-flight handle for its device.
+        servicePlaybackIo(context.get(), runtime.get());
+        assert(output.openTicket != 0);
+        output.openTicket = 0;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!output.pcm) {
+            assert(std::chrono::steady_clock::now() < deadline);
+            collectPcmOpens(runtime.get(), nullptr);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        assert(output.pcm == &testPcm && fakeOpenCalls.load() == 3);
+        output.pcm = nullptr;
+        output.active = 0;
+        gPcmOpener = nullptr;
+    }
+    gPcmRetry.clear();
+    puts("PCM opens run off the audio thread and failed devices back off");
+}
+
 int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "--playback-only") == 0) {
         testAdaptivePlaybackPriming();
@@ -1245,6 +1342,7 @@ int main(int argc, char **argv) {
         puts("Scene sink fades preserve shared source aliases and acknowledge exact silence");
     }
     testAdaptivePlaybackPriming();
+    testPcmOpenBackoff();
     testPlaybackClockDrift();
     testPlaybackResamplingContinuity();
     testDirectProcessing();

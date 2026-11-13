@@ -10,7 +10,7 @@ test-midi-docs: test-script-docs
 test-native: test-config-storage test-audio-runtime test-builtin-effects test-audio-meters test-audio-graph test-audio-graph-mailbox \
     test-scenes \
 	test-plugin-package test-plugin-host test-plugin-integration \
-	test-audio-pcm-recover test-audio-stress test-bluetooth-hci test-bluetooth-a2dp test-bluetooth-connect-log test-display-hotplug test-soundboard-config \
+	test-audio-pcm-recover test-audio-stress test-bluetooth-hci test-bluetooth-a2dp test-bluetooth-connect-log test-display-hotplug test-hardware-modules test-soundboard-config \
 	test-boot-recovery test-config-backup test-system-logs test-system test-gadget-setup test-mdns \
 	test-gadget-volume test-diagnostics test-midi-usb test-script test-script-storage test-script-docs test-watchdog test-resolve-modules test-build-dependencies test-storage-expand test-device-health test-hardware-telemetry test-hardware-power-button
 
@@ -271,6 +271,14 @@ $(OUT_DIR)/host/audiox-midi-usb-test: tests/native/hardware/midi_usb_test.cpp sr
 test-display-hotplug: $(OUT_DIR)/host/audiox-display-hotplug-test
 	@"$<"
 
+.PHONY: test-hardware-modules
+test-hardware-modules: $(OUT_DIR)/host/audiox-hardware-modules-test
+	@"$<"
+
+$(OUT_DIR)/host/audiox-hardware-modules-test: tests/native/hardware/hardware_modules_test.cpp src/init/hardware_modules.cpp include/hardware_modules.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/native/hardware/hardware_modules_test.cpp src/init/hardware_modules.cpp
+
 .PHONY: test-audio-meters
 test-audio-meters: $(OUT_DIR)/host/audiox-audio-meters-test
 	@"$<"
@@ -283,7 +291,7 @@ $(OUT_DIR)/host/audiox-audio-meters-test: tests/native/audio/audio_meters_test.c
 
 $(OUT_DIR)/host/audiox-display-hotplug-test: tests/native/hardware/display_hotplug_test.cpp src/context.cpp \
 		src/audio/plugin_host.cpp \
-		src/framebuffer/hardware.cpp src/framebuffer/drawing.cpp src/framebuffer/ui.cpp src/touch/touch.cpp \
+		src/framebuffer/hardware.cpp src/framebuffer/kms.cpp src/framebuffer/drawing.cpp src/framebuffer/ui.cpp src/touch/touch.cpp \
 		$(wildcard include/framebuffer/*.hpp include/touch/*.hpp include/audio/*.hpp include/config/*.hpp include/midi/*.hpp include/scripting/*.hpp) include/context.hpp include/defs.hpp include/system_history.hpp
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-unused-parameter -Iinclude \

@@ -64,7 +64,10 @@ static bool validFramebuffer(const fb_var_screeninfo &vinfo, const fb_fix_screen
            (uint64_t)finfo.line_length * vinfo.yres <= finfo.smem_len;
 }
 
-static void initFramebuffer(FramebufferContext *fb) {
+// fbdev fallback for displays without a KMS driver (and the firmware's simplefb
+// before a KMS driver takes over).
+bool FramebufferContext::initFbdev() {
+    FramebufferContext *fb = this;
     for (int idx = 0; idx <= 3; ++idx) {
         char path[32];
         snprintf(path, sizeof(path), "/dev/fb%d", idx);
@@ -143,10 +146,16 @@ static void initFramebuffer(FramebufferContext *fb) {
         snprintf(fb->dev_path, sizeof(fb->dev_path), "%s", path);
         memset(map, 0, fb->pageflip_enabled ? pageLen * 2 : pageLen);
         memset(staging, 0, pageLen);
+        fb->backend = DisplayBackend::Fbdev;
         printf("[FBUI] Framebuffer %s initialized: %ux%u, page flipping %s\n",
                path, fb->width, fb->height, fb->pageflip_enabled ? "enabled" : "unavailable");
-        return;
+        return true;
     }
+    return false;
+}
+
+bool FramebufferContext::initDisplay(bool probe) {
+    return initKms(probe) || initFbdev();
 }
 
 FramebufferContext::FramebufferContext(Audiox *context)
@@ -155,7 +164,7 @@ FramebufferContext::FramebufferContext(Audiox *context)
       draw_offset(0), front_page(0), draw_page(0), pageflip_enabled(0),
       orig_vinfo{}, has_orig_vinfo(0), dev_path{} {
     if (app) app->fb = this;
-    initFramebuffer(this);
+    (void)initDisplay(true);
     if (!isReady()) printf("[FBUI] No connected framebuffer; waiting for a display.\n");
     nextProbeMs = displayMonotonicMs() + AUDIOX_DEVICE_POLL_INTERVAL_MS;
 }
@@ -168,8 +177,13 @@ FramebufferContext::~FramebufferContext() {
 void FramebufferContext::release() {
     resetUi();
     if (app && app->touch) app->touch->suspend();
-    if (buffer) munmap(buffer, bufferSize);
-    if (fd >= 0) close(fd);
+    if (backend == DisplayBackend::Kms || kms.fd >= 0) {
+        releaseKms();
+    } else {
+        if (buffer) munmap(buffer, bufferSize);
+        if (fd >= 0) close(fd);
+    }
+    backend = DisplayBackend::None;
     delete[] stagingBuffer;
     fd = -1;
     buffer = nullptr;
@@ -185,20 +199,23 @@ void FramebufferContext::release() {
 void FramebufferContext::waitForFramebuffer(int timeoutSeconds) {
     for (int elapsed = 0; !isReady() && elapsed < timeoutSeconds * 10; ++elapsed) {
         usleep(100000);
-        initFramebuffer(this);
+        (void)initDisplay(true);
     }
     nextProbeMs = displayMonotonicMs() + AUDIOX_DEVICE_POLL_INTERVAL_MS;
 }
 
-bool FramebufferContext::isReady() const {
-    return fd >= 0 && buffer != nullptr && width > 0 && height > 0 && bpp > 0;
-}
-
 void FramebufferContext::checkForFramebuffer() {
     uint64_t now = displayMonotonicMs();
-    if (now < nextProbeMs) return;
+    const bool event = displayEventPending;
+    if (!event && now < nextProbeMs) return;
+    displayEventPending = false;
     nextProbeMs = now + AUDIOX_DEVICE_POLL_INTERVAL_MS;
-    if (isReady()) {
+    if (isReady() && backend == DisplayBackend::Kms) {
+        // Cached connector state normally; a DRM uevent asks the driver to re-detect.
+        if (kmsOutputValid(event)) return;
+        printf("[FBUI] Display %s disconnected or changed; releasing display resources.\n", kms.name);
+        release();
+    } else if (isReady()) {
         int index = -1;
         struct stat opened{}, current{};
         fb_var_screeninfo vinfo{};
@@ -214,9 +231,18 @@ void FramebufferContext::checkForFramebuffer() {
             vinfo.xres == width && vinfo.yres == height && vinfo.bits_per_pixel == bpp &&
             finfo.line_length == line_length && finfo.smem_len == bufferSize &&
             (!pageflip_enabled || (uint64_t)vinfo.yres_virtual >= (uint64_t)height * 2);
-        if (unchanged) return;
-        printf("[FBUI] Framebuffer %s disconnected or changed; releasing display resources.\n", dev_path);
-        release();
+        // A KMS driver that appears later (e.g. vc4 replacing the firmware's
+        // simplefb) takes over from fbdev.
+        if (unchanged && event && kmsDisplayAvailable()) {
+            printf("[FBUI] KMS display available; switching from %s.\n", dev_path);
+            release();
+            unchanged = false;
+        } else if (unchanged) {
+            return;
+        } else {
+            printf("[FBUI] Framebuffer %s disconnected or changed; releasing display resources.\n", dev_path);
+            release();
+        }
     }
-    initFramebuffer(this);
+    (void)initDisplay(true);
 }

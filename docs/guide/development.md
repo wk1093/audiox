@@ -229,13 +229,19 @@ base: drivers/example/early-driver
 normal: drivers/example/later-driver
 normal(pi5): drivers/example/pi5-only
 normal(!qemu): drivers/example/pi-only
+auto(!qemu): drivers/example/hardware-family/*
 ```
 
 These are syntax examples, not module paths to add. The resolver includes
-transitive dependencies; `base` loads early for boot/display-critical drivers,
-then `normal` loads later.
+transitive dependencies; `base` loads early, then `normal` loads later.
+`auto` modules (globs allowed) are staged but not listed: the runtime loads
+them only when a present device's modalias matches (at boot and on uevents),
+using the filtered `modules.alias`, `modules.dep` and `modules.softdep` the
+resolver writes. Display, touch and bus drivers use `auto`, so supporting new
+hardware usually means adding a glob, not a load-order entry. A `base`/`normal`
+seed for the same module takes precedence.
 
-Board filters support `pi4`, `pi5`, and `qemu`, including comma-separated and negated filters. Unknown prefixes/boards fail the build. Inspect `out/module-load.summary.txt` for skipped seeds and use `make show_modules` / `make test-resolve-modules` while changing this area.
+Board filters support `pi4`, `pi5`, and `qemu`, including comma-separated and negated filters. Unknown prefixes/boards fail the build. Inspect `out/module-load.summary.txt` for skipped seeds and use `make show_modules` / `make test-resolve-modules` / `make test-hardware-modules` while changing this area.
 
 ### FFmpeg for sound uploads
 

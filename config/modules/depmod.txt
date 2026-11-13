@@ -2,6 +2,8 @@
 # Keep this list short: transitive dependencies are resolved automatically.
 # Prefix boot-critical seeds with 'base:' to include them in early-load list.
 # Use 'normal:' (or no prefix) for modules loaded after boot UI appears.
+# Use 'auto:' for drivers that should load only when matching hardware exists
+# (by modalias, at boot and on hotplug). auto seeds may be globs.
 # Add a board filter to limit a seed to some boards (pi4, pi5, qemu):
 #   base(pi5): drivers/foo        only on Pi 5
 #   normal(pi4,pi5): drivers/bar  on Pi 4 and Pi 5
@@ -36,28 +38,30 @@ normal: net/bluetooth/bluetooth
 normal: drivers/bluetooth/btusb
 normal: drivers/bluetooth/hci_uart
 
-# Display stack (vc4/v3d + official DSI panel). Raspberry Pi hardware only;
-# the QEMU debug build (make debug) uses a virtio-gpu framebuffer instead.
-base(!qemu): drivers/gpu/drm/vc4/vc4
-base(!qemu): drivers/gpu/drm/v3d/v3d
-base(!qemu): drivers/gpu/drm/panel/panel-raspberrypi-touchscreen
+# Display and touch stack. These are hardware-loaded ("auto"): every module is
+# staged with its dependencies, and init loads only the drivers whose modalias
+# matches a device that exists (coldplug at boot, kernel uevents afterwards).
+# This covers any KMS display (DSI panels, HDMI/mini-HDMI, DPI, SPI TFTs, USB
+# displays), their bridges/regulators/backlights, and touch controllers on I2C,
+# SPI or USB, without per-display seed lists. Full KMS on Pi 4 needs the
+# brcmstb DDC I2C controller for HDMI or vc4 never binds (including DSI).
+auto(!qemu): drivers/gpu/drm/*
+auto(!qemu): drivers/video/backlight/*
+auto(!qemu): drivers/video/fbdev/*
+auto(!qemu): drivers/staging/fbtft/*
+auto(!qemu): drivers/regulator/*
+auto(!qemu): drivers/i2c/busses/*
+auto(!qemu): drivers/i2c/muxes/*
+auto(!qemu): drivers/spi/spi-bcm2835*
+auto(!qemu): drivers/pwm/*
+auto(!qemu): drivers/input/touchscreen/*
+auto(!qemu): drivers/hid/hid-multitouch
+auto(!qemu): drivers/hid/i2c-hid/*
+auto(!qemu): drivers/hid/wacom
+auto(!qemu): sound/soc/codecs/snd-soc-hdmi-codec
+# QEMU debug build (make debug) uses a virtio-gpu display instead.
 base(qemu): drivers/gpu/drm/virtio/virtio-gpu
-base: drivers/video/backlight/backlight
-base(!qemu): drivers/regulator/rpi-panel-attiny-regulator
-base(!qemu): drivers/regulator/rpi-panel-v2-regulator
-
-# Touch / input buses
-base(!qemu): drivers/i2c/busses/i2c-bcm2835
 base: drivers/i2c/i2c-dev
-base(!qemu): drivers/i2c/muxes/i2c-mux-pinctrl
-base(!qemu): drivers/input/touchscreen/raspberrypi-ts
-base: drivers/hid/i2c-hid/i2c-hid-of
-base: drivers/hid/hid-multitouch
-
-# Optional touchscreen/controller families
-base: drivers/input/touchscreen/usbtouchscreen
-base: drivers/input/touchscreen/goodix_ts
-base: drivers/input/touchscreen/edt-ft5x06
 
 # The network stack for providing the ethernet gadget for the web ui
 normal: drivers/usb/gadget/function/u_ether

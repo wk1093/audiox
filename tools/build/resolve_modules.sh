@@ -55,22 +55,26 @@ mkdir -p "${STAGE_KERNEL_DIR}"
 rm -rf "${STAGE_KERNEL_DIR}"
 mkdir -p "${STAGE_KERNEL_DIR}"
 
-for meta in modules.dep modules.dep.bin modules.alias modules.alias.bin modules.builtin modules.builtin.bin modules.order; do
-    if [[ -f "${MOD_TREE_DIR}/${meta}" ]]; then
-        install -m 0644 "${MOD_TREE_DIR}/${meta}" "${STAGE_BASE_DIR}/${meta}"
-    fi
-done
+# Stale metadata from older resolver versions described the whole kernel tree.
+rm -f "${STAGE_BASE_DIR}"/modules.*
+if [[ -f "${MOD_TREE_DIR}/modules.builtin" ]]; then
+    install -m 0644 "${MOD_TREE_DIR}/modules.builtin" "${STAGE_BASE_DIR}/modules.builtin"
+fi
 
 declare -A NAME_TO_REL=()
 declare -A STATE=()
 declare -A IS_BASE_SEED=()
 declare -A IS_NORMAL_SEED=()
+declare -A IS_AUTO_SEED=()
+declare -A DEPS=()
 declare -A IS_SEED=()
 declare -A IS_BUILTIN=()
 ORDER=()
 SEEDS=()
 BASE_SEEDS=()
 NORMAL_SEEDS=()
+AUTO_SEEDS=()
+ALL_RELS=()
 
 normalize_rel() {
     local rel="$1"
@@ -106,6 +110,7 @@ register_module_file() {
     local full_path="$1"
     local rel="${full_path#${SRC_KERNEL_DIR}/}"
     register_module_rel "${rel}"
+    ALL_RELS+=("$(normalize_rel "${rel}")")
 }
 
 while IFS= read -r -d '' mod_file; do
@@ -216,6 +221,9 @@ visit_module() {
         fi
 
         visit_module "${dep_rel}"
+        if [[ -z "${IS_BUILTIN[${dep_rel}]:-}" ]]; then
+            DEPS["${rel}"]+="${DEPS[${rel}]:+ }${dep_rel}"
+        fi
     done
 
     STATE["${rel}"]="done"
@@ -223,11 +231,17 @@ visit_module() {
 }
 
 # Seed line syntax: [<class>[(<boards>)]:] <module>
-#   class: base | normal (default normal)
+#   class: base | normal | auto (default normal)
+#     base/normal: loaded unconditionally by init from the base/normal lists.
+#     auto: staged only; init loads them when matching hardware appears
+#       (modalias coldplug and uevent hotplug via modules.alias).
+#   module: a path below kernel/ without extension, or for auto seeds a glob
+#     (e.g. "drivers/gpu/drm/*"; "*" also matches "/"). A glob that matches no
+#     module is an error.
 #   boards: comma-separated board names; "!name" excludes a board. With any
 #   positive name the seed applies only to the listed boards.
 #   e.g. "base(pi5): drivers/foo", "normal(!pi5): drivers/bar"
-SEED_RE='^(base|normal)(\(([^()]*)\))?:[[:space:]]*(.*)$'
+SEED_RE='^(base|normal|auto)(\(([^()]*)\))?:[[:space:]]*(.*)$'
 SKIPPED_SEEDS=()
 
 # Returns 0 if the board list applies to ${BOARD}; exits on malformed lists.
@@ -280,7 +294,7 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
         fi
     elif [[ "${line}" == *:* ]]; then
         echo "[resolve_modules] ERROR: ${DEP_FILE}:${line_no}: unrecognized seed prefix in '${line}'" >&2
-        echo "[resolve_modules] Use base:, normal:, base(<boards>):, or normal(<boards>):" >&2
+        echo "[resolve_modules] Use base:, normal:, auto: with an optional (<boards>) list" >&2
         exit 1
     fi
 
@@ -289,8 +303,43 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
         exit 1
     fi
 
+    if [[ "${line}" == *[\*\?\[]* ]]; then
+        if [[ "${seed_class}" != "auto" ]]; then
+            echo "[resolve_modules] ERROR: ${DEP_FILE}:${line_no}: globs are only allowed for auto: seeds" >&2
+            exit 1
+        fi
+        matched=0
+        for candidate in "${ALL_RELS[@]}"; do
+            # shellcheck disable=SC2053
+            if [[ "${candidate}" == ${line} ]]; then
+                matched=1
+                if [[ -z "${IS_SEED[${candidate}]:-}" ]]; then
+                    IS_SEED["${candidate}"]=1
+                    IS_AUTO_SEED["${candidate}"]=1
+                    AUTO_SEEDS+=("${candidate}")
+                fi
+            fi
+        done
+        if (( ! matched )); then
+            echo "[resolve_modules] ERROR: ${DEP_FILE}:${line_no}: glob '${line}' matches no module" >&2
+            exit 1
+        fi
+        continue
+    fi
+
     normalized_seed="$(normalize_rel "${line}")"
-    if [[ -n "${IS_SEED[${normalized_seed}]:-}" ]]; then
+    if [[ "${seed_class}" == "auto" ]]; then
+        if [[ -n "${IS_BUILTIN[${normalized_seed}]:-}" ]]; then
+            continue
+        fi
+        if [[ -z "${IS_SEED[${normalized_seed}]:-}" ]]; then
+            IS_SEED["${normalized_seed}"]=1
+            IS_AUTO_SEED["${normalized_seed}"]=1
+            AUTO_SEEDS+=("${normalized_seed}")
+        fi
+        continue
+    fi
+    if [[ -n "${IS_SEED[${normalized_seed}]:-}" && -z "${IS_AUTO_SEED[${normalized_seed}]:-}" ]]; then
         if [[ "${seed_class}" == "base" && -z "${IS_BASE_SEED[${normalized_seed}]:-}" ]]; then
             IS_BASE_SEED["${normalized_seed}"]=1
             BASE_SEEDS+=("${normalized_seed}")
@@ -311,6 +360,17 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
 
 done < "${DEP_FILE}"
 
+# An explicit base/normal seed wins over an auto glob that also matched it.
+FILTERED_AUTO=()
+for auto_seed in "${AUTO_SEEDS[@]}"; do
+    if [[ -n "${IS_BASE_SEED[${auto_seed}]:-}" || -n "${IS_NORMAL_SEED[${auto_seed}]:-}" ]]; then
+        unset 'IS_AUTO_SEED[${auto_seed}]'
+    else
+        FILTERED_AUTO+=("${auto_seed}")
+    fi
+done
+AUTO_SEEDS=("${FILTERED_AUTO[@]}")
+
 for base_seed in "${BASE_SEEDS[@]}"; do
     visit_module "${base_seed}"
 done
@@ -319,6 +379,12 @@ BASE_ORDER_COUNT="${#ORDER[@]}"
 
 for normal_seed in "${NORMAL_SEEDS[@]}"; do
     visit_module "${normal_seed}"
+done
+
+LISTED_ORDER_COUNT="${#ORDER[@]}"
+
+for auto_seed in "${AUTO_SEEDS[@]}"; do
+    visit_module "${auto_seed}"
 done
 
 : > "${BASE_LOAD_LIST_FILE}"
@@ -339,6 +405,10 @@ for idx in "${!ORDER[@]}"; do
 
     module_path="/lib/modules/${KV}/kernel/${rel}.ko"
 
+    if (( idx >= LISTED_ORDER_COUNT )); then
+        continue
+    fi
+
     if (( idx < BASE_ORDER_COUNT )); then
         echo "${module_path}" >> "${BASE_LOAD_LIST_FILE}"
     else
@@ -348,15 +418,69 @@ for idx in "${!ORDER[@]}"; do
     echo "${module_path}" >> "${LOAD_LIST_FILE}"
 done
 
+# Runtime metadata limited to staged modules. init's hardware loader reads
+# modules.alias (modalias -> module), modules.dep (module -> dependencies,
+# paths relative to the staged tree) and modules.softdep (pre/post modules).
+module_name() {
+    local name="${1##*/}"
+    echo "${name//-/_}"
+}
+
+declare -A STAGED_NAME=()
+for rel in "${ORDER[@]}"; do
+    STAGED_NAME["$(module_name "${rel}")"]=1
+done
+
+{
+    echo "# Dependencies of the staged modules, generated by resolve_modules.sh."
+    for rel in "${ORDER[@]}"; do
+        line="kernel/${rel}.ko:"
+        for dep in ${DEPS[${rel}]:-}; do
+            line+=" kernel/${dep}.ko"
+        done
+        echo "${line}"
+    done
+} > "${STAGE_BASE_DIR}/modules.dep"
+
+ALIAS_COUNT=0
+{
+    echo "# Aliases of the staged modules, generated by resolve_modules.sh."
+    if [[ -f "${MOD_TREE_DIR}/modules.alias" ]]; then
+        while read -r keyword pattern name; do
+            [[ "${keyword}" == "alias" && -n "${name}" && -n "${STAGED_NAME[${name}]:-}" ]] || continue
+            echo "alias ${pattern} ${name}"
+            ALIAS_COUNT=$((ALIAS_COUNT + 1))
+        done < "${MOD_TREE_DIR}/modules.alias"
+    fi
+} > "${STAGE_BASE_DIR}/modules.alias"
+
+if (( ${#AUTO_SEEDS[@]} > 0 )) && [[ ! -f "${MOD_TREE_DIR}/modules.alias" ]]; then
+    echo "[resolve_modules] ERROR: auto seeds need ${MOD_TREE_DIR}/modules.alias" >&2
+    exit 1
+fi
+
+{
+    echo "# Soft dependencies of the staged modules, generated by resolve_modules.sh."
+    if [[ -f "${MOD_TREE_DIR}/modules.softdep" ]]; then
+        while read -r keyword name rest; do
+            [[ "${keyword}" == "softdep" && -n "${STAGED_NAME[${name}]:-}" ]] || continue
+            echo "softdep ${name} ${rest}"
+        done < "${MOD_TREE_DIR}/modules.softdep"
+    fi
+} > "${STAGE_BASE_DIR}/modules.softdep"
+
 {
     echo "Kernel Version: ${KV}"
     echo "Board: ${BOARD:-(any)}"
     echo "Seed Count: ${#SEEDS[@]}"
     echo "Base Seed Count: ${#BASE_SEEDS[@]}"
     echo "Normal Seed Count: ${#NORMAL_SEEDS[@]}"
+    echo "Auto Seed Count: ${#AUTO_SEEDS[@]}"
     echo "Resolved Module Count: ${#ORDER[@]}"
     echo "Base Load Count: ${BASE_ORDER_COUNT}"
-    echo "Normal Load Count: $((${#ORDER[@]} - BASE_ORDER_COUNT))"
+    echo "Normal Load Count: $((LISTED_ORDER_COUNT - BASE_ORDER_COUNT))"
+    echo "Hardware-Loaded (auto) Count: $((${#ORDER[@]} - LISTED_ORDER_COUNT))"
+    echo "Staged Alias Count: ${ALIAS_COUNT}"
     echo
     echo "Base Seed Modules:"
     for seed in "${BASE_SEEDS[@]}"; do
@@ -368,6 +492,11 @@ done
         echo "  ${seed}"
     done
     echo
+    echo "Auto (hardware-loaded) Seed Modules:"
+    for seed in "${AUTO_SEEDS[@]}"; do
+        echo "  ${seed}"
+    done
+    echo
     echo "Skipped Seeds (other boards):"
     for seed in "${SKIPPED_SEEDS[@]}"; do
         echo "  ${seed}"
@@ -376,7 +505,13 @@ done
     echo "Resolved Load Order:"
     for idx in "${!ORDER[@]}"; do
         rel="${ORDER[${idx}]}"
-        if (( idx < BASE_ORDER_COUNT )); then
+        if (( idx >= LISTED_ORDER_COUNT )); then
+            if [[ -n "${IS_AUTO_SEED[${rel}]:-}" ]]; then
+                echo "  [auto-seed  ] ${rel}"
+            else
+                echo "  [auto-dep   ] ${rel}"
+            fi
+        elif (( idx < BASE_ORDER_COUNT )); then
             if [[ -n "${IS_BASE_SEED[${rel}]:-}" ]]; then
                 echo "  [base-seed ] ${rel}"
             else
@@ -392,7 +527,7 @@ done
     done
 } > "${SUMMARY_FILE}"
 
-echo "[resolve_modules] Staged ${#ORDER[@]} modules from ${#SEEDS[@]} seeds"
+echo "[resolve_modules] Staged ${#ORDER[@]} modules from ${#SEEDS[@]} seeds (${#AUTO_SEEDS[@]} hardware-loaded seeds)"
 echo "[resolve_modules] Base list: ${BASE_LOAD_LIST_FILE}"
 echo "[resolve_modules] Normal list: ${NORMAL_LOAD_LIST_FILE}"
 echo "[resolve_modules] Module load list: ${LOAD_LIST_FILE}"

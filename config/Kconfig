@@ -70,20 +70,14 @@ endmenu
 
 menu "Boot configuration"
 
-config VC4_OVERLAY
-	string "Display driver overlay"
-	default "vc4-kms-v3d-pi5" if BOARD_PI5
-	default "vc4-fkms-v3d-pi4"
-	help
-	  Display overlay written to config.txt. The Pi 5 only supports full
-	  KMS; the Pi 4 defaults to FKMS.
-
 config DSI_TOUCH_OVERLAY
 	string "DSI touchscreen overlay"
 	default ""
 	help
-	  Optional extra overlay for a DSI touchscreen. Leave empty to rely on
-	  automatic panel detection.
+	  Optional extra overlay for a DSI touchscreen, such as
+	  vc4-kms-dsi-7inch. Leave empty to rely on firmware panel detection
+	  (display_auto_detect=1). The display driver itself is always full KMS
+	  (vc4-kms-v3d-pi4 or vc4-kms-v3d-pi5, chosen by board).
 
 config BOOT_CD_FIRMWARE
 	bool "Use cut-down GPU firmware (start_cd=1)"

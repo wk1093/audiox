@@ -221,7 +221,7 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Gate firmware trial confirmation on audio readiness and ongoing audio-thread progress, not only 60 seconds of main-loop uptime (`src/init/recovery.cpp`, `src/init/init.cpp`, `src/audio/processing.cpp`). Test a responsive main loop with a stalled audio thread.
 - [x] Reject incomplete rollback boot backups and preserve trial/backup state when restoration is incomplete (`include/boot_recovery.hpp`).
 - [x] Fault-inject interruption at update, rollback, configuration-save, and restore persistence boundaries.
-- [ ] Validate FAT boot-partition power-loss behavior on hardware before declaring 2.0 stable.
+- [x] Validate FAT boot-partition power-loss behavior on hardware before declaring 2.0 stable.
 - [x] Add a channel-and-note-bindable, temporary passthrough-only toggle with MIDI learn: clear controller lighting, pause scripts and local MIDI actions, forward every channel except the toggle, and restore normal controls without restarting when USB MIDI is already enabled.
 - [x] Add clock-drift correction for ALSA playback devices; improve playback priming and partial-write recovery, and stabilize buffer-size transitions.
 - [x] Run audio processing in a supervised, restartable worker; expose worker status and restart controls, and bypass repeatedly failing plugins with an explicit retry path.
@@ -230,6 +230,7 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Prevent soundboard slot invalidation while queued triggers are pending.
 - [x] Fix Bluetooth reconnect loops, stale audio during handoffs, and overlapping start/suspend requests; report paused Bluetooth output accurately.
 - [x] Split the embedded WebUI into feature files and minify it; update USB gadget-volume tests for resampling and verify 16-bit/32-bit playback.
+- [x] Fix display hotplug handling and switch from fkms to kms.
 
 
 ## Pre-2.0 validation

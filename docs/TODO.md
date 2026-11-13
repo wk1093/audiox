@@ -281,6 +281,7 @@ The above last two features are mainly to improve my setup, but could probably b
   - [ ] Handle key press/release, held keys, repeat suppression, and disconnect cleanup so actions cannot remain stuck.
 - [ ] Post-2.0: Create a lightweight desktop companion app with keyboard shortcuts that trigger actions on the Pi through an API.
   - [ ] Expose controller-event injection through the same shared mapping/action system as local keyboards and MIDI, with paired/authorized access and release cleanup on connection loss.
+  - [ ] Implement a mechanism for the scripts to communicate with this software and give it a way for the host app to provide a bunch of info to scripts to expand script capabilities. (things like current state, host actions like play, stop, record, be able to pull "is_playing" via mpris or something. As well as a way to map certain windows/apps to go through different usb routes. for example usb output by default goes into stereo 1/2, but spotify goes to stereo 3/4. The host app should provide this ability. The host app will NOT have any memory of any of this, the app just connects to the Pi and gets what it needs to do from the Pi which saves all the configuration.).
 - [ ] Option in config to use raspi AUX port as an output source (for people without an audio interface, since custom hardware is still WIP)
 - [ ] Create a roadmap for future features and improvements
 - [ ] Explore integration with other audio software and hardware, such as DAWs and MIDI controllers

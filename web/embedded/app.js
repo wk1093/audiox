@@ -559,7 +559,7 @@ document.getElementById('btn-sb-assign-stop-all').addEventListener('click', asyn
   const isTarget = state.mappingAssignTarget === '__action_stop_all__';
   if (isTarget) {
     state.mappingAssignTarget = null;
-    if (state.mappingPollTimer) { clearInterval(state.mappingPollTimer); state.mappingPollTimer = null; }
+    stopMappingCapture();
     if (midiActionCaptureStatusEl) midiActionCaptureStatusEl.textContent = 'Cancelled.';
     return;
   }
@@ -568,7 +568,7 @@ document.getElementById('btn-sb-assign-stop-all').addEventListener('click', asyn
     if (r.ok) { const d = JSON.parse(await r.text()); state.mappingLastSeq = Number(d.last_seq || 0); }
   } catch (_) {}
   state.mappingAssignTarget = '__action_stop_all__';
-  if (!state.mappingPollTimer) state.mappingPollTimer = setInterval(pollMappingCapture, 220);
+  startMappingCapture();
   if (midiActionCaptureStatusEl) midiActionCaptureStatusEl.textContent = 'Press a MIDI button to map stop all.';
 });
 
@@ -581,7 +581,7 @@ document.getElementById('btn-sb-assign-sampler-toggle').addEventListener('click'
   const isTarget = state.mappingAssignTarget === '__action_sampler_toggle__';
   if (isTarget) {
     state.mappingAssignTarget = null;
-    if (state.mappingPollTimer) { clearInterval(state.mappingPollTimer); state.mappingPollTimer = null; }
+    stopMappingCapture();
     if (midiActionCaptureStatusEl) midiActionCaptureStatusEl.textContent = 'Cancelled.';
     return;
   }
@@ -590,7 +590,7 @@ document.getElementById('btn-sb-assign-sampler-toggle').addEventListener('click'
     if (r.ok) { const d = JSON.parse(await r.text()); state.mappingLastSeq = Number(d.last_seq || 0); }
   } catch (_) {}
   state.mappingAssignTarget = '__action_sampler_toggle__';
-  if (!state.mappingPollTimer) state.mappingPollTimer = setInterval(pollMappingCapture, 220);
+  startMappingCapture();
   if (midiActionCaptureStatusEl) midiActionCaptureStatusEl.textContent = 'Press a MIDI button to map sampler toggle.';
 });
 
@@ -604,8 +604,7 @@ document.getElementById('btn-assign-passthrough-toggle').addEventListener('click
   const target = '__action_passthrough_toggle__';
   if (state.mappingAssignTarget === target) {
     state.mappingAssignTarget = null;
-    clearInterval(state.mappingPollTimer);
-    state.mappingPollTimer = null;
+    stopMappingCapture();
     midiActionCaptureStatusEl.textContent = 'Cancelled.';
     return;
   }
@@ -614,7 +613,7 @@ document.getElementById('btn-assign-passthrough-toggle').addEventListener('click
     if (!response.ok) throw new Error(await response.text());
     state.mappingLastSeq = Number(JSON.parse(await response.text()).last_seq || 0);
     state.mappingAssignTarget = target;
-    if (!state.mappingPollTimer) state.mappingPollTimer = setInterval(pollMappingCapture, 220);
+    startMappingCapture();
     midiActionCaptureStatusEl.textContent = 'Press a MIDI button to map passthrough-only toggle. Exit passthrough-only mode before learning.';
   } catch (error) {
     setStatus(`MIDI learn failed: ${error}`, 'warn');

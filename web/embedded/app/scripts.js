@@ -285,8 +285,7 @@ document.addEventListener('visibilitychange', () => {
 function cancelChordLearn() {
   if (state.mappingAssignTarget !== '__macro__') return;
   state.mappingAssignTarget = null;
-  if (state.mappingPollTimer) clearInterval(state.mappingPollTimer);
-  state.mappingPollTimer = null;
+  stopMappingCapture();
   document.getElementById('btn-chord-learn').setAttribute('aria-pressed', 'false');
   document.getElementById('chord-learn-status').textContent = 'MIDI learning stopped.';
 }
@@ -301,8 +300,7 @@ document.getElementById('btn-chord-learn').addEventListener('click', async () =>
   if (button.disabled) return;
   button.disabled = true;
   state.mappingAssignTarget = null;
-  if (state.mappingPollTimer) clearInterval(state.mappingPollTimer);
-  state.mappingPollTimer = null;
+  stopMappingCapture();
   try {
     const res = await apiFetch('/api/midi/last_note', { cache: 'no-store' });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
@@ -313,7 +311,7 @@ document.getElementById('btn-chord-learn').addEventListener('click', async () =>
     if (!Number.isInteger(seq) || seq < 0) throw new Error('device did not report a valid MIDI event sequence');
     state.mappingLastSeq = seq;
     state.mappingAssignTarget = '__macro__';
-    if (!state.mappingPollTimer) state.mappingPollTimer = setInterval(pollMappingCapture, 220);
+    startMappingCapture();
     button.setAttribute('aria-pressed', 'true');
     document.getElementById('chord-learn-status').textContent = 'Press a pad. Select Learn MIDI Pad again to cancel.';
   } catch (err) {
@@ -356,4 +354,3 @@ document.getElementById('btn-chord-save').addEventListener('click', () => {
     config_write_allowed: script && document.getElementById('macro-config-write').checked,
     script_hex: chordHexEncode(script) }, document.getElementById('btn-chord-save'));
 });
-

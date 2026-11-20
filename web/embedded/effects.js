@@ -15,6 +15,11 @@
     return params.toString();
   }
 
+  function stopCaptureSubscription(timer, unsubscribe) {
+    if (timer) clearInterval(timer);
+    unsubscribe?.();
+  }
+
   function normalizeEffectId(v) {
     const id = String(v || '').trim();
     return /^fx_[a-zA-Z0-9_]+$/.test(id) ? id : '';
@@ -226,7 +231,9 @@
       this.panelEl = null;
       this.panelStatusEl = null;
       this.ccPoll = null;
+      this.ccUnsubscribe = null;
       this.notePoll = null;
+      this.noteUnsubscribe = null;
       this.ccTarget = null;
       this.noteTarget = null;
       this.lastCcSeq = 0;
@@ -1209,28 +1216,38 @@
 
       this.ccTarget = { effectId, param };
       if (this.ccPoll) {
-        clearInterval(this.ccPoll);
+        stopCaptureSubscription(this.ccPoll, this.ccUnsubscribe);
+        this.ccPoll = null;
+        this.ccUnsubscribe = null;
       }
 
       this.setStatus(`Move a MIDI CC to map ${this.displayName(effectId)}: ${this.parameterName(effectId, param)}...`, 'ok');
       this.renderPanel();
-      this.ccPoll = setInterval(() => this.pollCcCapture(), 220);
+      this.ccUnsubscribe = window.AudioxApi?.subscribe?.('midi.cc',
+        (data) => this.pollCcCapture(data)) || null;
+      this.ccPoll = setInterval(() => {
+        if (!this.ccUnsubscribe || !window.AudioxApi?.isConnected?.()) this.pollCcCapture();
+      }, 220);
     }
 
-    async pollCcCapture() {
+    async pollCcCapture(pushedData) {
       if (!this.ccTarget) {
         if (this.ccPoll) {
-          clearInterval(this.ccPoll);
+          stopCaptureSubscription(this.ccPoll, this.ccUnsubscribe);
           this.ccPoll = null;
+          this.ccUnsubscribe = null;
         }
         return;
       }
 
       try {
-        const res = await apiFetch('/api/midi/last_cc', { method: 'GET' });
-        const txt = await res.text();
-        if (!res.ok) return;
-        const data = parseJson(txt) || {};
+        let data = pushedData;
+        if (data === undefined) {
+          const res = await apiFetch('/api/midi/last_cc', { method: 'GET' });
+          const txt = await res.text();
+          if (!res.ok) return;
+          data = parseJson(txt) || {};
+        }
         if (!data.connected) return;
 
         const seq = toNumber(data.last_seq, 0);
@@ -1240,8 +1257,9 @@
           const target = this.ccTarget;
           this.ccTarget = null;
           if (this.ccPoll) {
-            clearInterval(this.ccPoll);
+            stopCaptureSubscription(this.ccPoll, this.ccUnsubscribe);
             this.ccPoll = null;
+            this.ccUnsubscribe = null;
           }
           await this.setEffectCc(target.effectId, target.param, cc);
           this.setPanelStatus(`Mapped CC ${cc} to ${this.displayName(target.effectId)}: ${this.parameterName(target.effectId, target.param)}`, 'ok');
@@ -1260,29 +1278,39 @@
 
       this.noteTarget = { effectId };
       if (this.notePoll) {
-        clearInterval(this.notePoll);
+        stopCaptureSubscription(this.notePoll, this.noteUnsubscribe);
+        this.notePoll = null;
+        this.noteUnsubscribe = null;
       }
 
       const isCut = this.effectsById.get(effectId)?.type === 'cut';
       this.setStatus(`Press a MIDI note to map ${this.displayName(effectId)} ${isCut ? 'mute' : 'bypass'} toggle...`, 'ok');
       this.renderPanel();
-      this.notePoll = setInterval(() => this.pollNoteCapture(), 220);
+      this.noteUnsubscribe = window.AudioxApi?.subscribe?.('midi.note',
+        (data) => this.pollNoteCapture(data)) || null;
+      this.notePoll = setInterval(() => {
+        if (!this.noteUnsubscribe || !window.AudioxApi?.isConnected?.()) this.pollNoteCapture();
+      }, 220);
     }
 
-    async pollNoteCapture() {
+    async pollNoteCapture(pushedData) {
       if (!this.noteTarget) {
         if (this.notePoll) {
-          clearInterval(this.notePoll);
+          stopCaptureSubscription(this.notePoll, this.noteUnsubscribe);
           this.notePoll = null;
+          this.noteUnsubscribe = null;
         }
         return;
       }
 
       try {
-        const res = await apiFetch('/api/midi/last_note', { method: 'GET' });
-        const txt = await res.text();
-        if (!res.ok) return;
-        const data = parseJson(txt) || {};
+        let data = pushedData;
+        if (data === undefined) {
+          const res = await apiFetch('/api/midi/last_note', { method: 'GET' });
+          const txt = await res.text();
+          if (!res.ok) return;
+          data = parseJson(txt) || {};
+        }
         if (!data.connected) return;
 
         const seq = toNumber(data.last_seq, 0);
@@ -1292,8 +1320,9 @@
           const target = this.noteTarget;
           this.noteTarget = null;
           if (this.notePoll) {
-            clearInterval(this.notePoll);
+            stopCaptureSubscription(this.notePoll, this.noteUnsubscribe);
             this.notePoll = null;
+            this.noteUnsubscribe = null;
           }
           await this.setEffectToggle(target.effectId, note);
           const isCut = this.effectsById.get(target.effectId)?.type === 'cut';

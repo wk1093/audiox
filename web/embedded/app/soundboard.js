@@ -214,8 +214,7 @@ async function beginSoundboardGridLearn(corner) {
   const target = `__grid_${corner}__`;
   if (state.mappingAssignTarget === target) {
     state.mappingAssignTarget = null;
-    if (state.mappingPollTimer) clearInterval(state.mappingPollTimer);
-    state.mappingPollTimer = null;
+    stopMappingCapture();
     document.getElementById('sb-grid-learn-status').textContent = 'Grid MIDI learn cancelled.';
     return;
   }
@@ -228,7 +227,7 @@ async function beginSoundboardGridLearn(corner) {
     if (!Number.isInteger(sequence) || sequence < 0) throw new Error('device did not report a valid MIDI event sequence');
     state.mappingAssignTarget = target;
     state.mappingLastSeq = sequence;
-    if (!state.mappingPollTimer) state.mappingPollTimer = setInterval(pollMappingCapture, 220);
+    startMappingCapture();
     document.getElementById('sb-grid-learn-status').textContent =
       `Press the ${corner.replace('_', ' ')} pad corner. Click its Learn button again to cancel.`;
   } catch (error) {
@@ -617,8 +616,7 @@ function renderSoundboardGrid() {
       if (isTarget) {
         state.mappingAssignTarget = null;
         if (state.mappingPollTimer) {
-          clearInterval(state.mappingPollTimer);
-          state.mappingPollTimer = null;
+          stopMappingCapture();
         }
         sbMappingStatusEl.textContent = 'Assignment cancelled.';
       } else {
@@ -632,7 +630,7 @@ function renderSoundboardGrid() {
         } catch (_) {}
         state.mappingAssignTarget = file;
         if (!state.mappingPollTimer) {
-          state.mappingPollTimer = setInterval(pollMappingCapture, 220);
+          startMappingCapture();
         }
         sbMappingStatusEl.textContent = `Press a MIDI button to assign to "${file}".`;
       }
@@ -825,14 +823,12 @@ function setSoundboardEditing(editing) {
   }
   if (!editing && state.sfxFiles.includes(state.mappingAssignTarget)) {
     state.mappingAssignTarget = null;
-    clearInterval(state.mappingPollTimer);
-    state.mappingPollTimer = null;
+    stopMappingCapture();
     renderSoundboardGrid();
   }
   if (!editing && String(state.mappingAssignTarget || '').startsWith('__grid_')) {
     state.mappingAssignTarget = null;
-    if (state.mappingPollTimer) clearInterval(state.mappingPollTimer);
-    state.mappingPollTimer = null;
+    stopMappingCapture();
     document.getElementById('sb-grid-learn-status').textContent = 'Grid MIDI learn cancelled.';
   }
   sbMappingStatusEl.textContent = editing

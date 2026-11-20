@@ -240,28 +240,45 @@ async function deleteMapping(note) {
   }
 }
 
-async function pollMappingCapture() {
+function stopMappingCapture() {
+  if (state.mappingPollTimer) clearInterval(state.mappingPollTimer);
+  state.mappingPollTimer = null;
+  state.mappingUnsubscribe?.();
+  state.mappingUnsubscribe = null;
+}
+
+function startMappingCapture() {
+  if (state.mappingPollTimer || state.mappingUnsubscribe) return;
+  state.mappingUnsubscribe = window.AudioxApi?.subscribe?.('midi.note', (data) => {
+    void pollMappingCapture(data);
+  }) || null;
+  state.mappingPollTimer = setInterval(() => {
+    if (!state.mappingUnsubscribe || !window.AudioxApi?.isConnected?.()) pollMappingCapture();
+  }, 220);
+}
+
+async function pollMappingCapture(pushedData) {
   if (!state.mappingAssignTarget) {
-    if (state.mappingPollTimer) {
-      clearInterval(state.mappingPollTimer);
-      state.mappingPollTimer = null;
-    }
+    stopMappingCapture();
     return;
   }
 
   const targetAtStart = state.mappingAssignTarget;
   try {
-    const res = await apiFetch('/api/midi/last_note', { method: 'GET' });
-    const txt = await res.text();
-    if (!res.ok) {
-      if (targetAtStart === '__macro__' || targetAtStart === '__action_passthrough_toggle__' ||
-          String(targetAtStart).startsWith('__grid_'))
-        throw new Error(`${res.status}: ${txt}`);
-      return;
+    let data = pushedData;
+    if (data === undefined) {
+      const res = await apiFetch('/api/midi/last_note', { method: 'GET' });
+      const txt = await res.text();
+      if (!res.ok) {
+        if (targetAtStart === '__macro__' || targetAtStart === '__action_passthrough_toggle__' ||
+            String(targetAtStart).startsWith('__grid_'))
+          throw new Error(`${res.status}: ${txt}`);
+        return;
+      }
+      data = JSON.parse(txt);
     }
     if (targetAtStart !== state.mappingAssignTarget) return;
 
-    const data = JSON.parse(txt);
     const connected = !!data.connected;
     const seq = Number(data.last_seq || 0);
     const note = Number(data.last_note);
@@ -284,10 +301,7 @@ async function pollMappingCapture() {
       state.mappingLastSeq = seq;
       const target = state.mappingAssignTarget;
       state.mappingAssignTarget = null;
-      if (state.mappingPollTimer) {
-        clearInterval(state.mappingPollTimer);
-        state.mappingPollTimer = null;
-      }
+      stopMappingCapture();
       if (target === '__macro__') {
         document.getElementById('btn-chord-learn').setAttribute('aria-pressed', 'false');
         if (!Number.isInteger(data.last_channel) || data.last_channel < 0 || data.last_channel > 15) {
@@ -324,8 +338,7 @@ async function pollMappingCapture() {
       setStatus(`MIDI learn failed: ${err}`, 'warn', 'midi-chords');
     } else if (targetAtStart === '__action_passthrough_toggle__') {
       state.mappingAssignTarget = null;
-      clearInterval(state.mappingPollTimer);
-      state.mappingPollTimer = null;
+      stopMappingCapture();
       setStatus(`MIDI learn failed: ${err}`, 'warn', 'midi-passthrough');
     } else if (String(targetAtStart).startsWith('__grid_')) {
       document.getElementById('sb-grid-learn-status').textContent = `Grid MIDI learn failed: ${err}`;
@@ -503,4 +516,3 @@ document.getElementById('btn-light-refresh').addEventListener('click', async () 
     setStatus(`LED refresh error: ${err}`, 'warn');
   }
 });
-

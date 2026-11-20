@@ -338,16 +338,19 @@ async function loadRoutingThingsWithOptions(options = {}) {
   const force = !!options.force;
 
   try {
-    const res = await apiFetch('/api/routing/things', { method: 'GET' });
-    const txt = await res.text();
-    if (!res.ok) {
-      if (!silent) {
-        setStatus(`things load failed: ${res.status} ${txt.trim()}`, 'warn');
+    let parsed = options.data;
+    if (parsed === undefined) {
+      const res = await apiFetch('/api/routing/things', { method: 'GET' });
+      const txt = await res.text();
+      if (!res.ok) {
+        if (!silent) {
+          setStatus(`things load failed: ${res.status} ${txt.trim()}`, 'warn');
+        }
+        return false;
       }
-      return false;
+      parsed = JSON.parse(txt);
     }
 
-    const parsed = JSON.parse(txt);
     const nextThings = parsed?.things || [];
     const nextSig = makeThingsSignature(nextThings);
     if (!force && nextSig === state.thingsSignature) {
@@ -367,6 +370,7 @@ async function loadRoutingThingsWithOptions(options = {}) {
 }
 
 async function pollRoutingThingsIfNeeded() {
+  if (state.thingsUnsubscribe && window.AudioxApi?.isConnected?.()) return;
   if (state.sceneRoutingConflict) return;
   if (AudioxUI.isBusy()) return;
   if (state.activeTab !== 'routing') {
@@ -394,6 +398,15 @@ function startRoutingThingsPolling() {
   if (state.thingsPollTimer) {
     clearInterval(state.thingsPollTimer);
   }
+  state.thingsUnsubscribe?.();
+  state.thingsUnsubscribe = window.AudioxApi?.subscribe?.('routing.things', (data) => {
+    if (state.sceneRoutingConflict || AudioxUI.isBusy() || state.activeTab !== 'routing'
+        || (document.visibilityState && document.visibilityState !== 'visible')
+        || state.thingsPollInFlight) return;
+    state.thingsPollInFlight = true;
+    void loadRoutingThingsWithOptions({ silent: true, force: false, data })
+      .finally(() => { state.thingsPollInFlight = false; });
+  }) || null;
   state.thingsPollTimer = setInterval(() => {
     pollRoutingThingsIfNeeded();
     pollEffectsIfNeeded();
@@ -513,4 +526,3 @@ async function saveRouting() {
     return false;
   }
 }
-

@@ -12,10 +12,9 @@ async function pollSystemIfNeeded() {
 
   state.systemPollInFlight = true;
   try {
-    await Promise.all([
-      loadSystemInfo(),
-      loadLogs(),
-    ]);
+    const tasks = [loadLogs()];
+    if (!state.systemInfoUnsubscribe || !window.AudioxApi?.isConnected?.()) tasks.push(loadSystemInfo());
+    await Promise.all(tasks);
   } finally {
     state.systemPollInFlight = false;
   }
@@ -25,17 +24,26 @@ function startSystemPolling() {
   if (state.systemPollTimer) {
     clearInterval(state.systemPollTimer);
   }
+  state.systemInfoUnsubscribe?.();
+  state.systemInfoUnsubscribe = window.AudioxApi?.subscribe?.('system.info', (data) => {
+    if (AudioxUI.isBusy() || state.activeTab !== 'system'
+        || (document.visibilityState && document.visibilityState !== 'visible')
+        || state.systemPollInFlight) return;
+    state.systemPollInFlight = true;
+    void loadSystemInfo(data).finally(() => { state.systemPollInFlight = false; });
+  }) || null;
   state.systemPollTimer = setInterval(() => {
     pollSystemIfNeeded();
   }, 1000);
 }
 
 function stopSystemPolling() {
-  if (!state.systemPollTimer) {
-    return;
+  if (state.systemPollTimer) {
+    clearInterval(state.systemPollTimer);
+    state.systemPollTimer = null;
   }
-  clearInterval(state.systemPollTimer);
-  state.systemPollTimer = null;
+  state.systemInfoUnsubscribe?.();
+  state.systemInfoUnsubscribe = null;
 }
 async function loadVersion() {
   try {
@@ -129,9 +137,9 @@ function renderStorageUsage(storage) {
     + (storage.reserved_bytes > 0 ? ` (${format(storage.reserved_bytes)} reserved)` : '');
 }
 
-async function loadSystemInfo() {
+async function loadSystemInfo(pushedData) {
   try {
-    const data = await AudioxUI.probeDevice();
+    const data = pushedData || await AudioxUI.probeDevice();
 
     const vEl = document.getElementById('sysinfo-version');
     const kEl = document.getElementById('sysinfo-kernel');

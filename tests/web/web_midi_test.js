@@ -159,7 +159,7 @@ function fixture() {
     },
   });
   vm.runInContext(fs.readFileSync(require.resolve('../../web/embedded/app/scripts.js'), 'utf8'), context);
-  vm.runInContext(source.slice(source.indexOf('async function pollMappingCapture('),
+  vm.runInContext(source.slice(source.indexOf('function stopMappingCapture('),
     source.indexOf('async function loadSamplerConfig(')), context);
   context.resetMacroEditor();
   get('macro-name').value = 'Test script';

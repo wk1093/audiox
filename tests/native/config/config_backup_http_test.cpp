@@ -38,6 +38,7 @@ int handleApiRequest(HttpServer *server, int cfd, const char *method, const char
     uploadedPlugin.assign(body, size);
     return server->sendResponse(cfd, "200 OK", "text/plain", "received", 8);
 }
+bool buildHttpEventJson(HttpServer *, const char *, char *, size_t, size_t *) { return false; }
 
 namespace fs = std::filesystem;
 
@@ -73,6 +74,28 @@ std::string exchange(HttpServer &server, const char *method, const char *path,
     return response;
 }
 
+std::string exchangeRaw(HttpServer &server, const std::string &request) {
+    int pair[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+    std::thread worker([&]() {
+        handleClient(&server, pair[1]);
+        close(pair[1]);
+    });
+    assert(send(pair[0], request.data(), request.size(), MSG_NOSIGNAL) ==
+           static_cast<ssize_t>(request.size()));
+    assert(shutdown(pair[0], SHUT_WR) == 0);
+    std::string response;
+    char buf[16384];
+    for (;;) {
+        ssize_t n = read(pair[0], buf, sizeof(buf));
+        if (n <= 0) break;
+        response.append(buf, static_cast<size_t>(n));
+    }
+    close(pair[0]);
+    worker.join();
+    return response;
+}
+
 void put(const char *path, const std::string &body) {
     std::ofstream out(path, std::ios::binary);
     out.write(body.data(), (std::streamsize)body.size());
@@ -89,6 +112,146 @@ std::string get(const char *path) {
 } // namespace
 
 int main() {
+    char accept[32];
+    assert(audiox::websocket::acceptKey("dGhlIHNhbXBsZSBub25jZQ==", accept, sizeof(accept)));
+    assert(!strcmp(accept, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="));
+    assert(!audiox::websocket::acceptKey("not-a-websocket-key", accept, sizeof(accept)));
+    assert(!audiox::websocket::acceptKey("dGhlIHNhbXBsZSBub25jZR==", accept, sizeof(accept)));
+    const uint8_t partialFrame[] = {0x81, 0x82};
+    audiox::websocket::Frame incomplete{};
+    assert(audiox::websocket::decodeClientFrameResult(partialFrame, sizeof(partialFrame), &incomplete) ==
+           audiox::websocket::FrameDecodeResult::Incomplete);
+    const uint8_t invalidFrame[] = {0x01, 0x80};
+    assert(audiox::websocket::decodeClientFrameResult(invalidFrame, sizeof(invalidFrame), &incomplete) ==
+           audiox::websocket::FrameDecodeResult::Invalid);
+
+    HttpRequestHeaders parsedHeaders{};
+    const char validHeaders[] =
+        "GET /ws HTTP/1.1\r\nHost: audiox.local\r\n"
+        "Upgrade: websocket\r\nConnection: keep-alive, Upgrade\r\n"
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: audiox.v1\r\n"
+        "Origin: http://audiox.local\r\n\r\n";
+    assert(parseRequestHeaders(validHeaders, sizeof(validHeaders) - 1, &parsedHeaders));
+    assert(parsedHeaders.hasHost && !strcmp(parsedHeaders.host, "audiox.local"));
+    assert(hasToken(parsedHeaders.connection, "upgrade"));
+    assert(sameOriginHost(parsedHeaders.origin, parsedHeaders.host));
+    assert(!sameOriginHost("", parsedHeaders.host));
+    for (const char *invalid : {
+        "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\n",
+        "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 1x\r\n\r\n",
+        "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n",
+        "GET / HTTP/1.1\r\nHost: x\r\nHost: y\r\n\r\n",
+        "POST / HTTP/1.1\r\nHost: x\r\nSec-Fetch-Site: same-origin\r\nSec-Fetch-Site: cross-site\r\n\r\n",
+        "GET / HTTP/1.1\r\nHost: x\r\nX-Test: bad\rvalue\r\n\r\n"})
+        assert(!parseRequestHeaders(invalid, strlen(invalid), &parsedHeaders));
+    assert(parseRequestHeaders(validHeaders, sizeof(validHeaders) - 1, &parsedHeaders));
+
+    uint8_t maskedSubscribe[] = {
+        0x81, 0x80 | 44, 1, 2, 3, 4,
+        '{' ^ 1, '"' ^ 2, 't' ^ 3, 'y' ^ 4, 'p' ^ 1, 'e' ^ 2, '"' ^ 3, ':' ^ 4,
+        '"' ^ 1, 's' ^ 2, 'u' ^ 3, 'b' ^ 4, 's' ^ 1, 'c' ^ 2, 'r' ^ 3, 'i' ^ 4,
+        'b' ^ 1, 'e' ^ 2, '"' ^ 3, ',' ^ 4, '"' ^ 1, 't' ^ 2, 'o' ^ 3, 'p' ^ 4,
+        'i' ^ 1, 'c' ^ 2, 's' ^ 3, '"' ^ 4, ':' ^ 1, '[' ^ 2, '"' ^ 3, 'a' ^ 4,
+        'u' ^ 1, 'd' ^ 2, 'i' ^ 3, 'o' ^ 4, '.' ^ 1, 'm' ^ 2, 'e' ^ 3, 't' ^ 4,
+        'e' ^ 1, 'r' ^ 2, 's' ^ 3, '"' ^ 4, ']' ^ 1, '}' ^ 2
+    };
+    // The test frame payload is deliberately small enough for a single masked frame.
+    maskedSubscribe[1] = static_cast<uint8_t>(0x80 | (sizeof(maskedSubscribe) - 6));
+    audiox::websocket::Frame decoded{};
+    assert(audiox::websocket::decodeClientFrame(maskedSubscribe, sizeof(maskedSubscribe), &decoded));
+    uint8_t subscription[1024];
+    memcpy(subscription, decoded.payload, decoded.length);
+    const size_t frameHeader = decoded.consumed - decoded.length;
+    audiox::websocket::unmask(subscription, decoded.length, maskedSubscribe + frameHeader - 4);
+    bool subscribe = false;
+    uint32_t topics = 0;
+    assert(parseWebSocketSubscription(subscription, decoded.length, &subscribe, &topics));
+    assert(subscribe && topics == 1U);
+    int websocketPair[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, websocketPair) == 0);
+    HttpServer websocketServer(nullptr);
+    snprintf(websocketServer.requestHost, sizeof(websocketServer.requestHost), "%s", parsedHeaders.host);
+    assert(addWebSocketClient(&websocketServer, websocketPair[0], parsedHeaders));
+    char handshake[512]{};
+    const ssize_t handshakeLength = read(websocketPair[1], handshake, sizeof(handshake) - 1);
+    assert(handshakeLength > 0);
+    assert(std::string(handshake, static_cast<size_t>(handshakeLength)).find(
+        "101 Switching Protocols") != std::string::npos);
+    assert(std::string(handshake, static_cast<size_t>(handshakeLength)).find(
+        "Sec-WebSocket-Protocol: audiox.v1") != std::string::npos);
+    closeWebSocket(&websocketServer.websocketClients[0]);
+    close(websocketPair[1]);
+    const char reboundHeaders[] =
+        "GET /ws HTTP/1.1\r\nHost: attacker.example\r\n"
+        "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: audiox.v1\r\n"
+        "Origin: http://attacker.example\r\n\r\n";
+    HttpRequestHeaders rebound{};
+    assert(parseRequestHeaders(reboundHeaders, sizeof(reboundHeaders) - 1, &rebound));
+    snprintf(websocketServer.requestHost, sizeof(websocketServer.requestHost), "%s", AUDIOX_USB_NET_SERVER_IP);
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, websocketPair) == 0);
+    assert(!addWebSocketClient(&websocketServer, websocketPair[0], rebound));
+    close(websocketPair[0]);
+    close(websocketPair[1]);
+
+    HttpServer httpServer(nullptr);
+    const std::string originRejected = exchangeRaw(httpServer,
+        "POST /api/system/shutdown HTTP/1.1\r\nHost: audiox.local\r\n"
+        "Origin: http://attacker.example\r\nContent-Length: 0\r\n\r\n");
+    assert(originRejected.find("403 Forbidden") != std::string::npos);
+    assert(originRejected.find("cross-origin request rejected") != std::string::npos);
+    const std::string reboundOriginRejected = exchangeRaw(httpServer,
+        "POST /api/system/shutdown HTTP/1.1\r\nHost: attacker.example\r\n"
+        "Origin: http://attacker.example\r\nContent-Length: 0\r\n\r\n");
+    assert(reboundOriginRejected.find("421 Misdirected Request") != std::string::npos);
+    const std::string fetchSiteRejected = exchangeRaw(httpServer,
+        "POST /api/system/shutdown HTTP/1.1\r\nHost: audiox.local\r\n"
+        "Sec-Fetch-Site: cross-site\r\nContent-Length: 0\r\n\r\n");
+    assert(fetchSiteRejected.find("403 Forbidden") != std::string::npos);
+    const std::string apiRouteError = exchangeRaw(httpServer,
+        "POST /api/update HTTP/1.1\r\nHost: audiox.local\r\nContent-Length: 0\r\n\r\n");
+    assert(apiRouteError.find("405 Method Not Allowed") != std::string::npos);
+    assert(apiRouteError.find("Content-Type: application/json; charset=utf-8") != std::string::npos);
+    assert(apiRouteError.find("\"ok\":false") != std::string::npos);
+
+    int responsePair[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, responsePair) == 0);
+    httpServer.apiRequest = true;
+    const char apiError[] = "bad \"request\"\n";
+    assert(httpServer.sendResponseWithHeaders(responsePair[0], "400 Bad Request",
+        "text/plain; charset=utf-8", apiError, sizeof(apiError) - 1, nullptr,
+        "X-Test-Header: preserved\r\n") == 0);
+    char responseBuffer[1024]{};
+    const ssize_t responseLength = read(responsePair[1], responseBuffer, sizeof(responseBuffer) - 1);
+    assert(responseLength > 0);
+    const std::string responseText(responseBuffer, static_cast<size_t>(responseLength));
+    assert(responseText.find("application/json; charset=utf-8") != std::string::npos);
+    assert(responseText.find("\"error\":\"bad \\\"request\\\"\\u000a\"") != std::string::npos);
+    assert(responseText.find("X-Test-Header: preserved") != std::string::npos);
+    assert(responseText.find("X-Content-Type-Options: nosniff") != std::string::npos);
+    close(responsePair[0]);
+    close(responsePair[1]);
+
+    int closePair[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, closePair) == 0);
+    HttpWebSocketClient closeClient{};
+    closeClient.fd = closePair[0];
+    const uint8_t maskedClose[] = {0x88, 0x82, 1, 2, 3, 4,
+                                   static_cast<uint8_t>(0x03 ^ 1), static_cast<uint8_t>(0xE8 ^ 2)};
+    assert(send(closePair[1], maskedClose, sizeof(maskedClose), MSG_NOSIGNAL) ==
+           static_cast<ssize_t>(sizeof(maskedClose)));
+    assert(receiveWebSocket(&closeClient, httpMonotonicMs()));
+    assert(closeClient.closeAfterFlush);
+    assert(flushWebSocket(&closeClient));
+    uint8_t closeResponse[8]{};
+    const ssize_t closeLength = read(closePair[1], closeResponse, sizeof(closeResponse));
+    assert(closeLength == 4 && closeResponse[0] == 0x88 && closeResponse[1] == 2 &&
+           closeResponse[2] == 0x03 && closeResponse[3] == 0xE8);
+    closeWebSocket(&closeClient);
+    close(closePair[1]);
+
     int cwd = open(".", O_RDONLY | O_DIRECTORY);
     assert(cwd >= 0);
     char pattern[] = "/tmp/audiox-backup-http-test-XXXXXX";
@@ -100,9 +263,16 @@ int main() {
     const std::string sound(200000, 'x');
     put("sfx/kick.wav", sound);
     HttpServer server(nullptr);
-    ssize_t length = 0;
+    size_t length = 0;
     const auto checkedHeaders = [&](const char *headers) {
-        return pluginHeaders(&server, headers, strlen(headers), &length);
+        HttpRequestHeaders parsed{};
+        const std::string request = std::string("PUT /api/plugins/install HTTP/1.1\r\n") + headers + "\r\n";
+        const bool ok = parseRequestHeaders(request.data(), request.size(), &parsed);
+        if (ok) {
+            length = parsed.contentLength;
+            snprintf(server.requestHost, sizeof(server.requestHost), "%s", parsed.host);
+        }
+        return ok;
     };
     assert(checkedHeaders("Host: localhost:8766\r\nContent-Length: 200000\r\n"));
     assert(length == 200000 && !strcmp(server.requestHost, "localhost:8766"));

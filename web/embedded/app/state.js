@@ -59,6 +59,7 @@ const state = {
   edgeDeleteEnabled: true,
   activeTab: 'routing',
   mappingPollTimer: null,
+  mappingUnsubscribe: null,
   mappingLastSeq: 0,
   mappingAssignTarget: null,
   midiMappingsByNote: {},
@@ -72,6 +73,7 @@ const state = {
   internalGraphMutation: false,
   thingsPollTimer: null,
   thingsPollInFlight: false,
+  thingsUnsubscribe: null,
   thingsSignature: '',
   effectsPollInFlight: false,
   soundboardModesBySfx: {},
@@ -92,10 +94,12 @@ const state = {
   ccVolumes: [],       // [{cc, id}] from /api/midi/cc_volumes
   volAssignTarget: null,
   volCcPollTimer: null,
+  volCcUnsubscribe: null,
   volCcLastSeq: 0,
   volShowEffects: false,
   systemPollTimer: null,
   systemPollInFlight: false,
+  systemInfoUnsubscribe: null,
   pi5FanSettingsLoaded: false,
   pi5FanSettingsLoading: false,
   pi5FanIsPi5: false,
@@ -108,4 +112,3 @@ const state = {
   cpuTimesSample: null,
   sceneRoutingConflict: false,
 };
-

@@ -3,11 +3,19 @@
 const volumeMeters = new Map();
 let meterPollTimer = null;
 let meterPollBusy = false;
+let meterUnsubscribe = null;
 let meterTopology = null;
 const meterLevels = new WeakMap();
 const meterReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 let meterAnimationFrame = null;
 let meterAnimationTime = 0;
+
+function stopVolCcCapture() {
+  if (state.volCcPollTimer) clearInterval(state.volCcPollTimer);
+  state.volCcPollTimer = null;
+  state.volCcUnsubscribe?.();
+  state.volCcUnsubscribe = null;
+}
 
 function resetVolumeMeters() {
   if (meterAnimationFrame !== null) cancelAnimationFrame(meterAnimationFrame);
@@ -49,14 +57,21 @@ function animateVolumeMeters(now) {
 function stopMeterPolling() {
   if (meterPollTimer !== null) clearInterval(meterPollTimer);
   meterPollTimer = null;
+  meterUnsubscribe?.();
+  meterUnsubscribe = null;
   resetVolumeMeters();
 }
 
 function startMeterPolling() {
   stopMeterPolling();
   if (document.hidden) return;
+  meterUnsubscribe = window.AudioxApi?.subscribe?.('audio.meters', (data) => {
+    void pollMeters(data);
+  }) || null;
   pollMeters();
-  meterPollTimer = setInterval(pollMeters, 250);
+  meterPollTimer = setInterval(() => {
+    if (!meterUnsubscribe || !window.AudioxApi?.isConnected?.()) pollMeters();
+  }, 250);
 }
 
 function updateVolumeMeter(id, levels, immediate = false) {
@@ -115,14 +130,17 @@ function updateVolumeMeter(id, levels, immediate = false) {
   }
 }
 
-async function pollMeters() {
+async function pollMeters(pushedData) {
   if (meterPollBusy || state.activeTab !== 'volume' || document.hidden) return;
   meterPollBusy = true;
   const status = document.getElementById('vol-meter-status');
   try {
-    const res = await apiFetch('/api/audio/meters', { cache: 'no-store', signal: AbortSignal.timeout(2000) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
+    let data = pushedData;
+    if (data === undefined) {
+      const res = await apiFetch('/api/audio/meters', { cache: 'no-store', signal: AbortSignal.timeout(2000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      data = await res.json();
+    }
     if (!Array.isArray(data.meters) || data.meters.some(meter =>
       typeof meter.id !== 'string' || !Array.isArray(meter.levels) ||
       meter.levels.length > 16 || meter.levels.some(level => !Number.isFinite(level)))) {
@@ -310,7 +328,7 @@ function renderVolGrid() {
     assignBtn.addEventListener('click', async () => {
       if (isTarget) {
         state.volAssignTarget = null;
-        if (state.volCcPollTimer) { clearInterval(state.volCcPollTimer); state.volCcPollTimer = null; }
+        stopVolCcCapture();
         if (volCcStatusEl) volCcStatusEl.textContent = 'Cancelled.';
         renderVolGrid();
         return;
@@ -324,7 +342,11 @@ function renderVolGrid() {
       } catch (_) {}
       state.volAssignTarget = id;
       if (!state.volCcPollTimer) {
-        state.volCcPollTimer = setInterval(pollVolCcCapture, 220);
+        state.volCcUnsubscribe = window.AudioxApi?.subscribe?.('midi.cc',
+          (data) => pollVolCcCapture(data)) || null;
+        state.volCcPollTimer = setInterval(() => {
+          if (!state.volCcUnsubscribe || !window.AudioxApi?.isConnected?.()) pollVolCcCapture();
+        }, 220);
       }
       if (volCcStatusEl) volCcStatusEl.textContent = `Move a MIDI knob or slider to assign to "${name}".`;
       renderVolGrid();
@@ -383,15 +405,18 @@ async function setVolumeGain(thingId, gain) {
   }
 }
 
-async function pollVolCcCapture() {
+async function pollVolCcCapture(pushedData) {
   if (!state.volAssignTarget) {
-    if (state.volCcPollTimer) { clearInterval(state.volCcPollTimer); state.volCcPollTimer = null; }
+    stopVolCcCapture();
     return;
   }
   try {
-    const res = await apiFetch('/api/midi/last_cc', { method: 'GET' });
-    if (!res.ok) return;
-    const data = JSON.parse(await res.text());
+    let data = pushedData;
+    if (data === undefined) {
+      const res = await apiFetch('/api/midi/last_cc', { method: 'GET' });
+      if (!res.ok) return;
+      data = JSON.parse(await res.text());
+    }
     const seq = Number(data.last_seq || 0);
     const cc = Number(data.last_cc);
 
@@ -404,7 +429,7 @@ async function pollVolCcCapture() {
       state.volCcLastSeq = seq;
       const target = state.volAssignTarget;
       state.volAssignTarget = null;
-      if (state.volCcPollTimer) { clearInterval(state.volCcPollTimer); state.volCcPollTimer = null; }
+      stopVolCcCapture();
       await setCcVolumeMapping(cc, target);
       if (volCcStatusEl) volCcStatusEl.textContent = `Assigned CC ${cc} to "${target}".`;
     }
@@ -455,4 +480,3 @@ async function deleteCcVolumeMapping(cc) {
     setStatus(`CC volume delete error: ${err}`, 'warn');
   }
 }
-

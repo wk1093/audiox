@@ -8,8 +8,10 @@ remote-control standard.
 ::: warning Trusted local control only
 These HTTP operations control the device and can modify files, restore settings,
 or reboot it. The current server does not provide a user-account/authentication
-workflow or HTTPS. Do not expose it directly to the internet or an untrusted
-network. Do not issue write requests casually against a working performance setup.
+workflow or HTTPS, and binds only to the configured USB/NCM address. Do not
+expose it directly to the internet or an untrusted network. Do not issue write
+requests casually against a working performance setup. Unknown `Host` values
+are rejected to prevent DNS-rebinding access.
 :::
 
 ## Persistent device files
@@ -72,11 +74,38 @@ Base URLs in this page are relative to the device, such as
 - Mutation endpoints commonly accept plain `key=value&key=value` text, **not**
   JSON. Conventions differ by endpoint; copy the current WebUI's request shape
   when implementing an advanced client.
+- Browser write requests with a cross-origin `Origin` or `Sec-Fetch-Site:
+  cross-site` are rejected. This is CSRF protection, not authentication.
 - Treat non-2xx status codes as failures and read the accompanying text.
 - A queued trigger response is not a completion receipt.
-- Poll small status endpoints at sensible intervals instead of repeatedly
+- Use the WebSocket pub/sub interface for live status where available; otherwise
+  poll small status endpoints at sensible intervals instead of repeatedly
   downloading files or rebuilding state.
 - Use exact IDs from the device. Friendly names are not stable identifiers.
+
+### Live status events
+
+Connect to `ws://audiox.local/ws` and negotiate the `audiox.v1` subprotocol.
+Send a JSON text message to subscribe:
+
+```json
+{"type":"subscribe","topics":["audio.meters","midi.note"]}
+```
+
+Send `{"type":"unsubscribe","topics":["audio.meters"]}` to stop receiving a
+topic. Server messages have the form
+`{"type":"event","topic":"midi.note","data":{...}}`. Supported topics are:
+
+| Topic | Data | Snapshot interval |
+| --- | --- | --- |
+| `audio.meters` | Current audio meter values | 50 ms |
+| `midi.note` | MIDI connection and latest note/sequence/channel | 50 ms |
+| `midi.cc` | MIDI connection and latest CC/sequence/value | 50 ms |
+| `system.info` | Same device information as `GET /api/system/info` | 1 s |
+| `routing.things` | Same routing topology as `GET /api/routing/things` | 1 s |
+
+Events are snapshots, not a durable event log; reconnecting clients should
+resubscribe and use HTTP endpoints for on-demand data.
 
 For example, these **read-only** requests inspect the running device:
 

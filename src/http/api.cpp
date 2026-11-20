@@ -4843,6 +4843,77 @@ static int handleSystemInfo(HttpServer *server, int cfd, const char *, const cha
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
 }
 
+} // namespace
+
+bool buildHttpEventJson(HttpServer *server, const char *topic,
+						char *out, size_t capacity, size_t *length) {
+	if (!server || !topic || !out || !capacity || !length) return false;
+	*length = 0;
+	if (!strcmp(topic, "audio.meters")) {
+		if (!server->app || !server->app->audio ||
+			server->app->audio->buildMetersJson(out, capacity) != RET_OK) return false;
+		*length = strlen(out);
+		return true;
+	}
+	if (!strcmp(topic, "system.info")) {
+		if (buildSystemInfo(server, out, capacity) != RET_OK) return false;
+		*length = strlen(out);
+		return true;
+	}
+	if (!strcmp(topic, "midi.note") || !strcmp(topic, "midi.cc")) {
+		const bool note = !strcmp(topic, "midi.note");
+		const MidiContext *midi = server->app ? server->app->midi : nullptr;
+		int n;
+		if (note) {
+			n = snprintf(out, capacity,
+				"{\"connected\":%s,\"device\":\"%s\",\"last_note\":%d,"
+				"\"last_velocity\":%u,\"last_seq\":%u,\"last_channel\":%u}\n",
+				midi && midi->connected ? "true" : "false",
+				midi ? audiox::json::escape(midi->devPath).c_str() : "",
+				midi && midi->lastNoteSeq ? midi->lastNote : -1,
+				midi ? static_cast<unsigned>(midi->lastVelocity) : 0U,
+				midi ? midi->lastNoteSeq : 0U,
+				midi ? static_cast<unsigned>(midi->lastChannel) : 0U);
+		} else {
+			n = snprintf(out, capacity,
+				"{\"connected\":%s,\"last_cc\":%d,\"last_cc_value\":%u,\"last_seq\":%u}\n",
+				midi && midi->connected ? "true" : "false",
+				midi && midi->lastCcSeq ? midi->lastCc : -1,
+				midi ? static_cast<unsigned>(midi->lastCcValue) : 0U,
+				midi ? midi->lastCcSeq : 0U);
+		}
+		if (n < 0 || static_cast<size_t>(n) >= capacity) return false;
+		*length = static_cast<size_t>(n);
+		return true;
+	}
+	if (!strcmp(topic, "routing.things")) {
+		AudioGraphThingInfo things[AUDIO_GRAPH_MAX_THINGS]{};
+		const size_t count = server->app && server->app->audio
+			? server->app->audio->copyRoutingThings(things, AUDIO_GRAPH_MAX_THINGS) : 0;
+		size_t used = 0;
+		int n = snprintf(out, capacity, "{\"ok\":true,\"things\":[");
+		if (n < 0 || static_cast<size_t>(n) >= capacity) return false;
+		used = static_cast<size_t>(n);
+		for (size_t i = 0; i < count; ++i) {
+			const std::string id = audiox::json::escape(things[i].id);
+			const std::string name = audiox::json::escape(things[i].name);
+			n = snprintf(out + used, capacity - used,
+				"%s{\"id\":\"%s\",\"name\":\"%s\",\"inputs\":%u,\"outputs\":%u}",
+				i ? "," : "", id.c_str(), name.c_str(),
+				static_cast<unsigned>(things[i].inputs), static_cast<unsigned>(things[i].outputs));
+			if (n < 0 || static_cast<size_t>(n) >= capacity - used) return false;
+			used += static_cast<size_t>(n);
+		}
+		n = snprintf(out + used, capacity - used, "]}\n");
+		if (n < 0 || static_cast<size_t>(n) >= capacity - used) return false;
+		*length = used + static_cast<size_t>(n);
+		return true;
+	}
+	return false;
+}
+
+namespace {
+
 static int handleAudioWorker(HttpServer *server, int cfd, const char *method,
 							 const char *body, size_t bodyLength) {
 	if (strcmp(method, "GET") && strcmp(method, "POST")) return sendMethodNotAllowed(server, cfd);
@@ -5932,6 +6003,12 @@ int handleApiRequest(HttpServer *server,
 					 const char *body,
 					 size_t body_len,
 					 const char *query) {
+	struct ApiRequestScope {
+		HttpServer *server;
+		bool previous;
+		~ApiRequestScope() { if (server) server->apiRequest = previous; }
+	} scope{server, server ? server->apiRequest : false};
+	if (server) server->apiRequest = true;
 	if (!server || cfd < 0 || !method || !path) {
 		return -1;
 	}

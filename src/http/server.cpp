@@ -1,4 +1,5 @@
 #include "http/context.hpp"
+#include "http/websocket.hpp"
 #include <limits.h>
 #include "http/ffmpeg.hpp"
 #include "audio/context.hpp"
@@ -8,6 +9,7 @@
 #include "config/backup.hpp"
 #include "config/paths.hpp"
 #include "config/file.hpp"
+#include "json.hpp"
 #include "watchdog_heartbeat.hpp"
 
 #include <arpa/inet.h>
@@ -25,9 +27,11 @@
 #include <sys/statvfs.h>
 #include <sys/time.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #define HTTP_REQ_MAX 65536
+#define HTTP_HEADER_MAX 16384
 #define HTTP_BODY_MAX 49152
 #define HTTP_INITRAM_PATH "/api/initram"
 #define HTTP_INITRAM_MAX (64u * 1024u * 1024u)
@@ -54,6 +58,269 @@
 #define HTTP_STAGE_UPDATE_PATH HTTP_STAGE_DIR "/update.axu.part"
 
 namespace {
+
+struct HttpRequestHeaders {
+    size_t contentLength{};
+    bool hasContentLength{};
+    bool hasHost{};
+    bool hasUpgrade{};
+    bool hasConnection{};
+    bool hasWebSocketKey{};
+    bool hasWebSocketVersion{};
+    bool hasWebSocketProtocol{};
+    bool hasOrigin{};
+    bool hasFetchSite{};
+    char host[256]{};
+    char upgrade[64]{};
+    char connection[128]{};
+    char websocketKey[64]{};
+    char websocketVersion[8]{};
+    char websocketProtocol[64]{};
+    char origin[256]{};
+    char fetchSite[32]{};
+};
+
+static int setNonBlocking(int fd);
+static bool queueWebSocketFrame(HttpWebSocketClient *client, uint8_t opcode,
+                                const void *payload, size_t length);
+static void closeWebSocket(HttpWebSocketClient *client);
+
+static uint64_t httpMonotonicMs() {
+    timespec ts{};
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return static_cast<uint64_t>(ts.tv_sec) * 1000U +
+        static_cast<uint64_t>(ts.tv_nsec) / 1000000U;
+}
+
+static bool hasToken(const char *list, const char *token) {
+    if (!list || !token) return false;
+    const size_t tokenLength = strlen(token);
+    for (const char *p = list; *p;) {
+        while (*p == ' ' || *p == '\t' || *p == ',') ++p;
+        const char *end = strchr(p, ',');
+        size_t length = end ? static_cast<size_t>(end - p) : strlen(p);
+        while (length && (p[length - 1] == ' ' || p[length - 1] == '\t')) --length;
+        if (length == tokenLength && !strncasecmp(p, token, length)) return true;
+        p = end ? end + 1 : p + length;
+    }
+    return false;
+}
+
+static bool sameOriginHost(const char *origin, const char *host) {
+    if (!origin || !*origin || !host || !*host) return false;
+    static constexpr char prefix[] = "http://";
+    if (strncasecmp(origin, prefix, sizeof(prefix) - 1)) return false;
+    const char *originHost = origin + sizeof(prefix) - 1;
+    if (strchr(originHost, '/') || strchr(originHost, '?') || strchr(originHost, '#')) return false;
+    if (!strcasecmp(originHost, host)) return true;
+    const size_t hostLength = strlen(host);
+    return hostLength > 3 && !strcasecmp(host + hostLength - 3, ":80") &&
+        strlen(originHost) == hostLength - 3 && !strncasecmp(originHost, host, hostLength - 3);
+}
+
+static bool queueWebSocketFrame(HttpWebSocketClient *client, uint8_t opcode,
+                                const void *payload, size_t length) {
+    if (!client || client->fd < 0 || client->outputOffset < client->outputSize ||
+        !audiox::websocket::encodeServerFrame(opcode, payload, length,
+            client->output, sizeof(client->output), &client->outputSize)) return false;
+    client->outputOffset = 0;
+    return true;
+}
+
+static bool sendUpgradeResponse(int fd, const char *accept) {
+    char response[256];
+    const int length = snprintf(response, sizeof(response),
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: %s\r\n"
+        "Sec-WebSocket-Protocol: audiox.v1\r\n\r\n", accept);
+    if (length < 0 || static_cast<size_t>(length) >= sizeof(response)) return false;
+    size_t sent = 0;
+    while (sent < static_cast<size_t>(length)) {
+        const ssize_t count = send(fd, response + sent, static_cast<size_t>(length) - sent,
+                                   MSG_NOSIGNAL);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) return false;
+        sent += static_cast<size_t>(count);
+    }
+    return true;
+}
+
+static bool addWebSocketClient(HttpServer *server, int fd, const HttpRequestHeaders &headers) {
+    if (!server || !hasToken(headers.connection, "upgrade") ||
+        strcasecmp(headers.upgrade, "websocket") ||
+        strcmp(headers.websocketVersion, "13") ||
+        !hasToken(headers.websocketProtocol, "audiox.v1") ||
+        (headers.hasOrigin && !sameOriginHost(headers.origin, server->requestHost)) ||
+        (headers.hasContentLength && headers.contentLength != 0)) return false;
+    char accept[32];
+    if (!audiox::websocket::acceptKey(headers.websocketKey, accept, sizeof(accept))) return false;
+    HttpWebSocketClient *client = nullptr;
+    for (auto &candidate : server->websocketClients) {
+        if (candidate.fd < 0) {
+            client = &candidate;
+            break;
+        }
+    }
+    if (!client || !sendUpgradeResponse(fd, accept) || setNonBlocking(fd) < 0) return false;
+    *client = HttpWebSocketClient{};
+    client->fd = fd;
+    client->lastActivityMs = httpMonotonicMs();
+    static constexpr char ready[] = "{\"type\":\"ready\",\"protocol\":\"audiox.v1\"}";
+    if (!queueWebSocketFrame(client, 0x1, ready, sizeof(ready) - 1)) {
+        closeWebSocket(client);
+        return false;
+    }
+    return true;
+}
+
+struct SubscriptionParser {
+    const char *cursor;
+    const char *end;
+
+    void whitespace() { while (cursor < end && (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' || *cursor == '\n')) ++cursor; }
+    bool character(char value) { whitespace(); if (cursor == end || *cursor != value) return false; ++cursor; return true; }
+    bool string(const char **value, size_t *length) {
+        whitespace();
+        if (cursor == end || *cursor++ != '"') return false;
+        const char *begin = cursor;
+        while (cursor < end && *cursor != '"') {
+            const unsigned char c = static_cast<unsigned char>(*cursor);
+            if (c < 0x20 || c == '\\' || c >= 0x7f) return false;
+            ++cursor;
+        }
+        if (cursor == end) return false;
+        *value = begin;
+        *length = static_cast<size_t>(cursor - begin);
+        ++cursor;
+        return true;
+    }
+};
+
+static bool parseWebSocketSubscription(const uint8_t *data, size_t length, bool *subscribe,
+                                      uint32_t *topics) {
+    if (!data || !length || length > 1024 || !subscribe || !topics) return false;
+    SubscriptionParser parser{reinterpret_cast<const char *>(data),
+                              reinterpret_cast<const char *>(data) + length};
+    if (!parser.character('{')) return false;
+    bool hasType = false, hasTopics = false;
+    uint32_t mask = 0;
+    for (unsigned field = 0; field < 2; ++field) {
+        const char *key;
+        size_t keyLength;
+        if (!parser.string(&key, &keyLength) || !parser.character(':')) return false;
+        if (keyLength == 4 && !memcmp(key, "type", 4)) {
+            if (hasType) return false;
+            const char *value;
+            size_t valueLength;
+            if (!parser.string(&value, &valueLength)) return false;
+            if (valueLength == 9 && !memcmp(value, "subscribe", 9)) *subscribe = true;
+            else if (valueLength == 11 && !memcmp(value, "unsubscribe", 11)) *subscribe = false;
+            else return false;
+            hasType = true;
+        } else if (keyLength == 6 && !memcmp(key, "topics", 6)) {
+            if (hasTopics || !parser.character('[')) return false;
+            hasTopics = true;
+            bool first = true;
+            while (!parser.character(']')) {
+                if (!first && !parser.character(',')) return false;
+                first = false;
+                const char *value;
+                size_t valueLength;
+                if (!parser.string(&value, &valueLength)) return false;
+                static constexpr const char *names[] = {
+                    "audio.meters", "midi.note", "midi.cc", "system.info", "routing.things"
+                };
+                bool known = false;
+                for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+                    if (valueLength == strlen(names[i]) && !memcmp(value, names[i], valueLength)) {
+                        mask |= 1U << i;
+                        known = true;
+                    }
+                }
+                if (!known) return false;
+            }
+        } else {
+            return false;
+        }
+        if (field == 0 && !parser.character(',')) return false;
+    }
+    if (!hasType || !hasTopics || !parser.character('}')) return false;
+    parser.whitespace();
+    if (parser.cursor != parser.end) return false;
+    *topics = mask;
+    return true;
+}
+
+static void closeWebSocket(HttpWebSocketClient *client) {
+    if (client->fd >= 0) close(client->fd);
+    *client = HttpWebSocketClient{};
+}
+
+static bool flushWebSocket(HttpWebSocketClient *client) {
+    while (client->outputOffset < client->outputSize) {
+        const ssize_t sent = send(client->fd, client->output + client->outputOffset,
+            client->outputSize - client->outputOffset, MSG_NOSIGNAL | MSG_DONTWAIT);
+        if (sent < 0 && errno == EINTR) continue;
+        if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return true;
+        if (sent <= 0) return false;
+        client->outputOffset += static_cast<size_t>(sent);
+    }
+    client->outputOffset = client->outputSize = 0;
+    return true;
+}
+
+static bool receiveWebSocket(HttpWebSocketClient *client, uint64_t now) {
+    for (;;) {
+        if (client->inputSize == sizeof(client->input)) return false;
+        const ssize_t received = recv(client->fd, client->input + client->inputSize,
+            sizeof(client->input) - client->inputSize, MSG_DONTWAIT);
+        if (received < 0 && errno == EINTR) continue;
+        if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+        if (received <= 0) return false;
+        client->inputSize += static_cast<size_t>(received);
+    }
+    size_t consumed = 0;
+    while (consumed < client->inputSize) {
+        audiox::websocket::Frame frame{};
+        const auto result = audiox::websocket::decodeClientFrameResult(
+            client->input + consumed, client->inputSize - consumed, &frame);
+        if (result == audiox::websocket::FrameDecodeResult::Incomplete) break;
+        if (result == audiox::websocket::FrameDecodeResult::Invalid) return false;
+        uint8_t payload[1024];
+        memcpy(payload, frame.payload, frame.length);
+        const size_t headerLength = frame.consumed - frame.length;
+        audiox::websocket::unmask(payload, frame.length, client->input + consumed + headerLength - 4);
+        consumed += frame.consumed;
+        client->lastActivityMs = now;
+        if (frame.opcode == 0x8) {
+            if (frame.length == 1) return false;
+            static constexpr uint8_t closePayload[] = {0x03, 0xE8};
+            if (!queueWebSocketFrame(client, 0x8, closePayload, sizeof(closePayload))) return false;
+            client->closeAfterFlush = true;
+            return true;
+        }
+        if (frame.opcode == 0x9) {
+            if (!queueWebSocketFrame(client, 0xA, payload, frame.length)) return false;
+        } else if (frame.opcode == 0xA) {
+            client->pingAtMs = 0;
+        } else if (frame.opcode == 0x1) {
+            bool subscribe = false;
+            uint32_t topics = 0;
+            if (!parseWebSocketSubscription(payload, frame.length, &subscribe, &topics)) return false;
+            if (subscribe) client->topics |= topics;
+            else client->topics &= ~topics;
+        } else {
+            return false;
+        }
+    }
+    if (consumed) {
+        memmove(client->input, client->input + consumed, client->inputSize - consumed);
+        client->inputSize -= consumed;
+    }
+    return true;
+}
 
 static int setSocketTimeouts(int fd, long recv_ms, long send_ms) {
     if (fd < 0) {
@@ -1163,95 +1430,139 @@ static ssize_t findHeaderEnd(const char *buf, size_t len) {
     return -1;
 }
 
-static ssize_t parseContentLength(const char *buf, size_t header_len) {
-    if (!buf || header_len == 0) {
-        return -1;
+static bool headerValue(const char *start, size_t length, char *out, size_t capacity) {
+    while (length && (*start == ' ' || *start == '\t')) {
+        ++start;
+        --length;
     }
-
-    const char *line = buf;
-    const char *end = buf + header_len;
-    while (line < end) {
-        const char *next = (const char *)memchr(line, '\n', (size_t)(end - line));
-        size_t line_len = next ? (size_t)(next - line) : (size_t)(end - line);
-
-        if (line_len >= 15 && strncasecmp(line, "Content-Length:", 15) == 0) {
-            const char *p = line + 15;
-            while (p < line + line_len && (*p == ' ' || *p == '\t')) {
-                ++p;
-            }
-            long v = strtol(p, NULL, 10);
-            if (v < 0) {
-                return -1;
-            }
-            return (ssize_t)v;
-        }
-
-        if (!next) {
-            break;
-        }
-        line = next + 1;
+    while (length && (start[length - 1] == ' ' || start[length - 1] == '\t')) --length;
+    if (!length || length >= capacity) return false;
+    for (size_t i = 0; i < length; ++i) {
+        const unsigned char c = static_cast<unsigned char>(start[i]);
+        if ((c < 0x20 && c != '\t') || c == 0x7f) return false;
     }
-
-    return -1;
+    memcpy(out, start, length);
+    out[length] = '\0';
+    return true;
 }
 
-static bool pluginHeaders(HttpServer *server, const char *headers, size_t size,
-                          ssize_t *length) {
-  bool hasHost = false, hasLength = false;
-  snprintf(server->requestHost, sizeof(server->requestHost), "%s",
-           AUDIOX_USB_NET_SERVER_IP);
-  const char *end = headers + size;
-  for (const char *line = headers; line < end;) {
-    const char *next =
-        static_cast<const char *>(memchr(line, '\n', end - line));
-    const char *stop = next ? next : end;
-    if (stop > line && stop[-1] == '\r')
-      --stop;
-    if (stop - line >= 18 && !strncasecmp(line, "Transfer-Encoding:", 18))
-      return false;
-    const bool host = stop - line >= 5 && !strncasecmp(line, "Host:", 5);
-    const bool content =
-        stop - line >= 15 && !strncasecmp(line, "Content-Length:", 15);
-    if (host || (content && length)) {
-      const char *value = line + (host ? 5 : 15);
-      while (value < stop && (*value == ' ' || *value == '\t'))
-        ++value;
-      while (stop > value && (stop[-1] == ' ' || stop[-1] == '\t'))
-        --stop;
-      if (value == stop)
-        return false;
-      if (host) {
-        if (hasHost ||
-            stop - value >= static_cast<ptrdiff_t>(sizeof(server->requestHost)))
-          return false;
-        for (const char *p = value; p < stop; ++p)
-          if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
-                (*p >= '0' && *p <= '9') || *p == '.' || *p == '-' ||
-                *p == ':' || *p == '[' || *p == ']'))
-            return false;
-        memcpy(server->requestHost, value, stop - value);
-        server->requestHost[stop - value] = '\0';
-        hasHost = true;
-      } else {
-        if (hasLength)
-          return false;
-        size_t count = 0;
-        for (const char *p = value; p < stop; ++p) {
-          if (*p < '0' || *p > '9' || count > (SIZE_MAX - (*p - '0')) / 10)
-            return false;
-          count = count * 10 + (*p - '0');
+static bool parseRequestHeaders(const char *buf, size_t headerLen, HttpRequestHeaders *out) {
+    if (!buf || !out || !headerLen || headerLen > 16384) return false;
+    *out = HttpRequestHeaders{};
+    snprintf(out->host, sizeof(out->host), "%s", AUDIOX_USB_NET_SERVER_IP);
+
+    const char *end = buf + headerLen;
+    const char *line = static_cast<const char *>(memchr(buf, '\n', headerLen));
+    if (!line) return false;
+    ++line;
+    while (line < end) {
+        const char *next = static_cast<const char *>(memchr(line, '\n', end - line));
+        const char *stop = next ? next : end;
+        if (stop > line && stop[-1] == '\r') --stop;
+        if (stop == line) break;
+        const char *colon = static_cast<const char *>(memchr(line, ':', stop - line));
+        if (!colon || colon == line) return false;
+        for (const char *p = colon + 1; p < stop; ++p) {
+            const unsigned char c = static_cast<unsigned char>(*p);
+            if ((c < 0x20 && c != '\t') || c == 0x7f) return false;
         }
-        if (count > static_cast<size_t>(SSIZE_MAX))
-          return false;
-        *length = static_cast<ssize_t>(count);
-        hasLength = true;
-      }
+        for (const char *p = line; p < colon; ++p) {
+            const unsigned char c = static_cast<unsigned char>(*p);
+            if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                  (c >= '0' && c <= '9') || c == '-')) return false;
+        }
+        const char *value = colon + 1;
+        const size_t valueLength = static_cast<size_t>(stop - value);
+        const size_t nameLength = static_cast<size_t>(colon - line);
+        if (nameLength == 17 && !strncasecmp(line, "Transfer-Encoding", nameLength))
+            return false;
+        if (nameLength == 14 && !strncasecmp(line, "Content-Length", nameLength)) {
+            if (out->hasContentLength) return false;
+            while (value < stop && (*value == ' ' || *value == '\t')) ++value;
+            const char *trimmedEnd = stop;
+            while (trimmedEnd > value && (trimmedEnd[-1] == ' ' || trimmedEnd[-1] == '\t')) --trimmedEnd;
+            if (value == trimmedEnd) return false;
+            size_t parsed = 0;
+            for (const char *p = value; p < trimmedEnd; ++p) {
+                if (*p < '0' || *p > '9' || parsed > (SIZE_MAX - (*p - '0')) / 10) return false;
+                parsed = parsed * 10 + static_cast<size_t>(*p - '0');
+            }
+            if (parsed > static_cast<size_t>(SSIZE_MAX)) return false;
+            out->contentLength = parsed;
+            out->hasContentLength = true;
+        } else {
+            char *destination = nullptr;
+            size_t capacity = 0;
+            bool *seen = nullptr;
+            if (nameLength == 4 && !strncasecmp(line, "Host", 4)) {
+                destination = out->host; capacity = sizeof(out->host); seen = &out->hasHost;
+            } else if (nameLength == 7 && !strncasecmp(line, "Upgrade", 7)) {
+                destination = out->upgrade; capacity = sizeof(out->upgrade); seen = &out->hasUpgrade;
+            } else if (nameLength == 10 && !strncasecmp(line, "Connection", 10)) {
+                destination = out->connection; capacity = sizeof(out->connection); seen = &out->hasConnection;
+            } else if (nameLength == 17 && !strncasecmp(line, "Sec-WebSocket-Key", 17)) {
+                destination = out->websocketKey; capacity = sizeof(out->websocketKey); seen = &out->hasWebSocketKey;
+            } else if (nameLength == 21 && !strncasecmp(line, "Sec-WebSocket-Version", 21)) {
+                destination = out->websocketVersion; capacity = sizeof(out->websocketVersion); seen = &out->hasWebSocketVersion;
+            } else if (nameLength == 22 && !strncasecmp(line, "Sec-WebSocket-Protocol", 22)) {
+                destination = out->websocketProtocol; capacity = sizeof(out->websocketProtocol); seen = &out->hasWebSocketProtocol;
+            } else if (nameLength == 6 && !strncasecmp(line, "Origin", 6)) {
+                destination = out->origin; capacity = sizeof(out->origin); seen = &out->hasOrigin;
+            } else if (nameLength == 14 && !strncasecmp(line, "Sec-Fetch-Site", 14)) {
+                destination = out->fetchSite; capacity = sizeof(out->fetchSite); seen = &out->hasFetchSite;
+            }
+            if (destination) {
+                if (seen && *seen) return false;
+                if (!headerValue(value, valueLength, destination, capacity)) return false;
+                if (seen) *seen = true;
+                if (nameLength == 4 && !strncasecmp(line, "Host", 4)) {
+                    for (const char *p = destination; *p; ++p) {
+                        if (!(isalnum(static_cast<unsigned char>(*p)) || *p == '.' ||
+                              *p == '-' || *p == ':' || *p == '[' || *p == ']')) return false;
+                    }
+                }
+            }
+        }
+        if (!next) break;
+        line = next + 1;
     }
-    if (!next)
-      break;
-    line = next + 1;
-  }
-  return !length || hasLength;
+    return true;
+}
+
+static bool parseRequestLine(const char *request, size_t headerLen,
+                             char *method, size_t methodCapacity,
+                             char *target, size_t targetCapacity, bool *http11) {
+    const char *end = static_cast<const char *>(memchr(request, '\n', headerLen));
+    if (!end) return false;
+    if (end > request && end[-1] == '\r') --end;
+    const char *firstSpace = static_cast<const char *>(memchr(request, ' ', end - request));
+    if (!firstSpace || firstSpace == request) return false;
+    const char *secondSpace = static_cast<const char *>(memchr(firstSpace + 1, ' ', end - firstSpace - 1));
+    if (!secondSpace || secondSpace == firstSpace + 1 || memchr(secondSpace + 1, ' ', end - secondSpace - 1))
+        return false;
+    const size_t methodLength = static_cast<size_t>(firstSpace - request);
+    const size_t targetLength = static_cast<size_t>(secondSpace - firstSpace - 1);
+    if (methodLength >= methodCapacity || targetLength >= targetCapacity) return false;
+    for (const char *p = request; p < firstSpace; ++p)
+        if (*p < 'A' || *p > 'Z') return false;
+    memcpy(method, request, methodLength);
+    method[methodLength] = '\0';
+    memcpy(target, firstSpace + 1, targetLength);
+    target[targetLength] = '\0';
+    if (target[0] != '/' || strchr(target, '#') || strchr(target, '\\')) return false;
+    for (size_t i = 0; i < targetLength; ++i)
+        if (static_cast<unsigned char>(target[i]) < 0x21 || target[i] == 0x7f) return false;
+    const char *version = secondSpace + 1;
+    const size_t versionLength = static_cast<size_t>(end - version);
+    if (versionLength == 8 && !memcmp(version, "HTTP/1.1", 8)) {
+        *http11 = true;
+        return true;
+    }
+    if (versionLength == 8 && !memcmp(version, "HTTP/1.0", 8)) {
+        *http11 = false;
+        return true;
+    }
+    return false;
 }
 
 static int setNonBlocking(int fd) {
@@ -1297,6 +1608,20 @@ static void loadHtmlBody(HttpServer *server, const char *html_path) {
   }
 }
 
+static bool allowedRequestHost(const char *host) {
+    if (!host) return false;
+    char candidate[256];
+    snprintf(candidate, sizeof(candidate), "%s", host);
+    char *port = strrchr(candidate, ':');
+    if (port && !strcmp(port, ":80")) *port = '\0';
+    return !strcasecmp(candidate, AUDIOX_USB_NET_SERVER_IP) ||
+        !strcasecmp(candidate, "audiox.local") ||
+        !strcasecmp(candidate, "audiox") ||
+        !strcasecmp(candidate, "audiox.lan") ||
+        !strcasecmp(candidate, "audiox.wklab.net") ||
+        !strcasecmp(candidate, "localhost");
+}
+
 static void handleClient(HttpServer *server, int cfd) {
     char req[HTTP_REQ_MAX];
     size_t have = 0;
@@ -1328,35 +1653,74 @@ static void handleClient(HttpServer *server, int cfd) {
         (void)server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
         return;
     }
+    if (static_cast<size_t>(header_end) > HTTP_HEADER_MAX) {
+        static const char too_large[] = "request headers too large\n";
+        (void)server->sendResponse(cfd, "431 Request Header Fields Too Large", "text/plain; charset=utf-8", too_large, sizeof(too_large) - 1);
+        return;
+    }
 
     char method[8];
     char path[2048];
-    method[0] = '\0';
-    path[0] = '\0';
-    int targetEnd = 0;
-    if (sscanf(req, "%7s %2047s%n", method, path, &targetEnd) != 2 || req[targetEnd] != ' ') {
+    bool http11 = false;
+    if (!parseRequestLine(req, static_cast<size_t>(header_end),
+                          method, sizeof(method), path, sizeof(path), &http11)) {
         static const char bad[] = "bad request line\n";
         (void)server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
         return;
     }
+
+    HttpRequestHeaders headers{};
+    if (!parseRequestHeaders(req, static_cast<size_t>(header_end), &headers) ||
+        (http11 && !headers.hasHost)) {
+        static const char bad[] = "invalid request headers\n";
+        (void)server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+        return;
+    }
+    if (headers.hasHost && !allowedRequestHost(headers.host)) {
+        static const char error[] = "unrecognized Host header\n";
+        (void)server->sendResponse(cfd, "421 Misdirected Request",
+            "text/plain; charset=utf-8", error, sizeof(error) - 1);
+        return;
+    }
+    snprintf(server->requestHost, sizeof(server->requestHost), "%s",
+             allowedRequestHost(headers.host) ? headers.host : AUDIOX_USB_NET_SERVER_IP);
 
     char *query = strchr(path, '?');
     if (query) {
         *query++ = '\0';
     }
 
-    ssize_t content_length = parseContentLength(req, (size_t)header_end);
-    if (content_length < 0) {
-        content_length = 0;
-    }
+    const ssize_t content_length = static_cast<ssize_t>(headers.contentLength);
 
     size_t body_off = (size_t)header_end;
     size_t initial_body_len = have > body_off ? have - body_off : 0;
 
-    if (!strncmp(path, "/api/plugins", 12) &&
-        !pluginHeaders(server, req, body_off, !strcmp(path, "/api/plugins/install") ? &content_length : nullptr)) {
-        const char *error = "invalid plugin request headers\n";
-        (void)server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", error, strlen(error));
+    if (strcmp(path, "/ws") == 0) {
+        if (strcmp(method, "GET") || query || initial_body_len ||
+            !addWebSocketClient(server, cfd, headers)) {
+            static const char error[] = "invalid or unavailable websocket upgrade\n";
+            (void)server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", error, sizeof(error) - 1);
+        }
+        return;
+    }
+    struct ApiResponseScope {
+        HttpServer *server;
+        bool previous;
+        ~ApiResponseScope() { server->apiRequest = previous; }
+    } apiResponseScope{server, server->apiRequest};
+    if (!strncmp(path, "/api/", 5) || !strcmp(path, "/api")) server->apiRequest = true;
+    const bool safeMethod = !strcmp(method, "GET") || !strcmp(method, "HEAD") ||
+        !strcmp(method, "OPTIONS");
+    if (!safeMethod && ((headers.hasOrigin && !sameOriginHost(headers.origin, server->requestHost)) ||
+                        !strcasecmp(headers.fetchSite, "cross-site"))) {
+        static const char error[] = "{\"ok\":false,\"error\":\"cross-origin request rejected\"}\n";
+        (void)server->sendResponse(cfd, "403 Forbidden", "application/json; charset=utf-8",
+                                   error, sizeof(error) - 1);
+        return;
+    }
+    if (initial_body_len > headers.contentLength) {
+        static const char bad[] = "unexpected request bytes\n";
+        (void)server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
         return;
     }
     if (strcmp(path, "/api/plugins/install") == 0) {
@@ -1524,13 +1888,74 @@ static void handleClient(HttpServer *server, int cfd) {
         if (handleApiRequest(server, cfd, method, path, body, body_len, query) == 0) {
             return;
         }
-        static const char err[] = "api handler failed\n";
-        (void)server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+        static const char err[] = "{\"ok\":false,\"error\":\"api handler failed\"}\n";
+        (void)server->sendResponse(cfd, "500 Internal Server Error", "application/json; charset=utf-8", err, sizeof(err) - 1);
         return;
     }
 
     static const char not_found[] = "not found\n";
     (void)server->sendResponse(cfd, "404 Not Found", "text/plain; charset=utf-8", not_found, sizeof(not_found) - 1);
+}
+
+static void pollWebSockets(HttpServer *server) {
+    static constexpr const char *topics[] = {
+        "audio.meters", "midi.note", "midi.cc", "system.info", "routing.things"
+    };
+    static constexpr uint64_t intervals[] = {50, 50, 50, 1000, 1000};
+    const uint64_t now = httpMonotonicMs();
+    for (auto &client : server->websocketClients) {
+        if (client.fd < 0) continue;
+        if (!receiveWebSocket(&client, now) || !flushWebSocket(&client)) {
+            closeWebSocket(&client);
+            continue;
+        }
+        if (client.closeAfterFlush && client.outputOffset == client.outputSize) {
+            closeWebSocket(&client);
+            continue;
+        }
+        if (client.pingAtMs && now >= client.pingAtMs && now - client.pingAtMs > 60000) {
+            closeWebSocket(&client);
+            continue;
+        }
+        if (!client.pingAtMs && now >= client.lastActivityMs &&
+            now - client.lastActivityMs >= 20000 &&
+            client.outputOffset == client.outputSize) {
+            if (!queueWebSocketFrame(&client, 0x9, nullptr, 0)) {
+                closeWebSocket(&client);
+                continue;
+            }
+            client.pingAtMs = now;
+        }
+    }
+
+    for (unsigned topic = 0; topic < sizeof(topics) / sizeof(topics[0]); ++topic) {
+        bool subscribed = false;
+        for (const auto &client : server->websocketClients)
+            subscribed |= client.fd >= 0 && (client.topics & (1U << topic));
+        if (!subscribed || now < server->websocketTopicAtMs[topic]) continue;
+
+        char data[HTTP_WEBSOCKET_FRAME_MAX];
+        size_t dataLength = 0;
+        if (!buildHttpEventJson(server, topics[topic], data, sizeof(data), &dataLength))
+            continue;
+        char message[HTTP_WEBSOCKET_FRAME_MAX + 128];
+        const int prefix = snprintf(message, sizeof(message),
+            "{\"type\":\"event\",\"topic\":\"%s\",\"data\":", topics[topic]);
+        if (prefix < 0 || static_cast<size_t>(prefix) + dataLength + 2 >= sizeof(message))
+            continue;
+        memcpy(message + prefix, data, dataLength);
+        size_t messageLength = static_cast<size_t>(prefix) + dataLength;
+        message[messageLength++] = '}';
+        message[messageLength] = '\0';
+
+        for (auto &client : server->websocketClients) {
+            if (client.fd < 0 || !(client.topics & (1U << topic)) ||
+                client.outputOffset < client.outputSize) continue;
+            if (!queueWebSocketFrame(&client, 0x1, message, messageLength))
+                closeWebSocket(&client);
+        }
+        server->websocketTopicAtMs[topic] = now + intervals[topic];
+    }
 }
 
 } // namespace
@@ -1577,7 +2002,12 @@ int HttpServer::startSocket() {
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(80);
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (inet_pton(AF_INET, AUDIOX_USB_NET_SERVER_IP, &addr.sin_addr) != 1) {
+        printf("[INIT] [ERR] invalid USB network server address: %s\n", AUDIOX_USB_NET_SERVER_IP);
+        close(listen_fd);
+        listen_fd = -1;
+        return RET_WARN;
+    }
 
     if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         printf("[INIT] [WARN] HTTP bind failed on port 80: %s\n", strerror(errno));
@@ -1594,7 +2024,7 @@ int HttpServer::startSocket() {
     }
 
     started = 1;
-    printf("[INIT] HTTP server listening on port 80\n");
+    printf("[INIT] HTTP/WebSocket server listening on %s:80\n", AUDIOX_USB_NET_SERVER_IP);
     return RET_OK;
 }
 
@@ -1610,9 +2040,9 @@ void HttpServer::poll() {
                 continue;
             }
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                return;
+                break;
             }
-            return;
+            break;
         }
 
         // Allow enough time for browser PUT/POST bodies to arrive without
@@ -1620,8 +2050,11 @@ void HttpServer::poll() {
         (void)setSocketTimeouts(cfd, 1500, 1500);
 
         handleClient(this, cfd);
-        close(cfd);
+        bool upgraded = false;
+        for (const auto &client : websocketClients) upgraded |= client.fd == cfd;
+        if (!upgraded) close(cfd);
     }
+    pollWebSockets(this);
 }
 
 int HttpServer::sendResponse(int cfd,
@@ -1640,6 +2073,19 @@ int HttpServer::sendResponseWithHeaders(int cfd, const char *status, const char 
         return -1;
     }
 
+    std::string normalizedError;
+    if (apiRequest && status[0] >= '4' && status[0] <= '5' &&
+        body_data && body_size && content_type &&
+        !strncasecmp(content_type, "text/plain", 10)) {
+        normalizedError = "{\"ok\":false,\"error\":\"";
+        normalizedError += audiox::json::escape(
+            std::string(static_cast<const char *>(body_data), body_size).c_str());
+        normalizedError += "\"}\n";
+        body_data = normalizedError.data();
+        body_size = normalizedError.size();
+        content_type = "application/json; charset=utf-8";
+    }
+
     char disposition[128] = {};
     if (download_name) {
         int n = snprintf(disposition, sizeof(disposition),
@@ -1647,6 +2093,10 @@ int HttpServer::sendResponseWithHeaders(int cfd, const char *status, const char 
         if (n <= 0 || (size_t)n >= sizeof(disposition)) return -1;
     }
     char hdr[2048];
+    static constexpr char securityHeaders[] =
+        "X-Content-Type-Options: nosniff\r\n"
+        "X-Frame-Options: DENY\r\n"
+        "Referrer-Policy: no-referrer\r\n";
     int hlen = snprintf(hdr,
                         sizeof(hdr),
                         "HTTP/1.1 %s\r\n"
@@ -1654,11 +2104,13 @@ int HttpServer::sendResponseWithHeaders(int cfd, const char *status, const char 
                         "Content-Length: %zu\r\n"
                         "%s"
                         "%s"
+                        "%s"
                         "Connection: close\r\n\r\n",
                         status,
                         content_type,
                         body_size,
                         disposition,
+                        securityHeaders,
                         headers ? headers : "");
     if (hlen <= 0 || (size_t)hlen >= sizeof(hdr)) {
         return -1;

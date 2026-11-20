@@ -266,7 +266,8 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Cache parsed config.txt / midi_map.txt + fx_params.txt behind stat fingerprints.
   - [x] Framebuffer UI: row-fill rects, cached pre-scaled logo, idle frame cap.
   - [x] Throttle log fsyncs on the heartbeat; remove fixed boot sleeps.
-- [ ] Harden HTTP API (auth/ACL, size limits review, clearer error payloads)
+- [x] Harden HTTP API (USB/NCM-only binding, strict request framing and size limits, cross-origin write rejection, JSON API errors; auth/ACL deferred for local-only access)
+  - [x] Add generic WebSocket pub/sub for meters, MIDI capture, system info and routing topology; retain HTTP for on-demand and slow-poll data
 
 ### Before announcing the main release
 - [ ] Complete or explicitly defer every open pre-release hardware validation item above; document any known limitations.

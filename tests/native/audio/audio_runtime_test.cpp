@@ -1284,6 +1284,24 @@ int main(int argc, char **argv) {
         return 0;
     }
     assert(argc == 3);
+    {
+        RuntimeGraph runtime{};
+        runtime.snapshot.thingCount = 1;
+        runtime.snapshot.things[0].outputs = 2;
+        runtime.nodeKind[0] = NODE_SOURCE;
+        for (uint8_t channel = 0; channel < kMaxChannelsPerThing; ++channel)
+            std::fill_n(runtime.outputStorage[0][channel], BUFFER_FRAMES, 1.0f);
+
+        clearRuntimeBuffers(&runtime);
+        for (uint8_t channel = 0; channel < 2; ++channel) {
+            assert(runtime.outputs[0][channel] == runtime.outputStorage[0][channel]);
+            for (float sample : runtime.outputStorage[0][channel]) assert(sample == 0.0f);
+        }
+        for (uint8_t channel = 2; channel < kMaxChannelsPerThing; ++channel) {
+            assert(runtime.outputs[0][channel] == runtime.silence);
+            for (float sample : runtime.outputStorage[0][channel]) assert(sample == 1.0f);
+        }
+    }
 #ifdef AUDIOX_DSP_RUNTIME_ONLY
     audiox::graph::NativeGraph dspOwner(argv[1], argv[2]);
     audiox::graph::NativeGraph directOwner(argv[1], argv[2]);

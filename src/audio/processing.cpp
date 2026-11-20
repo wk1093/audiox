@@ -1628,12 +1628,16 @@ static void clearRuntimeBuffers(RuntimeGraph *rt) {
     }
 
     for (uint16_t node = 0; node < rt->snapshot.thingCount; ++node) {
+        const uint8_t outputChannels = std::min<uint8_t>(
+            rt->snapshot.things[node].outputs, kMaxChannelsPerThing);
+        const bool source = rt->nodeKind[node] == NODE_SOURCE;
         for (uint8_t ch = 0; ch < kMaxChannelsPerThing; ++ch) {
             rt->inputs[node][ch] = rt->silence;
-            rt->outputs[node][ch] = rt->nodeKind[node] == NODE_SOURCE ?
+            const bool activeSourceChannel = source && ch < outputChannels;
+            rt->outputs[node][ch] = activeSourceChannel ?
                 rt->outputStorage[node][ch] : rt->silence;
             rt->inputContributionCount[node][ch] = 0;
-            if (rt->nodeKind[node] == NODE_SOURCE)
+            if (activeSourceChannel)
                 memset(rt->outputStorage[node][ch], 0, sizeof(rt->outputStorage[node][ch]));
         }
     }

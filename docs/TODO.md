@@ -242,7 +242,7 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Listen to physical Pi audio and validate realtime performance.
 - [x] Deploy the telemetry collector at telemetry.audiox.wklab.net and validate real consent, reconnect/reboot persistence, and upload behavior on both installations.
 - [x] Validate pitch quality modes and worst-block X-run behavior with real audio on Pi hardware.
-- [ ] Validate power/throttling telemetry on physical Pi 4 and Pi 5 hardware, and Pi 5 fan RPM/stall feedback and onboard power-button shutdown.
+- [x] Validate power/throttling telemetry on physical Pi 4 and Pi 5 hardware, and Pi 5 fan RPM/stall feedback and onboard power-button shutdown.
 - [x] Validate live WebUI/MIDI scene recall with different effect inventories, audible transition quality, and recall latency on hardware.
 - [x] Validate audio-device disconnect/reconnect health and the offline WebUI on the deployed appliance.
 - [x] Validate X-run reduction, recovery interruptions, and latency tradeoffs on Raspberry Pi hardware under representative workloads.
@@ -256,11 +256,12 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Version configuration formats to protect settings across updates and support backup/restore.
   - [x] Add schema versioning to USB settings, routing, MIDI, effects, volumes, and Bluetooth pairing; refuse unsupported newer versions.
   - [x] Validate configuration schema versions when creating or staging a backup.
-- [ ] Stabilize the audio thread under various load conditions and ensure low-latency performance. (maybe dynamic buffer sizing)
+- [x] Stabilize the audio thread under various load conditions and ensure low-latency performance. (maybe dynamic buffer sizing)
   - [x] Add adaptive ALSA period targets after five X-runs in 30 seconds; downshift after 30/60 seconds stable, with 5/10/15-minute in-memory backoff after failed downshifts. Preserve the fixed DSP block size and expose buffer telemetry.
   - [x] Prime enlarged playback queues before startup/recovery; ignore the first runtime minute and 10 seconds after PCM buffer transitions for adaptation and health warnings, while retaining diagnostic totals.
   - [x] Add compile-time-gated, bounded System-page tests for audio-thread overload and whole-system CPU contention; leave normal builds disabled by default.
-- [ ] optimize things
+- [x] Optimize runtime buffer clearing to zero only declared source channels and keep unused outputs on shared silence.
+- [x] optimize things
   - [x] Strip shipped binaries/libraries in initramfs staging and build with board-specific `-mcpu`.
   - [x] Cache parsed config.txt / midi_map.txt + fx_params.txt behind stat fingerprints.
   - [x] Framebuffer UI: row-fill rects, cached pre-scaled logo, idle frame cap.

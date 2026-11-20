@@ -2,6 +2,10 @@
 # Fetch verified official Lua sources; keep native and cross builds in separate roots.
 set -euo pipefail
 
+# Recursive recipes run in non-building Make modes too.
+if [[ "${MAKEFLAGS:-}" =~ ^[^[:space:]-]*q ]]; then exit 1; fi
+if [[ "${MAKEFLAGS:-}" =~ ^[^[:space:]-]*[nt] ]]; then exit 0; fi
+
 usage="usage: build_lua.sh <version> <commit> <build_root> <cc> <ar>"
 VERSION="${1:?${usage}}"
 COMMIT="${2:?${usage}}"
@@ -49,7 +53,11 @@ for component in MAJOR MINOR RELEASE; do
     fi
 done
 # Generic C99 build: no dlopen/readline or platform-specific standard libraries.
-make -s -C "${SRC_DIR}" -j"$(nproc)" liblua.a \
+make_jobs=()
+if [[ "${MAKELEVEL:-0}" == 0 ]]; then
+    make_jobs=(-j"$(nproc)")
+fi
+make -s -C "${SRC_DIR}" "${make_jobs[@]}" liblua.a \
     CC="${CC}" AR="${AR} rc" RANLIB="${AR} s" CFLAGS="-O2 -std=c99"
 cp "${SRC_DIR}/lua.h" "${SRC_DIR}/luaconf.h" \
     "${SRC_DIR}/lauxlib.h" "${BUILD_ROOT}/include/"

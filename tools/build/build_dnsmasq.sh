@@ -2,6 +2,10 @@
 # Fetch, verify, and statically cross-compile dnsmasq for the runtime image.
 set -euo pipefail
 
+# Recursive recipes run in non-building Make modes too.
+if [[ "${MAKEFLAGS:-}" =~ ^[^[:space:]-]*q ]]; then exit 1; fi
+if [[ "${MAKEFLAGS:-}" =~ ^[^[:space:]-]*[nt] ]]; then exit 0; fi
+
 usage="usage: build_dnsmasq.sh <version> <sha256> <out_dir> <output_binary> [cc] [fetch_command]"
 VERSION="${1:?${usage}}"
 SHA256="${2:?${usage}}"
@@ -41,7 +45,11 @@ rm -rf "${SRC_DIR}"
 tar -xJf "${TARBALL}" -C "${OUT_DIR}/build"
 
 echo "Building static dnsmasq ${VERSION} with ${CC}..."
-make -C "${SRC_DIR}" -j"$(nproc)" \
+make_jobs=()
+if [[ "${MAKELEVEL:-0}" == 0 ]]; then
+    make_jobs=(-j"$(nproc)")
+fi
+make -C "${SRC_DIR}" "${make_jobs[@]}" \
     CC="${CC}" \
     COPTS="${COPTS}" \
     CFLAGS="-Wall -W -O2" \

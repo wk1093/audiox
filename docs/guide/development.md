@@ -135,8 +135,8 @@ Downloads require network access during dependency preparation. Do not mistake a
 
 Firmware builds also compile a pinned LLVM 21.1.8 AArch64 backend from source
 in `out/graph-llvm`. The first build is substantial; allow additional time and
-disk space. Its default parallelism is two jobs; set `LLVM_BUILD_JOBS` to
-change it without changing the rest of the build. The statically linked
+disk space. See [Build parallelism](#build-parallelism) for job limits and
+the `LLVM_BUILD_JOBS` override. The statically linked
 `/sbin/audiox-graph-compiler` is included automatically, along with LLVM's
 license. Subsequent builds reuse the source and library cache. The host LLVM
 used by tests is independent of this target dependency. Effect sources build
@@ -144,6 +144,26 @@ to LLVM bitcode under `out/dsp-bitcode` and ship in `/usr/share/audiox/dsp`;
 the production executable contains effect state/control handling, not the
 built-in sample-processing kernels. Each graph compilation optimizes and
 recompiles these kernels on the device. There is no compiled-in DSP fallback.
+
+## Build parallelism
+
+`make` defaults to `nproc` parallel jobs. An explicit limit such as
+`make -j8 initramfs` or `make -j1 initramfs` takes precedence. ALSA, SBC,
+Lua (host and target), and dnsmasq share Make's jobserver instead of starting
+their own CPU-count-sized worker pools. Lua and dnsmasq build scripts use
+`nproc` when invoked outside Make.
+
+LLVM keeps its Ninja build directory and incremental outputs. With GNU Make
+4.4+ using its default FIFO jobserver and Ninja 1.13+, LLVM shares the same
+global budget as the other builds. With older tools (or Make's pipe jobserver),
+LLVM uses Make's numeric `-j` limit as a separate pool; total concurrency can
+therefore exceed that limit while other dependencies build. Bare `make -j`
+and standalone LLVM builds use `nproc` for this fallback.
+
+LLVM compilation is memory-intensive. Reduce the whole build's concurrency with
+`make -j2`, or set `LLVM_BUILD_JOBS=2 make -j8` to cap only LLVM. This explicit
+LLVM override starts a separate pool even with a FIFO jobserver.
+`LLVM_BUILD_JOBS` must be a positive integer.
 
 ## Configure a board
 

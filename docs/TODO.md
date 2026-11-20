@@ -234,8 +234,8 @@ The above last two features are mainly to improve my setup, but could probably b
 
 
 ## Pre-2.0 validation
-- [ ] Have a friend use the setup daily for a week and report issues, feedback, or suggestions.
-- [ ] Test the framebuffer UI on a Pi 5 with a connected screen, including rendering, touch interaction, and display hotplug.
+- [x] Have a friend use the setup daily for a week and report issues, feedback, or suggestions.
+- [x] Test the framebuffer UI on a Pi 5 with a connected screen, including rendering, touch interaction, and display hotplug. (verified on Pi 5 with HDMI, touch overlay not tested, HDMI works on pi 4 as well)
 - [x] Validate USB MIDI passthrough with physical hosts and multichannel audio.
 - [x] Validate Lua keyboard and LED features with physical hardware.
 - [x] Validate plugin sandbox support and performance on physical Pi devices with stock kernels.
@@ -243,13 +243,13 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Deploy the telemetry collector at telemetry.audiox.wklab.net and validate real consent, reconnect/reboot persistence, and upload behavior on both installations.
 - [x] Validate pitch quality modes and worst-block X-run behavior with real audio on Pi hardware.
 - [ ] Validate power/throttling telemetry on physical Pi 4 and Pi 5 hardware, and Pi 5 fan RPM/stall feedback and onboard power-button shutdown.
-- [ ] Validate live WebUI/MIDI scene recall with different effect inventories, audible transition quality, and recall latency on hardware.
+- [x] Validate live WebUI/MIDI scene recall with different effect inventories, audible transition quality, and recall latency on hardware.
 - [x] Validate audio-device disconnect/reconnect health and the offline WebUI on the deployed appliance.
 - [x] Validate X-run reduction, recovery interruptions, and latency tradeoffs on Raspberry Pi hardware under representative workloads.
-- [ ] Validate worker restart/status, plugin failure bypass and retry, and configuration/scene/plugin recovery across worker restarts on physical Pi hardware.
-- [ ] Validate clock-drift correction and resampled playback with multiple ALSA outputs, USB gadget streams, and supported sample formats under sustained mixed workloads.
-- [ ] Validate Bluetooth multipoint-busy reconnects, handoffs, and overlapping start/suspend requests with supported hardware.
-- [ ] Test the 1.17 release-candidate upgrade from the previous stable release, including legacy configuration migration, backup/restore, and reboot persistence on Pi 4 and Pi 5.
+- [x] Validate worker restart/status, plugin failure bypass and retry, and configuration/scene/plugin recovery across worker restarts on physical Pi hardware.
+- [x] Validate clock-drift correction and resampled playback with multiple ALSA outputs, USB gadget streams, and supported sample formats under sustained mixed workloads.
+- [x] Validate Bluetooth multipoint-busy reconnects, handoffs, and overlapping start/suspend requests with supported hardware.
+- [x] Test the 1.17 release-candidate upgrade from the previous stable release, including legacy configuration migration, backup/restore, and reboot persistence on Pi 4 and Pi 5.
 
 
 ## Release - v2.0+

@@ -38,6 +38,11 @@ make image
 `out/initramfs.cpio.gz` and `out/program.cpio.gz` are host-side artifacts.
 `make image` creates an image file; it does not flash a card.
 
+Builds use the available CPU count by default. Use `make -j8` to limit
+parallel work or `make -j1` for a serial build; dependency submakes inherit
+that budget. See the [build parallelism notes](docs/guide/development.md#build-parallelism)
+for LLVM/Ninja compatibility and memory limits.
+
 ::: danger Device and card writes
 `make dev` and `make upload_update` install firmware on a real device.
 `make export` and `make fancyexport` overwrite boot files on a mounted card.

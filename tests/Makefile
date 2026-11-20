@@ -57,6 +57,7 @@ $(OUT_DIR)/host/audiox-storage-expand-test: tests/native/system/storage_expand_t
 
 test-build-dependencies:
 	bash tests/build/build_dependencies_test.sh
+	bash tests/build/build_parallelism_test.sh
 	bash tests/build/graph_llvm_release_test.sh
 
 .PHONY: test-image-layout

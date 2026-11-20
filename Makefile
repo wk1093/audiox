@@ -6,6 +6,13 @@ LIBS = -lm -pthread
 
 PKG_FETCH ?= curl -fsSL
 
+# Use all available CPUs unless the caller supplied a job limit (including -j1).
+ifeq ($(filter -j%,$(MAKEFLAGS)),)
+ifeq ($(MAKELEVEL),0)
+MAKEFLAGS += -j$(shell nproc)
+endif
+endif
+
 # AUDIOX_QEMU=1 builds the QEMU debug variant (make debug): virtio disk
 # (/dev/vda) instead of the SD card, usbip-vudc instead of the dwc2 UDC, and a
 # generic arm64 kernel. Its build output goes to out/qemu; toolchain deps are
@@ -114,7 +121,7 @@ RUNTIME_LIBS += $(LUA_STATIC_LIB) -lm
 # AUDIOX_VERSION_BUILD defaults to the 12-character git commit for nightly builds.
 AUDIOX_VERSION_MAJOR ?= 1
 AUDIOX_VERSION_MINOR ?= 17
-AUDIOX_VERSION_PATCH ?= 0
+AUDIOX_VERSION_PATCH ?= 1
 AUDIOX_VERSION_PRERELEASE ?= 
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
@@ -446,7 +453,7 @@ alsa_source:
 			--disable-shared \
 			--enable-static \
 			CC="$(CC)" CXX="$(CXX)"
-	$(MAKE) -C "$(ALSA_BUILD_DIR)" -j$$(nproc)
+	$(MAKE) -C "$(ALSA_BUILD_DIR)"
 	$(MAKE) -C "$(ALSA_BUILD_DIR)" DESTDIR="$(ALSA_SYSROOT)" install
 	@echo "ALSA static lib ready: $(ALSA_STATIC_LIB)"
 
@@ -476,7 +483,7 @@ $(SBC_STATIC_LIB) $(SBC_HEADER) &:
 		--disable-tools \
 		--disable-tester \
 		CC="$(CC)"
-	$(MAKE) -C "$(SBC_BUILD_DIR)" -j$$(nproc)
+	$(MAKE) -C "$(SBC_BUILD_DIR)"
 	$(MAKE) -C "$(SBC_BUILD_DIR)" DESTDIR="$(SBC_SYSROOT)" install
 	@test -f "$(SBC_STATIC_LIB)" && test -f "$(SBC_HEADER)" || { echo "SBC install is missing $(SBC_STATIC_LIB) or $(SBC_HEADER)"; exit 1; }
 	@touch "$(SBC_STATIC_LIB)" "$(SBC_HEADER)"
@@ -488,13 +495,13 @@ dnsmasq: $(DNSMASQ_BIN)
 lua: $(LUA_STATIC_LIB) $(LUA_HEADERS) $(LUA_LICENSE)
 
 $(LUA_STATIC_LIB) $(LUA_HEADERS) $(LUA_LICENSE) &: tools/build/build_lua.sh
-	@bash "$(CURDIR)/tools/build/build_lua.sh" "$(LUA_VERSION)" "$(LUA_COMMIT)" "$(LUA_BUILD_ROOT)" "$(CC)" "$(LUA_AR)"
+	+@bash "$(CURDIR)/tools/build/build_lua.sh" "$(LUA_VERSION)" "$(LUA_COMMIT)" "$(LUA_BUILD_ROOT)" "$(CC)" "$(LUA_AR)"
 
 $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS) &: tools/build/build_lua.sh
-	@bash "$(CURDIR)/tools/build/build_lua.sh" "$(LUA_VERSION)" "$(LUA_COMMIT)" "$(HOST_LUA_BUILD_ROOT)" "$(HOSTCC)" "$(HOSTAR)"
+	+@bash "$(CURDIR)/tools/build/build_lua.sh" "$(LUA_VERSION)" "$(LUA_COMMIT)" "$(HOST_LUA_BUILD_ROOT)" "$(HOSTCC)" "$(HOSTAR)"
 
 $(DNSMASQ_BIN): tools/build/build_dnsmasq.sh
-	@"$(CURDIR)/tools/build/build_dnsmasq.sh" "$(DNSMASQ_VERSION)" "$(DNSMASQ_SHA256)" "$(SHARED_OUT_DIR)" "$@" "$(CC)" "$(PKG_FETCH)"
+	+@"$(CURDIR)/tools/build/build_dnsmasq.sh" "$(DNSMASQ_VERSION)" "$(DNSMASQ_SHA256)" "$(SHARED_OUT_DIR)" "$@" "$(CC)" "$(PKG_FETCH)"
 
 # The static dnsmasq.conf must agree with CONFIG_DEVICE_IP (a /24 on usb0).
 check_dnsmasq_conf:
@@ -606,7 +613,7 @@ $(ROOTFS_DIR)/sbin/audiox-audio-worker: $(RUNTIME_DEPS) $(RUNTIME_OBJS) $(AUDIO_
 	$(RUNTIME_COMPILER) $(RUNTIME_FLAGS) -o "$@" $(RUNTIME_OBJS) $(AUDIO_WORKER_OBJ) $(RUNTIME_LIBS)
 
 $(GRAPH_LLVM_ROOT)/ready: tools/build/build_graph_llvm.sh
-	bash "$<" "$(GRAPH_LLVM_ROOT)" "$(CC)" "$(CXX)"
+	+bash "$<" "$(GRAPH_LLVM_ROOT)" "$(CC)" "$(CXX)"
 
 $(GRAPH_COMPILER_BIN): tools/build/graph-compiler.cpp include/audio/graph_native.hpp include/audio/plugin_native.hpp include/audio/graph_block.hpp include/audio/effects/native.hpp $(GRAPH_LLVM_ROOT)/ready Makefile
 	@mkdir -p "$(dir $@)"

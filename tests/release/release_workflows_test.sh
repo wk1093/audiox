@@ -203,6 +203,22 @@ grep -Fq '!tools/release/release-notes.py' "$BUILD"
 grep -Fq -- "- 'desktop/**'" "$BUILD"
 grep -Fq 'needs: [prepare, build, desktop]' "$BUILD"
 grep -Fq 'pattern: desktop-*' "$BUILD"
+windows_build="$(awk '
+    $0 == "      - name: Build and smoke-test Windows executable" { found = 1; next }
+    found && /^      - / { exit }
+    found { print }
+' "$BUILD")"
+windows_test="$(awk '
+    $0 == "      - name: Test Windows companion connection" { found = 1; next }
+    found && /^      - / { exit }
+    found { print }
+' "$BUILD")"
+grep -Fq 'shell: msys2 {0}' <<< "$windows_build"
+! grep -Fq 'node --test' <<< "$windows_build"
+grep -Fq 'shell: pwsh' <<< "$windows_test"
+grep -Fq "AUDIOX_DESKTOP_WINDOWS: '1'" <<< "$windows_test"
+grep -Fq 'node --test tests/desktop/companion_test.js' <<< "$windows_test"
+grep -F -A4 -- '- name: Set up Windows Node.js' "$BUILD" | grep -Fq 'actions/setup-node@v4'
 for name in "Get FFmpeg" "Build SD Card Image (.img)" "Build Update Archive (.axu)" \
     "Package Imager image" "Upload Imager publishing files" \
     "Upload SD Card Image Artifact" "Upload Update Archive Artifact"; do

@@ -306,6 +306,23 @@ unavailable or the query failed. Both calls are callback-only. Linux requires
 `playerctl`; updates arrive approximately every five seconds. Status is a
 snapshot at script evaluation, not a synchronous desktop query.
 
+### Desktop stream routing
+
+`desktop.route(stream_id, sink_id)` queues an experimental Linux `pactl`
+stream move. IDs are unsigned 32-bit numbers from `pactl list short
+sink-inputs` and `pactl list short sinks`; they may change as devices and
+streams reconnect. This requires the device-management permission and a
+connected companion advertising `route_stream`. Only one request can be
+pending; another request fails the script.
+
+The call queues work asynchronously, not confirmation that routing succeeded.
+Failures and timeouts are reported in the device logs. On disconnect or
+termination the companion attempts to restore streams it moved, unless they
+have since been moved elsewhere. Restoration is best-effort, including when
+streams disappear or the audio server restarts. Automatic app matching,
+persisted routing rules, stereo-pair selection, and WebUI controls are not yet
+available.
+
 ### Meter readings
 
 `meters.get(id[, channel])` reads a routing node's published linear peak meter.

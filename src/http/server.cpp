@@ -1,5 +1,6 @@
 #include "http/context.hpp"
 #include "http/websocket.hpp"
+#include "desktop/routing.hpp"
 #include <limits.h>
 #include "http/ffmpeg.hpp"
 #include "audio/context.hpp"
@@ -113,6 +114,12 @@ struct HttpTransport {
     uint64_t nextEvent[eventCount]{};
     int rebootCommand{};
     uint64_t rebootAt{};
+    bool desktopCanRoute{};
+    bool routePending{};
+    bool routeSent{};
+    uint32_t routeSequence{};
+    desktop::RouteCommand route{};
+    uint64_t routeDeadline{};
 };
 
 #define HTTP_REQ_MAX 65536
@@ -356,7 +363,8 @@ static bool desktopToken(const char *text, size_t length, size_t limit) {
     return true;
 }
 
-static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *media = nullptr) {
+static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *media = nullptr,
+                              bool *canRoute = nullptr) {
     if (!data || !length || length > 1024) return false;
     SubscriptionParser parser{reinterpret_cast<const char *>(data),
                               reinterpret_cast<const char *>(data) + length};
@@ -364,6 +372,7 @@ static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *
     unsigned fields = 0;
     bool closed = false;
     DesktopMedia parsedMedia = DesktopMedia::Unavailable;
+    bool parsedRoute = false;
     for (unsigned i = 0; i < 5; ++i) {
         const char *key, *value;
         size_t keyLength, valueLength;
@@ -386,6 +395,7 @@ static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *
                 if (count && !parser.character(',')) return false;
                 if (++count > 16 || !parser.string(&value, &valueLength) ||
                     !desktopToken(value, valueLength, 32)) return false;
+                if (valueLength == 12 && !memcmp(value, "route_stream", 12)) parsedRoute = true;
             }
         } else {
             if (!parser.string(&value, &valueLength)) return false;
@@ -406,6 +416,7 @@ static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *
     parser.whitespace();
     if (parser.cursor != parser.end) return false;
     if (media) *media = parsedMedia;
+    if (canRoute) *canRoute = parsedRoute;
     return true;
 }
 
@@ -476,8 +487,31 @@ static bool receiveWebSocket(HttpWebSocketClient *client, uint64_t now, HttpServ
             client->pingAtMs = 0;
         } else if (frame.opcode == 0x1) {
             if (desktopServer) {
+                uint32_t resultId;
+                bool resultOk;
+                if (desktop::parseRouteResult(
+                        std::string_view(reinterpret_cast<const char *>(payload), frame.length),
+                        resultId, resultOk)) {
+                    std::lock_guard<std::mutex> lock(desktopServer->transport->mutex);
+                    auto &transport = *desktopServer->transport;
+                    if (!transport.routePending || !transport.routeSent || transport.route.id != resultId)
+                        return false;
+                    if (!resultOk) printf("[HTTP] [WARN] Desktop route request %u failed\n", resultId);
+                    transport.routePending = transport.routeSent = false;
+                    continue;
+                }
                 DesktopMedia media;
-                if (!parseDesktopHello(payload, frame.length, &media)) return false;
+                bool canRoute;
+                if (!parseDesktopHello(payload, frame.length, &media, &canRoute)) return false;
+                {
+                    std::lock_guard<std::mutex> lock(desktopServer->transport->mutex);
+                    desktopServer->transport->desktopCanRoute = canRoute;
+                    if (!canRoute && desktopServer->transport->routePending &&
+                        !desktopServer->transport->routeSent) {
+                        printf("[HTTP] [WARN] Desktop route request cancelled: capability unavailable\n");
+                        desktopServer->transport->routePending = false;
+                    }
+                }
                 desktopServer->desktopMedia.store(media);
                 client->desktopIdentified = true;
                 publishDesktopStatus(desktopServer, payload, frame.length);
@@ -2153,12 +2187,35 @@ static void pollDesktopWebSocket(HttpServer *server, uint64_t now) {
     if (ok && !client.desktopIdentified && now - client.connectedAtMs > 5000) ok = false;
     if (ok && client.pingAtMs && now - client.pingAtMs > 10000) ok = false;
     if (ok && client.closeAfterFlush && client.outputSize == client.outputOffset) ok = false;
+    if (ok && client.desktopIdentified) {
+        std::lock_guard<std::mutex> lock(server->transport->mutex);
+        auto &transport = *server->transport;
+        if (transport.routePending && now >= transport.routeDeadline) {
+            printf("[HTTP] [WARN] Desktop route request timed out\n");
+            ok = false;
+        } else if (transport.routePending && !transport.routeSent &&
+                   client.outputSize == client.outputOffset && !client.closeAfterFlush) {
+            const std::string command = desktop::routeCommand(transport.route);
+            ok = queueWebSocketFrame(&client, 0x1, command.data(), command.size());
+            if (ok) {
+                transport.routeSent = true;
+                transport.routeDeadline = now + 10000;
+            }
+        }
+    }
     if (ok && !client.pingAtMs && now - client.lastActivityMs >= 5000 &&
         client.outputSize == client.outputOffset) {
         ok = queueWebSocketFrame(&client, 0x9, nullptr, 0);
         client.pingAtMs = now;
     }
     if (!ok) {
+        {
+            std::lock_guard<std::mutex> lock(server->transport->mutex);
+            if (server->transport->routePending)
+                printf("[HTTP] [WARN] Desktop route request lost its connection\n");
+            server->transport->routePending = server->transport->routeSent = false;
+            server->transport->desktopCanRoute = false;
+        }
         server->desktopMedia.store(DesktopMedia::Unavailable);
         if (client.desktopIdentified) publishDesktopStatus(server);
         closeWebSocket(&client);
@@ -2468,7 +2525,20 @@ HttpServer::HttpServer(Audiox *context) : app(context) {
     if (app) {
         app->http = this;
     }
+
     loadHtmlBody(this, HTTP_DEFAULT_HTML_PATH);
+}
+
+int HttpServer::requestDesktopRoute(uint32_t stream, uint32_t sink) {
+    if (!transport) return RET_WARN;
+    std::lock_guard<std::mutex> lock(transport->mutex);
+    if (!transport->desktopCanRoute || transport->routePending) return RET_WARN;
+    if (++transport->routeSequence == 0) ++transport->routeSequence;
+    transport->route = {transport->routeSequence, stream, sink};
+    transport->routePending = true;
+    transport->routeSent = false;
+    transport->routeDeadline = httpMonotonicMs() + 10000;
+    return RET_OK;
 }
 
 HttpServer::~HttpServer() {

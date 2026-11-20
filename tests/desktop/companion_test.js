@@ -27,6 +27,18 @@ test('companion announces detected capabilities, responds to ping, and reconnect
   });
   if (!windows) {
     fs.writeFileSync(path.join(dir, 'wpctl'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(dir, 'pactl'), `#!/bin/sh
+case "$1 $2 $3" in
+  'list short sink-inputs')
+    IFS= read -r sink < "$XDG_RUNTIME_DIR/sink"
+    printf '11\\t%s\\t22\\tprotocol\\tformat\\n' "$sink" ;;
+  'move-sink-input 11 '*)
+    if [ "$3" = 99 ]; then echo 'sink unavailable' >&2; exit 1; fi
+    printf '%s\\n' "$3" > "$XDG_RUNTIME_DIR/sink" ;;
+  *) exit 1 ;;
+esac
+`, { mode: 0o755 });
+    fs.writeFileSync(path.join(dir, 'sink'), '1\n');
     fs.writeFileSync(path.join(dir, 'playerctl'), `#!/bin/sh
 IFS= read -r status < "$XDG_RUNTIME_DIR/media-status"
 case "$status" in
@@ -91,13 +103,25 @@ esac
   assert.equal(first.opcode, 1);
   assert.equal(first.masked, true);
   const firstHello = JSON.parse(first.payload);
-  assert.deepEqual(firstHello.capabilities, windows ? ['default_sink'] : ['pipewire', 'default_sink']);
+  assert.deepEqual(firstHello.capabilities, windows ? ['default_sink'] : ['pipewire', 'default_sink', 'route_stream']);
   if (!windows) {
+    const route = async (id, sink, ok) => {
+      const response = once(events, 'frame');
+      const payload = Buffer.from(`{"type":"route","id":${id},"stream":11,"sink":${sink}}`);
+      first.socket.write(Buffer.concat([Buffer.from([0x81, payload.length]), payload]));
+      assert.deepEqual(JSON.parse((await response)[0].payload), { type: 'route_result', id, ok });
+    };
+    await route(1, 2, true);
+    assert.equal(fs.readFileSync(path.join(dir, 'sink'), 'utf8'), '2\n');
+    await route(2, 99, false);
+    assert.equal(fs.readFileSync(path.join(dir, 'sink'), 'utf8'), '2\n');
+    fs.writeFileSync(path.join(dir, 'sink'), '3\n');
+    await route(3, 4, true);
     const updated = once(events, 'frame');
     const ready = Buffer.from('{"type":"ready","protocol":"audiox.desktop.v1","media_status":true}');
     first.socket.write(Buffer.concat([Buffer.from([0x81, ready.length]), ready]));
     const mediaHello = JSON.parse((await updated)[0].payload);
-    assert.deepEqual(mediaHello.capabilities, ['pipewire', 'default_sink', 'mpris']);
+    assert.deepEqual(mediaHello.capabilities, ['pipewire', 'default_sink', 'route_stream', 'mpris']);
     assert.equal(mediaHello.media, 'playing');
   }
 
@@ -129,6 +153,7 @@ esac
   const reconnected = once(events, 'frame');
   first.socket.destroy();
   const again = (await reconnected)[0];
+  if (!windows) assert.equal(fs.readFileSync(path.join(dir, 'sink'), 'utf8'), '3\n');
   assert.equal(again.opcode, 1);
   assert.deepEqual(JSON.parse(again.payload).capabilities, windows ? ['default_sink'] : []);
   const oldReady = Buffer.from('{"type":"ready","protocol":"audiox.desktop.v1"}');

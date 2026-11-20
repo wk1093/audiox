@@ -1,4 +1,5 @@
 #include "../../include/http/websocket.hpp"
+#include "../../include/desktop/routing.hpp"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -38,12 +39,20 @@ static void closeSocket(Socket fd) { closesocket(fd); }
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#ifdef __linux__
+#include "routing.hpp"
+#endif
 using Socket = int;
 constexpr Socket invalidSocket = -1;
 static void closeSocket(Socket fd) { close(fd); }
 #endif
 
 namespace {
+
+#ifndef _WIN32
+volatile sig_atomic_t stopping = 0;
+void stopSignal(int) { stopping = 1; }
+#endif
 
 bool setNonBlocking(Socket fd, bool enabled) {
 #ifdef _WIN32
@@ -315,6 +324,7 @@ std::string hello(const std::string &media) {
     if (stat(socketPath.c_str(), &status) == 0 && S_ISSOCK(status.st_mode)) {
         capabilities = "\"pipewire\"";
         if (hasExecutable("wpctl")) capabilities += ",\"default_sink\"";
+        if (hasExecutable("pactl")) capabilities += ",\"route_stream\"";
     }
     if (!media.empty()) {
         if (!capabilities.empty()) capabilities += ',';
@@ -340,8 +350,14 @@ void runConnection(Socket fd, bool &connected) {
     if (!sendFrame(fd, 0x1, previous)) return;
     connected = true;
     std::fprintf(stderr, "AudioX: desktop connected.\n");
+#ifdef __linux__
+    desktop::Routing routing(fd);
+#endif
     auto nextCheck = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (true) {
+#ifndef _WIN32
+        if (stopping) return;
+#endif
         const int ready = waitSocket(fd, false, 1);
         if (ready < 0) return;
         if (ready > 0) {
@@ -356,6 +372,16 @@ void runConnection(Socket fd, bool &connected) {
                     mediaNegotiated = true;
                     nextCheck = std::chrono::steady_clock::now();
                 }
+#ifdef __linux__
+                else {
+                    desktop::RouteCommand command;
+                    if (desktop::parseRouteCommand(payload, command)) {
+                        const bool success = routing.move(command.stream, command.sink);
+                        const std::string response = desktop::routeResult(command.id, success);
+                        if (!sendFrame(fd, 0x1, response)) return;
+                    }
+                }
+#endif
             } else if (opcode != 0xA) return;
         }
         if (std::chrono::steady_clock::now() >= nextCheck) {
@@ -408,6 +434,8 @@ int main(int argc, char **argv) {
     }
 #else
     signal(SIGPIPE, SIG_IGN);
+    signal(SIGTERM, stopSignal);
+    signal(SIGINT, stopSignal);
 #endif
     in_addr address{};
     if (inet_pton(AF_INET, host, &address) != 1) {
@@ -416,7 +444,13 @@ int main(int argc, char **argv) {
     }
     unsigned delay = 1;
     bool reported = false;
-    while (true) {
+    while (
+#ifndef _WIN32
+        !stopping
+#else
+        true
+#endif
+    ) {
         const Socket fd = connectTo(host, port);
         if (fd != invalidSocket) {
             const auto connectedAt = std::chrono::steady_clock::now();
@@ -430,6 +464,9 @@ int main(int argc, char **argv) {
             std::fprintf(stderr, "AudioX: disconnected or WebSocket unavailable; retrying.\n");
             reported = true;
         }
+#ifndef _WIN32
+        if (stopping) break;
+#endif
         std::this_thread::sleep_for(std::chrono::seconds(delay));
         delay = std::min(delay * 2, 5U);
     }

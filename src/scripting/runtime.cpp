@@ -517,6 +517,12 @@ void ScriptContext::pollMacros(uint64_t now) {
         failMacro(error);
         return;
       }
+    } else if (action.kind == ScriptKind::DesktopRoute) {
+      if (!midi.app || !midi.app->http ||
+          midi.app->http->requestDesktopRoute(action.value, static_cast<uint32_t>(action.number)) != RET_OK) {
+        failMacro("desktop.route failed: companion unavailable or another route request is pending");
+        return;
+      }
     } else if (action.kind == ScriptKind::BluetoothScan ||
                action.kind == ScriptKind::BluetoothPair ||
                action.kind == ScriptKind::BluetoothConnect ||

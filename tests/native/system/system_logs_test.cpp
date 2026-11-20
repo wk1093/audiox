@@ -7,7 +7,9 @@
 #include "../../../src/http/logs.cpp"
 
 static std::string responseStatus, responseBody;
+struct HttpTransport {};
 HttpServer::HttpServer(Audiox *context) : app(context) {}
+HttpServer::~HttpServer() = default;
 int HttpServer::sendResponse(int, const char *status, const char *, const void *body, size_t size, const char *) const {
     responseStatus = status;
     responseBody.assign(static_cast<const char *>(body), size);

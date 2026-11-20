@@ -351,6 +351,20 @@ int desktopIsPlaying(lua_State *lua) {
     return 1;
 }
 
+int desktopRoute(lua_State *lua) {
+    if (lua_gettop(lua) != 2 || !lua_isinteger(lua, 1) || !lua_isinteger(lua, 2))
+        return luaL_error(lua, "desktop.route expects two integer IDs");
+    scriptUtilityCheck(lua, true, false);
+    const lua_Integer stream = lua_tointeger(lua, 1);
+    const lua_Integer sink = lua_tointeger(lua, 2);
+    if (stream < 0 || stream > UINT32_MAX || sink < 0 || sink > UINT32_MAX)
+        return luaL_error(lua, "desktop.route: stream and sink must be unsigned 32-bit IDs");
+    auto *action = append(lua, ScriptKind::DesktopRoute);
+    action->value = static_cast<uint32_t>(stream);
+    action->number = static_cast<double>(sink);
+    return 0;
+}
+
 int deviceControl(lua_State *lua) {
     auto kind = static_cast<ScriptKind>(lua_tointeger(lua, lua_upvalueindex(1)));
     int arguments = kind == ScriptKind::EffectToggle ? 1 :
@@ -947,6 +961,8 @@ void libraries(lua_State *lua) {
     lua_setfield(lua, -2, "media_status");
     lua_pushcfunction(lua, desktopIsPlaying);
     lua_setfield(lua, -2, "is_playing");
+    lua_pushcfunction(lua, desktopRoute);
+    lua_setfield(lua, -2, "route");
     lua_setglobal(lua, "desktop");
     const luaL_Reg helpers[] = {{"millis", millis}, {"epoch", epoch}, {"log", log}, {"choose", choose},
         {"clamp", clamp}, {"map", map}, {"round", round}, {nullptr, nullptr}};

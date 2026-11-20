@@ -53,7 +53,7 @@ enum class ScriptKind { Tap, Wait, Light, Press, Release, Type, Log, SoundPlay, 
                             EffectEnable, EffectToggle, EffectSet, VolumeSet, VolumeAdjust, ConfigWrite,
                             StorageWrite, StorageRemove, ScriptConfigSet, SystemRestart, BluetoothScan,
                             BluetoothPair, BluetoothConnect, BluetoothDisconnect, BluetoothUnpair, BluetoothMediaKey,
-                            BluetoothAutoConnect, SettingsSet };
+                            BluetoothAutoConnect, SettingsSet, DesktopRoute };
 
 enum class ScriptValueKind { Boolean, Number, String };
 
@@ -208,6 +208,13 @@ inline bool scriptNeedsDevicePermission(const char *source) {
         for (const char *name : {"config", "settings", "system", "bluetooth"})
             if (static_cast<size_t>(source - start) == strlen(name) &&
                 !strncmp(start, name, static_cast<size_t>(source - start))) return true;
+        if (static_cast<size_t>(source - start) == 7 && !strncmp(start, "desktop", 7)) {
+            const char *member = source;
+            while (*member == ' ' || *member == '\t' || *member == '\r' || *member == '\n') ++member;
+            if (*member++ != '.') continue;
+            while (*member == ' ' || *member == '\t' || *member == '\r' || *member == '\n') ++member;
+            if (!strncmp(member, "route", 5) && !identifier(member[5])) return true;
+        }
     }
     return false;
 }

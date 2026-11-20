@@ -1,9 +1,9 @@
 # AudioX Companion App
 
 **Status:** The background companion connects and reports detected host
-capabilities and Linux media playback status. Audio device controls, routing,
-media controls, other Lua host actions, shortcuts, and the system tray are not yet
-implemented.
+capabilities and Linux media playback status. Experimental Linux stream routing
+is available through Lua. Automatic app routing, audio device controls, media
+controls, shortcuts, and the system tray are not yet implemented.
 
 ## Connection
 
@@ -23,6 +23,11 @@ when disconnected.
 that socket and an executable `wpctl` were detected; on Windows it denotes
 platform support. These are host detections, **not** implemented AudioX actions.
 Detection does not guarantee that the host audio service will accept a command.
+
+On Linux, `route_stream` indicates that a PipeWire socket and `pactl` are
+available. `desktop.route(stream_id, sink_id)` queues a manual stream move;
+see the [Lua API](../docs/lua/api.md#desktop-stream-routing) for limitations.
+The companion attempts to restore its changes when it disconnects or stops.
 
 On Linux, `mpris` means `playerctl` is available on PATH. The companion queries
 all MPRIS players every five seconds; the WebUI shows Playing if any player is

@@ -225,7 +225,8 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
     readUntil(desktop, [](const auto &response) {
         return response.find("Sec-WebSocket-Protocol: audiox.desktop.v1") != std::string::npos;
     });
-    const std::string hello = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["pipewire","default_sink"]})";
+    assert(server.requestDesktopRoute(11, 2) == RET_WARN);
+    const std::string hello = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["pipewire","default_sink","route_stream"]})";
     assert(parseDesktopHello(reinterpret_cast<const uint8_t *>(hello.data()), hello.size()));
     const std::string mediaHello = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["mpris"],"media":"playing"})";
     assert(parseDesktopHello(reinterpret_cast<const uint8_t *>(mediaHello.data()), mediaHello.size()));
@@ -241,6 +242,19 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
     readUntil(ws, [](const auto &response) {
         return response.find("\"hostname\":\"workstation\"") != std::string::npos &&
             response.find("\"default_sink\"") != std::string::npos;
+    });
+    assert(server.requestDesktopRoute(11, 2) == RET_OK);
+    assert(server.requestDesktopRoute(12, 3) == RET_WARN);
+    readUntil(desktop, [](const auto &response) {
+        return response.find(R"({"type":"route","id":1,"stream":11,"sink":2})") != std::string::npos;
+    });
+    const std::string routeResult = R"({"type":"route_result","id":1,"ok":false})";
+    std::string resultFrame{char(0x81), char(0x80 | routeResult.size()), 1, 2, 3, 4};
+    for (size_t i = 0; i < routeResult.size(); ++i) resultFrame += char(routeResult[i] ^ resultFrame[2 + i % 4]);
+    sendBytes(desktop, resultFrame);
+    pumpUntil(server, [&]() {
+        std::lock_guard<std::mutex> lock(server.transport->mutex);
+        return !server.transport->routePending;
     });
     std::string mediaFrame{char(0x81), char(0x80 | mediaHello.size()), 1, 2, 3, 4};
     for (size_t i = 0; i < mediaHello.size(); ++i) mediaFrame += char(mediaHello[i] ^ mediaFrame[2 + i % 4]);
@@ -258,6 +272,18 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
     expect(request(browserDesktopUpgrade), "400 Bad Request");
     const int replacement = request(desktopUpgrade);
     readUntil(replacement, [](const auto &response) { return response.find("101 Switching Protocols") != std::string::npos; });
+    sendBytes(replacement, helloFrame);
+    readUntil(ws, [](const auto &response) { return response.find("\"hostname\":\"workstation\"") != std::string::npos; });
+    assert(server.requestDesktopRoute(11, 4) == RET_OK);
+    readUntil(replacement, [](const auto &response) {
+        return response.find(R"({"type":"route","id":2,"stream":11,"sink":4})") != std::string::npos;
+    });
+    {
+        std::lock_guard<std::mutex> lock(server.transport->mutex);
+        server.transport->routeDeadline = 0;
+    }
+    readUntil(ws, [](const auto &response) { return response.find("\"connected\":false") != std::string::npos; });
+    assert(server.requestDesktopRoute(11, 4) == RET_WARN);
     close(replacement);
     if (const char *binary = getenv("AUDIOX_DESKTOP_BINARY")) {
         const pid_t child = fork();

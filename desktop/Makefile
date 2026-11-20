@@ -15,7 +15,7 @@ linux: $(OUT_DIR)/audiox-companion-linux-$(ARCH).AppImage
 windows: $(OUT_DIR)/audiox-companion-windows-x86_64.exe
 macos: $(OUT_DIR)/audiox-companion-macos-$(ARCH).tar.gz
 
-$(OUT_DIR)/linux/$(ARCH)/audiox-companion: src/main.cpp ../include/http/websocket.hpp
+$(OUT_DIR)/linux/$(ARCH)/audiox-companion: src/main.cpp src/routing.hpp ../include/http/websocket.hpp ../include/desktop/routing.hpp
 	@mkdir -p "$(@D)"
 	$(CXX) $(CXXFLAGS) -DAUDIOX_DESKTOP_LINUX -static -o "$@" "$<"
 
@@ -28,11 +28,11 @@ $(OUT_DIR)/audiox-companion-linux-$(ARCH).AppImage: $(OUT_DIR)/linux/$(ARCH)/aud
 	ln -sf audiox-companion "$(OUT_DIR)/linux/$(ARCH)/AppDir/AppRun"
 	ARCH="$(ARCH)" APPIMAGE_EXTRACT_AND_RUN=1 "$(APPIMAGETOOL)" "$(OUT_DIR)/linux/$(ARCH)/AppDir" "$@"
 
-$(OUT_DIR)/audiox-companion-windows-x86_64.exe: src/main.cpp ../include/http/websocket.hpp
+$(OUT_DIR)/audiox-companion-windows-x86_64.exe: src/main.cpp ../include/http/websocket.hpp ../include/desktop/routing.hpp
 	@mkdir -p "$(@D)"
 	$(CXX) $(CXXFLAGS) -DAUDIOX_DESKTOP_WINDOWS -static -o "$@" "$<" -lws2_32
 
-$(OUT_DIR)/macos/$(ARCH)/audiox-companion: src/main.cpp ../include/http/websocket.hpp
+$(OUT_DIR)/macos/$(ARCH)/audiox-companion: src/main.cpp ../include/http/websocket.hpp ../include/desktop/routing.hpp
 	@mkdir -p "$(@D)"
 	$(CXX) $(CXXFLAGS) -DAUDIOX_DESKTOP_MACOS -o "$@" "$<"
 

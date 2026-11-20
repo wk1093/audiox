@@ -149,6 +149,12 @@ jobs:
           msystem: MINGW64
           install: make mingw-w64-x86_64-gcc
 
+      - name: Set up Windows Node.js
+        if: matrix.platform == 'windows'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Build and smoke-test Linux AppImage
         if: matrix.platform == 'linux'
         run: |
@@ -165,7 +171,13 @@ jobs:
         run: |
           make desktop-windows CXX=g++
           out/desktop/audiox-companion-windows-x86_64.exe --help
-          AUDIOX_DESKTOP_WINDOWS=1 node --test tests/desktop/companion_test.js
+
+      - name: Test Windows companion connection
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          AUDIOX_DESKTOP_WINDOWS: '1'
+        run: node --test tests/desktop/companion_test.js
 
       - name: Build and smoke-test macOS archive
         if: matrix.platform == 'macos'

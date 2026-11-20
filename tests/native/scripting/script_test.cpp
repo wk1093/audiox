@@ -131,6 +131,17 @@ int main() {
         uint16_t mask{};
         assert(!scriptInspectHooks("local s=desktop.media_status(); hook('run', function() end)",
                                    mask, error, sizeof(error)));
+        assert(!scriptNeedsDevicePermission("desktop.media_status()"));
+        assert(scriptNeedsDevicePermission("desktop . route(1, 2)"));
+        assert(!evaluateMedia("desktop.route(1, 2)", DesktopMedia::Playing));
+        assert(scriptEvaluate("desktop.route(4294967295, 0)", defaultEvent, state, plan, error,
+                              sizeof(error), nullptr, true));
+        assert(plan.count == 1 && plan.actions[0].kind == ScriptKind::DesktopRoute &&
+               plan.actions[0].value == UINT32_MAX && plan.actions[0].number == 0);
+        assert(!scriptEvaluate("desktop.route(-1, 2)", defaultEvent, state, plan, error,
+                               sizeof(error), nullptr, true));
+        assert(!scriptEvaluate("desktop.route(1, 4294967296)", defaultEvent, state, plan, error,
+                               sizeof(error), nullptr, true));
     }
     {
         ScriptMeters meters{};

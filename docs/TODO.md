@@ -268,8 +268,10 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Throttle log fsyncs on the heartbeat; remove fixed boot sleeps.
 - [x] Harden HTTP API (USB/NCM-only binding, strict request framing and size limits, cross-origin write rejection, JSON API errors; auth/ACL deferred for local-only access)
   - [x] Add generic WebSocket pub/sub for meters, MIDI capture, system info and routing topology; retain HTTP for on-demand and slow-poll data
-- [ ] Bluetooth phone call support. 
 - [x] Send Bluetooth AVRCP media-key taps from Lua; hardware interoperability remains to be validated.
+- [ ] Create a lightweight desktop companion app with keyboard shortcuts that trigger actions on the Pi through an API.
+  - [ ] Expose controller-event injection through the same shared mapping/action system as local keyboards and MIDI, with release cleanup on connection loss.
+  - [ ] Implement a mechanism for scripts to communicate with the desktop and access host state and actions. Support per-app USB-channel routing configured and stored on the Pi, not the host.
 
 ### Before announcing the main release
 - [x] Complete or explicitly defer every open pre-release hardware validation item above; document any known limitations.
@@ -280,12 +282,10 @@ The above last two features are mainly to improve my setup, but could probably b
 
 
 ## Future
+- [ ] Post-2.0: Support Bluetooth phone calls, routing call audio and microphone through AudioX and providing answer/end controls on the phone, WebUI, and Lua.
 - [ ] Post-2.0: Support a dedicated USB keyboard connected directly to the Pi as a controller for every MIDI-mappable action, including soundboard playback, effects, scenes, and scripts.
   - [ ] Translate keyboard input into the shared controller-event/mapping system so keyboard and MIDI bindings use the same mapping controls, without duplicate map buttons or parallel action implementations.
   - [ ] Handle key press/release, held keys, repeat suppression, and disconnect cleanup so actions cannot remain stuck.
-- [ ] Post-2.0: Create a lightweight desktop companion app with keyboard shortcuts that trigger actions on the Pi through an API.
-  - [ ] Expose controller-event injection through the same shared mapping/action system as local keyboards and MIDI, with paired/authorized access and release cleanup on connection loss.
-  - [ ] Implement a mechanism for the scripts to communicate with this software and give it a way for the host app to provide a bunch of info to scripts to expand script capabilities. (things like current state, host actions like play, stop, record, be able to pull "is_playing" via mpris or something. As well as a way to map certain windows/apps to go through different usb routes. for example usb output by default goes into stereo 1/2, but spotify goes to stereo 3/4. The host app should provide this ability. The host app will NOT have any memory of any of this, the app just connects to the Pi and gets what it needs to do from the Pi which saves all the configuration.).
 - [ ] Option in config to use raspi AUX port as an output source (for people without an audio interface, since custom hardware is still WIP)
 - [ ] Create a roadmap for future features and improvements
 - [ ] Explore integration with other audio software and hardware, such as DAWs and MIDI controllers

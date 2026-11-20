@@ -5,12 +5,14 @@ network. When connected, the WebUI shows a **Desktop** page with the host name,
 operating system, and detected capabilities. The page disappears on disconnect.
 Only one companion can be connected at a time.
 
-This is an early version: audio controls, routing, Lua host actions, and the
-system tray are not implemented yet. Capability names describe host support,
-not actions that AudioX can currently perform. On Linux, `pipewire` indicates a
+This is an early version: automatic app routing, audio device controls, media
+controls, shortcuts, and the system tray are not implemented yet. On Linux,
+experimental manual stream routing is available via `desktop.route`; see the
+[Lua API](/lua/api#desktop-stream-routing). On Linux, `pipewire` indicates a
 detected PipeWire socket, and `default_sink` additionally requires `wpctl` on
 the service's PATH. On Windows, `default_sink` indicates platform support.
 Detection does not guarantee that the host audio service accepts a command.
+The `route_stream` capability requires `pactl` on the companion's PATH.
 On Linux, if `playerctl` is on PATH, the page also reports the aggregate MPRIS
 playback status. Any playing player takes precedence over paused or stopped
 players. No players and query errors are shown separately. Lua scripts can read

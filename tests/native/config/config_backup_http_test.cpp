@@ -2,6 +2,7 @@
 #include <cassert>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <string>
 #include <thread>
 #include <sys/statvfs.h>
@@ -34,15 +35,23 @@ int prepareBootUpdateRecovery() { assert(false); return -1; }
 int AudioContext::reloadSfxBank() { assert(false); return -1; }
 static std::string uploadedPlugin;
 int handleApiRequest(HttpServer *server, int cfd, const char *method, const char *path, const char *body, size_t size, const char *) {
+    if (!strcmp(method, "GET") && !strcmp(path, "/api/test/download"))
+        return server->sendFilePath(cfd, "download.bin", "application/octet-stream");
     assert(!strcmp(method, "PUT") && !strcmp(path, "/api/plugins/install"));
     uploadedPlugin.assign(body, size);
     return server->sendResponse(cfd, "200 OK", "text/plain", "received", 8);
 }
-bool buildHttpEventJson(HttpServer *, const char *, char *, size_t, size_t *) { return false; }
+bool buildHttpEventJson(HttpServer *, const char *, char *out, size_t capacity, size_t *length) {
+    assert(capacity >= 3);
+    memcpy(out, "{}", 3);
+    *length = 2;
+    return true;
+}
 
 namespace fs = std::filesystem;
 
 namespace {
+namespace direct_test {
 
 std::string exchange(HttpServer &server, const char *method, const char *path,
                      const std::string &body = "", size_t claimed = 0) {
@@ -72,6 +81,7 @@ std::string exchange(HttpServer &server, const char *method, const char *path,
     close(pair[0]);
     worker.join();
     return response;
+}
 }
 
 std::string exchangeRaw(HttpServer &server, const std::string &request) {
@@ -109,9 +119,203 @@ std::string get(const char *path) {
     return std::string(std::istreambuf_iterator<char>(in), {});
 }
 
+void sendBytes(int fd, const std::string &bytes) {
+    size_t sent = 0;
+    while (sent < bytes.size()) {
+        const ssize_t n = send(fd, bytes.data() + sent, bytes.size() - sent, MSG_NOSIGNAL);
+        assert(n > 0);
+        sent += static_cast<size_t>(n);
+    }
+}
+
+void pumpUntil(HttpServer &server, const std::function<bool()> &done) {
+    const uint64_t deadline = httpMonotonicMs() + 3000;
+    while (!done()) {
+        assert(httpMonotonicMs() < deadline);
+        server.poll();
+        usleep(1000);
+    }
+}
+
+void testTransport(const char *upgrade, const std::string &badArchive) {
+    HttpServer server(nullptr);
+    server.listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    assert(server.listen_fd >= 0);
+    sockaddr_in local{};
+    local.sin_family = AF_INET;
+    local.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    assert(bind(server.listen_fd, reinterpret_cast<sockaddr *>(&local), sizeof(local)) == 0);
+    socklen_t localSize = sizeof(local);
+    assert(getsockname(server.listen_fd, reinterpret_cast<sockaddr *>(&local), &localSize) == 0);
+    assert(listen(server.listen_fd, 4) == 0);
+    server.transport = std::make_unique<HttpTransport>();
+    assert(pthread_create(&server.transport->thread, nullptr, runHttpTransport, &server) == 0);
+    server.transport->running = true;
+
+    const auto request = [&](const std::string &bytes, bool slowReader = false) {
+        const int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        assert(fd >= 0);
+        if (slowReader) {
+            const int size = 4096;
+            assert(setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size)) == 0);
+        }
+        assert(connect(fd, reinterpret_cast<sockaddr *>(&local), sizeof(local)) == 0);
+        sendBytes(fd, bytes);
+        return fd;
+    };
+    const auto readUntil = [&](int fd, const std::function<bool(const std::string &)> &done) {
+        std::string response;
+        pumpUntil(server, [&]() {
+            char buf[16384];
+            const ssize_t n = recv(fd, buf, sizeof(buf), MSG_DONTWAIT);
+            assert(n >= 0 || errno == EAGAIN || errno == EWOULDBLOCK);
+            if (n > 0) response.append(buf, static_cast<size_t>(n));
+            if (done(response)) return true;
+            if (!n) fprintf(stderr, "unexpected response (%zu bytes): %.500s\n", response.size(), response.c_str());
+            assert(n != 0);
+            return false;
+        });
+        return response;
+    };
+    const auto expect = [&](int fd, const char *text) {
+        readUntil(fd, [&](const std::string &response) { return response.find(text) != std::string::npos; });
+        close(fd);
+    };
+    const std::string head = " HTTP/1.1\r\nHost: localhost\r\n";
+    const std::string status = "GET /api/config/restore/check?size=20" + head + "\r\n";
+    const std::string restore = "PUT /api/config/restore" + head +
+        "Content-Length: " + std::to_string(badArchive.size()) + "\r\n\r\n";
+    const int slowUpload = request(restore + badArchive.substr(0, 30));
+    const std::string largeDownload(8 * 1024 * 1024, 'x');
+    put("download.bin", largeDownload);
+    const int slowDownload = request("GET /api/test/download" + head + "\r\n", true);
+    readUntil(slowDownload, [](const auto &response) {
+        return response.find("Content-Length: 8388608") != std::string::npos;
+    });
+    expect(request(status), "200 OK");
+    sendBytes(slowUpload, badArchive.substr(30));
+    expect(slowUpload, "checksum mismatch");
+    close(slowDownload);
+    const int download = request("GET /api/test/download" + head + "\r\n");
+    const auto downloaded = readUntil(download, [&](const auto &response) {
+        const size_t end = response.find("\r\n\r\n");
+        return end != std::string::npos && response.size() == end + 4 + largeDownload.size();
+    });
+    assert(downloaded.substr(downloaded.find("\r\n\r\n") + 4) == largeDownload);
+    close(download);
+
+    const int ws = request(upgrade);
+    readUntil(ws, [](const auto &response) { return response.find("\r\n\r\n") != std::string::npos; });
+    const std::string subscription = R"({"type":"subscribe","topics":["audio.meters","midi.note","midi.cc","system.info","routing.things","desktop.status"]})";
+    std::string frame{char(0x81), char(0x80 | subscription.size()), 1, 2, 3, 4};
+    for (size_t i = 0; i < subscription.size(); ++i)
+        frame += char(subscription[i] ^ frame[2 + i % 4]);
+    sendBytes(ws, frame);
+    readUntil(ws, [](const auto &response) {
+        for (const char *topic : eventTopics) {
+            if (response.find(std::string("\"topic\":\"") + topic + "\"") == std::string::npos) return false;
+        }
+        return true;
+    });
+    const std::string desktopUpgrade =
+        "GET /ws/desktop HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n"
+        "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: audiox.desktop.v1\r\n\r\n";
+    const int desktop = request(desktopUpgrade);
+    readUntil(desktop, [](const auto &response) {
+        return response.find("Sec-WebSocket-Protocol: audiox.desktop.v1") != std::string::npos;
+    });
+    const std::string hello = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["pipewire","default_sink"]})";
+    assert(parseDesktopHello(reinterpret_cast<const uint8_t *>(hello.data()), hello.size()));
+    const std::string mediaHello = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["mpris"],"media":"playing"})";
+    assert(parseDesktopHello(reinterpret_cast<const uint8_t *>(mediaHello.data()), mediaHello.size()));
+    const std::string badMedia = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["mpris"],"media":"unknown"})";
+    assert(!parseDesktopHello(reinterpret_cast<const uint8_t *>(badMedia.data()), badMedia.size()));
+    const std::string duplicateMedia = R"({"type":"hello","hostname":"workstation","os":"linux","media":"playing","media":"paused","capabilities":[]})";
+    assert(!parseDesktopHello(reinterpret_cast<const uint8_t *>(duplicateMedia.data()), duplicateMedia.size()));
+    const std::string badHello = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["bad\"value"]})";
+    assert(!parseDesktopHello(reinterpret_cast<const uint8_t *>(badHello.data()), badHello.size()));
+    std::string helloFrame{char(0x81), char(0x80 | hello.size()), 1, 2, 3, 4};
+    for (size_t i = 0; i < hello.size(); ++i) helloFrame += char(hello[i] ^ helloFrame[2 + i % 4]);
+    sendBytes(desktop, helloFrame);
+    readUntil(ws, [](const auto &response) {
+        return response.find("\"hostname\":\"workstation\"") != std::string::npos &&
+            response.find("\"default_sink\"") != std::string::npos;
+    });
+    std::string mediaFrame{char(0x81), char(0x80 | mediaHello.size()), 1, 2, 3, 4};
+    for (size_t i = 0; i < mediaHello.size(); ++i) mediaFrame += char(mediaHello[i] ^ mediaFrame[2 + i % 4]);
+    sendBytes(desktop, mediaFrame);
+    readUntil(ws, [](const auto &response) {
+        return response.find("\"media\":\"playing\"") != std::string::npos;
+    });
+    assert(server.desktopMedia.load() == DesktopMedia::Playing);
+    expect(request(desktopUpgrade), "400 Bad Request");
+    close(desktop);
+    readUntil(ws, [](const auto &response) { return response.find("\"connected\":false") != std::string::npos; });
+    assert(server.desktopMedia.load() == DesktopMedia::Unavailable);
+    const std::string browserDesktopUpgrade = desktopUpgrade.substr(0, desktopUpgrade.size() - 2) +
+        "Origin: http://localhost\r\n\r\n";
+    expect(request(browserDesktopUpgrade), "400 Bad Request");
+    const int replacement = request(desktopUpgrade);
+    readUntil(replacement, [](const auto &response) { return response.find("101 Switching Protocols") != std::string::npos; });
+    close(replacement);
+    if (const char *binary = getenv("AUDIOX_DESKTOP_BINARY")) {
+        const pid_t child = fork();
+        assert(child >= 0);
+        if (child == 0) {
+            const std::string port = std::to_string(ntohs(local.sin_port));
+            execl(binary, binary, "--host", "127.0.0.1", "--port", port.c_str(), nullptr);
+            _exit(127);
+        }
+        readUntil(ws, [](const auto &response) { return response.find("\"connected\":true") != std::string::npos; });
+        assert(kill(child, SIGTERM) == 0);
+        int status = 0;
+        assert(waitpid(child, &status, 0) == child);
+        readUntil(ws, [](const auto &response) { return response.find("\"connected\":false") != std::string::npos; });
+    }
+    close(ws);
+
+    const std::string clip = "PUT /api/rootfs/sfx/kick.wav" + head + "Content-Length: 4\r\n\r\n";
+    put("sfx/kick.wav", "original sound");
+    put("ffmpeg", "#!/bin/sh\nexit 1\n");
+    expect(request(clip + "data"), "415 Unsupported Media Type");
+    assert(get("sfx/kick.wav") == "original sound");
+    put("ffmpeg", "#!/bin/sh\nexec sleep 30\n");
+    const int abort = request(clip + "data");
+    pumpUntil(server, [&]() { return server.transport->sound.request != nullptr; });
+    expect(request(status), "200 OK");
+    expect(request(clip + "data"), "503 Service Unavailable");
+    close(abort);
+    pumpUntil(server, [&]() { return server.transport->sound.pid < 0; });
+    assert(get("sfx/kick.wav") == "original sound");
+    const int timedOut = request(clip + "data");
+    pumpUntil(server, [&]() { return server.transport->sound.request != nullptr; });
+    server.transport->sound.deadline = httpMonotonicMs();
+    expect(timedOut, "504 Gateway Timeout");
+    assert(get("sfx/kick.wav") == "original sound");
+    const char pcm[] =
+        "RIFF\x28\0\0\0WAVEfmt \x10\0\0\0\x01\0\x02\0\x80\xbb\0\0"
+        "\0\xee\x02\0\x04\0\x10\0data\x04\0\0\0\x01\0\x01\0";
+    const std::string wav(pcm, sizeof(pcm) - 1);
+    put("ffmpeg", "#!/bin/sh\nwhile [ \"$1\" != -i ]; do shift; done\ninput=$2\n"
+                   "for output do :; done\nexec cp \"$input\" \"$output\"\n");
+    const std::string wavRequest = "PUT /api/rootfs/sfx/kick.wav" + head +
+        "Content-Length: " + std::to_string(wav.size()) + "\r\n\r\n" + wav;
+    expect(request(wavRequest), "ok converted kick.wav");
+    assert(get("sfx/kick.wav") == wav);
+    if (const char *ffmpeg = getenv("AUDIOX_TEST_FFMPEG")) {
+        assert(fs::remove("ffmpeg"));
+        fs::create_symlink(ffmpeg, "ffmpeg");
+        expect(request(wavRequest), "ok converted kick.wav");
+        assert(get("sfx/kick.wav") == wav);
+    }
+    assert(fs::is_empty("staging"));
+}
+
 } // namespace
 
 int main() {
+    using direct_test::exchange;
     char accept[32];
     assert(audiox::websocket::acceptKey("dGhlIHNhbXBsZSBub25jZQ==", accept, sizeof(accept)));
     assert(!strcmp(accept, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="));
@@ -252,6 +456,28 @@ int main() {
     closeWebSocket(&closeClient);
     close(closePair[1]);
 
+    HttpServer desktopTimeout(nullptr);
+    desktopTimeout.transport = std::make_unique<HttpTransport>();
+    int desktopPair[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, desktopPair) == 0);
+    const uint64_t now = httpMonotonicMs();
+    desktopTimeout.desktopClient.fd = desktopPair[0];
+    desktopTimeout.desktopClient.connectedAtMs = now - 5001;
+    desktopTimeout.desktopClient.lastActivityMs = now;
+    pollDesktopWebSocket(&desktopTimeout, now);
+    assert(desktopTimeout.desktopClient.fd < 0);
+    close(desktopPair[1]);
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, desktopPair) == 0);
+    desktopTimeout.desktopClient.fd = desktopPair[0];
+    desktopTimeout.desktopClient.desktopIdentified = true;
+    desktopTimeout.desktopClient.lastActivityMs = now - 5001;
+    pollDesktopWebSocket(&desktopTimeout, now);
+    assert(desktopTimeout.desktopClient.pingAtMs == now);
+    pollDesktopWebSocket(&desktopTimeout, now + 10001);
+    assert(desktopTimeout.desktopClient.fd < 0);
+    assert(desktopTimeout.transport->events[desktopTopic]->find("\"connected\":false") != std::string::npos);
+    close(desktopPair[1]);
+
     int cwd = open(".", O_RDONLY | O_DIRECTORY);
     assert(cwd >= 0);
     char pattern[] = "/tmp/audiox-backup-http-test-XXXXXX";
@@ -367,8 +593,9 @@ int main() {
     for (const auto &entry : fs::directory_iterator(".")) {
         assert(entry.path().filename().string().find(".backup-transfer-") != 0);
     }
+    testTransport(validHeaders, bad);
     assert(fchdir(cwd) == 0);
     close(cwd);
     fs::remove_all(pattern);
-    puts("PASS: native backup download, streamed restore, rejection, cleanup and staged reboot");
+    puts("PASS: backup and restore, independent socket transfers, WebSocket topics, and atomic sound import");
 }

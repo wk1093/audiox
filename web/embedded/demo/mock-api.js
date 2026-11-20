@@ -880,6 +880,7 @@
     log('SCENE', 'info', `recalled "${scene.name}" (${snap.effects.length} effects, ${parsedEdges().edges.length} routes)`);
   }
   on('GET', '/api/scenes', () => reply(sceneView()));
+  on('GET', '/api/scenes/status', () => reply({ sequence: S.sceneSequence }));
   on('POST', '/api/scenes/save', ({ query }) => {
     const id = query.get('id');
     const name = unhex(query.get('name_hex')).trim();

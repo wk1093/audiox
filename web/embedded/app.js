@@ -231,6 +231,16 @@ function updateZoomLabel() {
   document.getElementById('btn-zoom-reset').textContent = txt;
 }
 
+AudioxDesktop.create({
+  api: window.AudioxApi,
+  tab: document.getElementById('desktop-tab'),
+  host: document.getElementById('desktop-host'),
+  os: document.getElementById('desktop-os'),
+  capabilities: document.getElementById('desktop-capabilities'),
+  media: document.getElementById('desktop-media'),
+  onDisconnect: () => { if (state.activeTab === 'desktop') setActiveTab('routing'); },
+});
+
 async function initializeGraphFromConfig() {
   ensureRoutingGraph();
   await loadConfig();

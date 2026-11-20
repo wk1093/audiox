@@ -29,6 +29,91 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <atomic>
+#include <array>
+#include <deque>
+#include <mutex>
+#include <pthread.h>
+#include <poll.h>
+#include <signal.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
+#include <sys/sendfile.h>
+
+namespace {
+constexpr const char *eventTopics[] = {
+    "audio.meters", "midi.note", "midi.cc", "system.info", "routing.things", "desktop.status"
+};
+constexpr uint64_t eventIntervals[] = {50, 50, 50, 1000, 1000, 0};
+constexpr size_t eventCount = sizeof(eventTopics) / sizeof(eventTopics[0]);
+constexpr size_t desktopTopic = eventCount - 1;
+}
+
+struct HttpExchange {
+    std::string header, body, response;
+    size_t inputOffset{};
+    int upload{-1};
+    int download{-1};
+    off_t downloadSize{};
+    bool soundImport{};
+    bool api{};
+    std::atomic<bool> complete{false};
+    std::atomic<bool> disconnected{false};
+
+    ~HttpExchange() {
+        if (upload >= 0) close(upload);
+        if (download >= 0) close(download);
+    }
+};
+
+namespace {
+// Only the control thread sets this during dispatch. Direct socket-based tests
+// and the network thread's protocol errors still use the normal socket helpers.
+thread_local HttpExchange *exchange = nullptr;
+
+ssize_t readRequest(int fd, void *out, size_t size) {
+    if (!exchange) return recv(fd, out, size, 0);
+    if (exchange->inputOffset < exchange->header.size()) {
+        const size_t n = std::min(size, exchange->header.size() - exchange->inputOffset);
+        memcpy(out, exchange->header.data() + exchange->inputOffset, n);
+        exchange->inputOffset += n;
+        return static_cast<ssize_t>(n);
+    }
+    if (exchange->upload >= 0) return read(exchange->upload, out, size);
+    const size_t offset = exchange->inputOffset - exchange->header.size();
+    if (offset >= exchange->body.size()) return 0;
+    const size_t n = std::min(size, exchange->body.size() - offset);
+    memcpy(out, exchange->body.data() + offset, n);
+    exchange->inputOffset += n;
+    return static_cast<ssize_t>(n);
+}
+
+ssize_t writeResponse(int fd, const void *data, size_t size) {
+    if (!exchange) return send(fd, data, size, MSG_NOSIGNAL);
+    exchange->response.append(static_cast<const char *>(data), size);
+    return static_cast<ssize_t>(size);
+}
+}
+
+struct HttpTransport {
+    struct SoundJob {
+        std::shared_ptr<HttpExchange> request;
+        pid_t pid{-1};
+        uint64_t deadline{};
+        std::string temporary, destination;
+        bool timedOut{};
+    } sound;
+    std::atomic<bool> stopping{false};
+    pthread_t thread{};
+    bool running{};
+    std::mutex mutex;
+    std::deque<std::shared_ptr<HttpExchange>> requests;
+    std::array<std::shared_ptr<const std::string>, eventCount> events;
+    std::atomic<uint32_t> demand{0};
+    uint64_t nextEvent[eventCount]{};
+    int rebootCommand{};
+    uint64_t rebootAt{};
+};
 
 #define HTTP_REQ_MAX 65536
 #define HTTP_HEADER_MAX 16384
@@ -81,6 +166,7 @@ struct HttpRequestHeaders {
 };
 
 static int setNonBlocking(int fd);
+static bool allowedRequestHost(const char *host);
 static bool queueWebSocketFrame(HttpWebSocketClient *client, uint8_t opcode,
                                 const void *payload, size_t length);
 static void closeWebSocket(HttpWebSocketClient *client);
@@ -127,14 +213,14 @@ static bool queueWebSocketFrame(HttpWebSocketClient *client, uint8_t opcode,
     return true;
 }
 
-static bool sendUpgradeResponse(int fd, const char *accept) {
+static bool sendUpgradeResponse(int fd, const char *accept, const char *protocol) {
     char response[256];
     const int length = snprintf(response, sizeof(response),
         "HTTP/1.1 101 Switching Protocols\r\n"
         "Upgrade: websocket\r\n"
         "Connection: Upgrade\r\n"
         "Sec-WebSocket-Accept: %s\r\n"
-        "Sec-WebSocket-Protocol: audiox.v1\r\n\r\n", accept);
+        "Sec-WebSocket-Protocol: %s\r\n\r\n", accept, protocol);
     if (length < 0 || static_cast<size_t>(length) >= sizeof(response)) return false;
     size_t sent = 0;
     while (sent < static_cast<size_t>(length)) {
@@ -147,28 +233,38 @@ static bool sendUpgradeResponse(int fd, const char *accept) {
     return true;
 }
 
-static bool addWebSocketClient(HttpServer *server, int fd, const HttpRequestHeaders &headers) {
+static bool addWebSocketClient(HttpServer *server, int fd, const HttpRequestHeaders &headers,
+                               bool desktop = false) {
+    const char *protocol = desktop ? "audiox.desktop.v1" : "audiox.v1";
     if (!server || !hasToken(headers.connection, "upgrade") ||
         strcasecmp(headers.upgrade, "websocket") ||
         strcmp(headers.websocketVersion, "13") ||
-        !hasToken(headers.websocketProtocol, "audiox.v1") ||
-        (headers.hasOrigin && !sameOriginHost(headers.origin, server->requestHost)) ||
+        !hasToken(headers.websocketProtocol, protocol) ||
+        !allowedRequestHost(headers.host) ||
+        (desktop && (headers.hasOrigin || headers.hasFetchSite)) ||
+        (headers.hasOrigin && !sameOriginHost(headers.origin, headers.host)) ||
         (headers.hasContentLength && headers.contentLength != 0)) return false;
     char accept[32];
     if (!audiox::websocket::acceptKey(headers.websocketKey, accept, sizeof(accept))) return false;
     HttpWebSocketClient *client = nullptr;
-    for (auto &candidate : server->websocketClients) {
-        if (candidate.fd < 0) {
-            client = &candidate;
-            break;
+    if (desktop) {
+        if (server->desktopClient.fd < 0) client = &server->desktopClient;
+    } else {
+        for (auto &candidate : server->websocketClients) {
+            if (candidate.fd < 0) {
+                client = &candidate;
+                break;
+            }
         }
     }
-    if (!client || !sendUpgradeResponse(fd, accept) || setNonBlocking(fd) < 0) return false;
+    if (!client || setNonBlocking(fd) < 0 || !sendUpgradeResponse(fd, accept, protocol)) return false;
     *client = HttpWebSocketClient{};
     client->fd = fd;
-    client->lastActivityMs = httpMonotonicMs();
+    client->connectedAtMs = client->lastActivityMs = httpMonotonicMs();
     static constexpr char ready[] = "{\"type\":\"ready\",\"protocol\":\"audiox.v1\"}";
-    if (!queueWebSocketFrame(client, 0x1, ready, sizeof(ready) - 1)) {
+    static constexpr char desktopReady[] = "{\"type\":\"ready\",\"protocol\":\"audiox.desktop.v1\",\"media_status\":true}";
+    const char *message = desktop ? desktopReady : ready;
+    if (!queueWebSocketFrame(client, 0x1, message, strlen(message))) {
         closeWebSocket(client);
         return false;
     }
@@ -229,12 +325,9 @@ static bool parseWebSocketSubscription(const uint8_t *data, size_t length, bool 
                 const char *value;
                 size_t valueLength;
                 if (!parser.string(&value, &valueLength)) return false;
-                static constexpr const char *names[] = {
-                    "audio.meters", "midi.note", "midi.cc", "system.info", "routing.things"
-                };
                 bool known = false;
-                for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
-                    if (valueLength == strlen(names[i]) && !memcmp(value, names[i], valueLength)) {
+                for (unsigned i = 0; i < eventCount; ++i) {
+                    if (valueLength == strlen(eventTopics[i]) && !memcmp(value, eventTopics[i], valueLength)) {
                         mask |= 1U << i;
                         known = true;
                     }
@@ -251,6 +344,82 @@ static bool parseWebSocketSubscription(const uint8_t *data, size_t length, bool 
     if (parser.cursor != parser.end) return false;
     *topics = mask;
     return true;
+}
+
+static bool desktopToken(const char *text, size_t length, size_t limit) {
+    if (!length || length > limit) return false;
+    for (size_t i = 0; i < length; ++i) {
+        const char c = text[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.')) return false;
+    }
+    return true;
+}
+
+static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *media = nullptr) {
+    if (!data || !length || length > 1024) return false;
+    SubscriptionParser parser{reinterpret_cast<const char *>(data),
+                              reinterpret_cast<const char *>(data) + length};
+    if (!parser.character('{')) return false;
+    unsigned fields = 0;
+    bool closed = false;
+    DesktopMedia parsedMedia = DesktopMedia::Unavailable;
+    for (unsigned i = 0; i < 5; ++i) {
+        const char *key, *value;
+        size_t keyLength, valueLength;
+        if (parser.character('}')) { closed = true; break; }
+        if (i && !parser.character(',')) return false;
+        if (!parser.string(&key, &keyLength) || !parser.character(':')) return false;
+        unsigned bit = 0;
+        if (keyLength == 4 && !memcmp(key, "type", 4)) bit = 1;
+        else if (keyLength == 8 && !memcmp(key, "hostname", 8)) bit = 2;
+        else if (keyLength == 2 && !memcmp(key, "os", 2)) bit = 4;
+        else if (keyLength == 12 && !memcmp(key, "capabilities", 12)) bit = 8;
+        else if (keyLength == 5 && !memcmp(key, "media", 5)) bit = 16;
+        else return false;
+        if (fields & bit) return false;
+        fields |= bit;
+        if (bit == 8) {
+            if (!parser.character('[')) return false;
+            unsigned count = 0;
+            while (!parser.character(']')) {
+                if (count && !parser.character(',')) return false;
+                if (++count > 16 || !parser.string(&value, &valueLength) ||
+                    !desktopToken(value, valueLength, 32)) return false;
+            }
+        } else {
+            if (!parser.string(&value, &valueLength)) return false;
+            if (bit == 1) {
+                if (valueLength != 5 || memcmp(value, "hello", 5)) return false;
+            } else if (bit == 16) {
+                if (valueLength == 7 && !memcmp(value, "playing", 7)) parsedMedia = DesktopMedia::Playing;
+                else if (valueLength == 6 && !memcmp(value, "paused", 6)) parsedMedia = DesktopMedia::Paused;
+                else if (valueLength == 7 && !memcmp(value, "stopped", 7)) parsedMedia = DesktopMedia::Stopped;
+                else if (valueLength == 4 && !memcmp(value, "none", 4)) parsedMedia = DesktopMedia::None;
+                else if (valueLength == 5 && !memcmp(value, "error", 5)) parsedMedia = DesktopMedia::Error;
+                else return false;
+            } else if (!desktopToken(value, valueLength, bit == 2 ? 64 : 32)) return false;
+        }
+    }
+    if ((fields & 15) != 15) return false;
+    if (!closed && !parser.character('}')) return false;
+    parser.whitespace();
+    if (parser.cursor != parser.end) return false;
+    if (media) *media = parsedMedia;
+    return true;
+}
+
+static void publishDesktopStatus(HttpServer *server, const uint8_t *hello = nullptr, size_t length = 0) {
+    std::string message = "{\"type\":\"event\",\"topic\":\"desktop.status\",\"data\":{";
+    if (hello) {
+        message += "\"connected\":true,\"hello\":";
+        message.append(reinterpret_cast<const char *>(hello), length);
+    } else {
+        message += "\"connected\":false";
+    }
+    message += "}}";
+    std::lock_guard<std::mutex> lock(server->transport->mutex);
+    server->transport->events[desktopTopic] = std::make_shared<const std::string>(std::move(message));
 }
 
 static void closeWebSocket(HttpWebSocketClient *client) {
@@ -271,7 +440,7 @@ static bool flushWebSocket(HttpWebSocketClient *client) {
     return true;
 }
 
-static bool receiveWebSocket(HttpWebSocketClient *client, uint64_t now) {
+static bool receiveWebSocket(HttpWebSocketClient *client, uint64_t now, HttpServer *desktopServer = nullptr) {
     for (;;) {
         if (client->inputSize == sizeof(client->input)) return false;
         const ssize_t received = recv(client->fd, client->input + client->inputSize,
@@ -306,6 +475,14 @@ static bool receiveWebSocket(HttpWebSocketClient *client, uint64_t now) {
         } else if (frame.opcode == 0xA) {
             client->pingAtMs = 0;
         } else if (frame.opcode == 0x1) {
+            if (desktopServer) {
+                DesktopMedia media;
+                if (!parseDesktopHello(payload, frame.length, &media)) return false;
+                desktopServer->desktopMedia.store(media);
+                client->desktopIdentified = true;
+                publishDesktopStatus(desktopServer, payload, frame.length);
+                continue;
+            }
             bool subscribe = false;
             uint32_t topics = 0;
             if (!parseWebSocketSubscription(payload, frame.length, &subscribe, &topics)) return false;
@@ -323,6 +500,7 @@ static bool receiveWebSocket(HttpWebSocketClient *client, uint64_t now) {
 }
 
 static int setSocketTimeouts(int fd, long recv_ms, long send_ms) {
+    if (exchange) return 0;
     if (fd < 0) {
         return -1;
     }
@@ -443,7 +621,7 @@ static int streamRequestBodyToFd(int cfd,
             want = sizeof(buf);
         }
 
-        ssize_t nr = recv(cfd, buf, want, 0);
+        ssize_t nr = readRequest(cfd, buf, want);
         if (nr < 0) {
             if (errno == EINTR) {
                 continue;
@@ -713,11 +891,7 @@ static int handleInitramUpload(HttpServer *server,
 
     static const char ok[] = "ok staged rebooting\n";
     (void)server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
-    sync();
-    usleep(200000);
-    if (reboot(RB_AUTOBOOT) < 0) {
-        printf("[INIT] [ERR] HTTP initram reboot failed: %s\n", strerror(errno));
-    }
+    server->rebootAfterResponse(RB_AUTOBOOT);
     return 0;
 }
 
@@ -969,11 +1143,7 @@ static int handleUpdateUpload(HttpServer *server,
 
     static const char ok[] = "ok update installed rebooting\n";
     (void)server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", ok, sizeof(ok) - 1);
-    sync();
-    usleep(200000);
-    if (reboot(RB_AUTOBOOT) < 0) {
-        printf("[INIT] [ERR] HTTP update reboot failed: %s\n", strerror(errno));
-    }
+    server->rebootAfterResponse(RB_AUTOBOOT);
     return 0;
 }
 
@@ -1055,24 +1225,24 @@ static int buildSfxFinalWavPath(const char *inputPath, char *out, size_t outSz) 
     return 0;
 }
 
-static int runFfmpegTranscodeToWav(const char *inputPath, const char *outputPath) {
-    if (!inputPath || !outputPath || !inputPath[0] || !outputPath[0]) {
-        return -1;
-    }
-
+static pid_t startFfmpegTranscode(int inputFd, const char *outputPath) {
     const char *ffmpeg_path = getFfmpegPath();
     if (!ffmpeg_path) {
+        errno = ENOENT;
         return -1;
     }
+    char inputPath[64];
+    snprintf(inputPath, sizeof(inputPath), "/proc/self/fd/%d", inputFd);
+    const pid_t parent = getpid();
 
     pid_t pid = fork();
-    if (pid < 0) {
-        return -1;
-    }
-
     if (pid == 0) {
-        int devNull = open("/dev/null", O_WRONLY);
+        const struct rlimit fileLimit{HTTP_ROOTFS_UPLOAD_MAX, HTTP_ROOTFS_UPLOAD_MAX};
+        if (prctl(PR_SET_PDEATHSIG, SIGKILL) < 0 || getppid() != parent ||
+            fcntl(inputFd, F_SETFD, 0) < 0 || setrlimit(RLIMIT_FSIZE, &fileLimit) < 0) _exit(127);
+        int devNull = open("/dev/null", O_RDWR);
         if (devNull >= 0) {
+            (void)dup2(devNull, STDIN_FILENO);
             (void)dup2(devNull, STDOUT_FILENO);
             (void)dup2(devNull, STDERR_FILENO);
             if (devNull > STDERR_FILENO) {
@@ -1084,9 +1254,14 @@ static int runFfmpegTranscodeToWav(const char *inputPath, const char *outputPath
               "ffmpeg",
               "-hide_banner",
               "-loglevel", "error",
+              "-nostdin",
+              "-xerror",
               "-y",
+              "-protocol_whitelist", "file",
               "-i", inputPath,
               "-vn",
+              "-map_metadata", "-1",
+              "-fflags", "+bitexact",
               "-acodec", "pcm_s16le",
               "-ar", "48000",
               "-ac", "2",
@@ -1096,90 +1271,104 @@ static int runFfmpegTranscodeToWav(const char *inputPath, const char *outputPath
         
         _exit(127);
     }
-
-    int status = 0;
-    while (waitpid(pid, &status, 0) < 0) {
-        if (errno == EINTR) {
-            continue;
-        }
-        return -1;
-    }
-
-    if (!WIFEXITED(status)) {
-        return -1;
-    }
-    if (WEXITSTATUS(status) != 0) {
-        return -1;
-    }
-
-    return 0;
+    return pid;
 }
 
-static int maybePreprocessSfxUpload(HttpServer *server,
-                                    int cfd,
-                                    const char *suffix,
-                                    const char *uploadedPath,
-                                    char *finalPath,
-                                    size_t finalPathSz) {
-    if (!uploadedPath || !uploadedPath[0] || !finalPath || finalPathSz == 0) {
-        return -1;
+static int startSoundImport(HttpServer *server, int cfd, const char *uploadedPath) {
+    if (!exchange || exchange->upload < 0 || !server->transport) return -1;
+    auto &job = server->transport->sound;
+    if (job.request || job.pid >= 0) {
+        static const char busy[] = "another sound import is in progress; try again shortly\n";
+        return server->sendResponse(cfd, "503 Service Unavailable", "text/plain", busy, sizeof(busy) - 1);
     }
-
-    size_t n = strnlen(uploadedPath, finalPathSz - 1);
-    memcpy(finalPath, uploadedPath, n);
-    finalPath[n] = '\0';
-
-    if (!isSfxUploadSuffix(suffix)) {
-        return 0;
-    }
-
     char wavPath[512];
     if (buildSfxFinalWavPath(uploadedPath, wavPath, sizeof(wavPath)) < 0) {
         static const char bad[] = "bad sfx path\n";
-        (void)unlink(uploadedPath);
-        (void)server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
-        return -1;
+        return server->sendResponse(cfd, "400 Bad Request", "text/plain", bad, sizeof(bad) - 1);
     }
-
-    char tempWavPath[512];
-    int tn = snprintf(tempWavPath, sizeof(tempWavPath), "%s.fftmp", wavPath);
-    if (tn <= 0 || (size_t)tn >= sizeof(tempWavPath)) {
-        static const char bad[] = "sfx path too long\n";
-        (void)unlink(uploadedPath);
-        (void)server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
-        return -1;
+    std::string temporary = HTTP_STAGE_DIR "/.audiox-import-XXXXXX";
+    const int fd = mkostemp(temporary.data(), O_CLOEXEC);
+    if (fd < 0) return sendErrnoResponse(server, cfd, "500 Internal Server Error", "stage converted sound", errno);
+    close(fd);
+    const pid_t pid = startFfmpegTranscode(exchange->upload, temporary.c_str());
+    if (pid < 0) {
+        const int error = errno;
+        unlink(temporary.c_str());
+        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "start ffmpeg", error);
     }
+    job.pid = pid;
+    job.deadline = httpMonotonicMs() + 120000;
+    job.temporary = std::move(temporary);
+    job.destination = wavPath;
+    return 0;
+}
 
-    if (runFfmpegTranscodeToWav(uploadedPath, tempWavPath) != 0) {
-        (void)unlink(tempWavPath);
-        (void)unlink(uploadedPath);
-        static const char err[] = "ffmpeg conversion failed\n";
-        (void)server->sendResponse(cfd, "415 Unsupported Media Type", "text/plain; charset=utf-8", err, sizeof(err) - 1);
-        return -1;
+static bool validConvertedSound(int fd) {
+    // FFmpeg's bit-exact stereo PCM muxer writes a 44-byte WAV header.
+    unsigned char header[44];
+    static constexpr unsigned char format[] = {
+        16, 0, 0, 0, 1, 0, 2, 0, 0x80, 0xbb, 0, 0, 0, 0xee, 2, 0, 4, 0, 16, 0
+    };
+    if (audioxUpdateReadAt(fd, header, sizeof(header), 0) < 0 ||
+        memcmp(header, "RIFF", 4) || memcmp(header + 8, "WAVEfmt ", 8) ||
+        memcmp(header + 16, format, sizeof(format)) || memcmp(header + 36, "data", 4)) return false;
+    const uint32_t bytes = header[40] | (uint32_t(header[41]) << 8) |
+        (uint32_t(header[42]) << 16) | (uint32_t(header[43]) << 24);
+    return bytes >= 4 && bytes % 4 == 0 && lseek(fd, 0, SEEK_END) == off_t(sizeof(header)) + bytes;
+}
+
+static void pollSoundImport(HttpServer *server, uint64_t now) {
+    auto &job = server->transport->sound;
+    if (!job.request) return;
+    if (now >= job.deadline || job.request->disconnected.load()) {
+        job.timedOut = now >= job.deadline;
+        (void)kill(job.pid, SIGKILL);
     }
+    int status = 0;
+    const pid_t result = waitpid(job.pid, &status, WNOHANG);
+    if (result == 0 || (result < 0 && errno == EINTR)) return;
 
-    if (rename(tempWavPath, wavPath) < 0) {
-        int saved = errno;
-        (void)unlink(tempWavPath);
-        (void)unlink(uploadedPath);
-        return sendErrnoResponse(server, cfd, "500 Internal Server Error", "sfx finalize failed", saved);
-    }
-
-    if (strcmp(uploadedPath, wavPath) != 0) {
-        (void)unlink(uploadedPath);
-    }
-
-    if (server && server->app && server->app->audio) {
-        int reloadRc = server->app->audio->reloadSfxBank();
-        if (reloadRc == RET_ERR) {
-            printf("[INIT] [WARN] soundboard bank reload failed after ffmpeg preprocess\n");
+    exchange = job.request.get();
+    if (!exchange->disconnected.load()) {
+        int fd = -1;
+        if (job.timedOut) {
+            static const char error[] = "sound conversion timed out\n";
+            server->sendResponse(-1, "504 Gateway Timeout", "text/plain", error, sizeof(error) - 1);
+        } else if (result < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            static const char error[] = "ffmpeg conversion failed\n";
+            server->sendResponse(-1, "415 Unsupported Media Type", "text/plain", error, sizeof(error) - 1);
+        } else if ((fd = open(job.temporary.c_str(), O_RDWR | O_CLOEXEC)) < 0 ||
+                   fchmod(fd, 0644) < 0 || fsync(fd) < 0) {
+            sendErrnoResponse(server, -1, "500 Internal Server Error", "sync converted sound", errno);
+        } else if (!validConvertedSound(fd)) {
+            static const char error[] = "sound conversion produced no usable PCM audio\n";
+            server->sendResponse(-1, "415 Unsupported Media Type", "text/plain", error, sizeof(error) - 1);
+        } else if (!exchange->disconnected.load()) {
+            if (rename(job.temporary.c_str(), job.destination.c_str()) < 0) {
+                sendErrnoResponse(server, -1, "500 Internal Server Error", "publish converted sound", errno);
+            } else {
+                const std::string dir = job.destination.substr(0, job.destination.rfind('/'));
+                const int dirFd = open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+                if (dirFd < 0 || fsync(dirFd) < 0) {
+                    printf("[HTTP] [WARN] sound published but directory sync failed: %s\n", strerror(errno));
+                }
+                if (dirFd >= 0) close(dirFd);
+                if (server->app && server->app->audio && server->app->audio->reloadSfxBank() == RET_ERR) {
+                    printf("[HTTP] [WARN] sound published but soundboard reload failed\n");
+                    static const char error[] = "sound saved, but the soundboard could not reload\n";
+                    server->sendResponse(-1, "500 Internal Server Error", "text/plain", error, sizeof(error) - 1);
+                } else {
+                    const std::string ok = "ok converted " + job.destination.substr(job.destination.rfind('/') + 1) + "\n";
+                    server->sendResponse(-1, "200 OK", "text/plain; charset=utf-8", ok.data(), ok.size());
+                }
+            }
         }
+        if (fd >= 0) close(fd);
     }
-
-    size_t wn = strnlen(wavPath, finalPathSz - 1);
-    memcpy(finalPath, wavPath, wn);
-    finalPath[wn] = '\0';
-    return 1;
+    unlink(job.temporary.c_str());
+    exchange->complete.store(true);
+    exchange = nullptr;
+    job = {};
 }
 
 static int handleRootfsUpload(HttpServer *server,
@@ -1224,6 +1413,7 @@ static int handleRootfsUpload(HttpServer *server,
     if (ensureParentDirs(fs_path) < 0) {
         return sendErrnoResponse(server, cfd, "500 Internal Server Error", "mkdir failed", errno);
     }
+    if (isSfxUploadSuffix(suffix)) return startSoundImport(server, cfd, fs_path);
 
     audiox::AtomicConfigFile output(fs_path);
     if (!output.get()) {
@@ -1253,31 +1443,6 @@ static int handleRootfsUpload(HttpServer *server,
         strstr(suffix, "/bin/") != NULL ||
         strstr(suffix, "/sbin/") != NULL) {
         chmod(fs_path, 0755);
-    }
-
-    char finalPath[512];
-    int preprocessRc = maybePreprocessSfxUpload(server,
-                                                cfd,
-                                                suffix,
-                                                fs_path,
-                                                finalPath,
-                                                sizeof(finalPath));
-    if (preprocessRc < 0) {
-        return 0;
-    }
-
-    if (preprocessRc > 0) {
-        const char *leaf = strrchr(finalPath, '/');
-        leaf = leaf ? (leaf + 1) : finalPath;
-        char okBody[256];
-        int on = snprintf(okBody, sizeof(okBody), "ok converted %s\n", leaf);
-        if (on < 0) {
-            on = 0;
-        }
-        if ((size_t)on >= sizeof(okBody)) {
-            on = (int)(sizeof(okBody) - 1);
-        }
-        return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", okBody, (size_t)on);
     }
 
     static const char ok[] = "ok\n";
@@ -1336,14 +1501,15 @@ static int handleConfigBackup(HttpServer *server, int cfd, const char *method,
         static const char message[] = "method not allowed\n";
         return server->sendResponse(cfd, "405 Method Not Allowed", "text/plain", message, sizeof(message) - 1);
     }
-    if (restoring) {
+    const bool staged = restoring && exchange && exchange->upload >= 0;
+    if (restoring && !staged) {
         const int checked = checkRestoreStorage(server, cfd, contentLength);
         if (checked != 0) return checked < 0 ? -1 : 0;
     }
     char temp[] = ROOT_MOUNT_POINT "/.backup-transfer-XXXXXX";
-    int fd = mkstemp(temp);
+    int fd = staged ? fcntl(exchange->upload, F_DUPFD_CLOEXEC, 0) : mkostemp(temp, O_CLOEXEC);
     if (fd < 0) return sendErrnoResponse(server, cfd, "500 Internal Server Error", "create backup transfer", errno);
-    if (unlink(temp) < 0) {
+    if (!staged && unlink(temp) < 0) {
         int saved = errno;
         close(fd);
         return sendErrnoResponse(server, cfd, "500 Internal Server Error", "unlink backup transfer", saved);
@@ -1351,7 +1517,7 @@ static int handleConfigBackup(HttpServer *server, int cfd, const char *method,
     char error[256] = {};
     int rc;
     if (restoring) {
-        rc = streamRequestBodyToFd(cfd, fd, initial, initialLen, contentLength);
+        rc = staged ? 0 : streamRequestBodyToFd(cfd, fd, initial, initialLen, contentLength);
         if (rc) {
             int saved = errno;
             close(fd);
@@ -1374,11 +1540,7 @@ static int handleConfigBackup(HttpServer *server, int cfd, const char *method,
         close(fd);
         static const char message[] = "Backup validated and staged; rebooting to restore settings and sounds.\n";
         rc = server->sendResponse(cfd, "202 Accepted", "text/plain; charset=utf-8", message, sizeof(message) - 1);
-        sync();
-        sleep(1);
-        if (reboot(RB_AUTOBOOT) < 0) {
-            printf("[CONFIG] [ERR] restore staged, but reboot failed: %s; reboot manually\n", strerror(errno));
-        }
+        server->rebootAfterResponse(RB_AUTOBOOT);
         return rc;
     }
     off_t size = lseek(fd, 0, SEEK_END);
@@ -1388,6 +1550,11 @@ static int handleConfigBackup(HttpServer *server, int cfd, const char *method,
         return sendErrnoResponse(server, cfd, "500 Internal Server Error", "size backup", saved);
     }
     rc = server->sendResponse(cfd, "200 OK", "application/octet-stream", nullptr, (size_t)size, "audiox-backup.axb");
+    if (exchange && rc == 0) {
+        exchange->download = fd;
+        exchange->downloadSize = size;
+        return rc;
+    }
     char buf[65536];
     off_t pos = 0;
     while (rc == 0 && pos < size) {
@@ -1623,12 +1790,12 @@ static bool allowedRequestHost(const char *host) {
 }
 
 static void handleClient(HttpServer *server, int cfd) {
-    char req[HTTP_REQ_MAX];
+    char req[HTTP_REQ_MAX + 1];
     size_t have = 0;
     ssize_t header_end = -1;
 
     while (have + 1 < sizeof(req)) {
-        ssize_t n = recv(cfd, req + have, sizeof(req) - have - 1, 0);
+        ssize_t n = readRequest(cfd, req + have, sizeof(req) - have - 1);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
@@ -1695,9 +1862,9 @@ static void handleClient(HttpServer *server, int cfd) {
     size_t body_off = (size_t)header_end;
     size_t initial_body_len = have > body_off ? have - body_off : 0;
 
-    if (strcmp(path, "/ws") == 0) {
+    if (strcmp(path, "/ws") == 0 || strcmp(path, "/ws/desktop") == 0) {
         if (strcmp(method, "GET") || query || initial_body_len ||
-            !addWebSocketClient(server, cfd, headers)) {
+            !addWebSocketClient(server, cfd, headers, !strcmp(path, "/ws/desktop"))) {
             static const char error[] = "invalid or unavailable websocket upgrade\n";
             (void)server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", error, sizeof(error) - 1);
         }
@@ -1738,7 +1905,7 @@ static void handleClient(HttpServer *server, int cfd) {
         package.reserve(static_cast<size_t>(content_length));
         char chunk[8192];
         while (package.size() < static_cast<size_t>(content_length)) {
-            ssize_t got = recv(cfd, chunk, std::min(sizeof(chunk), static_cast<size_t>(content_length) - package.size()), 0);
+            ssize_t got = readRequest(cfd, chunk, std::min(sizeof(chunk), static_cast<size_t>(content_length) - package.size()));
             if (got < 0 && errno == EINTR) continue;
             if (got <= 0) {
                 const char *error = "incomplete plugin upload; no package installed\n";
@@ -1848,7 +2015,7 @@ static void handleClient(HttpServer *server, int cfd) {
     }
 
     while ((have - body_off) < (size_t)content_length && have + 1 < sizeof(req)) {
-        ssize_t n = recv(cfd, req + have, sizeof(req) - have - 1, 0);
+        ssize_t n = readRequest(cfd, req + have, sizeof(req) - have - 1);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
@@ -1897,17 +2064,41 @@ static void handleClient(HttpServer *server, int cfd) {
     (void)server->sendResponse(cfd, "404 Not Found", "text/plain; charset=utf-8", not_found, sizeof(not_found) - 1);
 }
 
-static void pollWebSockets(HttpServer *server) {
-    static constexpr const char *topics[] = {
-        "audio.meters", "midi.note", "midi.cc", "system.info", "routing.things"
-    };
-    static constexpr uint64_t intervals[] = {50, 50, 50, 1000, 1000};
-    const uint64_t now = httpMonotonicMs();
-    for (auto &client : server->websocketClients) {
+using EventSnapshots = std::array<std::shared_ptr<const std::string>, eventCount>;
+
+struct WebSocketDelivery {
+    EventSnapshots sent{};
+    size_t nextTopic{};
+    uint64_t blockedAt{};
+};
+
+static void pollWebSockets(HttpServer *server, WebSocketDelivery *delivery, uint64_t now) {
+    auto &transport = *server->transport;
+    EventSnapshots available;
+    {
+        std::lock_guard<std::mutex> lock(transport.mutex);
+        available = transport.events;
+    }
+    uint32_t demand = 0;
+    for (size_t i = 0; i < HTTP_WEBSOCKET_CLIENTS; ++i) {
+        auto &client = server->websocketClients[i];
+        auto &state = delivery[i];
         if (client.fd < 0) continue;
-        if (!receiveWebSocket(&client, now) || !flushWebSocket(&client)) {
+        // Drain output first so a peer's ping can use the frame buffer.
+        if (!flushWebSocket(&client) ||
+            (client.outputOffset == client.outputSize &&
+             !client.closeAfterFlush && !receiveWebSocket(&client, now))) {
             closeWebSocket(&client);
             continue;
+        }
+        if (client.outputOffset != client.outputSize) {
+            if (!state.blockedAt) state.blockedAt = now;
+            if (now - state.blockedAt >= 10000) {
+                closeWebSocket(&client);
+                continue;
+            }
+        } else {
+            state.blockedAt = 0;
         }
         if (client.closeAfterFlush && client.outputOffset == client.outputSize) {
             closeWebSocket(&client);
@@ -1926,36 +2117,340 @@ static void pollWebSockets(HttpServer *server) {
             }
             client.pingAtMs = now;
         }
+        demand |= client.topics;
+        for (size_t topic = 0; topic < eventCount; ++topic) {
+            if (!(client.topics & (1U << topic))) state.sent[topic].reset();
+        }
+        if (client.outputOffset != client.outputSize) continue;
+        for (size_t offset = 0; offset < eventCount; ++offset) {
+            const size_t topic = (state.nextTopic + offset) % eventCount;
+            if (!(client.topics & (1U << topic)) || !available[topic] ||
+                available[topic] == state.sent[topic]) continue;
+            const auto &message = *available[topic];
+            if (!queueWebSocketFrame(&client, 0x1, message.data(), message.size()) ||
+                !flushWebSocket(&client)) {
+                closeWebSocket(&client);
+            } else {
+                state.sent[topic] = available[topic];
+                state.nextTopic = (topic + 1) % eventCount;
+            }
+            break;
+        }
     }
+    transport.demand.store(demand);
+}
 
-    for (unsigned topic = 0; topic < sizeof(topics) / sizeof(topics[0]); ++topic) {
-        bool subscribed = false;
-        for (const auto &client : server->websocketClients)
-            subscribed |= client.fd >= 0 && (client.topics & (1U << topic));
-        if (!subscribed || now < server->websocketTopicAtMs[topic]) continue;
+static void pollDesktopWebSocket(HttpServer *server, uint64_t now) {
+    auto &client = server->desktopClient;
+    if (client.fd < 0) return;
+    bool ok = flushWebSocket(&client);
+    if (ok && client.outputSize == client.outputOffset && !client.closeAfterFlush)
+        ok = receiveWebSocket(&client, now, server);
+    if (client.outputOffset != client.outputSize) {
+        if (!client.blockedAtMs) client.blockedAtMs = now;
+        if (now - client.blockedAtMs >= 10000) ok = false;
+    } else client.blockedAtMs = 0;
+    if (ok && !client.desktopIdentified && now - client.connectedAtMs > 5000) ok = false;
+    if (ok && client.pingAtMs && now - client.pingAtMs > 10000) ok = false;
+    if (ok && client.closeAfterFlush && client.outputSize == client.outputOffset) ok = false;
+    if (ok && !client.pingAtMs && now - client.lastActivityMs >= 5000 &&
+        client.outputSize == client.outputOffset) {
+        ok = queueWebSocketFrame(&client, 0x9, nullptr, 0);
+        client.pingAtMs = now;
+    }
+    if (!ok) {
+        server->desktopMedia.store(DesktopMedia::Unavailable);
+        if (client.desktopIdentified) publishDesktopStatus(server);
+        closeWebSocket(&client);
+    }
+}
 
+static void publishWebSocketEvents(HttpServer *server, uint64_t now) {
+    auto &transport = *server->transport;
+    const uint32_t demand = transport.demand.load();
+    for (size_t topic = 0; topic < eventCount; ++topic) {
+        if (topic == desktopTopic) continue;
+        if (!(demand & (1U << topic)) || now < transport.nextEvent[topic]) continue;
+        transport.nextEvent[topic] = now + eventIntervals[topic];
         char data[HTTP_WEBSOCKET_FRAME_MAX];
         size_t dataLength = 0;
-        if (!buildHttpEventJson(server, topics[topic], data, sizeof(data), &dataLength))
-            continue;
-        char message[HTTP_WEBSOCKET_FRAME_MAX + 128];
-        const int prefix = snprintf(message, sizeof(message),
-            "{\"type\":\"event\",\"topic\":\"%s\",\"data\":", topics[topic]);
-        if (prefix < 0 || static_cast<size_t>(prefix) + dataLength + 2 >= sizeof(message))
-            continue;
-        memcpy(message + prefix, data, dataLength);
-        size_t messageLength = static_cast<size_t>(prefix) + dataLength;
-        message[messageLength++] = '}';
-        message[messageLength] = '\0';
-
-        for (auto &client : server->websocketClients) {
-            if (client.fd < 0 || !(client.topics & (1U << topic)) ||
-                client.outputOffset < client.outputSize) continue;
-            if (!queueWebSocketFrame(&client, 0x1, message, messageLength))
-                closeWebSocket(&client);
-        }
-        server->websocketTopicAtMs[topic] = now + intervals[topic];
+        if (!buildHttpEventJson(server, eventTopics[topic], data, sizeof(data), &dataLength)) continue;
+        std::string message = "{\"type\":\"event\",\"topic\":\"";
+        message += eventTopics[topic];
+        message += "\",\"data\":";
+        message.append(data, dataLength);
+        message += '}';
+        std::lock_guard<std::mutex> lock(transport.mutex);
+        transport.events[topic] = std::make_shared<const std::string>(std::move(message));
     }
+}
+
+constexpr size_t httpConnectionLimit = 12;
+
+struct HttpConnection {
+    int fd{-1};
+    std::shared_ptr<HttpExchange> request;
+    uint64_t started{}, progress{};
+    size_t remaining{}, sent{};
+    off_t fileOffset{};
+    bool parsed{}, queued{}, writing{};
+
+    void reset() {
+        if (fd >= 0) close(fd);
+        if (request) request->disconnected.store(true);
+        *this = {};
+    }
+
+    void reject(HttpServer *server, const char *status, const char *message) {
+        exchange = request.get();
+        server->sendResponse(-1, status, "text/plain; charset=utf-8", message, strlen(message));
+        exchange = nullptr;
+        request->complete.store(true);
+        queued = true;
+    }
+};
+
+static size_t requestBodyLimit(const char *method, const char *path) {
+    if (!strcmp(method, "PUT") && !strcmp(path, "/api/config/restore"))
+        return audiox::backup::maxArchiveSize;
+    if (!strcmp(method, "PUT")) {
+        if (!strcmp(path, HTTP_BOOT_LOADER_PATH) || !strcmp(path, HTTP_BOOT_KERNEL_PATH))
+            return HTTP_BOOT_UPLOAD_MAX;
+        if (!strcmp(path, HTTP_UPDATE_PATH)) return HTTP_UPDATE_MAX;
+        if (!strcmp(path, HTTP_INITRAM_PATH)) return HTTP_INITRAM_MAX;
+        if (!strncmp(path, HTTP_ROOTFS_PREFIX, strlen(HTTP_ROOTFS_PREFIX))) return HTTP_ROOTFS_UPLOAD_MAX;
+        if (!strcmp(path, "/api/plugins/install")) return 12 * 1024 * 1024;
+    }
+    return HTTP_BODY_MAX;
+}
+
+static int openUploadStage() {
+    if (ensureDir(HTTP_STAGE_DIR, 0755) != RET_OK) return -1;
+    return open(HTTP_STAGE_DIR, O_TMPFILE | O_RDWR | O_CLOEXEC, 0600);
+}
+
+static bool receiveHttp(HttpServer *server, HttpConnection &connection,
+                        WebSocketDelivery *delivery, std::weak_ptr<HttpExchange> &largeUpload,
+                        uint64_t now) {
+    auto &request = *connection.request;
+    char buffer[32768];
+    const size_t want = connection.parsed ? std::min(connection.remaining, sizeof(buffer)) :
+        std::min(HTTP_HEADER_MAX + 1 - request.header.size(), sizeof(buffer));
+    const ssize_t n = recv(connection.fd, buffer, want, 0);
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return true;
+    if (n == 0) {
+        connection.reject(server, "400 Bad Request",
+            connection.parsed ? "incomplete request body\n" : "incomplete request headers\n");
+        return true;
+    }
+    if (n < 0) return false;
+    connection.progress = now;
+    const char *body = buffer;
+    size_t length = static_cast<size_t>(n);
+    if (!connection.parsed) {
+        request.header.append(buffer, length);
+        const ssize_t end = findHeaderEnd(request.header.data(), request.header.size());
+        if (end < 0 || static_cast<size_t>(end) > HTTP_HEADER_MAX) {
+            if (request.header.size() > HTTP_HEADER_MAX)
+                connection.reject(server, "431 Request Header Fields Too Large", "request headers too large\n");
+            return true;
+        }
+        HttpRequestHeaders headers{};
+        char method[8], path[2048];
+        bool http11 = false;
+        if (!parseRequestLine(request.header.data(), end, method, sizeof(method), path, sizeof(path), &http11) ||
+            !parseRequestHeaders(request.header.data(), end, &headers) || (http11 && !headers.hasHost)) {
+            connection.reject(server, "400 Bad Request", "invalid request headers\n");
+            return true;
+        }
+        char *query = strchr(path, '?');
+        if (query) *query = '\0';
+        request.api = !strncmp(path, "/api/", 5) || !strcmp(path, "/api");
+        if (headers.hasHost && !allowedRequestHost(headers.host)) {
+            connection.reject(server, "421 Misdirected Request", "unrecognized Host header\n");
+            return true;
+        }
+        length = request.header.size() - end;
+        if (!strcmp(path, "/ws") || !strcmp(path, "/ws/desktop")) {
+            if (!strcmp(method, "GET") && !query && !length &&
+                addWebSocketClient(server, connection.fd, headers, !strcmp(path, "/ws/desktop"))) {
+                for (size_t i = 0; i < HTTP_WEBSOCKET_CLIENTS; ++i) {
+                    if (server->websocketClients[i].fd == connection.fd) delivery[i] = {};
+                }
+                connection.fd = -1;
+                return false;
+            }
+            connection.reject(server, "400 Bad Request", "invalid or unavailable websocket upgrade\n");
+            return true;
+        }
+        const bool safe = !strcmp(method, "GET") || !strcmp(method, "HEAD") || !strcmp(method, "OPTIONS");
+        const char *host = headers.hasHost ? headers.host : AUDIOX_USB_NET_SERVER_IP;
+        if (!safe && ((headers.hasOrigin && !sameOriginHost(headers.origin, host)) ||
+                      !strcasecmp(headers.fetchSite, "cross-site"))) {
+            connection.reject(server, "403 Forbidden", "cross-origin request rejected\n");
+            return true;
+        }
+        if (headers.contentLength > requestBodyLimit(method, path)) {
+            connection.reject(server, "413 Payload Too Large", "payload too large\n");
+            return true;
+        }
+        if (length > headers.contentLength) {
+            connection.reject(server, "400 Bad Request", "unexpected request bytes\n");
+            return true;
+        }
+        if (!strcmp(method, "PUT") && !strcmp(path, "/api/config/restore")) {
+            exchange = &request;
+            const int checked = checkRestoreStorage(server, -1, headers.contentLength);
+            exchange = nullptr;
+            if (checked != 0) {
+                request.complete.store(true);
+                connection.queued = true;
+                return true;
+            }
+        }
+        constexpr size_t prefixSize = sizeof(HTTP_ROOTFS_PREFIX) - 1;
+        request.soundImport = !strcmp(method, "PUT") && !strncmp(path, HTTP_ROOTFS_PREFIX, prefixSize) &&
+            isSfxUploadSuffix(path + prefixSize) && headers.contentLength != 0;
+        if (headers.contentLength > HTTP_BODY_MAX || request.soundImport) {
+            if (!largeUpload.expired()) {
+                connection.reject(server, "503 Service Unavailable", "another upload is in progress; try again shortly\n");
+                return true;
+            }
+            request.upload = openUploadStage();
+            if (request.upload < 0) {
+                printf("[HTTP] [ERR] upload staging failed: %s\n", strerror(errno));
+                connection.reject(server, "507 Insufficient Storage", "could not stage upload\n");
+                return true;
+            }
+            largeUpload = connection.request;
+        }
+        connection.parsed = true;
+        connection.remaining = headers.contentLength;
+        request.body.assign(request.header.data() + end, length);
+        request.header.resize(end);
+        body = request.body.data();
+    }
+    if (request.upload >= 0) {
+        if (length && writeAllToFd(request.upload, body, length) < 0) {
+            connection.reject(server, "507 Insufficient Storage", "could not write staged upload\n");
+            return true;
+        }
+        request.body.clear();
+    } else if (body == buffer) {
+        request.body.append(body, length);
+    }
+    connection.remaining -= length;
+    if (connection.remaining) return true;
+    if (request.upload >= 0 && lseek(request.upload, 0, SEEK_SET) < 0) {
+        connection.reject(server, "500 Internal Server Error", "could not rewind staged upload\n");
+        return true;
+    }
+    auto &transport = *server->transport;
+    std::lock_guard<std::mutex> lock(transport.mutex);
+    if (transport.requests.size() >= httpConnectionLimit) {
+        connection.reject(server, "503 Service Unavailable", "request queue full\n");
+        return true;
+    }
+    transport.requests.push_back(connection.request);
+    connection.queued = true;
+    return true;
+}
+
+static bool transmitHttp(HttpConnection &connection, uint64_t now) {
+    auto &request = *connection.request;
+    ssize_t n;
+    if (connection.sent < request.response.size()) {
+        const size_t length = std::min<size_t>(65536, request.response.size() - connection.sent);
+        n = send(connection.fd, request.response.data() + connection.sent, length, MSG_NOSIGNAL);
+        if (n > 0) connection.sent += static_cast<size_t>(n);
+    } else if (connection.fileOffset < request.downloadSize) {
+        const off_t length = std::min<off_t>(65536, request.downloadSize - connection.fileOffset);
+        n = sendfile(connection.fd, request.download, &connection.fileOffset, static_cast<size_t>(length));
+    } else {
+        return false;
+    }
+    if (n < 0) return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+    if (!n) return false;
+    connection.progress = now;
+    return connection.sent < request.response.size() || connection.fileOffset < request.downloadSize;
+}
+
+static void *runHttpTransport(void *arg) {
+    auto *server = static_cast<HttpServer *>(arg);
+    auto &transport = *server->transport;
+    sigset_t signals;
+    sigemptyset(&signals);
+    sigaddset(&signals, SIGPIPE); // sendfile has no MSG_NOSIGNAL equivalent.
+    pthread_sigmask(SIG_BLOCK, &signals, nullptr);
+    HttpConnection connections[httpConnectionLimit];
+    WebSocketDelivery delivery[HTTP_WEBSOCKET_CLIENTS];
+    std::weak_ptr<HttpExchange> largeUpload;
+    publishDesktopStatus(server);
+    while (!transport.stopping.load()) {
+        struct pollfd fds[1 + httpConnectionLimit]{};
+        fds[0] = {server->listen_fd, 0, 0};
+        for (size_t i = 0; i < httpConnectionLimit; ++i) {
+            auto &connection = connections[i];
+            if (connection.fd < 0) fds[0].events = POLLIN;
+            short events = POLLIN;
+            if (connection.queued) {
+                if (connection.request->complete.load()) {
+                    if (!connection.writing) {
+                        connection.writing = true;
+                        connection.progress = httpMonotonicMs();
+                    }
+                    events = POLLOUT;
+                } else {
+                    events = connection.request->soundImport ? POLLRDHUP : 0;
+                }
+            }
+            fds[i + 1] = {connection.fd, events, 0};
+        }
+        const int ready = ::poll(fds, 1 + httpConnectionLimit, 10);
+        if (ready < 0) {
+            if (errno == EINTR) continue;
+            printf("[HTTP] [ERR] transport poll failed: %s\n", strerror(errno));
+            break;
+        }
+        const uint64_t now = httpMonotonicMs();
+        for (size_t i = 0; i < httpConnectionLimit; ++i) {
+            auto &connection = connections[i];
+            const short revents = fds[i + 1].revents;
+            if (connection.fd < 0) continue;
+            if (revents & (POLLERR | POLLHUP | POLLNVAL | POLLRDHUP)) {
+                connection.reset();
+            } else if (connection.writing) {
+                if (now - connection.progress >= 10000 ||
+                    ((revents & POLLOUT) && !transmitHttp(connection, now))) connection.reset();
+            } else if (!connection.queued) {
+                const uint64_t idleLimit = connection.parsed ? 10000 : 1500;
+                const uint64_t absoluteLimit = connection.parsed ? 900000 : 5000;
+                if (now - connection.progress >= idleLimit || now - connection.started >= absoluteLimit ||
+                    ((revents & POLLIN) && !receiveHttp(server, connection, delivery, largeUpload, now))) {
+                    connection.reset();
+                }
+            }
+        }
+        if (fds[0].revents & POLLIN) {
+            for (auto &connection : connections) {
+                if (connection.fd >= 0) continue;
+                const int fd = accept4(server->listen_fd, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
+                if (fd < 0) break;
+                connection.fd = fd;
+                connection.started = connection.progress = now;
+                connection.request = std::make_shared<HttpExchange>();
+            }
+        }
+        pollWebSockets(server, delivery, now);
+        pollDesktopWebSocket(server, now);
+    }
+    for (auto &connection : connections) connection.reset();
+    for (auto &client : server->websocketClients) {
+        if (client.fd >= 0) closeWebSocket(&client);
+    }
+    if (server->desktopClient.fd >= 0) closeWebSocket(&server->desktopClient);
+    transport.demand.store(0);
+    return nullptr;
 }
 
 } // namespace
@@ -1973,8 +2468,22 @@ HttpServer::HttpServer(Audiox *context) : app(context) {
     if (app) {
         app->http = this;
     }
-
     loadHtmlBody(this, HTTP_DEFAULT_HTML_PATH);
+}
+
+HttpServer::~HttpServer() {
+    if (transport) {
+        transport->stopping.store(true);
+        if (transport->running) pthread_join(transport->thread, nullptr);
+        auto &sound = transport->sound;
+        if (sound.pid >= 0) {
+            (void)kill(sound.pid, SIGKILL);
+            while (waitpid(sound.pid, nullptr, 0) < 0 && errno == EINTR) {}
+            unlink(sound.temporary.c_str());
+        }
+    }
+    if (listen_fd >= 0) close(listen_fd);
+    if (app && app->http == this) app->http = nullptr;
 }
 
 int HttpServer::startSocket() {
@@ -1982,7 +2491,7 @@ int HttpServer::startSocket() {
         return RET_OK;
     }
 
-    listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (listen_fd < 0) {
         printf("[INIT] [ERR] HTTP socket failed: %s\n", strerror(errno));
         return RET_WARN;
@@ -2023,38 +2532,64 @@ int HttpServer::startSocket() {
         return RET_WARN;
     }
 
+    transport = std::make_unique<HttpTransport>();
+    const int error = pthread_create(&transport->thread, nullptr, runHttpTransport, this);
+    if (error) {
+        printf("[INIT] [ERR] HTTP transport thread failed: %s\n", strerror(error));
+        transport.reset();
+        close(listen_fd);
+        listen_fd = -1;
+        return RET_WARN;
+    }
+    transport->running = true;
     started = 1;
     printf("[INIT] HTTP/WebSocket server listening on %s:80\n", AUDIOX_USB_NET_SERVER_IP);
     return RET_OK;
 }
 
 void HttpServer::poll() {
-    if (!started || listen_fd < 0) {
-        return;
+    if (!transport) return;
+    const uint64_t now = httpMonotonicMs();
+    if (transport->rebootAt && now >= transport->rebootAt) {
+        transport->rebootAt = 0;
+        if (reboot(transport->rebootCommand) < 0)
+            printf("[HTTP] [ERR] reboot/shutdown failed: %s\n", strerror(errno));
     }
-
-    while (1) {
-        int cfd = accept(listen_fd, NULL, NULL);
-        if (cfd < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                break;
-            }
-            break;
+    pollSoundImport(this, now);
+    std::shared_ptr<HttpExchange> request;
+    {
+        std::lock_guard<std::mutex> lock(transport->mutex);
+        if (!transport->requests.empty()) {
+            request = std::move(transport->requests.front());
+            transport->requests.pop_front();
         }
-
-        // Allow enough time for browser PUT/POST bodies to arrive without
-        // tripping a socket timeout that appears as NetworkError in fetch().
-        (void)setSocketTimeouts(cfd, 1500, 1500);
-
-        handleClient(this, cfd);
-        bool upgraded = false;
-        for (const auto &client : websocketClients) upgraded |= client.fd == cfd;
-        if (!upgraded) close(cfd);
     }
-    pollWebSockets(this);
+    if (request && !request->disconnected.load()) {
+        exchange = request.get();
+        handleClient(this, -1);
+        exchange = nullptr;
+        if (request->soundImport && transport->sound.pid >= 0 && !transport->sound.request) {
+            transport->sound.request = request;
+        } else {
+            request->complete.store(true);
+        }
+    }
+    publishWebSocketEvents(this, httpMonotonicMs());
+}
+
+void HttpServer::rebootAfterResponse(int command) {
+    sync();
+    if (exchange && transport) {
+        transport->rebootCommand = command;
+        transport->rebootAt = httpMonotonicMs() + 1000;
+    } else {
+        sleep(1);
+        if (reboot(command) < 0) printf("[HTTP] [ERR] reboot/shutdown failed: %s\n", strerror(errno));
+    }
+}
+
+bool HttpServer::canRespond(int cfd) const {
+    return cfd >= 0 || exchange != nullptr;
 }
 
 int HttpServer::sendResponse(int cfd,
@@ -2069,12 +2604,12 @@ int HttpServer::sendResponse(int cfd,
 int HttpServer::sendResponseWithHeaders(int cfd, const char *status, const char *content_type,
                                        const void *body_data, size_t body_size,
                                        const char *download_name, const char *headers) const {
-    if (cfd < 0 || !status || !content_type) {
+    if (!canRespond(cfd) || !status || !content_type) {
         return -1;
     }
 
     std::string normalizedError;
-    if (apiRequest && status[0] >= '4' && status[0] <= '5' &&
+    if ((exchange ? exchange->api : apiRequest) && status[0] >= '4' && status[0] <= '5' &&
         body_data && body_size && content_type &&
         !strncasecmp(content_type, "text/plain", 10)) {
         normalizedError = "{\"ok\":false,\"error\":\"";
@@ -2118,7 +2653,7 @@ int HttpServer::sendResponseWithHeaders(int cfd, const char *status, const char 
 
     size_t sent = 0;
     while (sent < (size_t)hlen) {
-        ssize_t n = send(cfd, hdr + sent, (size_t)hlen - sent, MSG_NOSIGNAL);
+        ssize_t n = writeResponse(cfd, hdr + sent, (size_t)hlen - sent);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
@@ -2134,7 +2669,7 @@ int HttpServer::sendResponseWithHeaders(int cfd, const char *status, const char 
     const char *body_bytes = (const char *)body_data;
     size_t body_sent = 0;
     while (body_bytes && body_sent < body_size) {
-        ssize_t n = send(cfd, body_bytes + body_sent, body_size - body_sent, MSG_NOSIGNAL);
+        ssize_t n = writeResponse(cfd, body_bytes + body_sent, body_size - body_sent);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
@@ -2157,7 +2692,7 @@ int HttpServer::sendFilePath(int cfd,
         return -1;
     }
 
-    int fd = open(path, O_RDONLY);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
         return -1;
     }
@@ -2207,6 +2742,11 @@ int HttpServer::sendFilePath(int cfd,
     if (sendResponse(cfd, "200 OK", ctype, NULL, (size_t)st.st_size) < 0) {
         close(fd);
         return -1;
+    }
+    if (exchange) {
+        exchange->download = fd;
+        exchange->downloadSize = st.st_size;
+        return 0;
     }
 
     char buf[8192];

@@ -114,6 +114,25 @@ int main() {
         state = {};
     }
     {
+        const auto evaluateMedia = [&](const char *source, DesktopMedia media) {
+            return scriptEvaluate(source, defaultEvent, state, plan, error, sizeof(error),
+                                  nullptr, false, false, 0, 0, nullptr, media);
+        };
+        assert(evaluateMedia("assert(desktop.media_status() == 'playing' and desktop.is_playing())",
+                             DesktopMedia::Playing));
+        assert(evaluateMedia("assert(desktop.media_status() == 'none' and not desktop.is_playing())",
+                             DesktopMedia::None));
+        assert(evaluateMedia("assert(desktop.media_status() == 'paused' and not desktop.is_playing())",
+                             DesktopMedia::Paused));
+        assert(evaluateMedia("assert(desktop.media_status() == 'error')", DesktopMedia::Error));
+        assert(!evaluateMedia("desktop.is_playing()", DesktopMedia::Error));
+        assert(!evaluateMedia("desktop.is_playing()", DesktopMedia::Unavailable));
+        assert(!evaluateMedia("desktop.media_status(1)", DesktopMedia::Playing));
+        uint16_t mask{};
+        assert(!scriptInspectHooks("local s=desktop.media_status(); hook('run', function() end)",
+                                   mask, error, sizeof(error)));
+    }
+    {
         ScriptMeters meters{};
         meters.count = 1;
         strcpy(meters.nodes[0].id, "mic");

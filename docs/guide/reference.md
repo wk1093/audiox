@@ -103,9 +103,32 @@ topic. Server messages have the form
 | `midi.cc` | MIDI connection and latest CC/sequence/value | 50 ms |
 | `system.info` | Same device information as `GET /api/system/info` | 1 s |
 | `routing.things` | Same routing topology as `GET /api/routing/things` | 1 s |
+| `desktop.status` | Connected desktop and its latest hello, or `{"connected":false}` | On change |
 
 Events are snapshots, not a durable event log; reconnecting clients should
 resubscribe and use HTTP endpoints for on-demand data.
+
+The native desktop companion uses the separate `ws://audiox.local/ws/desktop`
+endpoint with subprotocol `audiox.desktop.v1`. It sends a bounded text hello,
+for example:
+
+```json
+{"type":"hello","hostname":"workstation","os":"linux","capabilities":["pipewire","default_sink"]}
+```
+
+Only one desktop is accepted. A changed hello replaces its current snapshot;
+disconnecting publishes `{"connected":false}`. A connected `desktop.status`
+snapshot has `connected: true` and a `hello` object. Capability strings describe
+detected host support, not implemented AudioX controls. The desktop endpoint
+rejects browser Origin/Fetch-Site headers but does not authenticate native peers;
+keep the USB network trusted and private.
+
+The server advertises the extension with `media_status: true` in its ready
+message. Only after receiving that message, Linux companions with `playerctl`
+advertise `mpris` and include an optional `media` field in their hello. Its
+values are `playing`, `paused`, `stopped`,
+`none`, or `error`; playing takes precedence when multiple players exist.
+Older companions omit the field. Playback status is read-only.
 
 For example, these **read-only** requests inspect the running device:
 
@@ -259,7 +282,15 @@ at runtime; see [Scripts](./macros) and the [Lua reference](/lua/api).
 
 `/api/rootfs/<path>` reads/writes/deletes supported files under the data root;
 it is not a general shell or access to the entire live root filesystem.
-Sound uploads through this interface run conversion and cache-management logic.
+Sound uploads convert to 48 kHz stereo WAV in the background. The original
+clip stays in place if conversion fails or times out. A successful response
+means the converted file has replaced it and the soundboard has reloaded.
+Only one large upload or sound import is accepted at a time; retry a
+`503 Service Unavailable` response once the current transfer has finished.
+
+HTTP transfers and WebSocket frames are handled separately from the control
+loop. A slow client does not hold up the loop; applying firmware, restoring
+settings, and other device operations can still take time.
 
 Low-level boot/kernel/runtime upload endpoints also exist for development.
 They are not the recommended update path. Use the validated `.axu` workflow

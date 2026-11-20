@@ -4,7 +4,9 @@
   async function request(path, values = null, method = 'POST') {
     const query = values ? `?${new URLSearchParams(values)}` : '';
     const send = async () => {
-      const response = await apiFetch(`/api/scenes${path}${query}`, { method: values ? method : 'GET', cache: 'no-store' });
+      const options = { method: values ? method : 'GET', cache: 'no-store' };
+      if (!values) options.signal = AbortSignal.timeout(10000);
+      const response = await apiFetch(`/api/scenes${path}${query}`, options);
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `Scene request failed (${response.status})`);
       return data;
@@ -14,6 +16,7 @@
   function mount() {
     const host = document.getElementById('scenes-panel');
     if (!host) return;
+    const menu = document.getElementById('scenes-menu');
     host.innerHTML = `<div class="scene-controls">
         <label>Scene name <input id="scene-name" type="text" maxlength="63" placeholder="Clean / Live / Studio"></label>
         <button id="scene-capture" type="button">Capture new scene</button>
@@ -24,6 +27,8 @@
     const list = host.querySelector('#scene-list');
     const captureButton = host.querySelector('#scene-capture');
     let busy = false;
+    let polling = null;
+    let refreshFailed = false;
     let sequence = null;
     let signature = '';
     const statusText = (text) => { status.textContent = text; };
@@ -46,6 +51,7 @@
       busy = true;
       host.querySelectorAll('button').forEach((button) => { button.disabled = true; });
       try {
+        await polling;
         if (AudioxUI.isBusy()) throw new Error('Another device action is already running.');
         await action();
       } catch (error) {
@@ -57,10 +63,19 @@
         host.querySelectorAll('button').forEach((button) => { button.disabled = false; });
       }
     }
+    function observeRecall(nextSequence) {
+      if (!Number.isInteger(nextSequence)) throw new Error('Invalid scene recall status.');
+      if (refreshFailed) {
+        refreshFailed = false;
+        statusText('');
+      }
+      const recalled = sequence !== null && nextSequence !== sequence;
+      sequence = nextSequence;
+      return recalled;
+    }
     async function refresh() {
       const data = await request('');
-      if (sequence !== null && data.sequence !== sequence) changed();
-      sequence = data.sequence;
+      if (observeRecall(data.sequence)) changed();
       const nextSignature = JSON.stringify(data);
       if (nextSignature === signature) return;
       signature = nextSignature;
@@ -152,14 +167,32 @@
       await refresh();
     }));
     host.querySelector('#scene-refresh').addEventListener('click', () => run(refresh));
-    run(refresh);
-    // Background polls must not go through run(): toggling every button's disabled state makes them flicker.
-    let polling = false;
-    window.setInterval(async () => {
+    function poll() {
       if (polling || busy || AudioxUI.isBusy() || document.hidden) return;
-      polling = true;
-      try { await refresh(); } catch (error) { statusText(error.message); } finally { polling = false; }
-    }, 2500);
+      polling = (async () => {
+        try {
+          if (menu.open) {
+            await refresh();
+          } else {
+            const data = await request('/status');
+            if (observeRecall(data.sequence)) changed();
+          }
+        } catch (error) {
+          refreshFailed = true;
+          statusText(`Could not refresh scenes: ${error.message}`);
+        } finally {
+          polling = null;
+        }
+      })();
+      return polling;
+    }
+    menu.addEventListener('toggle', async () => {
+      if (!menu.open) return;
+      await polling;
+      if (menu.open) await poll();
+    });
+    poll();
+    window.setInterval(poll, 2500);
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount);
   else mount();

@@ -1,9 +1,11 @@
 #pragma once
 
 #include "defs.hpp"
+#include "desktop/media.hpp"
 #include "../context.hpp"
 
-#include <pthread.h>
+#include <atomic>
+#include <memory>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -14,6 +16,8 @@ struct HttpWebSocketClient {
     int fd{-1};
     uint32_t topics{};
     uint64_t lastActivityMs{};
+    uint64_t connectedAtMs{};
+    uint64_t blockedAtMs{};
     uint64_t pingAtMs{};
     uint64_t topicAtMs[5]{};
     uint8_t input[4096]{};
@@ -22,9 +26,11 @@ struct HttpWebSocketClient {
     size_t outputSize{};
     size_t outputOffset{};
     bool closeAfterFlush{};
+    bool desktopIdentified{};
 };
 
 struct HttpServer;
+struct HttpTransport;
 
 bool buildHttpEventJson(HttpServer *server, const char *topic,
                         char *out, size_t capacity, size_t *length);
@@ -43,21 +49,26 @@ struct HttpServer {
     Audiox *app;
 
     int listen_fd;
-    pthread_t thread;
     int started;
     char html_path[512];
     char body[16384];
     size_t body_len;
     char requestHost[256]{};
     bool apiRequest{};
+    std::unique_ptr<HttpTransport> transport;
+    // Transport-owned after start; kept here for the protocol helpers.
     HttpWebSocketClient websocketClients[HTTP_WEBSOCKET_CLIENTS]{};
-    uint64_t websocketTopicAtMs[5]{};
+    HttpWebSocketClient desktopClient{};
+    std::atomic<DesktopMedia> desktopMedia{DesktopMedia::Unavailable};
 
     HttpServer(Audiox *context);
+    ~HttpServer();
 
     int startSocket() WARN_UNUSED;
 
     void poll();
+    void rebootAfterResponse(int command);
+    bool canRespond(int cfd) const;
 
     int sendResponse(int cfd,
                      const char *status,

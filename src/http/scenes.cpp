@@ -41,6 +41,12 @@ int handleSceneRequest(HttpServer *server, int cfd, const char *method,
     auto errorReply = [&](const char *status, const std::string &error) {
         return reply(status, "{\"error\":\"" + audiox::json::escape(error.c_str()) + "\"}\n");
     };
+    if (!strcmp(path, "/api/scenes/status")) {
+        if (strcmp(method, "GET")) return errorReply("405 Method Not Allowed", "use GET");
+        const uint32_t sequence = server->app && server->app->audio
+            ? server->app->audio->sceneRecallSeq.load(std::memory_order_acquire) : 0;
+        return reply("200 OK", "{\"sequence\":" + std::to_string(sequence) + "}\n");
+    }
     Store store;
     std::string error;
     if (!strcmp(path, "/api/scenes")) {

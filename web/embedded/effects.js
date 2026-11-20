@@ -903,7 +903,7 @@
 
     async loadEffects() {
       if (!this.mutationInFlight && this.panelEl?.contains(document.activeElement) &&
-          ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
+          ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return false;
       const myEpoch = this.loadEpoch;
       const res = await apiFetch('/api/effects', { method: 'GET' });
       const txt = await res.text();
@@ -915,7 +915,7 @@
         throw new Error('Effects data is not available. Refresh the page and try again.');
       }
       AudioxUI.resolve('effects-load');
-      if (myEpoch !== this.loadEpoch) return;
+      if (myEpoch !== this.loadEpoch) return false;
       this.effectsById.clear();
       for (const fx of data.effects) {
         const id = normalizeEffectId(fx?.id);
@@ -929,12 +929,13 @@
       }
       const nextSig = this.buildEffectsSignature();
       if (nextSig === this.effectsSignature) {
-        return;
+        return true;
       }
       this.effectsSignature = nextSig;
       this.refreshAllNodes();
       this.onLayoutChange();
       this.renderPanel();
+      return true;
     }
 
     registerNode(node) {

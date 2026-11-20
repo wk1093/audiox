@@ -29,6 +29,19 @@ if [[ "$CHANNEL" == nightly && "$RELEASE_TAG" != "v${VERSION%%+*}+$PUBLISH_SEQUE
     exit 1
 fi
 
+DESKTOP_ASSETS=(
+    audiox-companion-linux-x86_64.AppImage
+    audiox-companion-windows-x86_64.exe
+    audiox-companion-macos-arm64.tar.gz
+)
+for asset in "${DESKTOP_ASSETS[@]}"; do
+    if [[ ! -s "$FILES/$asset" ]]; then
+        echo "Missing desktop artifact: $FILES/$asset" >&2
+        exit 1
+    fi
+    (cd "$FILES" && sha256sum "$asset" > "$asset.sha256")
+done
+
 WORK="$(mktemp -d)"
 trap 'rm -r "$WORK"' EXIT
 
@@ -104,7 +117,8 @@ if [[ -z "$CURRENT" ]] || jq -e .draft <<< "$CURRENT" > /dev/null; then
         fi
     done
     jq -s '{os_list: .}' "$FILES/pi4.json" "$FILES/pi5.json" > "$WORK/images.json"
-    gh release upload "$RELEASE_TAG" "$FILES/"*.img.xz "$FILES/"*.axu "$FILES/"*.sha256 \
+    gh release upload "$RELEASE_TAG" "$FILES/"*.img.xz "$FILES/"*.axu \
+        "${DESKTOP_ASSETS[@]/#/$FILES/}" "$FILES/"*.sha256 \
         "$WORK/images.json" --clobber
     if [[ "$CHANNEL" == nightly ]]; then
         gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false --notes-file "$WORK/notes.md"
@@ -163,7 +177,8 @@ else
             --draft --prerelease --latest=false
     fi
     mkdir "$WORK/latest"
-    gh release download "$RELEASE_TAG" --pattern '*.img.xz' --pattern '*.axu' --pattern '*.sha256' --dir "$WORK/latest"
+    gh release download "$RELEASE_TAG" --pattern '*.img.xz' --pattern '*.axu' --pattern '*.sha256' \
+        --pattern '*.AppImage' --pattern '*.exe' --pattern '*.tar.gz' --dir "$WORK/latest"
     gh release upload nightly "$WORK/latest/"* --clobber
     gh release upload nightly "$WORK/os_list.json" --clobber
     REFS="$(gh api "repos/$GH_REPO/git/matching-refs/tags/nightly" \

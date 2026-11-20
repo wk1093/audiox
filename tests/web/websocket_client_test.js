@@ -40,6 +40,8 @@ test('WebSocket subscriptions reconnect, route events, and close when unused', (
   vm.runInContext(fs.readFileSync(require.resolve('../../web/embedded/api.js'), 'utf8'), context);
 
   const events = [];
+  const connectionStates = [];
+  const stopObserving = context.AudioxApi.onConnectionChange((connected) => connectionStates.push(connected));
   const unsubscribe = context.AudioxApi.subscribe(['midi.note', 'midi.cc'], (data) => events.push(data));
   assert.equal(sockets.length, 1);
   assert.equal(sockets[0].url, 'ws://audiox.local/ws');
@@ -52,6 +54,7 @@ test('WebSocket subscriptions reconnect, route events, and close when unused', (
   assert.deepEqual(JSON.parse(JSON.stringify(events)), [{ last_note: 60 }]);
 
   sockets[0].close();
+  assert.deepEqual(connectionStates, [true, false]);
   assert.equal(context.AudioxApi.isConnected(), false);
   assert.equal(timers.at(-1).delay, 500);
   timers.at(-1).callback();
@@ -60,6 +63,7 @@ test('WebSocket subscriptions reconnect, route events, and close when unused', (
   assert.deepEqual(sockets[1].sent, [{ type: 'subscribe', topics: ['midi.note', 'midi.cc'] }]);
 
   unsubscribe();
+  stopObserving();
   assert.deepEqual(sockets[1].sent.at(-1), { type: 'unsubscribe', topics: ['midi.note', 'midi.cc'] });
   assert.equal(sockets[1].readyState, 3);
 });

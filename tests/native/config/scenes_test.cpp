@@ -119,6 +119,10 @@ int main() {
         assert(decode(encode("Unicode café"), decoded) && decoded == "Unicode café");
         assert(!decode("00", decoded) && !decode("zz", decoded));
         assert(request(server, "GET", "/api/scenes").find("Clean \\\"voice\\\"") != std::string::npos);
+        const auto status = request(server, "GET", "/api/scenes/status");
+        assert(status.find("200 OK") != std::string::npos);
+        assert(status.find("\r\n\r\n{\"sequence\":0}\n") != std::string::npos);
+        assert(request(server, "POST", "/api/scenes/status").find("405") != std::string::npos);
         assert(request(server, "PUT", "/api/scenes").find("405") != std::string::npos);
         assert(request(server, "POST", "/api/scenes/recall", "id=../escape").find("400") != std::string::npos);
         assert(request(server, "POST", "/api/scenes/bind", "id=clean&channel=16&note=60").find("400") != std::string::npos);
@@ -217,7 +221,10 @@ int main() {
         assert(recall(&app, live, error));
         assert(audio.effectStates.size() == 2 && router.hasRoutingHelper());
         assert(audio.getThingGain("orphan_gain") == 1.5f);
+        const auto sequenceBeforeMidi = audio.sceneRecallSeq.load();
         assert(recallMidi(&app, 2, 60));
+        assert(request(server, "GET", "/api/scenes/status").find(
+            "\r\n\r\n{\"sequence\":" + std::to_string(sequenceBeforeMidi + 1) + "}\n") != std::string::npos);
         assert(audio.effectStates.size() == 1 && audio.activeSceneId == "clean");
         assert(!recallMidi(&app, 1, 60));
         assert(request(server, "POST", "/api/scenes/bind", "id=clean&channel=3&note=61").find("200") != std::string::npos);

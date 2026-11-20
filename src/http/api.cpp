@@ -4295,9 +4295,7 @@ static int handleSystemRestart(HttpServer *server,
 	(void)path;
 	static const char ok[] = "{\"status\":\"restarting\"}\n";
 	int ret = server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
-	sync();
-	sleep(1);
-	reboot(RB_AUTOBOOT);
+	server->rebootAfterResponse(RB_AUTOBOOT);
 	return ret;
 }
 
@@ -4328,9 +4326,7 @@ static int handleSystemShutdown(HttpServer *server,
 	(void)path;
 	static const char ok[] = "{\"status\":\"shutting down\"}\n";
 	int ret = server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", ok, sizeof(ok) - 1);
-	sync();
-	sleep(1);
-	reboot(RB_POWER_OFF);
+	server->rebootAfterResponse(RB_POWER_OFF);
 	return ret;
 }
 
@@ -6009,7 +6005,7 @@ int handleApiRequest(HttpServer *server,
 		~ApiRequestScope() { if (server) server->apiRequest = previous; }
 	} scope{server, server ? server->apiRequest : false};
 	if (server) server->apiRequest = true;
-	if (!server || cfd < 0 || !method || !path) {
+	if (!server || !server->canRespond(cfd) || !method || !path) {
 		return -1;
 	}
 	if (!strcmp(path, "/api/plugins") || !strncmp(path, "/api/plugins/", 13))

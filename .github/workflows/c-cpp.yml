@@ -18,6 +18,7 @@ on:
       - 'config/Kconfig'
       - 'config/modules/**'
       - 'assets/branding/**'
+      - 'desktop/**'
   pull_request:
     branches: [ "main" ]
   workflow_call:
@@ -112,6 +113,77 @@ jobs:
     uses: ./.github/workflows/llvm.yml
     with:
       ref: ${{ needs.prepare.outputs.commit }}
+
+  desktop:
+    name: Build desktop (${{ matrix.platform }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: ubuntu-24.04
+          - platform: windows
+            runner: windows-latest
+          - platform: macos
+            runner: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+
+      - name: Install appimagetool
+        if: matrix.platform == 'linux'
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  $RUNNER_TEMP/appimagetool" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/appimagetool"
+
+      - name: Set up Windows compiler
+        if: matrix.platform == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: make mingw-w64-x86_64-gcc
+
+      - name: Build and smoke-test Linux AppImage
+        if: matrix.platform == 'linux'
+        run: |
+          make desktop-linux APPIMAGETOOL="$RUNNER_TEMP/appimagetool"
+          node --test tests/desktop/companion_test.js
+          out/desktop/audiox-companion-linux-x86_64.AppImage --appimage-extract-and-run --help
+          (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/out/desktop/audiox-companion-linux-x86_64.AppImage" \
+            --appimage-extract usr/lib/systemd/user/audiox-companion.service)
+          cmp desktop/audiox-companion.service "$RUNNER_TEMP/squashfs-root/usr/lib/systemd/user/audiox-companion.service"
+
+      - name: Build and smoke-test Windows executable
+        if: matrix.platform == 'windows'
+        shell: msys2 {0}
+        run: |
+          make desktop-windows CXX=g++
+          out/desktop/audiox-companion-windows-x86_64.exe --help
+          AUDIOX_DESKTOP_WINDOWS=1 node --test tests/desktop/companion_test.js
+
+      - name: Build and smoke-test macOS archive
+        if: matrix.platform == 'macos'
+        run: |
+          make desktop-macos
+          tar -xzf out/desktop/audiox-companion-macos-*.tar.gz -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/audiox-companion" --help
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.platform }}
+          path: |
+            out/desktop/*.AppImage
+            out/desktop/*.exe
+            out/desktop/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
 
   build:
     name: Build AudioX (${{ matrix.board }})
@@ -299,7 +371,7 @@ jobs:
 
   publish:
     name: Publish ${{ needs.prepare.outputs.channel }}
-    needs: [prepare, build]
+    needs: [prepare, build, desktop]
     if: needs.prepare.outputs.channel != '' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -328,6 +400,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: imager-*
+          path: release
+          merge-multiple: true
+
+      - name: Download desktop builds
+        uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
           path: release
           merge-multiple: true
 

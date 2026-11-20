@@ -71,18 +71,18 @@ jq -r '
 while IFS= read -r baseline_tag; do
     commit="$(git rev-parse --verify "refs/tags/$baseline_tag^{commit}")"
     if git merge-base --is-ancestor "$commit" HEAD; then
-        # Match the firmware input filter in c-cpp.yml; publishing/docs changes alone do not count.
+        # Match build inputs in c-cpp.yml; publishing/docs changes alone do not count.
         if git diff --quiet "$commit" HEAD -- src include root web/embedded tools Makefile \
-            config/Kconfig config/modules assets/branding \
+            config/Kconfig config/modules assets/branding desktop \
             ':(exclude)tools/release/mirror-updates.sh' ':(exclude)tools/release/prepare-release.sh'; then
-            echo "No firmware changes since published release $baseline_tag." >&2
+            echo "No build input changes since published release $baseline_tag." >&2
             tag=""
             finish false
             exit 0
         else
             status=$?
             if (( status != 1 )); then
-                echo "Failed to compare firmware inputs against $baseline_tag." >&2
+                echo "Failed to compare build inputs against $baseline_tag." >&2
                 exit "$status"
             fi
         fi
@@ -95,5 +95,5 @@ while IFS= read -r baseline_tag; do
     fi
 done < "$WORK/tags"
 
-echo "Firmware inputs are not covered by a published release; building a nightly." >&2
+echo "Build inputs are not covered by a published release; building a nightly." >&2
 finish true

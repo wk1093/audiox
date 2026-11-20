@@ -2,10 +2,13 @@ async function loadMappings() {
   try {
     const res = await apiFetch('/api/midi/mappings', { method: 'GET' });
     const txt = await res.text();
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`${res.status} ${txt.trim()}`);
 
     const data = JSON.parse(txt);
-    const mappings = Array.isArray(data?.mappings) ? data.mappings : [];
+    if (!Array.isArray(data?.mappings) || data.mappings.some((mapping) =>
+      !Number.isInteger(mapping?.note) || mapping.note < 0 || mapping.note > 127 ||
+      typeof mapping.sfx !== 'string')) throw new Error('Invalid MIDI mapping list.');
+    const mappings = data.mappings;
     state.midiMappingsByNote = {};
     state.midiMappingsBySfx = {};
 
@@ -15,7 +18,16 @@ async function loadMappings() {
     }
 
     renderSoundboardGrid();
-  } catch (err) {}
+    AudioxUI.resolve('midi-mappings-load');
+  } catch (err) {
+    setStatus(`MIDI mappings load failed: ${midiLoadErrorDetail(err)}`, 'warn', 'midi-mappings-load');
+  }
+}
+
+function midiLoadErrorDetail(error) {
+  if (error instanceof TypeError) return 'Check the device connection and try again.';
+  if (error instanceof SyntaxError) return 'The device returned an invalid response.';
+  return error.message;
 }
 
 async function loadMidiActions() {
@@ -464,14 +476,20 @@ lightDimButton.addEventListener('click', async () => {
 async function loadLightConfig() {
   try {
     const res = await apiFetch('/api/midi/light_config', { method: 'GET' });
-    if (!res.ok) return;
-    const data = JSON.parse(await res.text());
-    document.getElementById('light_channel').value = String(data.channel ?? 0);
-    document.getElementById('light_mapped_vel').value = String(data.mapped_vel ?? 0);
-    document.getElementById('light_stop_all_vel').value = String(data.stop_all_vel ?? 0);
-    document.getElementById('light_playing_vel').value = String(data.playing_vel ?? 0);
+    const txt = await res.text();
+    if (!res.ok) throw new Error(`${res.status} ${txt.trim()}`);
+    const data = JSON.parse(txt);
+    if (!data || !['channel', 'mapped_vel', 'stop_all_vel', 'playing_vel']
+      .every((key) => Number.isInteger(data[key]))) throw new Error('Invalid MIDI lighting settings.');
+    document.getElementById('light_channel').value = String(data.channel);
+    document.getElementById('light_mapped_vel').value = String(data.mapped_vel);
+    document.getElementById('light_stop_all_vel').value = String(data.stop_all_vel);
+    document.getElementById('light_playing_vel').value = String(data.playing_vel);
     AudioxUI.setUnsaved('light-config', false);
-  } catch (err) {}
+    AudioxUI.resolve('midi-light-config-load');
+  } catch (err) {
+    setStatus(`MIDI lighting settings load failed: ${midiLoadErrorDetail(err)}`, 'warn', 'midi-light-config-load');
+  }
 }
 
 async function saveLightConfig() {

@@ -21,6 +21,14 @@ for board in pi4 pi5; do
     printf 'AXUPDATE fixture %s' "$board" > "$WORK/package/audiox-update-$board.axu"
     (cd "$WORK/package" && sha256sum "audiox-update-$board.axu" > "audiox-update-$board.axu.sha256")
 done
+desktop_assets=(
+    audiox-companion-linux-x86_64.AppImage
+    audiox-companion-windows-x86_64.exe
+    audiox-companion-macos-arm64.tar.gz
+)
+for asset in "${desktop_assets[@]}"; do
+    printf 'desktop fixture %s' "$asset" > "$WORK/package/$asset"
+done
 
 # Persist simulated release state across the publisher's gh invocations.
 gh() {
@@ -181,6 +189,22 @@ for board in pi4 pi5; do
     (cd "$MOCK/assets/nightly" && sha256sum --check "audiox-update-$board.axu.sha256")
 done
 echo "PASS: both AXU archives and checksums reach the versioned and rolling nightly releases"
+for asset in "${desktop_assets[@]}"; do
+    for tag in "$TAG_27" nightly; do
+        cmp "$WORK/package/$asset" "$MOCK/assets/$tag/$asset"
+        (cd "$MOCK/assets/$tag" && sha256sum --check "$asset.sha256")
+    done
+done
+echo "PASS: desktop artifacts and checksums reach both nightly releases"
+
+mv "$WORK/package/${desktop_assets[0]}" "$WORK/missing-desktop"
+if CHANNEL=nightly RELEASE_TAG="$TAG_27" \
+    bash "$ROOT/tools/release/publish-imager.sh" "$WORK/package" > "$WORK/failure.log" 2>&1; then
+    echo "Expected a missing desktop artifact to fail" >&2; exit 1
+fi
+grep -q 'Missing desktop artifact' "$WORK/failure.log"
+mv "$WORK/missing-desktop" "$WORK/package/${desktop_assets[0]}"
+echo "PASS: publication rejects missing desktop artifacts"
 
 echo '' > "$MOCK/calls"
 CHANNEL=nightly RELEASE_TAG="$TAG_26" GITHUB_RUN_NUMBER=26 \
@@ -229,6 +253,9 @@ for board in pi4 pi5; do
         "$board" stable "$GH_REPO" v2.0.0 2026-10-26 2.0.0
 done
 cp "$WORK/package/"*.axu "$WORK/package/"*.axu.sha256 "$WORK/stable/"
+for asset in "${desktop_assets[@]}"; do
+    cp "$WORK/package/$asset" "$WORK/stable/"
+done
 echo '' > "$MOCK/calls"
 if CHANNEL=stable RELEASE_TAG=v2.0.0 FAIL_CATALOG=1 \
     bash "$ROOT/tools/release/publish-imager.sh" "$WORK/stable" > "$WORK/failure.log" 2>&1; then
@@ -251,6 +278,11 @@ for board in pi4 pi5; do
     cmp "$WORK/stable/audiox-update-$board.axu" "$MOCK/assets/v2.0.0/audiox-update-$board.axu"
 done
 echo "PASS: both AXU archives are published on stable releases"
+for asset in "${desktop_assets[@]}"; do
+    cmp "$WORK/stable/$asset" "$MOCK/assets/v2.0.0/$asset"
+    (cd "$MOCK/assets/v2.0.0" && sha256sum --check "$asset.sha256")
+done
+echo "PASS: desktop artifacts and checksums are published on stable releases"
 
 GH_REPO="$GH_REPO" bash "$ROOT/tools/release/mirror-updates.sh" "$WORK/pages"
 jq -e --arg nightly_tag "$TAG_28" '.stable.tag == "v2.0.0" and .nightly.tag == $nightly_tag and

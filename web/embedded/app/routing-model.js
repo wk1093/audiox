@@ -434,8 +434,17 @@ async function pollEffectsIfNeeded() {
 
   state.effectsPollInFlight = true;
   try {
-    await effectsManager.loadEffects();
-  } catch (_) {
+    if (await effectsManager.loadEffects() && state.effectsPollFailures) {
+      state.effectsPollFailures = 0;
+      AudioxUI.resolve('effects-stale');
+    }
+  } catch (error) {
+    const failureLimit = 3;
+    if (state.effectsPollFailures < failureLimit && ++state.effectsPollFailures === failureLimit) {
+      console.warn('AudioX: Effects background refresh failed', error);
+      setStatus('Could not refresh Effects. Shown values may be out of date; retrying automatically.',
+        'warn', 'effects-stale');
+    }
   } finally {
     state.effectsPollInFlight = false;
   }

@@ -46,6 +46,7 @@ remains beside the editor.
 | Scripts | Create named keyboard shortcuts or Lua automations; run them from the web or MIDI | [Scripts](./macros) |
 | Config | Change USB gadget settings and back up or restore your setup | [Config and backups](./config) |
 | System | Inspect device information and logs, restart, shut down, and install firmware | [System](./system) |
+| Desktop | View a connected companion's host and detected capabilities; controls are not yet implemented | [Desktop](./desktop) |
 
 ## Understand what Save means
 

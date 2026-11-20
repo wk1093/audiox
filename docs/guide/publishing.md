@@ -5,15 +5,16 @@ to install AudioX and [Development](./development) to build without publishing.
 
 ## Build workflow
 
-CI builds Pi 4 and Pi 5 separately. Main-branch and pull-request builds produce
-firmware artifacts but do not publish releases. The nightly check runs daily at
+CI builds Pi 4 and Pi 5 separately, and builds desktop artifacts for Linux,
+Windows, and macOS. Main-branch and pull-request builds do not publish releases.
+The desktop executable is currently a non-functional scaffold. The nightly check runs daily at
 08:00 UTC and can also be started from **Actions > Release AudioX > Run
 workflow** on `main`.
 
-The workflow compares firmware inputs selected by its `push.paths` filter.
+The workflow compares firmware and desktop inputs selected by its `push.paths` filter.
 Documentation, tests, Imager catalogs, and mirror-only edits do not trigger a
 nightly. Keep the workflow filter and `tools/release/prepare-release.sh` aligned when
-adding firmware inputs.
+adding build inputs.
 
 ## Select a release channel
 
@@ -22,7 +23,7 @@ The workflow reads `make print-version` from the selected commit:
 | Version | Channel |
 | --- | --- |
 | `X.Y.Z` | Stable, tagged `vX.Y.Z` |
-| SemVer prerelease such as `X.Y.Z-beta.2` | Nightly prerelease |
+| SemVer prerelease such as `X.Y.Z-beta.2` or `X.Y.Z-rc.1` | Nightly prerelease |
 
 Set `AUDIOX_VERSION_MAJOR`, `AUDIOX_VERSION_MINOR`, and
 `AUDIOX_VERSION_PATCH` in the Makefile. Leave prerelease and build metadata
@@ -35,8 +36,8 @@ Configured build metadata is rejected because the workflow supplies it.
 1. Commit the intended version in the Makefile.
 2. Select `main` and run **Actions > Release AudioX > Run workflow**, or wait
    for the scheduled run.
-3. CI builds both boards and stages images, checksums, manifests, and AXU
-   archives in a draft release.
+3. CI builds both boards and desktop platforms and stages images, checksums,
+   manifests, AXU archives, and desktop artifacts in a draft release.
 4. After uploads succeed, the workflow publishes the release as the latest
    Stable.
 
@@ -58,6 +59,10 @@ Versioned assets are not overwritten on reruns, and an older run cannot replace
 a newer Nightly. The rolling release includes fixed download names such as
 `audiox-latest-nightly-pi4.img.xz`, `audiox-latest-nightly-pi5.img.xz`, and
 `os_list.json`; its catalog points to versioned assets.
+Stable, versioned Nightly, and rolling Nightly releases also contain the Linux
+x86-64 AppImage, Windows x86-64 executable, macOS Apple Silicon archive, and
+SHA-256 sidecars. The macOS archive is unsigned and has not been tested by the
+project; a Windows installer is planned.
 
 Release notes use commit subjects and group subjects prefixed with `[feat]` or
 `[fix]`. Use clear subjects for user-facing changes; document test-only and

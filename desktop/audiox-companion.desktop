@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=AudioX Companion
+Exec=audiox-companion
+Icon=audiox-companion
+Categories=AudioVideo;Audio;
+Terminal=true

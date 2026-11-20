@@ -76,6 +76,7 @@ const state = {
   thingsUnsubscribe: null,
   thingsSignature: '',
   effectsPollInFlight: false,
+  effectsPollFailures: 0,
   soundboardModesBySfx: {},
   soundboardLayout: { mode: 'normal', rows: 4, columns: 4, corners: [null, null, null, null], cells: [] },
   soundboardCellsBySfx: {},

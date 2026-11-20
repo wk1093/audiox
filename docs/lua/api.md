@@ -291,6 +291,16 @@ using a new sound; the trigger does not scan storage. See
 
 ## Effects and volume
 
+### Desktop playback status
+
+`desktop.media_status()` returns the latest companion snapshot: `playing`,
+`paused`, `stopped`, `none`, `error`, or `unavailable` (disconnected or
+unsupported). `desktop.is_playing()` returns true if any player is playing,
+false for paused, stopped, or no players, and raises an error when status is
+unavailable or the query failed. Both calls are callback-only. Linux requires
+`playerctl`; updates arrive approximately every five seconds. Status is a
+snapshot at script evaluation, not a synchronous desktop query.
+
 ### Meter readings
 
 `meters.get(id[, channel])` reads a routing node's published linear peak meter.

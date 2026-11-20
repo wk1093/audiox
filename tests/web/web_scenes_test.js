@@ -14,10 +14,12 @@ class Element {
   async click() { if (!this.disabled) this.events.click?.(); await tick(); }
 }
 const tick = () => new Promise((resolve) => setImmediate(resolve));
-async function fixture() {
+async function fixture(open = true) {
   const controls = Object.fromEntries(['scene-status', 'scene-list', 'scene-name', 'scene-capture', 'scene-refresh']
     .map((id) => [id, new Element()]));
   const host = new Element();
+  const menu = new Element();
+  menu.open = open;
   host.querySelector = (selector) => controls[selector.slice(1)];
   host.querySelectorAll = () => [controls['scene-capture'], controls['scene-refresh'],
     ...controls['scene-list'].children.flatMap((row) => row.children.filter((child) => child.type === 'button'))];
@@ -39,7 +41,7 @@ async function fixture() {
     setInterval: (callback) => { poll = callback; },
   };
   const document = { readyState: 'complete', hidden: false, createElement: () => new Element(),
-    getElementById: (id) => id === 'scenes-panel' ? host : null };
+    getElementById: (id) => ({ 'scenes-panel': host, 'scenes-menu': menu })[id] };
   const AudioxUI = {
     hasUnsavedChanges: (key) => key === 'routing' && dirty,
     isBusy: () => deviceBusy,
@@ -52,22 +54,43 @@ async function fixture() {
       try { return await action(); } finally { deviceBusy = false; }
     },
   };
-  const context = { window, document, AudioxUI, TextEncoder, URLSearchParams, Uint32Array, Date,
+  const context = { window, document, AudioxUI, TextEncoder, URLSearchParams, Uint32Array, Date, AbortSignal,
     CustomEvent: class { constructor(type) { this.type = type; } },
     fetch: async (url, options) => {
       calls.push({ url, options });
       if (failure) return { ok: false, json: async () => ({ error: 'Disk unavailable' }) };
       if (url.startsWith('/api/scenes/recall?')) { data.sequence++; data.active = 'clean'; }
+      if (url === '/api/scenes/status') return { ok: true, json: async () => ({ sequence: data.sequence }) };
       return { ok: true, json: async () => structuredClone(url === '/api/scenes' ? data : { ok: true }) };
     },
   };
   vm.runInContext(fs.readFileSync('web/embedded/scenes.js', 'utf8'), apiContext(context));
   await tick();
   return { controls, data, calls, events, poll: () => poll(), fail: () => { failure = true; }, window,
+    toggle: (open) => { menu.open = open; return menu.events.toggle(); },
     dirty: (value) => { dirty = value; }, deviceBusy: (value) => { deviceBusy = value; },
     notifications, confirmations, tasks: () => tasks };
 }
 const button = (row, text) => row.children.find((child) => child.textContent === text);
+
+test('a closed Scenes menu checks for recalls without loading the scene list', async () => {
+  const f = await fixture(false);
+  assert.deepEqual(f.calls.map(({ url }) => url), ['/api/scenes/status']);
+  f.dirty(true);
+  f.data.sequence++;
+  await f.poll();
+  assert.deepEqual(f.events, ['audiox-scene-conflict']);
+  assert.equal(f.calls.at(-1).url, '/api/scenes/status');
+  assert.equal(f.controls['scene-list'].children.length, 0);
+  await f.toggle(true);
+  await tick();
+  assert.equal(f.calls.at(-1).url, '/api/scenes');
+  assert.equal(f.controls['scene-list'].children.length, 1);
+  assert.deepEqual(f.events, ['audiox-scene-conflict']);
+  await f.toggle(false);
+  await f.poll();
+  assert.equal(f.calls.at(-1).url, '/api/scenes/status');
+});
 
 test('scene UI captures names as UTF-8 hex and never renders user names as HTML', async () => {
   const f = await fixture();

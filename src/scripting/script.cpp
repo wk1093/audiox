@@ -24,6 +24,7 @@ char hooksRegistryKey;
 
 struct Compiler {
     const ScriptMeters *meters;
+    DesktopMedia desktopMedia;
     unsigned meterReads;
     ScriptPlan *plan;
     ScriptState *state;
@@ -321,6 +322,33 @@ int meterGet(lua_State *lua) {
         return 1;
     }
     return luaL_error(lua, "meters.get: unknown routing thing ID");
+}
+
+int desktopMediaStatus(lua_State *lua) {
+    arity(lua, 0, 0);
+    auto *compiler = context(lua);
+    if (compiler->registering) return luaL_error(lua, "desktop.media_status belongs inside callbacks");
+    const char *status = "unavailable";
+    switch (compiler->desktopMedia) {
+    case DesktopMedia::Playing: status = "playing"; break;
+    case DesktopMedia::Paused: status = "paused"; break;
+    case DesktopMedia::Stopped: status = "stopped"; break;
+    case DesktopMedia::None: status = "none"; break;
+    case DesktopMedia::Error: status = "error"; break;
+    case DesktopMedia::Unavailable: break;
+    }
+    lua_pushstring(lua, status);
+    return 1;
+}
+
+int desktopIsPlaying(lua_State *lua) {
+    arity(lua, 0, 0);
+    auto *compiler = context(lua);
+    if (compiler->registering) return luaL_error(lua, "desktop.is_playing belongs inside callbacks");
+    if (compiler->desktopMedia == DesktopMedia::Error || compiler->desktopMedia == DesktopMedia::Unavailable)
+        return luaL_error(lua, "desktop playback status unavailable");
+    lua_pushboolean(lua, compiler->desktopMedia == DesktopMedia::Playing);
+    return 1;
 }
 
 int deviceControl(lua_State *lua) {
@@ -914,6 +942,12 @@ void libraries(lua_State *lua) {
     lua_pushcfunction(lua, meterGet);
     lua_setfield(lua, -2, "get");
     lua_setglobal(lua, "meters");
+    lua_newtable(lua);
+    lua_pushcfunction(lua, desktopMediaStatus);
+    lua_setfield(lua, -2, "media_status");
+    lua_pushcfunction(lua, desktopIsPlaying);
+    lua_setfield(lua, -2, "is_playing");
+    lua_setglobal(lua, "desktop");
     const luaL_Reg helpers[] = {{"millis", millis}, {"epoch", epoch}, {"log", log}, {"choose", choose},
         {"clamp", clamp}, {"map", map}, {"round", round}, {nullptr, nullptr}};
     for (const luaL_Reg *helper = helpers; helper->name; ++helper) {
@@ -1488,13 +1522,15 @@ bool run(const char *source, const ScriptEvent *event, const ScriptState *initia
          bool configWriteAllowed = false, bool hookMode = false,
          uint16_t expectedHookMask = 0, uint16_t *discoveredMask = nullptr,
          uint32_t scriptId = 0, ScriptUi *inspectedUi = nullptr,
-         const ScriptMeters *meters = nullptr, ScriptActivity *activity = nullptr) {
+         const ScriptMeters *meters = nullptr, ScriptActivity *activity = nullptr,
+         DesktopMedia desktopMedia = DesktopMedia::Unavailable) {
     writeError(error, errorSize, "");
     size_t length = 0;
     if (!sourceLength(source, length, error, errorSize,
                       hookMode || syntaxOnly ? SCRIPT_STORAGE_MAX : SCRIPT_MAX)) return false;
     Compiler compiler{};
     compiler.meters = meters;
+    compiler.desktopMedia = desktopMedia;
     compiler.discoveredActivity = activity;
     compiler.plan = plan;
     compiler.state = resultState;
@@ -1548,7 +1584,7 @@ bool scriptEvaluate(const char *source, const ScriptEvent &event,
                         ScriptState &state, ScriptPlan &plan,
                         char *error, size_t errorSize, ConfigStore *config, bool configWriteAllowed,
                         bool hookMode, uint16_t expectedHookMask, uint32_t scriptId,
-                        const ScriptMeters *meters) {
+                        const ScriptMeters *meters, DesktopMedia desktopMedia) {
     plan = {};
     ScriptStateEntry eventValue = event.value;
     memcpy(eventValue.key, event.key, sizeof(eventValue.key));
@@ -1569,7 +1605,8 @@ bool scriptEvaluate(const char *source, const ScriptEvent &event,
     }
     ScriptState updated{};
     bool success = run(source, &event, &state, &updated, &plan, false, error, errorSize,
-                       config, configWriteAllowed, hookMode, expectedHookMask, nullptr, scriptId, nullptr, meters);
+                       config, configWriteAllowed, hookMode, expectedHookMask, nullptr, scriptId, nullptr,
+                       meters, nullptr, desktopMedia);
     if (!success) {
         plan = {};
         return false;

@@ -2,6 +2,7 @@
 #include "audio/activity.hpp"
 #include "audio/processing_fx.hpp"
 #include "init.hpp"
+#include "http/context.hpp"
 #include "midi/context.hpp"
 #include "scripting/context.hpp"
 #include "scripting/device.hpp"
@@ -325,7 +326,8 @@ void ScriptContext::pollMacros(uint64_t now) {
               macroErrors[activeMacro], sizeof(macroErrors[activeMacro]),
               midi.app ? midi.app->config : nullptr, macro.configWriteAllowed,
               macro.hookMode, macroEventMasks[activeMacro], macro.id,
-              midi.app && midi.app->audio ? &meters : nullptr)) {
+              midi.app && midi.app->audio ? &meters : nullptr,
+              midi.app && midi.app->http ? midi.app->http->desktopMedia.load() : DesktopMedia::Unavailable)) {
         printf("[SCRIPT] [WARN] Macro ch=%u note=%u failed: %s\n",
                macro.channel, macro.note, macroErrors[activeMacro]);
         activeMacro = -1;

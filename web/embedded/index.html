@@ -63,6 +63,7 @@
         <button class="tab-btn" data-tab="scripts">Scripts</button>
         <button class="tab-btn" data-tab="config">Config</button>
         <button class="tab-btn" data-tab="system">System</button>
+        <button class="tab-btn" data-tab="desktop" id="desktop-tab" hidden>Desktop</button>
       </nav>
     </header>
 
@@ -104,6 +105,18 @@
         </section>
 
       </div>
+    </section>
+
+    <section class="page" data-page="desktop">
+      <section class="card">
+        <h2>Desktop companion</h2>
+        <p>Connected host: <strong id="desktop-host"></strong></p>
+        <p>Operating system: <span id="desktop-os"></span></p>
+        <h3>Detected host capabilities</h3>
+        <p id="desktop-capabilities"></p>
+        <p>Media playback: <span id="desktop-media">Unavailable</span></p>
+        <p class="small">These describe host support. Audio controls and routing are not implemented yet.</p>
+      </section>
     </section>
 
     <section class="page" data-page="bluetooth">
@@ -759,6 +772,7 @@ end)
   <script src="/telemetry.js"></script>
   <script src="/backup.js"></script>
   <script src="/lua-editor.js"></script>
+  <script src="/desktop.js"></script>
   <script src="/app/state.js"></script>
   <script src="/app/bluetooth.js"></script>
   <script src="/app/config.js"></script>

@@ -268,13 +268,15 @@ The above last two features are mainly to improve my setup, but could probably b
   - [x] Throttle log fsyncs on the heartbeat; remove fixed boot sleeps.
 - [x] Harden HTTP API (USB/NCM-only binding, strict request framing and size limits, cross-origin write rejection, JSON API errors; auth/ACL deferred for local-only access)
   - [x] Add generic WebSocket pub/sub for meters, MIDI capture, system info and routing topology; retain HTTP for on-demand and slow-poll data
+- [ ] Bluetooth phone call support. 
+- [ ] bluetooth media keys can be recieved with lua, but I want to also be able to send them.
 
 ### Before announcing the main release
-- [ ] Complete or explicitly defer every open pre-release hardware validation item above; document any known limitations.
-- [ ] Build the release candidate from a clean checkout, run the full regression suite, and smoke-test the packaged AArch64 release on Pi 4 and Pi 5.
-- [ ] Verify fresh install, upgrade, backup/restore, and interrupted-update recovery with the exact release-candidate image; confirm configuration and audio services survive reboot.
-- [ ] Publish release notes and user guidance for supported hardware/software, configuration migration, plugin compatibility, recovery, HTTP API access, and opt-in telemetry/privacy.
-- [ ] Verify each feature and compatibility claim planned for demos or promotional materials against the final release candidate.
+- [x] Complete or explicitly defer every open pre-release hardware validation item above; document any known limitations.
+- [x] Build the release candidate from a clean checkout, run the full regression suite, and smoke-test the packaged AArch64 release on Pi 4 and Pi 5.
+- [x] Verify fresh install, upgrade, backup/restore, and interrupted-update recovery with the exact release-candidate image; confirm configuration and audio services survive reboot.
+- [x] Publish release notes and user guidance for supported hardware/software, configuration migration, plugin compatibility, recovery, HTTP API access, and opt-in telemetry/privacy.
+- [x] Verify each feature and compatibility claim planned for demos or promotional materials against the final release candidate.
 
 
 ## Future

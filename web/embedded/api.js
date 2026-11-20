@@ -9,6 +9,7 @@
   }
 
   const socketListeners = new Map();
+  const connectionListeners = new Set();
   let socket = null;
   let reconnectTimer = null;
   let reconnectDelay = 500;
@@ -19,6 +20,18 @@
 
   function isConnected() {
     return socket?.readyState === root.WebSocket?.OPEN;
+  }
+
+  function notifyConnection(connected) {
+    for (const listener of [...connectionListeners]) {
+      try { listener(connected); } catch (error) { console.error('AudioX connection listener failed', error); }
+    }
+  }
+
+  function onConnectionChange(listener) {
+    if (typeof listener !== 'function') return null;
+    connectionListeners.add(listener);
+    return () => connectionListeners.delete(listener);
   }
 
   function sendSubscription(type, topics) {
@@ -40,6 +53,7 @@
     current.addEventListener('open', () => {
       if (socket !== current) return;
       reconnectDelay = 500;
+      notifyConnection(true);
       sendSubscription('subscribe', activeTopics());
     });
     current.addEventListener('message', (event) => {
@@ -56,6 +70,7 @@
     current.addEventListener('close', () => {
       if (socket !== current) return;
       socket = null;
+      notifyConnection(false);
       if (!activeTopics().length) return;
       reconnectTimer = root.setTimeout(() => {
         reconnectTimer = null;
@@ -131,7 +146,7 @@
     root.open(url, '_blank', 'noopener,noreferrer');
   }
 
-  const api = { demo: false, request, upload, download, subscribe, isConnected };
+  const api = { demo: false, request, upload, download, subscribe, isConnected, onConnectionChange };
   root.AudioxApi = api;
   root.apiFetch = (input, init) => root.AudioxApi.request(input, init);
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

@@ -28,7 +28,7 @@ gh() {
 export -f gh
 
 commit() {
-    git add Makefile src docs tools
+    git add Makefile src docs tools desktop
     git -c commit.gpgsign=false commit --quiet --allow-empty -m "Fixture change"
 }
 
@@ -41,10 +41,11 @@ fixture() {
     git init --quiet --initial-branch=main
     git config user.email test@example.invalid
     git config user.name "Release test"
-    mkdir -p src docs tools/release
+    mkdir -p src docs tools/release desktop
     printf 'print-version:\n\t@printf "%%s\\n" "%s"\n' "$FIXTURE_VERSION" > Makefile
     echo firmware > src/firmware.cpp
     echo docs > docs/guide.md
+    echo desktop > desktop/main.cpp
     echo mirror > tools/release/mirror-updates.sh
     commit
     echo '[[]]' > releases.json
@@ -102,6 +103,13 @@ echo "changed firmware" > src/firmware.cpp
 commit
 expect_nightly true
 echo "PASS: nightlies skip published firmware and non-firmware edits, but detect firmware changes"
+
+fixture
+release v2.0.0-beta.2.nightly+42
+echo "changed desktop" > desktop/main.cpp
+commit
+expect_nightly true
+echo "PASS: desktop changes trigger a nightly release"
 
 fixture
 release v1.9.0
@@ -192,6 +200,9 @@ grep -Fq 'path: source' "$BUILD"
 grep -Fq 'SOURCE_REPO: ${{ github.workspace }}/source' "$BUILD"
 grep -Fq '.publishing-tools/tools/release/publish-imager.sh release' "$BUILD"
 grep -Fq '!tools/release/release-notes.py' "$BUILD"
+grep -Fq -- "- 'desktop/**'" "$BUILD"
+grep -Fq 'needs: [prepare, build, desktop]' "$BUILD"
+grep -Fq 'pattern: desktop-*' "$BUILD"
 for name in "Get FFmpeg" "Build SD Card Image (.img)" "Build Update Archive (.axu)" \
     "Package Imager image" "Upload Imager publishing files" \
     "Upload SD Card Image Artifact" "Upload Update Archive Artifact"; do
@@ -285,4 +296,16 @@ cd "$ROOT"
 version="$(make --silent print-version AUDIOX_VERSION_PRERELEASE=beta.2 AUDIOX_VERSION_NIGHTLY=1)"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.2\.nightly\+[a-f0-9]{12}$ ]]
 echo "PASS: Makefile provides stable and nightly versions"
+
+desktop_out="$WORK/desktop-build"
+make -C desktop "$desktop_out/linux/$(uname -m)/audiox-companion" OUT_DIR="$desktop_out"
+[[ "$("$desktop_out/linux/$(uname -m)/audiox-companion" --help)" == "Usage: audiox-companion [--host IPv4] [--port PORT]" ]]
+for platform in windows macos; do
+    if make -C desktop "$platform" OUT_DIR="$desktop_out" CXX=c++ > "$WORK/desktop-error" 2>&1; then
+        echo "Expected $platform to reject the Linux compiler" >&2
+        exit 1
+    fi
+    grep -q 'requires .* compiler' "$WORK/desktop-error"
+done
+echo "PASS: desktop scaffold builds on Linux and rejects incorrect platform toolchains"
 echo "Release workflow tests passed"

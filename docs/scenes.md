@@ -13,6 +13,8 @@ are retained and automatic graph refresh pauses. Download the wire draft if
 needed, then choose **Load Active Routing** to load the current device setup.
 The UI blocks saving the stale draft until it has been refreshed.
 Capture, update and WebUI recall are blocked while routing has unsaved edits.
+The WebUI checks recall status even when the Scenes menu is closed, but
+refreshes the saved scene list only while the menu is open or after a scene action.
 
 Capture a new scene, update an existing capture, recall it, or delete it from
 Setup scenes. Names must be unique and at most 63 UTF-8 bytes. Recall replaces
@@ -59,6 +61,7 @@ Mutation fields are URL query parameters (not JSON request bodies):
 | Method | Endpoint | Query |
 | --- | --- | --- |
 | GET | `/api/scenes` | None; returns `scenes`, last `active` ID and recall `sequence` |
+| GET | `/api/scenes/status` | None; returns only the recall `sequence`, without reading saved scenes |
 | POST | `/api/scenes/save` | `id`, `name_hex` (hex UTF-8), `channel`, `note`; captures live state |
 | POST | `/api/scenes/bind` | `id`, `channel`, `note`; changes binding only |
 | POST | `/api/scenes/recall` | `id` |

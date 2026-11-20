@@ -1,6 +1,7 @@
 #ifndef AUDIOX_HTTP_FFMPEG_HPP
 #define AUDIOX_HTTP_FFMPEG_HPP
 
+#include "defs.hpp"
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -9,7 +10,7 @@ namespace {
 // Get ffmpeg binary path. Returns path if found and executable, NULL otherwise.
 // Automatically chmod's to 0755 if found but not executable.
 static inline const char *getFfmpegPath() {
-    static const char ffmpeg_path[] = "/audiox/ffmpeg";
+    static const char ffmpeg_path[] = ROOT_MOUNT_POINT "/ffmpeg";
     
     // Check if executable
     if (access(ffmpeg_path, X_OK) == 0) {

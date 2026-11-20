@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include "desktop/media.hpp"
 #include "scripting/keyboard.hpp"
 
 inline constexpr size_t SCRIPT_MAX = 16385;
@@ -145,7 +146,8 @@ bool scriptEvaluate(const char *source, const ScriptEvent &event,
                         char *error, size_t errorSize, ConfigStore *config = nullptr,
                         bool configWriteAllowed = false, bool hookMode = false,
                         uint16_t expectedHookMask = 0, uint32_t scriptId = 0,
-                        const ScriptMeters *meters = nullptr);
+                        const ScriptMeters *meters = nullptr,
+                        DesktopMedia desktopMedia = DesktopMedia::Unavailable);
 
 // Execute registration only in an isolated sandbox, without state, event, or device I/O.
 // The returned mask is authoritative for callback scripts; callbacks are not invoked.

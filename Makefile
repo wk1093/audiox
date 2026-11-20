@@ -9,7 +9,7 @@ PKG_FETCH ?= curl -fsSL
 # Use all available CPUs unless the caller supplied a job limit (including -j1).
 ifeq ($(filter -j%,$(MAKEFLAGS)),)
 ifeq ($(MAKELEVEL),0)
-MAKEFLAGS += -j$(shell nproc)
+MAKEFLAGS += -j$(shell nproc 2>/dev/null || getconf _NPROCESSORS_ONLN)
 endif
 endif
 
@@ -122,7 +122,7 @@ RUNTIME_LIBS += $(LUA_STATIC_LIB) -lm
 AUDIOX_VERSION_MAJOR ?= 2
 AUDIOX_VERSION_MINOR ?= 0
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.2
+AUDIOX_VERSION_PRERELEASE ?= beta.3
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
 $(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
@@ -347,6 +347,19 @@ BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 .PHONY: all clean rootfs bootloader_rootfs program_initramfs bootloader_initramfs initramfs fetch_deps fetch_modules fetch_boot_modules show_modules show_kernel qemu fancyexport export image dev alsa alsa_source show_alsa sbc ffmpeg upload_ffmpeg upload_bootloader upload_kernel upload_cmdline update_archive upload_update boot_config stage_ffmpeg bluetooth_firmware dnsmasq check_dnsmasq_conf config menuconfig defconfig pi4_defconfig pi5_defconfig olddefconfig print-config print-version debug debug_ui debug-attach debug-reset-disk debug-clean qemu_kernel qemu_disk qemu_debug qemu_require_debug_build
 
 all: initramfs
+
+.PHONY: desktop-linux desktop-windows desktop-macos desktop-clean
+desktop-linux:
+	$(MAKE) -C desktop linux
+
+desktop-windows:
+	$(MAKE) -C desktop windows
+
+desktop-macos:
+	$(MAKE) -C desktop macos
+
+desktop-clean:
+	$(MAKE) -C desktop clean
 
 config: menuconfig
 

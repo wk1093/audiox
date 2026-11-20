@@ -14,14 +14,21 @@ test('companion announces detected capabilities, responds to ping, and reconnect
   const pipewire = net.createServer();
   const server = net.createServer();
   const sockets = new Set();
+  const events = new EventEmitter();
   let child;
+  let shuttingDown = false;
   t.after(async () => {
-    if (child && child.exitCode === null && child.signalCode === null) {
-      child.kill('SIGTERM');
-      await once(child, 'exit');
-    }
+    shuttingDown = true;
+    const closed = server.listening
+      ? new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+      : Promise.resolve();
     for (const socket of sockets) socket.destroy();
-    if (server.listening) await new Promise((resolve) => server.close(resolve));
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const exited = once(child, 'exit');
+      child.kill('SIGTERM');
+      await exited;
+    }
+    await closed;
     if (pipewire.listening) await new Promise((resolve) => pipewire.close(resolve));
     fs.rmSync(dir, { recursive: true, force: true });
   });
@@ -52,10 +59,16 @@ esac
     fs.writeFileSync(path.join(dir, 'media-status'), 'Playing\n');
     await new Promise((resolve) => pipewire.listen(path.join(dir, 'pipewire-0'), resolve));
   }
-  const events = new EventEmitter();
   server.on('connection', (socket) => {
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
+    socket.on('error', (error) => {
+      if (!shuttingDown || error.code !== 'ECONNRESET') events.emit('error', error);
+    });
+    if (shuttingDown) {
+      socket.destroy();
+      return;
+    }
     let input = Buffer.alloc(0);
     let upgraded = false;
     socket.on('data', (data) => {

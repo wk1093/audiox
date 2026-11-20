@@ -99,7 +99,12 @@ they do not alter AudioX playback or volume unless a script handles them.
 The [keyboard bridge example](/lua/cookbook#bluetooth-media-keys-to-computer-keyboard)
 maps them to configurable USB keyboard shortcuts on the computer.
 
-This is not BLE HID remote support, outgoing phone-player control, track metadata,
+Scripts can also send a media-key tap to a connected paired device with
+[`bluetooth.media_key(address, key)`](/lua/api#system-and-bluetooth-utilities).
+The remote device must support AVRCP target controls; acceptance into AudioX's
+queue does not guarantee that the remote player performs the action.
+
+This is not BLE HID remote support, track metadata,
 AVRCP browsing, or absolute-volume synchronization. Some devices handle volume
 locally or use newer vendor commands instead of pass-through keys; those do not
 produce this hook. Multipoint devices may send buttons to another connected host.

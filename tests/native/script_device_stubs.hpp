@@ -21,6 +21,7 @@ BluetoothContext::~BluetoothContext() {
 }
 
 int BluetoothContext::requestScan() { ++scriptBluetoothRequests; return scriptBluetoothResult; }
+int BluetoothContext::requestMediaKey(const char *, uint8_t) { ++scriptBluetoothRequests; return scriptBluetoothResult; }
 int BluetoothContext::requestPair(const char *) { ++scriptBluetoothRequests; return scriptBluetoothResult; }
 int BluetoothContext::requestConnect(const char *) { ++scriptBluetoothRequests; return scriptBluetoothResult; }
 int BluetoothContext::requestDisconnect(const char *) { ++scriptBluetoothRequests; return scriptBluetoothResult; }

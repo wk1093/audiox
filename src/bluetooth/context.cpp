@@ -270,6 +270,24 @@ int BluetoothContext::requestScan() {
     return RET_OK;
 }
 
+int BluetoothContext::requestMediaKey(const char *address, uint8_t operation) {
+    bt::Address target{};
+    if (!bt::parseAddress(address, &target) || bt::isZeroAddress(target) ||
+        !bt::mediaKeyName(operation)) return RET_ERR;
+    std::lock_guard<std::mutex> lock(mutex);
+    for (unsigned i = 0; i < BT_MAX_LINKS; ++i) {
+        const auto &ready = mediaReady[i];
+        if (!ready.ready || !bt::sameAddress(ready.address, target)) continue;
+        if (mediaCommandCount == sizeof(mediaCommands) / sizeof(mediaCommands[0])) return RET_WARN;
+        mediaCommands[(mediaCommandHead + mediaCommandCount) %
+                      (sizeof(mediaCommands) / sizeof(mediaCommands[0]))] =
+            {target, operation, i, ready.generation};
+        ++mediaCommandCount;
+        return RET_OK;
+    }
+    return RET_WARN;
+}
+
 int BluetoothContext::requestPair(const char *address) {
     bt::Address target = {};
     if (!bt::parseAddress(address, &target) || bt::isZeroAddress(target)) {
@@ -795,6 +813,7 @@ void BluetoothContext::threadMain() {
         }
 
         const uint64_t nowMs = bt::monotonicMs();
+        dispatchMediaCommand();
         for (int i = 0; i < BT_MAX_LINKS; ++i) {
             serviceLinkTimers(i, nowMs);
         }
@@ -826,12 +845,25 @@ void BluetoothContext::threadMain() {
         }
         for (int i = 0; i < BT_MAX_LINKS; ++i) {
             auto &media = mediaSessions[i];
+            for (auto &pending : media.pending) {
+                if (pending.used && nowMs >= pending.deadlineMs) {
+                    printf("[BT] [WARN] AVRCP media-key response timed out\n");
+                    pending.used = false;
+                }
+            }
+            if (media.commandPhase && nowMs >= media.commandDeadlineMs) {
+                printf("[BT] [WARN] AVRCP media-key send timed out; closing channel\n");
+                closeMediaSession(i);
+            }
             if (media.fd >= 0 && media.deadlineMs && bt::monotonicMs() >= media.deadlineMs) {
                 printf("[BT] [WARN] AVRCP connection/response timed out\n");
                 closeMediaSession(i);
             }
-            pollFds[mediaBase + i] = {media.fd,
-                static_cast<short>(media.connecting || media.responseLength ? POLLOUT : POLLIN), 0};
+            bool freeTransaction = false;
+            for (const auto &pending : media.pending) freeTransaction |= !pending.used;
+            pollFds[mediaBase + i] = {media.fd, static_cast<short>(
+                (media.connecting || media.responseLength) ? POLLOUT :
+                (POLLIN | ((media.commandPhase && freeTransaction) ? POLLOUT : 0))), 0};
             const BluetoothLink &link = links[i];
             struct pollfd *slot = &pollFds[linkBase + (size_t)i * 3U];
             slot[0] = {-1, 0, 0};
@@ -1038,6 +1070,9 @@ void BluetoothContext::closeA2dpSockets() {
     {
         std::lock_guard<std::mutex> lock(mutex);
         mediaEventHead = mediaEventCount = mediaEventsDropped = 0;
+        if (mediaCommandCount)
+            printf("[BT] [WARN] Dropped %u queued AVRCP media-key requests on shutdown\n", mediaCommandCount);
+        mediaCommandHead = mediaCommandCount = 0;
     }
     int *fds[] = {&sdpListenFd, &avdtpListenFd, &avrcpListenFd};
     for (int *fd : fds) {
@@ -1075,8 +1110,37 @@ void BluetoothContext::acceptSdpRequest() {
 }
 
 void BluetoothContext::closeMediaSession(unsigned index) {
+    setMediaReady(index, false);
     closeFd(mediaSessions[index].fd);
     mediaSessions[index] = {};
+}
+
+void BluetoothContext::setMediaReady(unsigned index, bool ready) {
+    std::lock_guard<std::mutex> lock(mutex);
+    auto &state = mediaReady[index];
+    ++state.generation;
+    state.ready = ready;
+    state.address = ready ? mediaSessions[index].address : bt::Address{};
+}
+
+void BluetoothContext::dispatchMediaCommand() {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!mediaCommandCount) return;
+    const auto command = mediaCommands[mediaCommandHead];
+    auto &ready = mediaReady[command.session];
+    auto &session = mediaSessions[command.session];
+    const bool stale = !ready.ready || ready.generation != command.generation ||
+        !bt::sameAddress(ready.address, command.address);
+    if (!stale && session.commandPhase) return;
+    mediaCommandHead = (mediaCommandHead + 1) % (sizeof(mediaCommands) / sizeof(mediaCommands[0]));
+    --mediaCommandCount;
+    if (stale) {
+        printf("[BT] [WARN] AVRCP media-key request lost its connection\n");
+        return;
+    }
+    session.commandOperation = command.operation;
+    session.commandPhase = 1;
+    session.commandDeadlineMs = bt::monotonicMs() + 3000;
 }
 
 void BluetoothContext::acceptMediaChannel() {
@@ -1125,6 +1189,7 @@ void BluetoothContext::acceptMediaChannel() {
     auto &session = mediaSessions[freeSlot];
     session.fd = fd;
     session.address = address;
+    setMediaReady(static_cast<unsigned>(freeSlot), true);
 }
 
 void BluetoothContext::connectMediaChannel(const bt::Address &address) {
@@ -1169,6 +1234,7 @@ void BluetoothContext::connectMediaChannel(const bt::Address &address) {
     session.address = address;
     session.connecting = result < 0;
     session.deadlineMs = session.connecting ? bt::monotonicMs() + 10000 : 0;
+    if (!session.connecting) setMediaReady(static_cast<unsigned>(freeSlot), true);
 }
 
 void BluetoothContext::pollMediaSession(unsigned index, short events) {
@@ -1187,6 +1253,7 @@ void BluetoothContext::pollMediaSession(unsigned index, short events) {
         }
         session.connecting = false;
         session.deadlineMs = 0;
+        setMediaReady(index, true);
     }
     if (!session.connecting && !session.responseLength && (events & POLLIN)) {
         uint8_t packet[bt::AVRCP_PACKET_MAX]{};
@@ -1202,14 +1269,27 @@ void BluetoothContext::pollMediaSession(unsigned index, short events) {
             closeMediaSession(index);
             return;
         }
-        bt::MediaKey key{};
-        bool hasKey = false;
-        session.responseLength = bt::avrcpResponse(packet, static_cast<size_t>(length),
-            session.response, sizeof(session.response), key, hasKey);
-        if (hasKey) queueMediaEvent(session.address, key);
-        if (session.responseLength) session.deadlineMs = bt::monotonicMs() + 2000;
-        else if (length < 3 || !(packet[0] & 0x02))
-            printf("[BT] [WARN] unsupported or malformed AVCTP packet\n");
+        if (packet[0] & 0x02) {
+            const unsigned transaction = packet[0] >> 4;
+            auto &pending = session.pending[transaction];
+            if (length != 8 || (packet[0] & 0x0d) || packet[1] != 0x11 || packet[2] != 0x0e ||
+                packet[4] != 0x48 || packet[5] != 0x7c || packet[7] != 0 ||
+                !pending.used || packet[6] != pending.operand) {
+                printf("[BT] [WARN] unexpected AVRCP media-key response\n");
+            } else {
+                if (packet[3] != 0x09)
+                    printf("[BT] [WARN] AVRCP media-key command rejected (status 0x%02x)\n", packet[3]);
+                pending.used = false;
+            }
+        } else {
+            bt::MediaKey key{};
+            bool hasKey = false;
+            session.responseLength = bt::avrcpResponse(packet, static_cast<size_t>(length),
+                session.response, sizeof(session.response), key, hasKey);
+            if (hasKey) queueMediaEvent(session.address, key);
+            if (session.responseLength) session.deadlineMs = bt::monotonicMs() + 2000;
+            else printf("[BT] [WARN] unsupported or malformed AVCTP packet\n");
+        }
     }
     if (session.responseLength) {
         const ssize_t sent = send(session.fd, session.response, session.responseLength, MSG_NOSIGNAL);
@@ -1221,6 +1301,29 @@ void BluetoothContext::pollMediaSession(unsigned index, short events) {
         }
         session.responseLength = 0;
         session.deadlineMs = 0;
+    }
+    if (!session.connecting && !session.responseLength && session.commandPhase && (events & POLLOUT)) {
+        unsigned transaction = session.nextTransaction;
+        for (unsigned i = 0; i < 16 && session.pending[transaction].used; ++i)
+            transaction = (transaction + 1) & 15;
+        if (session.pending[transaction].used) return;
+        uint8_t packet[8];
+        if (!bt::avrcpPassThrough(static_cast<uint8_t>(transaction), session.commandOperation,
+                                  session.commandPhase == 1, packet)) {
+            printf("[BT] [WARN] invalid AVRCP media-key command\n");
+            closeMediaSession(index);
+            return;
+        }
+        const ssize_t sent = send(session.fd, packet, sizeof(packet), MSG_NOSIGNAL);
+        if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return;
+        if (sent != static_cast<ssize_t>(sizeof(packet))) {
+            printf("[BT] [WARN] AVRCP media-key send failed: %s\n", sent < 0 ? strerror(errno) : "short write");
+            closeMediaSession(index);
+            return;
+        }
+        session.pending[transaction] = {packet[6], true, bt::monotonicMs() + 2000};
+        session.nextTransaction = static_cast<uint8_t>((transaction + 1) & 15);
+        session.commandPhase = session.commandPhase == 1 ? 2 : 0;
     }
 }
 

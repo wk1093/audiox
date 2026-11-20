@@ -2191,6 +2191,12 @@ int main() {
             testNowMs += 20;
             midi.scripts.pollMacros(testNowMs);
             assert(scriptBluetoothRequests == 2 && !midi.scripts.macroErrors[1][0]);
+            saveCallbacks("hook('run',function() bluetooth.media_key('AA:BB:CC:DD:EE:FF','pause') end)",
+                          "200 OK", true);
+            macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
+            testNowMs += 20;
+            midi.scripts.pollMacros(testNowMs);
+            assert(scriptBluetoothRequests == 3 && !midi.scripts.macroErrors[1][0]);
             saveCallbacks("hook('bluetooth_media_key',function(e) "
                           "assert(e.source=='bluetooth' and e.device=='AA:BB:CC:DD:EE:FF'); "
                           "assert(e.key=='pause'); state.presses=(state.presses or 0)+(e.pressed and 1 or 0); "

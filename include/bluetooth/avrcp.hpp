@@ -8,6 +8,7 @@ namespace bt {
 
 constexpr uint16_t AVRCP_PSM = 0x0017;
 constexpr uint32_t AVRCP_SDP_RECORD_HANDLE = 0x00010001;
+constexpr uint32_t AVRCP_CONTROLLER_SDP_RECORD_HANDLE = 0x00010002;
 constexpr size_t AVRCP_PACKET_MAX = 512;
 
 inline const char *mediaKeyName(uint8_t operation) {
@@ -28,10 +29,32 @@ inline const char *mediaKeyName(uint8_t operation) {
     }
 }
 
+inline bool mediaKeyOperation(const char *name, uint8_t &operation) {
+    if (!name) return false;
+    for (unsigned value = 0x41; value <= 0x4c; ++value) {
+        const char *candidate = mediaKeyName(static_cast<uint8_t>(value));
+        if (candidate && !std::strcmp(candidate, name)) {
+            operation = static_cast<uint8_t>(value);
+            return true;
+        }
+    }
+    return false;
+}
+
 struct MediaKey {
     uint8_t operation{};
     bool pressed{};
 };
+
+inline bool avrcpPassThrough(uint8_t transaction, uint8_t operation, bool pressed,
+                             uint8_t (&out)[8]) {
+    if (transaction > 15 || !mediaKeyName(operation)) return false;
+    const uint8_t packet[] = {static_cast<uint8_t>(transaction << 4), 0x11, 0x0e,
+                              0x00, 0x48, 0x7c,
+                              static_cast<uint8_t>(operation | (pressed ? 0 : 0x80)), 0};
+    std::memcpy(out, packet, sizeof(packet));
+    return true;
+}
 
 // Single-packet AVCTP / AVRCP 1.0 target. Unsupported commands are answered,
 // not converted into script events; responses never generate events.

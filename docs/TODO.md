@@ -269,7 +269,7 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Harden HTTP API (USB/NCM-only binding, strict request framing and size limits, cross-origin write rejection, JSON API errors; auth/ACL deferred for local-only access)
   - [x] Add generic WebSocket pub/sub for meters, MIDI capture, system info and routing topology; retain HTTP for on-demand and slow-poll data
 - [ ] Bluetooth phone call support. 
-- [ ] bluetooth media keys can be recieved with lua, but I want to also be able to send them.
+- [x] Send Bluetooth AVRCP media-key taps from Lua; hardware interoperability remains to be validated.
 
 ### Before announcing the main release
 - [x] Complete or explicitly defer every open pre-release hardware validation item above; document any known limitations.

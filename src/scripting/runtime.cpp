@@ -522,6 +522,7 @@ void ScriptContext::pollMacros(uint64_t now) {
                action.kind == ScriptKind::BluetoothConnect ||
                action.kind == ScriptKind::BluetoothDisconnect ||
                action.kind == ScriptKind::BluetoothUnpair ||
+               action.kind == ScriptKind::BluetoothMediaKey ||
                action.kind == ScriptKind::BluetoothAutoConnect) {
       auto *bluetooth = midi.app ? midi.app->bluetooth : nullptr;
       int result = RET_ERR;
@@ -541,6 +542,9 @@ void ScriptContext::pollMacros(uint64_t now) {
           break;
         case ScriptKind::BluetoothUnpair:
           result = bluetooth->requestUnpair(action.target);
+          break;
+        case ScriptKind::BluetoothMediaKey:
+          result = bluetooth->requestMediaKey(action.target, static_cast<uint8_t>(action.value));
           break;
         case ScriptKind::BluetoothAutoConnect:
           result =

@@ -52,7 +52,7 @@ const char *scriptEventName(ScriptEventKind kind);
 enum class ScriptKind { Tap, Wait, Light, Press, Release, Type, Log, SoundPlay, SoundStopAll, Midi,
                             EffectEnable, EffectToggle, EffectSet, VolumeSet, VolumeAdjust, ConfigWrite,
                             StorageWrite, StorageRemove, ScriptConfigSet, SystemRestart, BluetoothScan,
-                            BluetoothPair, BluetoothConnect, BluetoothDisconnect, BluetoothUnpair,
+                            BluetoothPair, BluetoothConnect, BluetoothDisconnect, BluetoothUnpair, BluetoothMediaKey,
                             BluetoothAutoConnect, SettingsSet };
 
 enum class ScriptValueKind { Boolean, Number, String };

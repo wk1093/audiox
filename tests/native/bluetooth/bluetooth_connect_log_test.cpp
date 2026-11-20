@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <poll.h>
 #include <string>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -89,5 +90,54 @@ int main() {
     assert(capture(context, false, true).find("disconnected: Host is down") != std::string::npos);
     assert(capture(context, true, true, true).find("disconnected: Host is down") != std::string::npos);
     assert(capture(context, true, true, false, "disconnected by user").find("disconnected by user") != std::string::npos);
+    int pair[2];
+    assert(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, pair) == 0);
+    context.mediaSessions[0].fd = pair[0];
+    context.mediaSessions[0].address = context.devices[0].address;
+    context.setMediaReady(0, true);
+    char address[BT_ADDRESS_TEXT]{};
+    bt::formatAddress(context.devices[0].address, address, sizeof(address));
+    assert(context.requestMediaKey(address, 0x44) == RET_OK);
+    context.dispatchMediaCommand();
+    uint8_t packets[2][8]{};
+    for (unsigned i = 0; i < 2; ++i) {
+        context.pollMediaSession(0, POLLOUT);
+        assert(recv(pair[1], packets[i], sizeof(packets[i]), 0) == 8);
+        assert(packets[i][6] == (i ? 0xc4 : 0x44));
+    }
+    assert((packets[0][0] >> 4) != (packets[1][0] >> 4));
+    for (unsigned i = 0; i < 2; ++i) {
+        uint8_t response[8]{};
+        bt::MediaKey key{};
+        bool hasKey = false;
+        assert(bt::avrcpResponse(packets[i], 8, response, sizeof(response), key, hasKey) == 8);
+        assert(send(pair[1], response, sizeof(response), 0) == 8);
+        context.pollMediaSession(0, POLLIN);
+        assert(!context.mediaSessions[0].pending[packets[i][0] >> 4].used);
+    }
+    for (unsigned i = 0; i < 16; ++i)
+        assert(context.requestMediaKey(address, 0x45) == RET_OK);
+    assert(context.requestMediaKey(address, 0x45) == RET_WARN);
+    for (unsigned i = 0; i < 16; ++i) {
+        context.dispatchMediaCommand();
+        context.pollMediaSession(0, POLLOUT);
+        assert(recv(pair[1], packets[0], sizeof(packets[0]), 0) == 8);
+        context.pollMediaSession(0, POLLOUT);
+        assert(recv(pair[1], packets[1], sizeof(packets[1]), 0) == 8);
+        for (const auto &packet : packets) {
+            uint8_t response[8]{};
+            bt::MediaKey key{};
+            bool hasKey = false;
+            assert(bt::avrcpResponse(packet, 8, response, sizeof(response), key, hasKey) == 8);
+            assert(send(pair[1], response, sizeof(response), 0) == 8);
+            context.pollMediaSession(0, POLLIN);
+        }
+    }
+    assert(context.requestMediaKey(address, 0x44) == RET_OK);
+    context.closeMediaSession(0);
+    context.dispatchMediaCommand();
+    assert(context.mediaCommandCount == 0);
+    assert(context.requestMediaKey(address, 0x44) == RET_WARN);
+    close(pair[1]);
     puts("Bluetooth auto-connect logging tests passed");
 }

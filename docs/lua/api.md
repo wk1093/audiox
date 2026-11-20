@@ -184,12 +184,17 @@ preferable for live control.
 | `bluetooth.disconnect([address])` | Queue disconnection; omitted address disconnects all audio links. |
 | `bluetooth.unpair(address)` | Queue removal of pairing. |
 | `bluetooth.auto_connect(address, enabled)` | Persist a boolean auto-connect preference. |
+| `bluetooth.media_key(address, key)` | Queue an AVRCP key press and release for a connected paired device. Keys are `play`, `pause`, `stop`, `record`, `rewind`, `fast_forward`, `next`, `previous`, `eject`, `volume_up`, `volume_down`, and `mute`. |
 
 Bluetooth mutations require device-management permission and use the existing
 worker request APIs. Busy/unavailable requests fail explicitly; request
 acceptance does not imply connection/pairing completion. Wait for
 `bluetooth_change` and inspect the snapshot rather than issuing several
-concurrent requests. Logs/settings/Bluetooth reads are callback-only and
+concurrent requests. Media-key actions require an active AVRCP channel; a
+full queue or disconnected device fails the script. Remote rejection, timeout,
+or disconnect after queuing is reported in device logs, not synchronously to
+the script. Disconnects can prevent delivery of the release packet.
+Logs/settings/Bluetooth reads are callback-only and
 bounded; unavailable resources raise Lua errors.
 
 ## Persistent configuration

@@ -176,6 +176,23 @@ int bluetoothAction(lua_State *lua) {
     return 0;
 }
 
+int bluetoothMediaKey(lua_State *lua) {
+    arity(lua, 2, 2);
+    scriptUtilityCheck(lua, true, false);
+    const char *address = text(lua, 1, BT_ADDRESS_TEXT - 1);
+    bt::Address parsed{};
+    if (!bt::parseAddress(address, &parsed) || bt::isZeroAddress(parsed))
+        return luaL_error(lua, "bluetooth.media_key: invalid MAC address");
+    const char *name = text(lua, 2, 31);
+    uint8_t operation;
+    if (!bt::mediaKeyOperation(name, operation))
+        return luaL_error(lua, "bluetooth.media_key: unknown media key");
+    auto *action = scriptUtilityAppend(lua, ScriptKind::BluetoothMediaKey);
+    snprintf(action->target, sizeof(action->target), "%s", address);
+    action->value = operation;
+    return 0;
+}
+
 void function(lua_State *lua, const char *name, lua_CFunction value) {
     lua_pushcfunction(lua, value);
     lua_setfield(lua, -2, name);
@@ -194,6 +211,7 @@ void scriptRegisterUtilities(lua_State *lua) {
     lua_setglobal(lua, "system");
     lua_newtable(lua);
     function(lua, "devices", bluetoothDevices);
+    function(lua, "media_key", bluetoothMediaKey);
     const char *names[] = {"scan", "pair", "connect", "disconnect", "unpair", "auto_connect"};
     const ScriptKind kinds[] = {ScriptKind::BluetoothScan, ScriptKind::BluetoothPair,
         ScriptKind::BluetoothConnect, ScriptKind::BluetoothDisconnect,

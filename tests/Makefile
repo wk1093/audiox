@@ -227,13 +227,13 @@ test-native: test-bluetooth-multipoint
 test-bluetooth-multipoint: $(OUT_DIR)/host/audiox-bluetooth-multipoint-test
 	@"$<"
 
-$(OUT_DIR)/host/audiox-bluetooth-multipoint-test: tests/native/bluetooth/bluetooth_multipoint_test.cpp src/bluetooth/context.cpp src/bluetooth/hci.cpp src/bluetooth/a2dp.cpp src/audio/plugin_host.cpp include/bluetooth/context.hpp include/audio/bluetooth_stream.hpp tests/Makefile
+$(OUT_DIR)/host/audiox-bluetooth-multipoint-test: tests/native/bluetooth/bluetooth_multipoint_test.cpp src/bluetooth/context.cpp src/bluetooth/hci.cpp src/bluetooth/a2dp.cpp src/audio/plugin_host.cpp include/bluetooth/context.hpp include/bluetooth/avrcp.hpp include/audio/bluetooth_stream.hpp tests/Makefile
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-error=format-truncation -Iinclude -fno-access-control -ffunction-sections -fdata-sections \
 		-Wl,--gc-sections -Wl,--wrap=send \
 		-o "$@" tests/native/bluetooth/bluetooth_multipoint_test.cpp src/bluetooth/context.cpp src/bluetooth/hci.cpp src/bluetooth/a2dp.cpp src/audio/plugin_host.cpp -lsbc -pthread
 
-$(OUT_DIR)/host/audiox-bluetooth-connect-log-test: tests/native/bluetooth/bluetooth_connect_log_test.cpp src/bluetooth/context.cpp src/bluetooth/hci.cpp src/bluetooth/a2dp.cpp include/bluetooth/context.hpp tests/Makefile
+$(OUT_DIR)/host/audiox-bluetooth-connect-log-test: tests/native/bluetooth/bluetooth_connect_log_test.cpp src/bluetooth/context.cpp src/bluetooth/hci.cpp src/bluetooth/a2dp.cpp include/bluetooth/context.hpp include/bluetooth/avrcp.hpp tests/Makefile
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Wno-error=format-truncation -Iinclude -fno-access-control -ffunction-sections -fdata-sections \
 		-Wl,--gc-sections -Wl,--wrap=socket -Wl,--wrap=setsockopt -Wl,--wrap=connect -Wl,--wrap=getsockopt \

@@ -167,11 +167,27 @@ struct BluetoothMediaSession {
     uint64_t deadlineMs{0};
     uint8_t response[bt::AVRCP_PACKET_MAX]{};
     size_t responseLength{0};
+    uint8_t commandOperation{};
+    uint8_t commandPhase{};
+    uint8_t nextTransaction{};
+    uint64_t commandDeadlineMs{};
+    struct Pending {
+        uint8_t operand{};
+        bool used{};
+        uint64_t deadlineMs{};
+    } pending[16]{};
 };
 
 struct BluetoothMediaEvent {
     bt::Address address{};
     bt::MediaKey key{};
+};
+
+struct BluetoothMediaCommand {
+    bt::Address address{};
+    uint8_t operation{};
+    unsigned session{};
+    uint64_t generation{};
 };
 
 // Owns the controller. All HCI traffic happens on the worker thread; the
@@ -195,6 +211,14 @@ struct BluetoothContext {
     unsigned mediaEventHead{0};
     unsigned mediaEventCount{0};
     unsigned mediaEventsDropped{0};
+    BluetoothMediaCommand mediaCommands[16]{};
+    unsigned mediaCommandHead{0};
+    unsigned mediaCommandCount{0};
+    struct MediaReady {
+        bt::Address address{};
+        bool ready{};
+        uint64_t generation{};
+    } mediaReady[BT_MAX_LINKS]{};
     int sdpClientFds[4];
     bool adapterReady;
     bool scanning;
@@ -230,6 +254,7 @@ struct BluetoothContext {
     int requestDisconnect(const char *address = nullptr);
     int requestUnpair(const char *address);
     int requestAutoConnect(const char *address, bool enabled);
+    int requestMediaKey(const char *address, uint8_t operation);
     int buildStatusJson(char *out, size_t outSize);
     // Name of the connected Bluetooth output, else of a paired output device.
     bool getOutputDeviceName(char *out, size_t outSize, bool *connected = nullptr) const;
@@ -272,6 +297,8 @@ private:
     void connectMediaChannel(const bt::Address &address);
     void pollMediaSession(unsigned index, short events);
     void closeMediaSession(unsigned index);
+    void setMediaReady(unsigned index, bool ready);
+    void dispatchMediaCommand();
     int findLink(const bt::Address &address) const;
     int allocateLink(const bt::Address &address);
     bool beginConnect(const bt::Address &target, bool automatic);

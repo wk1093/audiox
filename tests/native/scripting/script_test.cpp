@@ -474,6 +474,12 @@ int main() {
             assert(strstr(error, message) && plan.count == 0 && plan.configBytes == 0);
         }
     };
+    failure("bluetooth.media_key('01:02:03:04:05:06','play')", "acknowledgment");
+    writePlan("bluetooth.media_key('01:02:03:04:05:06','play')", true);
+    assert(plan.count == 1 && plan.actions[0].kind == ScriptKind::BluetoothMediaKey &&
+           plan.actions[0].value == 0x44 && !strcmp(plan.actions[0].target, "01:02:03:04:05:06"));
+    writePlan("bluetooth.media_key('bad','play')", false, "invalid MAC");
+    writePlan("bluetooth.media_key('01:02:03:04:05:06','unknown')", false, "unknown media key");
     writePlan("config.write('config.txt','x=1\\n'); wait(1)", true);
     assert(plan.count == 2 && plan.actions[0].kind == ScriptKind::ConfigWrite);
     assert(plan.actions[0].number == 4 && !strcmp(plan.configText, "x=1\n"));

@@ -167,7 +167,7 @@ jobs:
         run: |
           make desktop-linux APPIMAGETOOL="$RUNNER_TEMP/appimagetool"
           (cd desktop/tray && dbus-run-session -- go test ./...)
-          node --test tests/desktop/companion_test.js tests/desktop/app_run_test.js
+          node --test tests/desktop/companion_test.js tests/desktop/default_sink_test.js tests/desktop/app_run_test.js
           node --test tests/desktop/appimage_install_test.js tests/desktop/desktop_update_test.js
           out/desktop/audiox-companion-linux-x86_64.AppImage --appimage-extract-and-run --help
           (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/out/desktop/audiox-companion-linux-x86_64.AppImage" \

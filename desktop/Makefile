@@ -20,7 +20,7 @@ linux-update: linux
 windows: $(OUT_DIR)/audiox-companion-windows-x86_64.exe
 macos: $(OUT_DIR)/audiox-companion-macos-$(ARCH).tar.gz
 
-$(OUT_DIR)/linux/$(ARCH)/audiox-companion: src/main.cpp src/routing.hpp src/inventory.hpp src/auto_routing.hpp ../include/http/websocket.hpp ../include/desktop/routing.hpp ../include/desktop/json.hpp ../include/desktop/rules.hpp
+$(OUT_DIR)/linux/$(ARCH)/audiox-companion: src/main.cpp src/routing.hpp src/inventory.hpp src/default_sink.hpp src/auto_routing.hpp ../include/http/websocket.hpp ../include/desktop/routing.hpp ../include/desktop/json.hpp ../include/desktop/rules.hpp
 	@mkdir -p "$(@D)"
 	$(CXX) $(CXXFLAGS) -DAUDIOX_DESKTOP_LINUX -static -o "$@" "$<"
 

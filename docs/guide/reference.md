@@ -113,7 +113,7 @@ endpoint with subprotocol `audiox.desktop.v1`. It sends a bounded text hello,
 for example:
 
 ```json
-{"type":"hello","hostname":"workstation","os":"linux","capabilities":["pipewire","default_sink"]}
+{"type":"hello","hostname":"workstation","os":"linux","capabilities":["pipewire","route_stream"]}
 ```
 
 Only one desktop is accepted. A changed hello replaces its current snapshot;

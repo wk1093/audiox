@@ -119,6 +119,8 @@ struct HttpTransport {
     bool desktopCanRoute{};
     bool desktopCanDiscover{};
     bool desktopCanAutoRoute{};
+    bool desktopCanDefault{};
+    bool desktopConnected{};
     uint32_t desktopSession{};
     bool routePending{};
     bool routeSent{};
@@ -126,6 +128,12 @@ struct HttpTransport {
     desktop::RouteCommand route{};
     uint64_t routeDeadline{};
     DesktopRouteState routeState{DesktopRouteState::Unknown};
+    bool defaultWatchSent{}, defaultKnown{}, defaultPending{}, defaultSent{}, defaultUserRequested{};
+    uint32_t defaultSequence{}, defaultId{};
+    uint64_t defaultDeadline{}, defaultEventSerial{};
+    std::string defaultName, defaultRequested;
+    DesktopRouteState defaultState{DesktopRouteState::Unknown};
+    std::deque<DesktopDefaultEvent> defaultEvents;
     bool inventoryPending{};
     bool inventorySent{};
     uint32_t inventorySequence{};
@@ -386,7 +394,7 @@ static bool desktopToken(const char *text, size_t length, size_t limit) {
 
 static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *media = nullptr,
                               bool *canRoute = nullptr, bool *canDiscover = nullptr,
-                              bool *canAutoRoute = nullptr) {
+                              bool *canAutoRoute = nullptr, bool *canDefault = nullptr) {
     if (!data || !length || length > 1024) return false;
     SubscriptionParser parser{reinterpret_cast<const char *>(data),
                               reinterpret_cast<const char *>(data) + length};
@@ -397,6 +405,7 @@ static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *
     bool parsedRoute = false;
     bool parsedDiscover = false;
     bool parsedAutoRoute = false;
+    bool parsedDefault = false;
     for (unsigned i = 0; i < 5; ++i) {
         const char *key, *value;
         size_t keyLength, valueLength;
@@ -422,6 +431,7 @@ static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *
                 if (valueLength == 12 && !memcmp(value, "route_stream", 12)) parsedRoute = true;
                 if (valueLength == 14 && !memcmp(value, "pipewire_nodes", 14)) parsedDiscover = true;
                 if (valueLength == 10 && !memcmp(value, "auto_route", 10)) parsedAutoRoute = true;
+                if (valueLength == 12 && !memcmp(value, "default_sink", 12)) parsedDefault = true;
             }
         } else {
             if (!parser.string(&value, &valueLength)) return false;
@@ -445,6 +455,7 @@ static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *
     if (canRoute) *canRoute = parsedRoute;
     if (canDiscover) *canDiscover = parsedDiscover;
     if (canAutoRoute) *canAutoRoute = parsedAutoRoute;
+    if (canDefault) *canDefault = parsedDefault;
     return true;
 }
 
@@ -460,6 +471,25 @@ static void publishDesktopStatus(HttpServer *server, const uint8_t *hello = null
     }
     message += "}}";
     server->transport->events[desktopTopic] = std::make_shared<const std::string>(std::move(message));
+}
+
+static bool recordDesktopDefault(HttpTransport &transport, const std::string &name) {
+    if (transport.defaultKnown && transport.defaultName == name) return true;
+    if (transport.defaultEvents.size() >= 64) {
+        printf("[HTTP] [WARN] Desktop default-sink event queue full; disconnecting companion\n");
+        return false;
+    }
+    DesktopDefaultEvent event{};
+    if (!transport.defaultKnown || transport.defaultName.empty() != name.empty())
+        printf("[HTTP] Desktop default-sink snapshot: %s\n", name.empty() ? "unavailable" : "available");
+    event.serial = ++transport.defaultEventSerial;
+    event.session = transport.desktopSession;
+    event.initial = !transport.defaultKnown || transport.defaultName.empty();
+    snprintf(event.name, sizeof(event.name), "%s", name.c_str());
+    transport.defaultEvents.push_back(event);
+    transport.defaultName = name;
+    transport.defaultKnown = true;
+    return true;
 }
 
 static void closeWebSocket(HttpWebSocketClient *client) {
@@ -516,6 +546,40 @@ static bool receiveWebSocket(HttpWebSocketClient *client, uint64_t now, HttpServ
             client->pingAtMs = 0;
         } else if (frame.opcode == 0x1) {
             if (desktopServer) {
+                const std::string_view desktopMessage(reinterpret_cast<const char *>(payload), frame.length);
+                uint32_t defaultId;
+                std::string defaultName;
+                bool defaultDone;
+                const bool defaultSnapshot = desktop::parseDefaultMessage(
+                    desktopMessage, "default_snapshot", defaultId, defaultName, defaultDone);
+                const bool defaultSuccess = !defaultSnapshot && desktop::parseDefaultMessage(
+                    desktopMessage, "default_result", defaultId, defaultName, defaultDone);
+                const bool defaultFailure = !defaultSnapshot && !defaultSuccess && desktop::parseDefaultMessage(
+                    desktopMessage, "default_failed", defaultId, defaultName, defaultDone);
+                if (defaultSnapshot || defaultSuccess || defaultFailure) {
+                    std::lock_guard<std::mutex> lock(desktopServer->transport->mutex);
+                    auto &transport = *desktopServer->transport;
+                    if (!client->desktopIdentified || !transport.desktopCanDefault ||
+                        !transport.defaultWatchSent) return false;
+                    if (defaultSnapshot) {
+                        if (!recordDesktopDefault(transport, defaultName)) return false;
+                    } else {
+                        if (!transport.defaultPending || !transport.defaultSent ||
+                            defaultId != transport.defaultId ||
+                            (defaultSuccess && defaultName != transport.defaultRequested)) return false;
+                        if (defaultSuccess) {
+                            if (transport.defaultUserRequested) {
+                                if (!recordDesktopDefault(transport, defaultName)) return false;
+                            } else {
+                                transport.defaultName = defaultName;
+                                transport.defaultKnown = true;
+                            }
+                        } else printf("[HTTP] [WARN] Desktop default-sink request %u failed\n", defaultId);
+                        transport.defaultState = defaultSuccess ? DesktopRouteState::Succeeded : DesktopRouteState::Failed;
+                        transport.defaultPending = transport.defaultSent = false;
+                    }
+                    continue;
+                }
                 uint32_t resultId;
                 bool resultOk;
                 if (desktop::parseRouteResult(
@@ -598,14 +662,30 @@ static bool receiveWebSocket(HttpWebSocketClient *client, uint64_t now, HttpServ
                     continue;
                 }
                 DesktopMedia media;
-                bool canRoute, canDiscover, canAutoRoute;
-                if (!parseDesktopHello(payload, frame.length, &media, &canRoute, &canDiscover, &canAutoRoute)) return false;
+                bool canRoute, canDiscover, canAutoRoute, canDefault;
+                if (!parseDesktopHello(payload, frame.length, &media, &canRoute, &canDiscover, &canAutoRoute, &canDefault)) return false;
                 {
                     std::lock_guard<std::mutex> lock(desktopServer->transport->mutex);
                     if (!client->desktopIdentified && ++desktopServer->transport->desktopSession == 0)
                         ++desktopServer->transport->desktopSession;
                     desktopServer->transport->desktopCanRoute = canRoute;
                     desktopServer->transport->desktopCanDiscover = canDiscover;
+                    auto &transport = *desktopServer->transport;
+                    if (!transport.desktopConnected || transport.desktopCanDefault != canDefault)
+                        printf("[HTTP] Desktop default-sink capability: %s\n",
+                               canDefault ? "available" : "not advertised");
+                    transport.desktopConnected = true;
+                    if (!canDefault && transport.desktopCanDefault) {
+                        if (transport.defaultKnown && !recordDesktopDefault(transport, "")) return false;
+                        transport.defaultKnown = false;
+                        transport.defaultWatchSent = false;
+                        if (transport.defaultPending) {
+                            printf("[HTTP] [WARN] Desktop default-sink request cancelled: capability unavailable\n");
+                            transport.defaultState = DesktopRouteState::Failed;
+                        }
+                        transport.defaultPending = transport.defaultSent = false;
+                    }
+                    transport.desktopCanDefault = canDefault;
                     if (canAutoRoute && !desktopServer->transport->desktopCanAutoRoute &&
                         desktopServer->transport->rulesValid) {
                         if (++desktopServer->transport->rulesId == 0) ++desktopServer->transport->rulesId;
@@ -2312,11 +2392,31 @@ static void pollDesktopWebSocket(HttpServer *server, uint64_t now) {
     if (ok && client.desktopIdentified) {
         std::lock_guard<std::mutex> lock(server->transport->mutex);
         auto &transport = *server->transport;
-        if (transport.routePending && now >= transport.routeDeadline) {
+        if (transport.desktopCanDefault && !transport.defaultWatchSent &&
+            client.outputSize == client.outputOffset && !client.closeAfterFlush) {
+            const std::string watch = desktop::defaultWatch();
+            ok = queueWebSocketFrame(&client, 0x1, watch.data(), watch.size());
+            if (ok) transport.defaultWatchSent = true;
+            if (ok) printf("[HTTP] Desktop default-sink watch requested\n");
+        }
+        if (ok && transport.defaultPending && now >= transport.defaultDeadline) {
+            printf("[HTTP] [WARN] Desktop default-sink request timed out\n");
+            transport.defaultState = DesktopRouteState::TimedOut;
+            ok = false;
+        } else if (ok && transport.defaultPending && !transport.defaultSent &&
+                   client.outputSize == client.outputOffset && !client.closeAfterFlush) {
+            const std::string command = desktop::defaultSet(transport.defaultId, transport.defaultRequested);
+            ok = queueWebSocketFrame(&client, 0x1, command.data(), command.size());
+            if (ok) {
+                transport.defaultSent = true;
+                transport.defaultDeadline = now + 10000;
+            }
+        }
+        if (ok && transport.routePending && now >= transport.routeDeadline) {
             printf("[HTTP] [WARN] Desktop route request timed out\n");
             transport.routeState = DesktopRouteState::TimedOut;
             ok = false;
-        } else if (transport.routePending && !transport.routeSent &&
+        } else if (ok && transport.routePending && !transport.routeSent &&
                    client.outputSize == client.outputOffset && !client.closeAfterFlush) {
             const std::string command = desktop::routeCommand(transport.route);
             ok = queueWebSocketFrame(&client, 0x1, command.data(), command.size());
@@ -2367,6 +2467,23 @@ static void pollDesktopWebSocket(HttpServer *server, uint64_t now) {
     if (!ok) {
         {
             std::lock_guard<std::mutex> lock(server->transport->mutex);
+            auto &transport = *server->transport;
+            if (transport.defaultPending) {
+                printf("[HTTP] [WARN] Desktop default-sink request lost its connection\n");
+                if (transport.defaultState != DesktopRouteState::TimedOut)
+                    transport.defaultState = DesktopRouteState::Disconnected;
+            }
+            transport.defaultPending = transport.defaultSent = false;
+            if (transport.defaultKnown && !transport.defaultName.empty() &&
+                !recordDesktopDefault(transport, "")) {
+                printf("[HTTP] [WARN] Discarding queued desktop default-sink events after overflow\n");
+                transport.defaultEvents.clear();
+                recordDesktopDefault(transport, "");
+            }
+            transport.defaultKnown = false;
+            transport.defaultName.clear();
+            transport.defaultWatchSent = transport.desktopCanDefault = false;
+            transport.desktopConnected = false;
             if (server->transport->routePending)
                 printf("[HTTP] [WARN] Desktop route request lost its connection\n");
             if (server->transport->routePending &&
@@ -2718,6 +2835,66 @@ DesktopRouteState HttpServer::desktopRouteState(uint32_t id) const {
     if (!transport || !id) return DesktopRouteState::Unknown;
     std::lock_guard<std::mutex> lock(transport->mutex);
     return transport->route.id == id ? transport->routeState : DesktopRouteState::Unknown;
+}
+
+int HttpServer::requestDesktopDefault(const char *name, uint32_t *id, uint32_t session, bool userRequested) {
+    if (!transport || !name || !desktop::validSinkName(name)) return RET_WARN;
+    std::lock_guard<std::mutex> lock(transport->mutex);
+    if (!transport->desktopCanDefault || !transport->defaultKnown || transport->defaultName.empty() ||
+        transport->defaultPending || (session && session != transport->desktopSession)) return RET_WARN;
+    if (++transport->defaultSequence == 0) ++transport->defaultSequence;
+    transport->defaultId = transport->defaultSequence;
+    transport->defaultRequested = name;
+    transport->defaultUserRequested = userRequested;
+    transport->defaultPending = true;
+    transport->defaultSent = false;
+    transport->defaultDeadline = httpMonotonicMs() + 10000;
+    transport->defaultState = DesktopRouteState::Pending;
+    if (id) *id = transport->defaultId;
+    return RET_OK;
+}
+
+DesktopRouteState HttpServer::desktopDefaultState(uint32_t id) const {
+    if (!transport || !id) return DesktopRouteState::Unknown;
+    std::lock_guard<std::mutex> lock(transport->mutex);
+    return transport->defaultId == id ? transport->defaultState : DesktopRouteState::Unknown;
+}
+
+bool HttpServer::desktopDefault(char (&name)[128], uint32_t session, uint32_t *currentSession,
+                                bool *pending, DesktopDefaultAvailability *availability) const {
+    name[0] = '\0';
+    if (currentSession) *currentSession = 0;
+    if (pending) *pending = false;
+    if (availability) *availability = DesktopDefaultAvailability::Disconnected;
+    if (!transport) return false;
+    std::lock_guard<std::mutex> lock(transport->mutex);
+    DesktopDefaultAvailability status = DesktopDefaultAvailability::Available;
+    if (!transport->desktopConnected) status = DesktopDefaultAvailability::Disconnected;
+    else if (!transport->desktopCanDefault) status = DesktopDefaultAvailability::Unsupported;
+    else if (session && session != transport->desktopSession) status = DesktopDefaultAvailability::StaleSession;
+    else if (!transport->defaultKnown) status = DesktopDefaultAvailability::Waiting;
+    else if (transport->defaultName.empty()) status = DesktopDefaultAvailability::Unavailable;
+    if (availability) *availability = status;
+    if (status != DesktopDefaultAvailability::Available) return false;
+    snprintf(name, sizeof(name), "%s", transport->defaultName.c_str());
+    if (currentSession) *currentSession = transport->desktopSession;
+    if (pending) *pending = transport->defaultPending;
+    return true;
+}
+
+bool HttpServer::peekDesktopDefaultEvent(DesktopDefaultEvent &event) const {
+    if (!transport) return false;
+    std::lock_guard<std::mutex> lock(transport->mutex);
+    if (transport->defaultEvents.empty()) return false;
+    event = transport->defaultEvents.front();
+    return true;
+}
+
+void HttpServer::acknowledgeDesktopDefaultEvent(uint64_t serial) {
+    if (!transport) return;
+    std::lock_guard<std::mutex> lock(transport->mutex);
+    if (!transport->defaultEvents.empty() && transport->defaultEvents.front().serial == serial)
+        transport->defaultEvents.pop_front();
 }
 
 int HttpServer::requestDesktopInventory(uint32_t session, uint32_t *id) {

@@ -15,14 +15,16 @@ event callback, not at top level.
 
 | Name | Description |
 | --- | --- |
-| `event.type` | `note_on`, `note_off`, `cc`, `sound_start`, `sound_finish`, `device_connect`, `device_disconnect`, `run`, `boot`, `timer`, `config_change`, `ui`, `bluetooth_change`, or `bluetooth_media_key`. |
-| `event.source` | `"web"`, `"midi"`, `"audio"`, `"device"`, `"system"`, or `"bluetooth"`; all hooks use the same bounded queue. |
+| `event.type` | `note_on`, `note_off`, `cc`, `sound_start`, `sound_finish`, `device_connect`, `device_disconnect`, `run`, `boot`, `timer`, `config_change`, `ui`, `bluetooth_change`, `bluetooth_connect`, `bluetooth_disconnect`, `bluetooth_media_key`, or `desktop_default_change`. |
+| `event.source` | `"web"`, `"midi"`, `"audio"`, `"device"`, `"system"`, `"bluetooth"`, or `"desktop"`; all hooks use the same bounded queue. |
 | `event.channel` | Triggering MIDI channel, `0`–`15`. |
 | `event.note` | Triggering note, `0`–`127`. |
 | `event.velocity` | MIDI velocity/value, `0`–`127`; zero for audio/device hooks. |
 | `event.pressed` | True for press/start/connect and Web Run; false for release/CC/finish/disconnect. Bluetooth media keys supply both press and release. |
 | `event.cc`, `event.value` | MIDI controller number and value; `value` mirrors velocity for notes. |
-| `event.sound`, `event.device` | Sound basename or selected controller device path; `device` is the Bluetooth MAC address for `bluetooth_media_key`. Empty when inapplicable. |
+| `event.sound`, `event.device` | Sound basename or selected controller device path; `device` is the Bluetooth MAC address for Bluetooth hooks, or the stable sink name for `desktop_default_change`. Empty when inapplicable. |
+| `event.available`, `event.initial` | For `desktop_default_change`, whether a sink snapshot is available and whether it is the first available snapshot after connection or recovery. |
+| `event.desktop_session` | For `desktop_default_change`, the companion session that generated the event. |
 | `event.key` | Option/button key for `config_change` and `ui`, or media-key name for `bluetooth_media_key`; empty otherwise. |
 | `state` | Persistent flat table for this mapping; see [events and state](/lua/events-and-state). |
 
@@ -76,6 +78,11 @@ See [callback examples and lifetime rules](/lua/events-and-state#register-callba
   control-loop timer, not an audio/sample-accurate clock.
 - `bluetooth_change`: Bluetooth adapter, discovery, pairing, device, or
   connection status changed. Read `bluetooth.devices()` for the latest snapshot.
+- `bluetooth_connect`, `bluetooth_disconnect`: a Bluetooth audio connection
+  appeared or disappeared. `event.device` is its uppercase MAC address and
+  `event.pressed` is true on connect. Already-connected devices generate a
+  connect event after startup stabilizes or scripts change. These hooks sample
+  status and cannot observe a connection that starts and ends between polls.
 - `bluetooth_media_key`: a paired Classic Bluetooth device sent an AVRCP
   pass-through media key. `event.key` is `play`, `pause`, `stop`, `next`,
   `previous`, `rewind`, `fast_forward`, `volume_up`, `volume_down`, `mute`,
@@ -85,6 +92,15 @@ See [callback examples and lifetime rules](/lua/events-and-state#register-callba
   A bounded 64-event Bluetooth queue feeds the normal script queue; overflow
   drops events and is logged. These hooks do not automatically change playback
   or volume. See the [keyboard bridge example](./cookbook#bluetooth-media-keys-to-computer-keyboard).
+- `desktop_default_change`: the companion reports an initial, changed, or
+  unavailable default playback sink. `event.source` is `"desktop"`;
+  `event.available` is false when unavailable, otherwise `event.device` is the
+  stable sink name. `event.initial` marks the first available snapshot or
+  recovery. Companion-side polling is approximately once per second, so
+  intermediate changes may be missed. Events are dispatched after startup
+  stabilizes. Successful script-initiated sets do not generate this hook;
+  WebUI and external changes do. Use `event.device` for the event's value:
+  `desktop.default_sink()` can already contain a newer snapshot.
 - `config_change`: a WebUI option was persisted; `event.key` names it and
   `event.value` is its typed value. Script-side `script_config.set()` does not
   retrigger this hook, avoiding feedback loops.
@@ -101,7 +117,7 @@ callback completion.
 | --- | --- |
 | `script_config.get(key[, default])` | Read this script's saved scalar option; missing keys return the supplied default or nil. |
 | `script_config.set(key, value)` | Queue a persistent boolean, finite number, or string; nil removes the key. |
-| `ui.option(key, descriptor)` | Declare a native WebUI option at top level. Descriptor fields: `label`, `type`, `default`, optional numeric `min` and `max`. Types: `"boolean"`, `"number"`, `"string"`. |
+| `ui.option(key, descriptor)` | Declare a native WebUI option at top level. Descriptor fields: `label`, `type`, `default`, optional numeric `min` and `max`. Types: `"boolean"`, `"number"`, `"int"`, `"float"`, `"string"`, `"enum"`, `"device"`, `"host-device"`, `"bt-device"`. |
 | `ui.button(key, label)` | Declare a native WebUI button at top level; handled by `hook("ui", ...)`. |
 
 Up to 16 controls and 32 saved scalar keys per script. Keys are bounded to 31
@@ -111,6 +127,25 @@ not automatically written to flash. `script_config.get(key)` uses a declared
 option's default when unset; an explicit fallback overrides that default.
 Register declarations unconditionally,
 alongside hooks; read/write saved options inside callbacks.
+
+`int` values and bounds must be integers within JavaScript's safe integer
+range (±9,007,199,254,740,991). `float` and the existing `number` type accept
+finite numbers. An `enum` requires a `choices` array of 1–16 distinct,
+nonempty strings of at most 63 bytes; its default and saved value must be one
+of those choices:
+
+```lua callbacks
+ui.option("mode", {label="Mode", type="enum", default="normal",
+                   choices={"normal", "quiet"}})
+hook("run", function() log("Run") end)
+```
+
+`device` lists AudioX routing devices and stores their routing ID. `bt-device`
+lists paired Bluetooth devices and stores their MAC address. `host-device`
+uses the connected companion's PipeWire inventory and stores the stable node
+name; it is available on Linux. Use an empty string as the default for an
+initially unselected device. A previously selected but unavailable device is
+preserved and shown as unavailable.
 
 Controls appear beside the saved script on **Scripts**, not arbitrary pages.
 Labels and values are rendered as text; scripts cannot inject HTML, JavaScript,
@@ -321,7 +356,29 @@ termination the companion attempts to restore streams it moved, unless they
 have since been moved elsewhere. Restoration is best-effort, including when
 streams disappear or the audio server restarts. Automatic app matching,
 persisted routing rules, and stereo-pair selection are not yet available. The
-Desktop page also provides a manual stream-move control.
+Desktop page also provides automatic app matching and stereo-pair selection.
+
+### Desktop default playback device
+
+`desktop.default_sink()` returns the latest stable sink name, or `nil` and a
+diagnostic error if it is unavailable (disconnected, unsupported, waiting for
+a snapshot, or unreadable on the host).
+`desktop.default_sink_status()` returns the same error when unavailable, or a
+snapshot table with `name`, `session` (a connection-specific integer), and
+`pending` (whether a default-sink request is in flight). The three fields are
+captured together; the result can become stale after evaluation.
+`desktop.set_default_sink(name)` queues an asynchronous change and requires
+device-management permission. It accepts a stable nonnumeric sink name, not a
+transient numeric ID. Linux requires a connected companion advertising
+`default_sink` and either `pactl` or both `wpctl` and `pw-dump`; Windows and
+macOS are not supported. The companion
+checks that the sink exists and verifies the result. A queued call is not a
+success acknowledgment: failures and timeouts are logged. Only one request is
+in flight; script actions wait for a pending request, subject to the normal
+macro timeout. Other requests may be rejected while one is pending. A queued
+script action is bound to the desktop session observed during evaluation (or
+the session that generated a desktop-default event) and fails rather than
+changing a replacement desktop.
 
 ### Meter readings
 

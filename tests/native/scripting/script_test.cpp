@@ -79,7 +79,7 @@ void evaluationFailure(const char *source, const char *expected) {
 int main() {
     {
         ScriptActivity activity{};
-        uint16_t mask{};
+        uint32_t mask{};
         const char *source =
             "hook('device_active','mic',function(e) assert(e.device=='mic'); state.active=e.active end); "
             "hook('device_active','music',function(e) error('wrong device') end)";
@@ -128,7 +128,7 @@ int main() {
         assert(!evaluateMedia("desktop.is_playing()", DesktopMedia::Error));
         assert(!evaluateMedia("desktop.is_playing()", DesktopMedia::Unavailable));
         assert(!evaluateMedia("desktop.media_status(1)", DesktopMedia::Playing));
-        uint16_t mask{};
+        uint32_t mask{};
         assert(!scriptInspectHooks("local s=desktop.media_status(); hook('run', function() end)",
                                    mask, error, sizeof(error)));
         assert(!scriptNeedsDevicePermission("desktop.media_status()"));
@@ -142,6 +142,31 @@ int main() {
                                sizeof(error), nullptr, true));
         assert(!scriptEvaluate("desktop.route(1, 4294967296)", defaultEvent, state, plan, error,
                                sizeof(error), nullptr, true));
+        assert(!scriptNeedsDevicePermission("desktop.default_sink()"));
+        assert(scriptNeedsDevicePermission("desktop.set_default_sink('sink.name')"));
+        assert(scriptEvaluate("local name,err=desktop.default_sink(); assert(name==nil and err)",
+                              defaultEvent, state, plan, error, sizeof(error)));
+        assert(scriptEvaluate("local info,err=desktop.default_sink_status(); assert(info==nil and err)",
+                              defaultEvent, state, plan, error, sizeof(error)));
+        assert(scriptEvaluate("local info,err=desktop.default_sink_status(); "
+                              "assert(info==nil and err=='desktop not connected')",
+                              defaultEvent, state, plan, error, sizeof(error), nullptr, false,
+                              false, 0, 0, nullptr, DesktopMedia::Unavailable, nullptr, 0, false,
+                              "desktop not connected"));
+        assert(scriptEvaluate("local info=desktop.default_sink_status(); "
+                              "assert(info.name=='sink.name' and info.session==42 and info.pending)",
+                              defaultEvent, state, plan, error, sizeof(error), nullptr, false,
+                              false, 0, 0, nullptr, DesktopMedia::Unavailable, "sink.name", 42, true));
+        assert(scriptEvaluate("assert(desktop.default_sink()=='sink.name'); "
+                              "desktop.set_default_sink('other.sink')",
+                              defaultEvent, state, plan, error, sizeof(error), nullptr, true,
+                              false, 0, 0, nullptr, DesktopMedia::Unavailable, "sink.name"));
+        assert(plan.count == 1 && plan.actions[0].kind == ScriptKind::DesktopDefaultSet &&
+               !strcmp(plan.actions[0].text, "other.sink"));
+        assert(!scriptEvaluate("desktop.set_default_sink('other.sink')", defaultEvent, state, plan,
+                               error, sizeof(error), nullptr, false));
+        assert(!scriptEvaluate("desktop.set_default_sink('12')", defaultEvent, state, plan,
+                               error, sizeof(error), nullptr, true));
     }
     {
         ScriptMeters meters{};
@@ -165,7 +190,7 @@ int main() {
         assert(!evaluate("meters.get('mic')"));
         meters.nodes[0].levels[0] = .25f;
         assert(!scriptEvaluate("meters.get('mic')", defaultEvent, state, plan, error, sizeof(error)));
-        uint16_t mask{};
+        uint32_t mask{};
         assert(!scriptInspectHooks("local x=meters.get('mic'); hook('run', function(e) end)",
                                   mask, error, sizeof(error)));
         ScriptEvent cc{0, 7, 64, false};
@@ -268,10 +293,10 @@ int main() {
         "assert(count==1); state.runs=(state.runs or 0)+1; log('run') end); "
         "hook('note_off',function(e) assert(not e.pressed); log('released') end); "
         "hook('run',function(e) assert(count==1); log('second') end)";
-    uint16_t hookMask = 0;
+    uint32_t hookMask = 0;
     assert(scriptInspectHooks(callbacks, hookMask, error, sizeof(error)));
     assert(hookMask == 130);
-    auto callbackSuccess = [&](const char *text, ScriptEvent event, uint16_t expectedMask = 0) {
+    auto callbackSuccess = [&](const char *text, ScriptEvent event, uint32_t expectedMask = 0) {
         if (!scriptEvaluate(text, event, state, plan, error, sizeof(error),
                                 nullptr, false, true, expectedMask)) {
             fprintf(stderr, "Callback failed: %s\n", error);
@@ -287,7 +312,7 @@ int main() {
         assert(!memcmp(&before, &state, sizeof(state)));
     };
     auto inspectFailure = [&](const char *text, const char *message) {
-        uint16_t mask = 255;
+        uint32_t mask = 255;
         assert(!scriptInspectHooks(text, mask, error, sizeof(error)));
         assert(mask == 0 && strstr(error, message));
     };
@@ -348,11 +373,40 @@ int main() {
         assert(scriptUiValueValid(ui.controls[1], value));
         value.numberValue = 2;
         assert(!scriptUiValueValid(ui.controls[1], value));
+        assert(scriptInspectUi(
+            "ui.option('i',{label='Integer',type='int',default=1,min=0,max=9}); "
+            "ui.option('f',{label='Float',type='float',default=1.5}); "
+            "ui.option('e',{label='Mode',type='enum',default='one',choices={'one','two'}})",
+            ui, error, sizeof(error)));
+        assert(ui.count == 3 && ui.controls[2].choiceCount == 2);
+        value = ui.controls[0].defaultValue;
+        assert(scriptUiValueValid(ui.controls[0], value));
+        value.numberValue = 1.5;
+        value.numberIsInteger = false;
+        assert(!scriptUiValueValid(ui.controls[0], value));
+        value = ui.controls[2].defaultValue;
+        strcpy(value.stringValue, "two");
+        assert(scriptUiValueValid(ui.controls[2], value));
+        strcpy(value.stringValue, "other");
+        assert(!scriptUiValueValid(ui.controls[2], value));
         auto uiFailure = [&](const char *text) {
             assert(!scriptInspectUi(text, ui, error, sizeof(error)));
             assert(ui.count == 0 && error[0]);
         };
         uiFailure("ui.option('a',{label='A',type='integer',default=1})");
+        uiFailure("ui.option('a',{label='A',type='int',default=1.5})");
+        uiFailure("ui.option('a',{label='A',type='int',default=1,min=0.5})");
+        uiFailure("ui.option('a',{label='A',type='int',default=9007199254740992})");
+        uiFailure("ui.option('a',{label='A',type='enum',default='x',choices={'y'}})");
+        uiFailure("ui.option('a',{label='A',type='enum',default='x',choices={'x','x'}})");
+        uiFailure("ui.option('a',{label='A',type='enum',default='x',choices={'x',bad='y'}})");
+        uiFailure("ui.option('a',{label='A',type='string',default='x',choices={'x'}})");
+        uiFailure("ui.option('a',{label='A',type='bt-device',default='not-a-mac'})");
+        assert(scriptInspectUi(
+            "ui.option('a',{label='A',type='device',default=''}); "
+            "ui.option('b',{label='B',type='host-device',default=''}); "
+            "ui.option('c',{label='C',type='bt-device',default='AA:BB:CC:DD:EE:FF'})",
+            ui, error, sizeof(error)));
         uiFailure("ui.option('a',{label='A',type='number',default=0,min=1,max=2})");
         uiFailure("ui.option('a',{label='A',type='number',default=1,min=2,max=1})");
         uiFailure("ui.option('a',{label='A',type='number',default=0/0})");
@@ -376,7 +430,26 @@ int main() {
         callbackSuccess("hook('timer',function(e) assert(e.type=='timer' and e.source=='system') end)", event, 512);
         event.kind = ScriptEventKind::BluetoothChange;
         callbackSuccess("hook('bluetooth_change',function(e) assert(e.source=='bluetooth') end)", event, 4096);
+        event.kind = ScriptEventKind::BluetoothConnect;
+        strcpy(event.device, "AA:BB:CC:DD:EE:FF");
+        event.pressed = true;
+        callbackSuccess("hook('bluetooth_connect',function(e) assert(e.type=='bluetooth_connect' "
+                        "and e.source=='bluetooth' and e.device=='AA:BB:CC:DD:EE:FF' and e.pressed) end)",
+                        event, 32768);
+        event.kind = ScriptEventKind::BluetoothDisconnect;
+        event.pressed = false;
+        callbackSuccess("hook('bluetooth_disconnect',function(e) assert(e.type=='bluetooth_disconnect' "
+                        "and e.source=='bluetooth' and e.device=='AA:BB:CC:DD:EE:FF' and not e.pressed) end)",
+                        event, 65536);
+        event.kind = ScriptEventKind::DesktopDefaultChange;
+        strcpy(event.device, "sink.name");
+        event.initial = true;
+        event.desktopSession = 42;
+        callbackSuccess("hook('desktop_default_change',function(e) assert(e.source=='desktop' "
+                        "and e.available and e.initial and e.device=='sink.name' and e.desktop_session==42) end)",
+                        event, 131072);
         event.kind = ScriptEventKind::BluetoothMediaKey;
+        event.pressed = true;
         strcpy(event.key, "pause");
         strcpy(event.device, "AA:BB:CC:DD:EE:FF");
         callbackSuccess("hook('bluetooth_media_key',function(e) "

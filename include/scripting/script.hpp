@@ -42,10 +42,11 @@ struct ScriptActivity {
 };
 enum class ScriptEventKind : uint8_t {
     NoteOn, NoteOff, ControlChange, SoundStart, SoundFinish, DeviceConnect, DeviceDisconnect, Run,
-    Boot, Timer, ConfigChange, Ui, BluetoothChange, BluetoothMediaKey, DeviceActive
+    Boot, Timer, ConfigChange, Ui, BluetoothChange, BluetoothMediaKey, DeviceActive,
+    BluetoothConnect, BluetoothDisconnect, DesktopDefaultChange
 };
-inline constexpr unsigned SCRIPT_EVENT_COUNT = 15;
-inline constexpr uint16_t SCRIPT_EVENTS_MASK = (1U << SCRIPT_EVENT_COUNT) - 1;
+inline constexpr unsigned SCRIPT_EVENT_COUNT = 18;
+inline constexpr uint32_t SCRIPT_EVENTS_MASK = (1U << SCRIPT_EVENT_COUNT) - 1;
 inline constexpr uint16_t SCRIPT_LEGACY_EVENTS_MASK = 127;
 const char *scriptEventName(ScriptEventKind kind);
 
@@ -53,7 +54,7 @@ enum class ScriptKind { Tap, Wait, Light, Press, Release, Type, Log, SoundPlay, 
                             EffectEnable, EffectToggle, EffectSet, VolumeSet, VolumeAdjust, ConfigWrite,
                             StorageWrite, StorageRemove, ScriptConfigSet, SystemRestart, BluetoothScan,
                             BluetoothPair, BluetoothConnect, BluetoothDisconnect, BluetoothUnpair, BluetoothMediaKey,
-                            BluetoothAutoConnect, SettingsSet, DesktopRoute };
+                            BluetoothAutoConnect, SettingsSet, DesktopRoute, DesktopDefaultSet };
 
 enum class ScriptValueKind { Boolean, Number, String };
 
@@ -93,8 +94,9 @@ struct ScriptState {
     unsigned count;
 };
 
-enum class ScriptUiKind { Boolean, Number, String, Button };
+enum class ScriptUiKind { Boolean, Number, Integer, Float, String, Enum, Device, HostDevice, BluetoothDevice, Button };
 inline constexpr unsigned SCRIPT_UI_MAX = 16;
+inline constexpr unsigned SCRIPT_UI_CHOICES_MAX = 16;
 struct ScriptUiControl {
     char key[32];
     char label[64];
@@ -104,6 +106,8 @@ struct ScriptUiControl {
     bool hasMax;
     double min;
     double max;
+    char choices[SCRIPT_UI_CHOICES_MAX][64];
+    unsigned choiceCount;
 };
 struct ScriptUi {
     ScriptUiControl controls[SCRIPT_UI_MAX];
@@ -135,6 +139,8 @@ struct ScriptEvent {
     ScriptStateEntry value{};
     bool hasValue{true};
     bool active{false};
+    bool initial{false};
+    uint32_t desktopSession{0};
 };
 
 // Evaluate text once into an isolated, bounded plan. No actions are executed.
@@ -145,13 +151,16 @@ bool scriptEvaluate(const char *source, const ScriptEvent &event,
                         ScriptState &state, ScriptPlan &plan,
                         char *error, size_t errorSize, ConfigStore *config = nullptr,
                         bool configWriteAllowed = false, bool hookMode = false,
-                        uint16_t expectedHookMask = 0, uint32_t scriptId = 0,
+                        uint32_t expectedHookMask = 0, uint32_t scriptId = 0,
                         const ScriptMeters *meters = nullptr,
-                        DesktopMedia desktopMedia = DesktopMedia::Unavailable);
+                        DesktopMedia desktopMedia = DesktopMedia::Unavailable,
+                        const char *desktopDefault = nullptr,
+                        uint32_t desktopSession = 0, bool desktopDefaultPending = false,
+                        const char *desktopDefaultError = nullptr);
 
 // Execute registration only in an isolated sandbox, without state, event, or device I/O.
 // The returned mask is authoritative for callback scripts; callbacks are not invoked.
-bool scriptInspectHooks(const char *source, uint16_t &mask, char *error, size_t errorSize,
+bool scriptInspectHooks(const char *source, uint32_t &mask, char *error, size_t errorSize,
                         ScriptActivity *activity = nullptr);
 bool scriptInspectUi(const char *source, ScriptUi &ui, char *error, size_t errorSize);
 
@@ -173,7 +182,7 @@ struct ScriptDefinition {
     uint32_t id{0};
     char name[64]{};
     bool midiEnabled{true};
-    uint16_t eventMask{1};
+    uint32_t eventMask{1};
     bool configWriteAllowed{false};
     bool hookMode{false};
 };
@@ -213,7 +222,8 @@ inline bool scriptNeedsDevicePermission(const char *source) {
             while (*member == ' ' || *member == '\t' || *member == '\r' || *member == '\n') ++member;
             if (*member++ != '.') continue;
             while (*member == ' ' || *member == '\t' || *member == '\r' || *member == '\n') ++member;
-            if (!strncmp(member, "route", 5) && !identifier(member[5])) return true;
+            if ((!strncmp(member, "route", 5) && !identifier(member[5])) ||
+                (!strncmp(member, "set_default_sink", 16) && !identifier(member[16]))) return true;
         }
     }
     return false;

@@ -122,6 +122,52 @@ test('a late route response cannot update a replacement desktop', async () => {
   assert.equal(sink.value, '');
 });
 
+test('default sink shows discovered devices, sends stable names, and reports failures', async (t) => {
+  documentForTest(t);
+  let event, failed = false;
+  const defaultSection = {}, defaultForm = element(), defaultSink = element(), defaultSubmit = {};
+  const defaultCurrent = {}, defaultStatus = {}, inventory = {}, inventoryRefresh = element();
+  const requests = [];
+  const api = {
+    subscribe(topic, listener) { event = listener; },
+    async request(url, options) {
+      requests.push({ url, options });
+      if (url === '/api/desktop/inventory')
+        return { ok: true, json: async () => ({ id: 1 }) };
+      if (url.startsWith('/api/desktop/inventory?'))
+        return { ok: true, json: async () => ({ id: 1, status: 'succeeded', nodes: [
+          { id: 7, 'node.name': 'sink.audiox', 'node.description': 'AudioX', 'media.class': 'Audio/Sink' },
+        ] }) };
+      if (url.includes('?session='))
+        return { ok: true, json: async () => ({ name: 'sink.audiox' }) };
+      if (url === '/api/desktop/default')
+        return { ok: true, json: async () => ({ id: 4 }) };
+      if (url === '/api/desktop/default?id=4')
+        return { ok: true, json: async () => ({ id: 4, status: failed ? 'failed' : 'succeeded' }) };
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  };
+  const dispose = create({ api, tab: {}, host: {}, os: {}, capabilities: {}, media: {},
+    inventory, inventoryRefresh, inventoryStatus: {}, inventoryList: element(),
+    defaultSection, defaultForm, defaultSink, defaultSubmit, defaultCurrent, defaultStatus,
+    onDisconnect() {} });
+  event({ connected: true, session: 9, hello: { hostname: 'pc', os: 'linux',
+    capabilities: ['pipewire_nodes', 'default_sink'] } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(defaultSection.hidden, false);
+  assert.equal(defaultSink.value, 'sink.audiox');
+  await defaultForm.listeners.submit({ preventDefault() {} });
+  assert.ok(requests.some(request => request.url === '/api/desktop/default' &&
+    request.options.body === `session=9&name_hex=${Buffer.from('sink.audiox').toString('hex')}`));
+  assert.equal(defaultStatus.textContent, 'Default device changed.');
+  failed = true;
+  await defaultForm.listeners.submit({ preventDefault() {} });
+  assert.match(defaultStatus.textContent, /failed/);
+  event({ connected: false });
+  assert.equal(defaultSection.hidden, true);
+  dispose();
+});
+
 test('discovery displays names as text and discards results from an old desktop', async (t) => {
   documentForTest(t);
   let event, resolveResult, refresh;

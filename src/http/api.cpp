@@ -4916,6 +4916,54 @@ static int handleDesktopInventory(HttpServer *server, int cfd, const char *metho
     return sendMethodNotAllowed(server, cfd);
 }
 
+static int handleDesktopDefault(HttpServer *server, int cfd, const char *method,
+                                const char *body, size_t bodyLength, const char *query) {
+    auto reply = [&](const char *status, const std::string &text) {
+        return server->sendResponseWithHeaders(cfd, status, "application/json", text.data(),
+                                               text.size(), nullptr, "Cache-Control: no-store\r\n");
+    };
+    if (!strcmp(method, "POST")) {
+        std::string_view input(body ? body : "", body ? bodyLength : 0);
+        uint32_t session, id;
+        if (!desktop::consume(input, "session=") || !desktop::number(input, session) || !session ||
+            !desktop::consume(input, "&name_hex=") || input.empty() || input.size() > 254 ||
+            input.find('\0') != std::string_view::npos)
+            return reply("400 Bad Request", "{\"error\":\"Invalid session or sink name.\"}");
+        std::string hex(input);
+        char name[128]{};
+        if (!scriptHexDecode(hex.c_str(), name, sizeof(name)) || !desktop::validSinkName(name))
+            return reply("400 Bad Request", "{\"error\":\"Invalid sink name.\"}");
+        if (server->requestDesktopDefault(name, &id, session, true) != RET_OK)
+            return reply("409 Conflict", "{\"error\":\"Desktop changed, default sink is unavailable, or a request is pending.\"}");
+        return reply("202 Accepted", "{\"id\":" + std::to_string(id) + "}");
+    }
+    if (!strcmp(method, "GET")) {
+        std::string_view input(query ? query : "");
+        uint32_t value;
+        if (desktop::consume(input, "session=")) {
+            if (!desktop::number(input, value) || !value || !input.empty())
+                return reply("400 Bad Request", "{\"error\":\"Invalid session.\"}");
+            char name[128]{};
+            if (!server->desktopDefault(name, value))
+                return reply("409 Conflict", "{\"error\":\"Desktop default sink is unavailable.\"}");
+            return reply("200 OK", "{\"name\":\"" + audiox::json::escape(name) + "\"}");
+        }
+        if (!desktop::consume(input, "id=") || !desktop::number(input, value) || !value || !input.empty())
+            return reply("400 Bad Request", "{\"error\":\"Invalid request ID.\"}");
+        const char *status;
+        switch (server->desktopDefaultState(value)) {
+        case DesktopRouteState::Pending: status = "pending"; break;
+        case DesktopRouteState::Succeeded: status = "succeeded"; break;
+        case DesktopRouteState::Failed: status = "failed"; break;
+        case DesktopRouteState::Disconnected: status = "disconnected"; break;
+        case DesktopRouteState::TimedOut: status = "timed_out"; break;
+        default: return reply("404 Not Found", "{\"error\":\"Default-sink result is unavailable or was replaced.\"}");
+        }
+        return reply("200 OK", "{\"id\":" + std::to_string(value) + ",\"status\":\"" + status + "\"}");
+    }
+    return sendMethodNotAllowed(server, cfd);
+}
+
 static int handleDesktopRules(HttpServer *server, int cfd, const char *method,
                               const char *body, size_t bodyLength, const char *query) {
     auto reply = [&](const char *status, const std::string &text) {
@@ -5590,6 +5638,12 @@ static std::string scriptUiJson(const ScriptDefinition &script) {
         const auto &control = ui.controls[i];
         const char *type = control.kind == ScriptUiKind::Boolean ? "boolean" :
             control.kind == ScriptUiKind::Number ? "number" :
+            control.kind == ScriptUiKind::Integer ? "int" :
+            control.kind == ScriptUiKind::Float ? "float" :
+            control.kind == ScriptUiKind::Enum ? "enum" :
+            control.kind == ScriptUiKind::Device ? "device" :
+            control.kind == ScriptUiKind::HostDevice ? "host-device" :
+            control.kind == ScriptUiKind::BluetoothDevice ? "bt-device" :
             control.kind == ScriptUiKind::String ? "string" : "button";
         auto value = control.defaultValue;
         for (unsigned j = 0; j < settings.count; ++j)
@@ -5603,6 +5657,14 @@ static std::string scriptUiJson(const ScriptDefinition &script) {
         result += "{\"key\":\"" + audiox::json::escape(control.key) +
             "\",\"label\":\"" + audiox::json::escape(control.label) + "\",\"type\":\"" + type + "\"";
         if (control.kind != ScriptUiKind::Button) result += ",\"value\":" + scriptScalarJson(value);
+        if (control.kind == ScriptUiKind::Enum) {
+            result += ",\"choices\":[";
+            for (unsigned j = 0; j < control.choiceCount; ++j) {
+                if (j) result += ',';
+                result += "\"" + audiox::json::escape(control.choices[j]) + "\"";
+            }
+            result += ']';
+        }
         char bound[64];
         if (control.hasMin) {
             snprintf(bound, sizeof(bound), "%.17g", control.min);
@@ -5685,7 +5747,9 @@ static int handleScriptControl(HttpServer *server, int cfd, const char *method,
                 return reply("400 Bad Request", "expected boolean control value\n");
             event.value.kind = ScriptValueKind::Boolean;
             event.value.booleanValue = !strcmp(value, "true");
-        } else if (control->kind == ScriptUiKind::String) {
+        } else if (control->kind == ScriptUiKind::String || control->kind == ScriptUiKind::Enum ||
+                   control->kind == ScriptUiKind::Device || control->kind == ScriptUiKind::HostDevice ||
+                   control->kind == ScriptUiKind::BluetoothDevice) {
             event.value.kind = ScriptValueKind::String;
             snprintf(event.value.stringValue, sizeof(event.value.stringValue), "%s", value);
         } else {
@@ -5695,6 +5759,12 @@ static int handleScriptControl(HttpServer *server, int cfd, const char *method,
             event.value.numberValue = strtod(value, &last);
             if (!value[0] || *last || errno || !std::isfinite(event.value.numberValue))
                 return reply("400 Bad Request", "expected finite numeric control value\n");
+            if (control->kind == ScriptUiKind::Integer &&
+                std::trunc(event.value.numberValue) == event.value.numberValue &&
+                std::abs(event.value.numberValue) <= 9007199254740991.0) {
+                event.value.numberIsInteger = true;
+                event.value.integerValue = static_cast<int64_t>(event.value.numberValue);
+            }
         }
         if (!scriptUiValueValid(*control, event.value))
             return reply("400 Bad Request", "control value violates declared type or range\n");
@@ -5955,7 +6025,7 @@ static int handleMidiChords(HttpServer *server, int cfd, const char *method,
 				if (!eventMask[0] || *end || mask < 0 ||
 					mask > (chord.hookMode ? SCRIPT_EVENTS_MASK : SCRIPT_LEGACY_EVENTS_MASK))
 					return reply("400 Bad Request", "invalid event_mask for this script mode\n");
-				chord.eventMask = static_cast<uint16_t>(mask);
+				chord.eventMask = static_cast<uint32_t>(mask);
 			}
 			if (!named && chord.eventMask != 1)
 				return reply("400 Bad Request", "event subscriptions require the named scripts API\n");
@@ -6130,6 +6200,8 @@ int handleApiRequest(HttpServer *server,
 		return handleDesktopRoute(server, cfd, method, body, body_len, query);
 	if (!strcmp(path, "/api/desktop/inventory"))
 		return handleDesktopInventory(server, cfd, method, body, body_len, query);
+	if (!strcmp(path, "/api/desktop/default"))
+		return handleDesktopDefault(server, cfd, method, body, body_len, query);
 	if (!strcmp(path, "/api/desktop/rules"))
 		return handleDesktopRules(server, cfd, method, body, body_len, query);
 	if (!strcmp(path, "/api/plugins") || !strncmp(path, "/api/plugins/", 13))

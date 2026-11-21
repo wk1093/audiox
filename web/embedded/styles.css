@@ -1969,7 +1969,8 @@ details > summary:focus-visible {
   max-width: 100%;
 }
 
-.script-control input:not([type="checkbox"]) {
+.script-control input:not([type="checkbox"]),
+.script-control select {
   width: 12rem;
   max-width: 100%;
   min-width: 0;

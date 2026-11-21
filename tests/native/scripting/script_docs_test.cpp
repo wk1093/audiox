@@ -8,6 +8,12 @@
 #include <iostream>
 #include <string>
 
+extern "C" {
+#include <lua.h>
+#include <lauxlib.h>
+int luaopen_base(lua_State *lua);
+}
+
 int main() {
     assert(!std::filesystem::exists("tests/.script-docs-test-storage"));
     unsigned blocks = 0, callbackExamples = 0;
@@ -40,7 +46,7 @@ int main() {
                     if (callbacks) {
                         ScriptState state{};
                         ScriptPlan plan{};
-                        uint16_t mask = 0;
+                        uint32_t mask = 0;
                         if (!scriptInspectHooks(source.c_str(), mask, error, sizeof(error))) {
                             std::cerr << file.path() << ':' << start << ": " << error << '\n';
                             return 1;
@@ -95,6 +101,123 @@ int main() {
         assert(!fence);
     }
     assert(blocks > 0 && callbackExamples >= 13);
+    {
+        std::ifstream input("docs/public/scripts/bluetooth-default-sink.lua");
+        assert(input);
+        const std::string source((std::istreambuf_iterator<char>(input)), {});
+        char error[256]{};
+        uint32_t mask = 0;
+        ScriptUi controls{};
+        assert(scriptValidate(source.c_str(), error, sizeof(error)));
+        assert(scriptInspectHooks(source.c_str(), mask, error, sizeof(error)));
+        assert(scriptInspectUi(source.c_str(), controls, error, sizeof(error)));
+        ScriptState state{};
+        ScriptPlan plan{};
+        ScriptEvent event{};
+        event.kind = ScriptEventKind::Run;
+        if (!scriptEvaluate(source.c_str(), event, state, plan, error, sizeof(error),
+                            nullptr, true, true, mask, 1)) {
+            std::cerr << "Bluetooth default-sink script: " << error << '\n';
+            return 1;
+        }
+        for (unsigned i = 0; i < plan.count; ++i)
+            assert(plan.actions[i].kind != ScriptKind::DesktopDefaultSet);
+        auto configured = source;
+        const auto replace = [](std::string &text, const char *from, const char *to) {
+            const auto position = text.find(from);
+            assert(position != std::string::npos);
+            text.replace(position, std::strlen(from), to);
+        };
+        replace(configured, "type = \"bt-device\", default = \"\"",
+                "type = \"bt-device\", default = \"AA:BB:CC:DD:EE:FF\"");
+        replace(configured, "type = \"host-device\", default = \"\"",
+                "type = \"host-device\", default = \"sink.audiox\"");
+        auto connected = configured;
+        auto disconnected = configured;
+        replace(connected, "bluetooth.devices()",
+                "{ready=true, devices={{address='AA:BB:CC:DD:EE:FF', connected=true}}}");
+        replace(disconnected, "bluetooth.devices()",
+                "{ready=true, devices={{address='AA:BB:CC:DD:EE:FF', connected=false}}}");
+        const auto evaluate = [&](const std::string &script, ScriptEventKind kind,
+                                  const char *name, bool pending) {
+            event.kind = kind;
+            event.monotonicMs += 1000;
+            if (!scriptEvaluate(script.c_str(), event, state, plan, error, sizeof(error),
+                                nullptr, true, true, mask, 1, nullptr,
+                                DesktopMedia::Unavailable, name, 1, pending)) {
+                std::cerr << "Bluetooth default-sink evaluation: " << error << '\n';
+                assert(false);
+            }
+        };
+        const auto requested = [&]() -> const char * {
+            for (unsigned i = 0; i < plan.count; ++i)
+                if (plan.actions[i].kind == ScriptKind::DesktopDefaultSet) return plan.actions[i].text;
+            return nullptr;
+        };
+        evaluate(connected, ScriptEventKind::BluetoothConnect, "sink.original", false);
+        assert(requested() && !std::strcmp(requested(), "sink.audiox"));
+        evaluate(disconnected, ScriptEventKind::BluetoothDisconnect, "sink.original", true);
+        assert(!requested());
+        evaluate(disconnected, ScriptEventKind::Timer, "sink.audiox", false);
+        assert(requested() && !std::strcmp(requested(), "sink.original"));
+        evaluate(disconnected, ScriptEventKind::Timer, "sink.original", false);
+        assert(!requested());
+        lua_State *lua = luaL_newstate();
+        assert(lua);
+        luaL_requiref(lua, "_G", luaopen_base, 1);
+        lua_pop(lua, 1);
+        if (luaL_dofile(lua, "tests/native/scripting/bluetooth_default_test.lua") != LUA_OK) {
+            std::cerr << "Bluetooth default-sink scenarios: " << lua_tostring(lua, -1) << '\n';
+            lua_close(lua);
+            return 1;
+        }
+        lua_close(lua);
+    }
+    {
+        std::ifstream input("docs/public/scripts/desktop-default-toggle.lua");
+        assert(input);
+        std::string source((std::istreambuf_iterator<char>(input)), {});
+        char error[256]{};
+        uint32_t mask = 0;
+        ScriptUi controls{};
+        assert(scriptValidate(source.c_str(), error, sizeof(error)));
+        assert(scriptInspectHooks(source.c_str(), mask, error, sizeof(error)));
+        assert(scriptInspectUi(source.c_str(), controls, error, sizeof(error)));
+        const auto position = source.find("type = \"host-device\", default = \"\"");
+        assert(position != std::string::npos);
+        source.replace(position, std::strlen("type = \"host-device\", default = \"\""),
+                       "type = \"host-device\", default = \"sink.audiox\"");
+        ScriptState state{};
+        ScriptPlan plan{};
+        ScriptEvent event{};
+        event.kind = ScriptEventKind::Ui;
+        std::snprintf(event.key, sizeof(event.key), "toggle");
+        const auto evaluate = [&](const char *name, uint32_t session, bool pending) -> const char * {
+            if (!scriptEvaluate(source.c_str(), event, state, plan, error, sizeof(error),
+                                nullptr, true, true, mask, 1, nullptr,
+                                DesktopMedia::Unavailable, name, session, pending)) {
+                std::cerr << "Desktop toggle script: " << error << '\n';
+                assert(false);
+            }
+            for (unsigned i = 0; i < plan.count; ++i)
+                if (plan.actions[i].kind == ScriptKind::DesktopDefaultSet) return plan.actions[i].text;
+            return static_cast<const char *>(nullptr);
+        };
+        assert(!evaluate(nullptr, 0, false));
+        assert(!evaluate("sink.original", 1, true));
+        const char *requested = evaluate("sink.original", 1, false);
+        assert(requested && !std::strcmp(requested, "sink.audiox"));
+        assert(!evaluate("sink.original", 1, true));
+        requested = evaluate("sink.audiox", 1, false);
+        assert(requested && !std::strcmp(requested, "sink.original"));
+        requested = evaluate("sink.audiox", 1, false);
+        assert(requested && !std::strcmp(requested, "sink.original"));
+        requested = evaluate("sink.headphones", 1, false);
+        assert(requested && !std::strcmp(requested, "sink.audiox"));
+        requested = evaluate("sink.audiox", 1, false);
+        assert(requested && !std::strcmp(requested, "sink.headphones"));
+        assert(!evaluate("sink.audiox", 2, false));
+    }
     std::cout << "Validated " << blocks << " Lua documentation examples and evaluated "
               << callbackExamples << " callback examples across Run/sound/Run events\n";
 }

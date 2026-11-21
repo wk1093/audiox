@@ -144,6 +144,37 @@ inline bool parseInventoryChunk(std::string_view input, uint32_t &id, uint32_t &
     return decodeChunk(input, "inventory_chunk", id, offset, bytes, done);
 }
 
+inline bool validSinkName(std::string_view name) {
+    if (name.empty() || name.size() > 127 || name.front() == '-' || name.front() == '@') return false;
+    bool digits = true;
+    for (unsigned char c : name) {
+        if (c < 32 || c == 127) return false;
+        if (c < '0' || c > '9') digits = false;
+    }
+    return !digits;
+}
+
+inline std::string defaultWatch() { return "{\"type\":\"default_watch\"}"; }
+inline std::string defaultSet(uint32_t id, std::string_view name) {
+    return encodeChunk("default_set", id, 0, name, true);
+}
+inline std::string defaultSnapshot(std::string_view name) {
+    return encodeChunk("default_snapshot", 1, 0, name, true);
+}
+inline std::string defaultResult(uint32_t id, std::string_view name, bool ok) {
+    return encodeChunk(ok ? "default_result" : "default_failed", id, 0, name, true);
+}
+inline bool parseDefaultMessage(std::string_view input, std::string_view type,
+                                uint32_t &id, std::string &name, bool &done) {
+    uint32_t offset;
+    if (!decodeChunk(input, type, id, offset, name, done) || offset ||
+        (!name.empty() && !validSinkName(name))) return false;
+    if (type == "default_set") return done && !name.empty();
+    if (type == "default_snapshot") return id == 1 && done;
+    if (type == "default_result") return done && !name.empty();
+    return type == "default_failed" && done;
+}
+
 inline std::string rulesAck(uint32_t id, uint32_t offset, bool ok) {
     return "{\"type\":\"rules_ack\",\"id\":" + std::to_string(id) +
         ",\"offset\":" + std::to_string(offset) + ",\"ok\":" + (ok ? "true}" : "false}");

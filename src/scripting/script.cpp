@@ -2,6 +2,8 @@
 #include "scripting/storage.hpp"
 #include "scripting/utilities.hpp"
 #include "config/context.hpp"
+#include "bluetooth/hci.hpp"
+#include "desktop/routing.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -25,6 +27,10 @@ char hooksRegistryKey;
 struct Compiler {
     const ScriptMeters *meters;
     DesktopMedia desktopMedia;
+    const char *desktopDefault;
+    const char *desktopDefaultError;
+    uint32_t desktopSession;
+    bool desktopDefaultPending;
     unsigned meterReads;
     ScriptPlan *plan;
     ScriptState *state;
@@ -45,9 +51,9 @@ struct Compiler {
     bool hookMode;
     bool registering;
     unsigned hookCount;
-    uint16_t hookMask;
-    uint16_t expectedHookMask;
-    uint16_t *discoveredMask;
+    uint32_t hookMask;
+    uint32_t expectedHookMask;
+    uint32_t *discoveredMask;
     ScriptActivity activity;
     ScriptActivity *discoveredActivity;
     uint32_t scriptId;
@@ -362,6 +368,55 @@ int desktopRoute(lua_State *lua) {
     auto *action = append(lua, ScriptKind::DesktopRoute);
     action->value = static_cast<uint32_t>(stream);
     action->number = static_cast<double>(sink);
+    return 0;
+}
+
+int desktopDefaultSink(lua_State *lua) {
+    arity(lua, 0, 0);
+    auto *compiler = context(lua);
+    if (compiler->registering) return luaL_error(lua, "desktop.default_sink belongs inside callbacks");
+    if (!compiler->desktopDefault) {
+        lua_pushnil(lua);
+        lua_pushstring(lua, compiler->desktopDefaultError ? compiler->desktopDefaultError :
+                       "desktop default sink unavailable");
+        return 2;
+    }
+    lua_pushstring(lua, compiler->desktopDefault);
+    return 1;
+}
+
+int desktopDefaultStatus(lua_State *lua) {
+    arity(lua, 0, 0);
+    auto *compiler = context(lua);
+    if (compiler->registering) return luaL_error(lua, "desktop.default_sink_status belongs inside callbacks");
+    if (!compiler->desktopDefault || !compiler->desktopSession) {
+        lua_pushnil(lua);
+        lua_pushstring(lua, compiler->desktopDefaultError ? compiler->desktopDefaultError :
+                       "desktop default sink unavailable");
+        return 2;
+    }
+    lua_createtable(lua, 0, 3);
+    lua_pushstring(lua, compiler->desktopDefault);
+    lua_setfield(lua, -2, "name");
+    lua_pushinteger(lua, compiler->desktopSession);
+    lua_setfield(lua, -2, "session");
+    lua_pushboolean(lua, compiler->desktopDefaultPending);
+    lua_setfield(lua, -2, "pending");
+    return 1;
+}
+
+int desktopSetDefaultSink(lua_State *lua) {
+    arity(lua, 1, 1);
+    scriptUtilityCheck(lua, true, false);
+    if (lua_type(lua, 1) != LUA_TSTRING)
+        return luaL_error(lua, "desktop.set_default_sink expects a sink name");
+    size_t length = 0;
+    const char *name = lua_tolstring(lua, 1, &length);
+    if (!desktop::validSinkName(std::string_view(name, length)))
+        return luaL_error(lua, "desktop.set_default_sink: invalid sink name");
+    auto *action = append(lua, ScriptKind::DesktopDefaultSet);
+    memcpy(action->text, name, length);
+    action->text[length] = '\0';
     return 0;
 }
 
@@ -963,6 +1018,12 @@ void libraries(lua_State *lua) {
     lua_setfield(lua, -2, "is_playing");
     lua_pushcfunction(lua, desktopRoute);
     lua_setfield(lua, -2, "route");
+    lua_pushcfunction(lua, desktopDefaultSink);
+    lua_setfield(lua, -2, "default_sink");
+    lua_pushcfunction(lua, desktopDefaultStatus);
+    lua_setfield(lua, -2, "default_sink_status");
+    lua_pushcfunction(lua, desktopSetDefaultSink);
+    lua_setfield(lua, -2, "set_default_sink");
     lua_setglobal(lua, "desktop");
     const luaL_Reg helpers[] = {{"millis", millis}, {"epoch", epoch}, {"log", log}, {"choose", choose},
         {"clamp", clamp}, {"map", map}, {"round", round}, {nullptr, nullptr}};
@@ -1231,19 +1292,26 @@ int uiOption(lua_State *lua) {
         size_t length = 0;
         const char *field = lua_tolstring(lua, -2, &length);
         if (memchr(field, 0, length) || (strcmp(field, "label") && strcmp(field, "type") &&
-            strcmp(field, "default") && strcmp(field, "min") && strcmp(field, "max")))
+            strcmp(field, "default") && strcmp(field, "min") && strcmp(field, "max") &&
+            strcmp(field, "choices")))
             return luaL_error(lua, "unsupported UI declaration field");
         lua_pop(lua, 1);
     }
     lua_getfield(lua, 2, "label"); uiLabel(lua, -1, *control); lua_pop(lua, 1);
     lua_getfield(lua, 2, "type");
-    if (lua_type(lua, -1) != LUA_TSTRING) return luaL_error(lua, "UI type must be boolean, number, or string");
+    if (lua_type(lua, -1) != LUA_TSTRING) return luaL_error(lua, "invalid UI type");
     size_t length = 0;
     const char *kind = lua_tolstring(lua, -1, &length);
     if (length == 7 && !memcmp(kind, "boolean", 7)) control->kind = ScriptUiKind::Boolean;
     else if (length == 6 && !memcmp(kind, "number", 6)) control->kind = ScriptUiKind::Number;
+    else if (length == 3 && !memcmp(kind, "int", 3)) control->kind = ScriptUiKind::Integer;
+    else if (length == 5 && !memcmp(kind, "float", 5)) control->kind = ScriptUiKind::Float;
     else if (length == 6 && !memcmp(kind, "string", 6)) control->kind = ScriptUiKind::String;
-    else return luaL_error(lua, "UI type must be boolean, number, or string");
+    else if (length == 4 && !memcmp(kind, "enum", 4)) control->kind = ScriptUiKind::Enum;
+    else if (length == 6 && !memcmp(kind, "device", 6)) control->kind = ScriptUiKind::Device;
+    else if (length == 11 && !memcmp(kind, "host-device", 11)) control->kind = ScriptUiKind::HostDevice;
+    else if (length == 9 && !memcmp(kind, "bt-device", 9)) control->kind = ScriptUiKind::BluetoothDevice;
+    else return luaL_error(lua, "invalid UI type");
     lua_pop(lua, 1);
     lua_getfield(lua, 2, "default"); control->defaultValue = scalar(lua, -1, control->key); lua_pop(lua, 1);
     lua_getfield(lua, 2, "min");
@@ -1252,7 +1320,44 @@ int uiOption(lua_State *lua) {
     lua_getfield(lua, 2, "max");
     if (!lua_isnil(lua, -1)) { control->hasMax = true; control->max = finite(lua, -1); }
     lua_pop(lua, 1);
-    if ((control->kind != ScriptUiKind::Number && (control->hasMin || control->hasMax)) ||
+    lua_getfield(lua, 2, "choices");
+    if (control->kind == ScriptUiKind::Enum) {
+        if (lua_type(lua, -1) != LUA_TTABLE) return luaL_error(lua, "enum choices must be a table");
+        const int choices = lua_gettop(lua);
+        const size_t count = lua_rawlen(lua, choices);
+        if (!count || count > SCRIPT_UI_CHOICES_MAX)
+            return luaL_error(lua, "enum choices must contain 1..16 strings");
+        lua_pushnil(lua);
+        while (lua_next(lua, choices)) {
+            if (!lua_isinteger(lua, -2) || lua_tointeger(lua, -2) < 1 ||
+                static_cast<lua_Unsigned>(lua_tointeger(lua, -2)) > count)
+                return luaL_error(lua, "enum choices must be a contiguous array");
+            lua_pop(lua, 1);
+        }
+        for (size_t i = 0; i < count; ++i) {
+            lua_rawgeti(lua, choices, static_cast<lua_Integer>(i + 1));
+            size_t choiceLength = 0;
+            if (lua_type(lua, -1) != LUA_TSTRING)
+                return luaL_error(lua, "enum choices must be strings");
+            const char *choice = lua_tolstring(lua, -1, &choiceLength);
+            if (!choiceLength || choiceLength >= sizeof(control->choices[0]) ||
+                memchr(choice, 0, choiceLength))
+                return luaL_error(lua, "enum choices must be 1..63 bytes with no NUL");
+            for (size_t j = 0; j < i; ++j)
+                if (!strcmp(control->choices[j], choice))
+                    return luaL_error(lua, "duplicate enum choice");
+            memcpy(control->choices[i], choice, choiceLength);
+            lua_pop(lua, 1);
+        }
+        control->choiceCount = static_cast<unsigned>(count);
+    } else if (!lua_isnil(lua, -1)) return luaL_error(lua, "choices are only valid for enum controls");
+    lua_pop(lua, 1);
+    const bool numeric = control->kind == ScriptUiKind::Number ||
+                         control->kind == ScriptUiKind::Integer || control->kind == ScriptUiKind::Float;
+    if ((!numeric && (control->hasMin || control->hasMax)) ||
+        (control->kind == ScriptUiKind::Integer &&
+         ((control->hasMin && (std::trunc(control->min) != control->min || std::abs(control->min) > 9007199254740991.0)) ||
+          (control->hasMax && (std::trunc(control->max) != control->max || std::abs(control->max) > 9007199254740991.0)))) ||
         (control->hasMin && control->hasMax && control->min > control->max) ||
         !scriptUiValueValid(*control, control->defaultValue))
         return luaL_error(lua, "UI default or bounds do not match its type");
@@ -1293,6 +1398,12 @@ void pushEvent(lua_State *lua, const ScriptEvent &event) {
     lua_setfield(lua, -2, "pressed");
     lua_pushboolean(lua, event.active);
     lua_setfield(lua, -2, "active");
+    lua_pushboolean(lua, event.initial);
+    lua_setfield(lua, -2, "initial");
+    lua_pushboolean(lua, event.kind == ScriptEventKind::DesktopDefaultChange && event.device[0]);
+    lua_setfield(lua, -2, "available");
+    lua_pushinteger(lua, event.desktopSession);
+    lua_setfield(lua, -2, "desktop_session");
     lua_pushstring(lua, scriptEventName(event.kind));
     lua_setfield(lua, -2, "type");
     lua_pushinteger(lua, event.note);
@@ -1316,7 +1427,10 @@ void pushEvent(lua_State *lua, const ScriptEvent &event) {
                         event.kind == ScriptEventKind::DeviceActive;
     const bool web = event.fromWeb || event.kind == ScriptEventKind::Ui || event.kind == ScriptEventKind::ConfigChange;
     lua_pushstring(lua, (event.kind == ScriptEventKind::BluetoothChange ||
-                        event.kind == ScriptEventKind::BluetoothMediaKey) ? "bluetooth" :
+                        event.kind == ScriptEventKind::BluetoothMediaKey ||
+                        event.kind == ScriptEventKind::BluetoothConnect ||
+                        event.kind == ScriptEventKind::BluetoothDisconnect) ? "bluetooth" :
+                   event.kind == ScriptEventKind::DesktopDefaultChange ? "desktop" :
                    system ? "system" : web ? "web" : audio ? "audio" : device ? "device" : "midi");
     lua_setfield(lua, -2, "source");
     lua_setglobal(lua, "event");
@@ -1408,7 +1522,7 @@ int registerHook(lua_State *lua) {
     lua_pushstring(lua, device);
     lua_rawseti(lua, -2, 3);
     lua_rawseti(lua, -2, ++compiler->hookCount);
-    compiler->hookMask |= static_cast<uint16_t>(1U << kind);
+    compiler->hookMask |= 1U << kind;
     return 0;
 }
 
@@ -1536,10 +1650,12 @@ bool run(const char *source, const ScriptEvent *event, const ScriptState *initia
          ScriptState *resultState, ScriptPlan *plan, bool syntaxOnly,
          char *error, size_t errorSize, ConfigStore *config = nullptr,
          bool configWriteAllowed = false, bool hookMode = false,
-         uint16_t expectedHookMask = 0, uint16_t *discoveredMask = nullptr,
+         uint32_t expectedHookMask = 0, uint32_t *discoveredMask = nullptr,
          uint32_t scriptId = 0, ScriptUi *inspectedUi = nullptr,
          const ScriptMeters *meters = nullptr, ScriptActivity *activity = nullptr,
-         DesktopMedia desktopMedia = DesktopMedia::Unavailable) {
+         DesktopMedia desktopMedia = DesktopMedia::Unavailable, const char *desktopDefault = nullptr,
+         uint32_t desktopSession = 0, bool desktopDefaultPending = false,
+         const char *desktopDefaultError = nullptr) {
     writeError(error, errorSize, "");
     size_t length = 0;
     if (!sourceLength(source, length, error, errorSize,
@@ -1547,6 +1663,10 @@ bool run(const char *source, const ScriptEvent *event, const ScriptState *initia
     Compiler compiler{};
     compiler.meters = meters;
     compiler.desktopMedia = desktopMedia;
+    compiler.desktopDefault = desktopDefault;
+    compiler.desktopDefaultError = desktopDefaultError;
+    compiler.desktopSession = desktopSession;
+    compiler.desktopDefaultPending = desktopDefaultPending;
     compiler.discoveredActivity = activity;
     compiler.plan = plan;
     compiler.state = resultState;
@@ -1599,8 +1719,9 @@ ScriptAction *scriptUtilityAppend(lua_State *lua, ScriptKind kind) { return appe
 bool scriptEvaluate(const char *source, const ScriptEvent &event,
                         ScriptState &state, ScriptPlan &plan,
                         char *error, size_t errorSize, ConfigStore *config, bool configWriteAllowed,
-                        bool hookMode, uint16_t expectedHookMask, uint32_t scriptId,
-                        const ScriptMeters *meters, DesktopMedia desktopMedia) {
+                        bool hookMode, uint32_t expectedHookMask, uint32_t scriptId,
+                        const ScriptMeters *meters, DesktopMedia desktopMedia, const char *desktopDefault,
+                        uint32_t desktopSession, bool desktopDefaultPending, const char *desktopDefaultError) {
     plan = {};
     ScriptStateEntry eventValue = event.value;
     memcpy(eventValue.key, event.key, sizeof(eventValue.key));
@@ -1622,7 +1743,8 @@ bool scriptEvaluate(const char *source, const ScriptEvent &event,
     ScriptState updated{};
     bool success = run(source, &event, &state, &updated, &plan, false, error, errorSize,
                        config, configWriteAllowed, hookMode, expectedHookMask, nullptr, scriptId, nullptr,
-                       meters, nullptr, desktopMedia);
+                       meters, nullptr, desktopMedia, desktopDefault, desktopSession, desktopDefaultPending,
+                       desktopDefaultError);
     if (!success) {
         plan = {};
         return false;
@@ -1649,6 +1771,9 @@ const char *scriptEventName(ScriptEventKind kind) {
     case ScriptEventKind::BluetoothChange: return "bluetooth_change";
     case ScriptEventKind::BluetoothMediaKey: return "bluetooth_media_key";
     case ScriptEventKind::DeviceActive: return "device_active";
+    case ScriptEventKind::BluetoothConnect: return "bluetooth_connect";
+    case ScriptEventKind::BluetoothDisconnect: return "bluetooth_disconnect";
+    case ScriptEventKind::DesktopDefaultChange: return "desktop_default_change";
     }
     return "unknown";
 }
@@ -1657,11 +1782,11 @@ bool scriptValidate(const char *source, char *error, size_t errorSize) {
     return run(source, nullptr, nullptr, nullptr, nullptr, true, error, errorSize);
 }
 
-bool scriptInspectHooks(const char *source, uint16_t &mask, char *error, size_t errorSize,
+bool scriptInspectHooks(const char *source, uint32_t &mask, char *error, size_t errorSize,
                         ScriptActivity *activity) {
     mask = 0;
     if (activity) *activity = {};
-    uint16_t discovered = 0;
+    uint32_t discovered = 0;
     if (!run(source, nullptr, nullptr, nullptr, nullptr, false, error, errorSize,
              nullptr, false, true, 0, &discovered, 0, nullptr, nullptr, activity)) return false;
     mask = discovered;
@@ -1684,6 +1809,25 @@ bool scriptUiValueValid(const ScriptUiControl &control, const ScriptStateEntry &
     switch (control.kind) {
     case ScriptUiKind::Boolean: return entry.kind == ScriptValueKind::Boolean;
     case ScriptUiKind::String: return entry.kind == ScriptValueKind::String;
+    case ScriptUiKind::Device:
+    case ScriptUiKind::HostDevice:
+        return entry.kind == ScriptValueKind::String;
+    case ScriptUiKind::BluetoothDevice: {
+        bt::Address address{};
+        return entry.kind == ScriptValueKind::String &&
+            (!entry.stringValue[0] || bt::parseAddress(entry.stringValue, &address));
+    }
+    case ScriptUiKind::Enum:
+        if (entry.kind != ScriptValueKind::String) return false;
+        for (unsigned i = 0; i < control.choiceCount; ++i)
+            if (!strcmp(entry.stringValue, control.choices[i])) return true;
+        return false;
+    case ScriptUiKind::Integer:
+        if (entry.kind != ScriptValueKind::Number || !entry.numberIsInteger ||
+            std::trunc(entry.numberValue) != entry.numberValue ||
+            std::abs(entry.numberValue) > 9007199254740991.0) return false;
+        [[fallthrough]];
+    case ScriptUiKind::Float:
     case ScriptUiKind::Number:
         return entry.kind == ScriptValueKind::Number &&
             (!control.hasMin || (std::isfinite(control.min) && entry.numberValue >= control.min)) &&
@@ -1728,7 +1872,7 @@ bool scriptMigrate(ScriptDefinition &script, char *error, size_t errorSize) {
         writeError(error, errorSize, "converted script exceeds migration storage");
         return false;
     }
-    uint16_t mask = 0;
+    uint32_t mask = 0;
     if (!scriptInspectHooks(converted.c_str(), mask, error, errorSize)) return false;
     memcpy(script.script, converted.c_str(), converted.size() + 1);
     script.keys[0] = '\0';

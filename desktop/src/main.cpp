@@ -42,6 +42,7 @@ static void closeSocket(Socket fd) { closesocket(fd); }
 #ifdef __linux__
 #include "routing.hpp"
 #include "inventory.hpp"
+#include "default_sink.hpp"
 #include "auto_routing.hpp"
 #endif
 using Socket = int;
@@ -212,7 +213,7 @@ bool receiveFrame(Socket fd, uint8_t *opcode, std::string *payload) {
 #ifdef __linux__
 bool hasExecutable(const char *name) {
     const char *path = std::getenv("PATH");
-    if (!path) return false;
+    if (!path) path = "/usr/local/bin:/usr/bin:/bin";
     std::string paths(path);
     size_t start = 0;
     do {
@@ -223,6 +224,16 @@ bool hasExecutable(const char *name) {
         start = end + 1;
     } while (start <= paths.size());
     return false;
+}
+
+std::string pipewireSocketPath() {
+    const char *runtime = std::getenv("PIPEWIRE_RUNTIME_DIR");
+    if (!runtime || !*runtime) runtime = std::getenv("XDG_RUNTIME_DIR");
+    const std::string fallback = "/run/user/" + std::to_string(getuid());
+    const char *remote = std::getenv("PIPEWIRE_REMOTE");
+    if (!remote || !*remote) remote = "pipewire-0";
+    if (remote[0] == '/') return remote;
+    return std::string(runtime && *runtime ? runtime : fallback.c_str()) + "/" + remote;
 }
 
 std::string mediaStatus(Socket connection) {
@@ -317,16 +328,13 @@ std::string hello(const std::string &media) {
     std::string capabilities;
 #ifdef __linux__
     const char *os = "linux";
-    const char *runtime = std::getenv("XDG_RUNTIME_DIR");
-    const std::string fallback = "/run/user/" + std::to_string(getuid());
-    const char *remote = std::getenv("PIPEWIRE_REMOTE");
-    if (!remote || !*remote) remote = "pipewire-0";
-    const std::string socketPath = std::string(runtime && *runtime ? runtime : fallback.c_str()) + "/" + remote;
+    const std::string socketPath = pipewireSocketPath();
     struct stat status{};
     if (stat(socketPath.c_str(), &status) == 0 && S_ISSOCK(status.st_mode)) {
         capabilities = "\"pipewire\"";
-        if (hasExecutable("wpctl")) capabilities += ",\"default_sink\"";
         if (hasExecutable("pactl")) capabilities += ",\"route_stream\"";
+        if (hasExecutable("pactl") || (hasExecutable("wpctl") && hasExecutable("pw-dump")))
+            capabilities += ",\"default_sink\"";
         if (hasExecutable("pw-dump")) capabilities += ",\"pipewire_nodes\"";
         if (hasExecutable("pactl") && hasExecutable("pw-dump") &&
             hasExecutable("pw-loopback") && hasExecutable("pw-metadata")) capabilities += ",\"auto_route\"";
@@ -337,7 +345,6 @@ std::string hello(const std::string &media) {
     }
 #elif defined(_WIN32)
     const char *os = "windows";
-    capabilities = "\"default_sink\"";
 #else
     const char *os = "macos";
 #endif
@@ -358,6 +365,19 @@ void runConnection(Socket fd, bool &connected) {
 #ifdef __linux__
     desktop::Routing routing(fd);
     desktop::AutoRouting automatic(fd);
+    desktop::DefaultSinkControl defaultControl(fd);
+    auto reportDefaultCapability = [](const std::string &message) {
+        if (message.find("\"default_sink\"") != std::string::npos) {
+            std::fprintf(stderr, "AudioX: default sink control advertised; waiting for the Pi to enable tracking.\n");
+            return;
+        }
+        if (message.find("\"pipewire\"") == std::string::npos)
+            std::fprintf(stderr, "AudioX: default sink control unavailable: PipeWire socket not found at %s.\n",
+                         pipewireSocketPath().c_str());
+        else
+            std::fprintf(stderr, "AudioX: default sink control unavailable: install pactl or both wpctl and pw-dump.\n");
+    };
+    reportDefaultCapability(previous);
     bool automaticConfigured = false;
     int lastAutoStatus = -1;
     std::string stagedRules;
@@ -365,6 +385,21 @@ void runConnection(Socket fd, bool &connected) {
     std::string inventory;
     uint32_t inventoryId = 0;
     size_t inventoryOffset = 0;
+    bool watchingDefault = false, defaultKnown = false;
+    bool warnedDefaultWatch = false;
+    std::string observedDefault;
+    auto nextDefaultCheck = std::chrono::steady_clock::now();
+    auto defaultWatchDeadline = nextDefaultCheck + std::chrono::seconds(10);
+    auto publishDefault = [&](const std::string &name) {
+        if (defaultKnown && observedDefault == name) return true;
+        if (!sendFrame(fd, 0x1, desktop::defaultSnapshot(name))) return false;
+        if (!defaultKnown || observedDefault.empty() != name.empty())
+            std::fprintf(stderr, "AudioX: desktop default sink snapshot %s.\n",
+                         name.empty() ? "unavailable" : "available");
+        observedDefault = name;
+        defaultKnown = true;
+        return true;
+    };
 #endif
     auto nextCheck = std::chrono::steady_clock::now() + std::chrono::seconds(5);
 #ifdef __linux__
@@ -390,6 +425,46 @@ void runConnection(Socket fd, bool &connected) {
                 }
 #ifdef __linux__
                 else {
+                    if (payload == desktop::defaultWatch()) {
+                        watchingDefault = true;
+                        std::fprintf(stderr, "AudioX: Pi enabled desktop default sink tracking.\n");
+                        defaultKnown = false;
+                        nextDefaultCheck = std::chrono::steady_clock::now();
+                        continue;
+                    }
+                    uint32_t defaultId;
+                    std::string requestedDefault;
+                    bool done;
+                    if (desktop::parseDefaultMessage(payload, "default_set", defaultId, requestedDefault, done)) {
+                        if (!watchingDefault) return;
+                        std::string before, after, beforeError, setError, afterError;
+                        const bool hadDefault = defaultControl.read(before, beforeError);
+                        if (!publishDefault(hadDefault ? before : "")) return;
+                        const bool changed = hadDefault && defaultControl.set(requestedDefault, setError);
+                        if (!hadDefault || !changed)
+                            std::fprintf(stderr, "AudioX: cannot change desktop default sink: %s.\n",
+                                         (hadDefault ? setError : beforeError).c_str());
+                        bool hasDefault = defaultControl.read(after, afterError);
+                        const auto verifyDeadline = std::chrono::steady_clock::now() +
+                                                    std::chrono::seconds(1);
+                        while (changed && (!hasDefault || after != requestedDefault) &&
+                               std::chrono::steady_clock::now() < verifyDeadline) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                            hasDefault = defaultControl.read(after, afterError);
+                        }
+                        const bool success = changed && hasDefault && after == requestedDefault;
+                        if (changed && !success)
+                            std::fprintf(stderr, "AudioX: default sink change could not be verified%s%s.\n",
+                                         hasDefault ? "" : ": ", hasDefault ? "" : afterError.c_str());
+                        if (!success && !publishDefault(hasDefault ? after : "")) return;
+                        if (!sendFrame(fd, 0x1, desktop::defaultResult(defaultId, hasDefault ? after : "", success))) return;
+                        if (success) {
+                            observedDefault = after;
+                            defaultKnown = true;
+                        }
+                        nextDefaultCheck = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+                        continue;
+                    }
                     desktop::RouteCommand command;
                     if (desktop::parseRouteCommand(payload, command)) {
                         const bool managed = automatic.manages(false, command.stream);
@@ -465,11 +540,40 @@ void runConnection(Socket fd, bool &connected) {
             const std::string current = hello(media);
             if (current != previous) {
                 if (!sendFrame(fd, 0x1, current)) return;
+#ifdef __linux__
+                const bool hadDefaultCapability = previous.find("\"default_sink\"") != std::string::npos;
+                const bool hasDefaultCapability = current.find("\"default_sink\"") != std::string::npos;
+                if (hadDefaultCapability && !hasDefaultCapability) {
+                    watchingDefault = false;
+                    defaultKnown = false;
+                } else if (!hadDefaultCapability && hasDefaultCapability) {
+                    warnedDefaultWatch = false;
+                    defaultWatchDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+                }
+                if (hadDefaultCapability != hasDefaultCapability ||
+                    (previous.find("\"pipewire\"") != std::string::npos) !=
+                        (current.find("\"pipewire\"") != std::string::npos))
+                    reportDefaultCapability(current);
+#endif
                 previous = current;
             }
             nextCheck = std::chrono::steady_clock::now() + std::chrono::seconds(5);
         }
 #ifdef __linux__
+        if (!watchingDefault && !warnedDefaultWatch &&
+            previous.find("\"default_sink\"") != std::string::npos &&
+            std::chrono::steady_clock::now() >= defaultWatchDeadline) {
+            std::fprintf(stderr, "AudioX: Pi has not enabled default sink tracking; check that its software is up to date.\n");
+            warnedDefaultWatch = true;
+        }
+        if (watchingDefault && std::chrono::steady_clock::now() >= nextDefaultCheck) {
+            std::string name, error;
+            const bool available = defaultControl.read(name, error);
+            if (!available && (!defaultKnown || !observedDefault.empty()))
+                std::fprintf(stderr, "AudioX: could not read the desktop default sink: %s.\n", error.c_str());
+            if (!publishDefault(available ? name : "")) return;
+            nextDefaultCheck = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        }
         if (std::chrono::steady_clock::now() >= nextRouteCheck) {
             bool retry = false;
             if (automaticConfigured) {

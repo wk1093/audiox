@@ -915,6 +915,19 @@
   // The demo has no connected desktop companion.
   on('POST', '/api/desktop/route', () => reply({ error: 'Desktop routing is unavailable in the demo.' }, 409));
   on('GET', '/api/desktop/route', () => reply({ error: 'Route result is unavailable.' }, 404));
+  on('GET', '/api/desktop/rules', () => reply({
+    status: 'unavailable', routing_ok: null, rules: '# audiox desktop routes v1\n',
+  }));
+  on('PUT', '/api/desktop/rules', () => reply({ error: 'Desktop routing is unavailable in the demo.' }, 409));
+  on('POST', '/api/desktop/inventory', () => reply({ error: 'Desktop discovery is unavailable in the demo.' }, 409));
+  on('GET', '/api/desktop/inventory', ({ query }) => query.has('id')
+    ? reply({ error: 'Discovery result is unavailable.' }, 404)
+    : reply({ error: 'Invalid request ID.' }, 400));
+  on('POST', '/api/desktop/default', () => reply({ error: 'Desktop default sink is unavailable in the demo.' }, 409));
+  on('GET', '/api/desktop/default', ({ query }) => query.has('session')
+    ? reply({ error: 'Desktop default sink is unavailable in the demo.' }, 409)
+    : query.has('id') ? reply({ error: 'Default-sink result is unavailable.' }, 404)
+    : reply({ error: 'Invalid request ID.' }, 400));
 
   // Bluetooth
   on('GET', '/api/bluetooth/devices', () => reply(bluetoothJson()));

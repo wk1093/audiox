@@ -160,6 +160,37 @@ To inspect diagnostics, use `system.logs("stderr", 20)` inside a callback.
 `system.restart()` requests a whole-device reboot: avoid unconditional boot
 reboots, which would create a restart loop.
 
+## Switch the desktop default for a Bluetooth device
+
+Copy <a :href="withBase('/scripts/bluetooth-default-sink.lua')">the Bluetooth default-sink script</a>
+into a new script on the **Scripts** page and save it with device-management
+permission. Select a paired Bluetooth device and an AudioX **playback sink**
+using the controls beside the script. Enable automatic switching; the retry
+interval and **Check now** button are optional. No MIDI binding is needed.
+This requires a Linux companion with default-sink and PipeWire discovery
+support; both the Pi and companion need the version containing this script's
+`desktop.default_sink_status()` API.
+
+When the selected Bluetooth device connects, the script remembers the current
+desktop default and selects AudioX. On disconnect or disable, it restores the
+remembered sink if AudioX is still the default. A later manual or WebUI default
+change is respected and becomes the remembered choice. If a change was already
+in flight, the script waits for it and restores that newer choice. Failed
+requests are logged and retried at the configured interval.
+
+Bluetooth and desktop defaults are sampled, so brief changes can be missed.
+Automatic hooks and the timer start after the 60-second healthy-startup interval;
+**Run** or **Check now** can check earlier. The remembered sink is RAM-only.
+Editing the script, restarting AudioX, or script cancellation can lose it. If
+the companion disconnects, the script waits; if a new desktop session appears,
+it forgets the old restore device rather than changing the wrong computer.
+Therefore restoration after a crash or reconnect is not guaranteed. If a
+previous sink disappears, restore it manually or reconnect it.
+
+<script setup>
+import { withBase } from 'vitepress'
+</script>
+
 ## Count triggers
 
 ```lua callbacks

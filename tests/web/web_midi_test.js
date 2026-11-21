@@ -102,7 +102,7 @@ function fixture() {
       dispatchEvent(event) { this[event.type]?.(event); },
       append(...children) { this.children.push(...children); },
       appendChild(child) { this.children.push(child); },
-      replaceChildren() { this.children = []; },
+      replaceChildren(...children) { this.children = children; },
       setAttribute(name, value) { this[name] = value; },
       focus() { this.focused = true; },
     };
@@ -115,7 +115,7 @@ function fixture() {
   const document = { getElementById: get, createElement: element, hidden: false,
     addEventListener(name, callback) { this[name] = callback; }, querySelectorAll: () => [] };
   const context = apiContext({
-    document, window: {}, state, TextEncoder, TextDecoder,
+    document, window: {}, state, TextEncoder, TextDecoder, AbortSignal,
     AudioxLuaEditor: require('../../web/embedded/lua-editor.js'),
     AudioxUI: {
       confirm: async (...args) => { confirmations.push(args); return confirmResult; },
@@ -127,6 +127,13 @@ function fixture() {
     fetch: async (url, options) => {
       if (url === '/api/midi/last_note') return { ok: !learnFailure, status: 503,
         json: async () => note, text: async () => learnFailure ? 'MIDI unavailable' : JSON.stringify(note) };
+      if (url === '/api/routing/things') return { ok: true, json: async () => ({ ok: true, things: [
+        { id: 'mic', name: 'Microphone' }, { id: 'fx_1', name: 'Effect' },
+      ] }) };
+      if (url === '/api/bluetooth/devices') return { ok: true, json: async () => ({ ok: true, devices: [
+        { address: 'AA:BB:CC:DD:EE:FF', name: 'Headphones', paired: true },
+        { address: '11:22:33:44:55:66', paired: false },
+      ] }) };
       assert.ok(url === '/api/scripts' || url === '/api/scripts/run' || url === '/api/scripts/control');
       if (options.method) calls.push({ ...options, url });
       else reads.push(options);
@@ -400,6 +407,56 @@ test('script controls reject nonfinite/out-of-bounds numbers and text above 127 
   assert.equal(f.calls.length, 1);
   assert.equal(f.reads.length, 1);
   assert.equal(scriptControls(f)[1].value, '雪'.repeat(42) + 'x');
+});
+
+test('integer, float and enum controls validate and save typed values', async () => {
+  const f = fixture();
+  f.setScripts([scriptWithControls(f, [
+    { key: 'int', label: 'Integer', type: 'int', value: 1, min: 0, max: 10 },
+    { key: 'float', label: 'Float', type: 'float', value: 1.5 },
+    { key: 'enum', label: 'Mode', type: 'enum', value: 'one', choices: ['one', 'two'] },
+  ])]);
+  const [integer, floating, choice] = scriptControls(f);
+  assert.equal(integer.step, '1');
+  assert.equal(floating.step, 'any');
+  assert.equal(choice.tagName, 'select');
+  assert.deepEqual(choice.children.map(option => option.value), ['one', 'two']);
+  integer.value = '1.5';
+  await integer.change();
+  assert.equal(f.calls.length, 0);
+  assert.equal(integer.value, '1');
+  integer.value = '3';
+  await integer.change();
+  assert.equal(f.context.chordHexDecode(new URLSearchParams(f.calls[0].body).get('value_hex')), '3');
+});
+
+test('device controls list stable IDs and retain unavailable selections', async () => {
+  const f = fixture();
+  let onInventory;
+  f.context.AudioxDesktop = { subscribeInventory(listener) {
+    onInventory = listener;
+    listener({ nodes: [
+      { 'node.name': 'sink.name', 'node.description': 'Speakers', 'media.class': 'Audio/Sink' },
+      { 'node.name': 'audiox_auto_p_123_1', 'node.description': 'AudioX Channel 1', 'media.class': 'Audio/Sink' },
+      { 'node.name': 'audiox_auto_123_2', 'node.description': 'Temporary remap', 'media.class': 'Audio/Sink' },
+    ], error: '' });
+    return () => {};
+  } };
+  f.setScripts([scriptWithControls(f, [
+    { key: 'pi', label: 'Pi', type: 'device', value: 'mic' },
+    { key: 'bt', label: 'Bluetooth', type: 'bt-device', value: '' },
+    { key: 'host', label: 'Host', type: 'host-device', value: 'old.sink' },
+  ])]);
+  await new Promise(resolve => setImmediate(resolve));
+  const fields = f.get('chord-list').children[0].children[2].children;
+  const [pi, bluetooth, host] = fields.map(field => field.children[1]);
+  assert.deepEqual(pi.children.map(option => option.value), ['', 'mic']);
+  assert.deepEqual(bluetooth.children.map(option => option.value), ['', 'AA:BB:CC:DD:EE:FF']);
+  assert.deepEqual(host.children.map(option => option.value), ['', 'sink.name', 'audiox_auto_p_123_1', 'old.sink']);
+  assert.equal(host.value, 'old.sink');
+  onInventory({ nodes: [], error: 'Desktop disconnected' });
+  assert.equal(host.disabled, true);
+  assert.equal(fields[2].children[2].textContent, 'Desktop disconnected');
 });
 
 test('pending controls prevent duplicates and reloads; other unfinished controls are preserved', async () => {

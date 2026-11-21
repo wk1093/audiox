@@ -59,8 +59,8 @@ connection hooks do not require a binding.
 
 | Field | Meaning |
 | --- | --- |
-| `event.type` | MIDI/sound/controller events, `run`, `boot`, `timer`, `config_change`, `ui`, `bluetooth_change`, or `bluetooth_media_key`; see the [API](./api#startup-and-utility-hooks). |
-| `event.source` | `"web"` for Run/options/buttons, `"midi"` for MIDI, `"audio"` for sounds, `"device"` for the MIDI controller, `"system"` for boot/timer, `"bluetooth"` for Bluetooth changes and media keys. |
+| `event.type` | MIDI/sound/controller events, `run`, `boot`, `timer`, `config_change`, `ui`, Bluetooth events, or `desktop_default_change`; see the [API](./api#startup-and-utility-hooks). |
+| `event.source` | `"web"` for Run/options/buttons, `"midi"` for MIDI, `"audio"` for sounds, `"device"` for the MIDI controller, `"system"` for boot/timer, `"bluetooth"` for Bluetooth events, or `"desktop"` for desktop defaults. |
 | `event.channel` | MIDI source channel, `0`–`15`. |
 | `event.note` | MIDI note number, `0`–`127`. |
 | `event.velocity` | MIDI velocity/value, `0`–`127`; zero for audio/device hooks, `127` for Web Run. |
@@ -68,7 +68,8 @@ connection hooks do not require a binding.
 | `event.cc`, `event.value` | CC controller number and value, `0`–`127`; `value` mirrors MIDI velocity except for `config_change` (typed option value) and `ui` (nil). |
 | `event.key` | Changed option, pressed custom button key, or Bluetooth media-key name; empty for other events. |
 | `event.sound` | Sound basename for audio hooks; empty otherwise. |
-| `event.device` | Selected controller device path for connection hooks, or Bluetooth device MAC address for media keys; empty otherwise. |
+| `event.device` | Selected controller device path, Bluetooth device MAC address, or desktop default sink name, depending on the hook; empty otherwise. |
+| `event.available`, `event.initial` | For desktop default changes, snapshot availability and first/recovered snapshot. |
 
 Web triggers still supply numeric channel/note from the script's configuration
 and velocity `127`, including when the MIDI binding is disabled.
@@ -88,9 +89,18 @@ runs on the audio thread: an audio-to-MIDI ring transfers up to 128 pending
 events; overflow is logged and excess events are dropped.
 
 `device_connect`/`device_disconnect` cover the **selected MIDI controller**, not every USB,
-Bluetooth or audio device. Use `bluetooth_change` for Bluetooth state snapshots.
+Bluetooth or audio device. Use `bluetooth_connect` and `bluetooth_disconnect` for
+Bluetooth audio connection changes; `event.device` contains the MAC address.
+Already-connected devices generate a connect event after startup becomes stable
+or the script configuration changes. Changes are sampled, so a connection that
+starts and ends between polls cannot be observed. Use `bluetooth_change` for
+general Bluetooth state snapshots.
 Use `bluetooth_media_key` for AVRCP key presses/releases from paired devices.
 These events require no MIDI binding and have `event.source == "bluetooth"`.
+`desktop_default_change` likewise needs no binding. It reports sampled external
+and WebUI default changes after startup stabilizes, not successful
+script-initiated changes. Read `event.device` for that event's name; the
+current snapshot may have changed again before the callback runs.
 MIDI disconnect first cancels queued scripts and resets
 their state, then queues disconnect subscribers. These scripts can still use
 configuration, effects and logging, but cannot send to the disconnected controller.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "midi/usb.hpp"
+#include "bluetooth/context.hpp"
 
 struct MidiContext;
 
@@ -15,13 +16,17 @@ struct ScriptContext {
   ScriptState macroStates[SCRIPTS_MAX]{};
   char macroErrors[SCRIPTS_MAX][192]{};
   bool macroValid[SCRIPTS_MAX]{};
-  uint16_t macroEventMasks[SCRIPTS_MAX]{};
+  uint32_t macroEventMasks[SCRIPTS_MAX]{};
   bool bootHooksDispatched{false};
   uint64_t nextScriptTimerMs{0};
   uint64_t nextDeviceActivityMs{0};
   ScriptActivity deviceActivity[SCRIPTS_MAX]{};
   uint64_t scriptBluetoothHash{0};
   bool scriptBluetoothKnown{false};
+  char scriptBluetoothConnected[BT_MAX_DEVICES][BT_ADDRESS_TEXT]{};
+  unsigned scriptBluetoothConnectedCount{0};
+  bool scriptBluetoothQueueBlocked{false};
+  bool scriptDesktopQueueBlocked{false};
   bool macroUsesKeyboard[SCRIPTS_MAX]{};
   bool macroPressed[SCRIPTS_MAX]{};
   int macroLight[SCRIPTS_MAX]{};
@@ -56,6 +61,8 @@ struct ScriptContext {
   void pollScriptLifecycle(uint64_t now, bool startupStable);
   void pollDeviceActivity(uint64_t now);
   void pollBluetoothMediaEvents();
+  bool dispatchBluetoothConnection(const char *address, bool connected);
+  void pollDesktopDefaultEvents();
   void pollMacros(uint64_t now);
   bool queueControllerMidi(const uint8_t *bytes, size_t count);
   bool flushControllerMidi();

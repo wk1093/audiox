@@ -36,6 +36,13 @@ struct HttpTransport;
 enum class DesktopRouteState { Unknown, Pending, Succeeded, Failed, Disconnected, TimedOut };
 enum class DesktopInventoryState { Unknown, Pending, Succeeded, Failed, Disconnected, TimedOut };
 enum class DesktopRulesState { Unavailable, Pending, Succeeded, Failed };
+enum class DesktopDefaultAvailability { Available, Disconnected, Unsupported, Waiting, Unavailable, StaleSession };
+struct DesktopDefaultEvent {
+    uint64_t serial{};
+    uint32_t session{};
+    char name[128]{};
+    bool initial{};
+};
 
 bool buildHttpEventJson(HttpServer *server, const char *topic,
                         char *out, size_t capacity, size_t *length);
@@ -77,6 +84,14 @@ struct HttpServer {
     int requestDesktopRoute(uint32_t stream, uint32_t sink, uint32_t *id = nullptr,
                             uint32_t session = 0);
     DesktopRouteState desktopRouteState(uint32_t id) const;
+    int requestDesktopDefault(const char *name, uint32_t *id = nullptr, uint32_t session = 0,
+                              bool userRequested = false);
+    DesktopRouteState desktopDefaultState(uint32_t id) const;
+    bool desktopDefault(char (&name)[128], uint32_t session = 0,
+                        uint32_t *currentSession = nullptr, bool *pending = nullptr,
+                        DesktopDefaultAvailability *availability = nullptr) const;
+    bool peekDesktopDefaultEvent(DesktopDefaultEvent &event) const;
+    void acknowledgeDesktopDefaultEvent(uint64_t serial);
     int requestDesktopInventory(uint32_t session, uint32_t *id);
     DesktopInventoryState desktopInventory(uint32_t id, std::string &nodes) const;
     DesktopRulesState desktopRules(std::string &text, int *routeStatus = nullptr) const;

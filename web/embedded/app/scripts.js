@@ -2,6 +2,41 @@ let editingMacroId = null;
 const defaultScriptSource = 'hook("run", function(event)\n  log("Hello from AudioX")\nend)\n';
 let macroCount = 0;
 const scriptControlEdits = new Set();
+let scriptInventoryUnsubscribers = [];
+let scriptDeviceTimer = null;
+
+async function loadScriptDeviceChoices(type) {
+  const bluetooth = type === 'bt-device';
+  const response = await apiFetch(bluetooth ? '/api/bluetooth/devices' : '/api/routing/things',
+    { method: 'GET', cache: 'no-store', signal: AbortSignal.timeout(10000) });
+  if (!response.ok) throw new Error(`Request failed (${response.status})`);
+  const data = await response.json();
+  if (!data.ok) throw new Error(data.error || data.message || 'Device discovery failed');
+  const devices = bluetooth ? data.devices : data.things;
+  if (!Array.isArray(devices)) throw new Error('Invalid device discovery response');
+  return devices.filter(item => item && (bluetooth ? item.paired && typeof item.address === 'string' :
+    typeof item.id === 'string' && !item.id.startsWith('fx_') && item.id !== 'routing_helper'))
+    .map(item => ({ value: bluetooth ? item.address : item.id,
+      label: item.name || (bluetooth ? item.address : item.id) }));
+}
+
+function updateScriptDeviceChoices(control, choices, error = '') {
+  const { input, status } = control;
+  const selected = control.dirty ? input.value : String(control.savedValue || '');
+  const entries = [{ value: '', label: 'Select a device' }, ...choices];
+  if (selected && !entries.some(entry => entry.value === selected))
+    entries.push({ value: selected, label: `${selected} (unavailable)` });
+  const options = entries.map(entry => {
+    const option = document.createElement('option');
+    option.value = entry.value;
+    option.textContent = entry.label;
+    return option;
+  });
+  input.replaceChildren(...options);
+  input.value = selected;
+  input.disabled = control.pending || !!error || choices.length === 0;
+  status.textContent = error || (choices.length ? '' : 'No devices available');
+}
 
 function scriptListReloadSafe(preserveEditor) {
   return !(preserveEditor && AudioxUI.hasUnsavedChanges('macro-editor')) &&
@@ -23,6 +58,14 @@ async function loadMidiChords({ preserveEditor = false } = {}) {
 function renderMidiChords(chords) {
   macroCount = chords.length;
   const list = document.getElementById('chord-list');
+  if (scriptDeviceTimer) clearInterval(scriptDeviceTimer);
+  scriptDeviceTimer = null;
+  for (const unsubscribe of scriptInventoryUnsubscribers) unsubscribe();
+  scriptInventoryUnsubscribers = [];
+  const deviceControls = new Map();
+  const deviceRequests = new Set();
+  let current = true;
+  scriptInventoryUnsubscribers.push(() => { current = false; });
   list.replaceChildren();
   scriptControlEdits.clear();
   for (const chord of chords) {
@@ -81,10 +124,12 @@ function renderMidiChords(chords) {
       controls.className = 'script-controls';
       for (const descriptor of chord.ui) {
         if (!descriptor || typeof descriptor.key !== 'string' ||
-            !['boolean', 'number', 'string', 'button'].includes(descriptor.type)) continue;
+            !['boolean', 'number', 'int', 'float', 'string', 'enum', 'device', 'host-device', 'bt-device', 'button'].includes(descriptor.type)) continue;
+        const deviceType = ['device', 'host-device', 'bt-device'].includes(descriptor.type);
         const field = document.createElement('label');
         field.className = 'script-control';
-        const input = document.createElement(descriptor.type === 'button' ? 'button' : 'input');
+        const input = document.createElement(descriptor.type === 'button' ? 'button' :
+          descriptor.type === 'enum' || deviceType ? 'select' : 'input');
         const caption = String(descriptor.label ?? descriptor.key);
         if (descriptor.type === 'button') {
           input.type = 'button';
@@ -93,9 +138,17 @@ function renderMidiChords(chords) {
           const text = document.createElement('span');
           text.textContent = caption;
           field.append(text);
-          input.type = { boolean: 'checkbox', number: 'number', string: 'text' }[descriptor.type];
-          if (descriptor.type === 'number') {
-            input.step = 'any';
+          if (descriptor.type === 'enum') {
+            for (const choice of descriptor.choices || []) {
+              const option = document.createElement('option');
+              option.value = choice;
+              option.textContent = choice;
+              input.append(option);
+            }
+          } else if (!deviceType) input.type = { boolean: 'checkbox', number: 'number', int: 'number',
+            float: 'number', string: 'text' }[descriptor.type];
+          if (['number', 'int', 'float'].includes(descriptor.type)) {
+            input.step = descriptor.type === 'int' ? '1' : 'any';
             for (const bound of ['min', 'max']) {
               if (typeof descriptor[bound] === 'number' && Number.isFinite(descriptor[bound])) {
                 input[bound] = String(descriptor[bound]);
@@ -106,18 +159,57 @@ function renderMidiChords(chords) {
             input.title = 'Up to 127 UTF-8 bytes';
           }
         }
-        const control = { input, descriptor, savedValue: descriptor.value, pending: false, dirty: false };
+        const status = deviceType ? document.createElement('small') : null;
+        const control = { input, descriptor, status, savedValue: descriptor.value, pending: false, dirty: false };
         scriptControlEdits.add(control);
         restoreScriptControl(control);
         input.addEventListener('input', () => { control.dirty = true; });
         input.addEventListener(descriptor.type === 'button' ? 'click' : 'change',
           () => saveScriptControl(chord.id, control));
         field.append(input);
+        if (status) field.append(status);
         controls.append(field);
+        if (deviceType) {
+          updateScriptDeviceChoices(control, [], 'Loading devices...');
+          if (descriptor.type === 'host-device') {
+            const desktop = globalThis.AudioxDesktop;
+            if (!desktop?.subscribeInventory) updateScriptDeviceChoices(control, [], 'Desktop discovery unavailable');
+            else scriptInventoryUnsubscribers.push(desktop.subscribeInventory(snapshot => {
+              const choices = snapshot.nodes.filter(node => typeof node['node.name'] === 'string' &&
+                (node['media.class']?.startsWith('Audio/Sink') || node['media.class']?.startsWith('Audio/Source')) &&
+                (!node['node.name'].startsWith('audiox_auto_') ||
+                  /^audiox_auto_[pc]_\d+_\d+$/.test(node['node.name'])))
+                .map(node => ({ value: node['node.name'], label: node['node.description'] || node['node.name'] }));
+              updateScriptDeviceChoices(control, choices, snapshot.error);
+            }));
+          } else {
+            if (!deviceControls.has(descriptor.type)) deviceControls.set(descriptor.type, []);
+            deviceControls.get(descriptor.type).push(control);
+          }
+        }
       }
       row.append(controls);
     }
     list.appendChild(row);
+  }
+  function refreshDevices() {
+    for (const [type, controls] of deviceControls) {
+      if (deviceRequests.has(type)) continue;
+      deviceRequests.add(type);
+      loadScriptDeviceChoices(type).then(choices => {
+        if (current) for (const control of controls) updateScriptDeviceChoices(control, choices);
+      }, error => {
+        if (current) for (const control of controls)
+          updateScriptDeviceChoices(control, [], error.message || 'Device discovery failed');
+      }).finally(() => deviceRequests.delete(type));
+    }
+  }
+  if (deviceControls.size) {
+    refreshDevices();
+    scriptDeviceTimer = setInterval(() => {
+      if (state.activeTab === 'scripts' && (!document.visibilityState || document.visibilityState === 'visible'))
+        refreshDevices();
+    }, 10000);
   }
 }
 
@@ -136,14 +228,15 @@ async function saveScriptControl(id, control) {
   try {
     let value;
     if (descriptor.type === 'boolean') value = input.checked;
-    else if (descriptor.type === 'number') {
+    else if (['number', 'int', 'float'].includes(descriptor.type)) {
       value = Number(input.value);
       if (!String(input.value).trim() || !Number.isFinite(value) ||
           (input.min !== undefined && input.min !== '' && value < Number(input.min)) ||
-          (input.max !== undefined && input.max !== '' && value > Number(input.max))) {
+          (input.max !== undefined && input.max !== '' && value > Number(input.max)) ||
+          (descriptor.type === 'int' && !Number.isSafeInteger(value))) {
         throw new Error('Enter a finite number within the displayed bounds');
       }
-    } else if (descriptor.type === 'string') {
+    } else if (['string', 'enum', 'device', 'host-device', 'bt-device'].includes(descriptor.type)) {
       value = input.value;
       if (new TextEncoder().encode(value).length > 127) {
         throw new Error('Text must be at most 127 UTF-8 bytes');
@@ -170,7 +263,7 @@ async function saveScriptControl(id, control) {
     setStatus(`Script control failed: ${err}`, 'warn', 'midi-chords');
   } finally {
     control.pending = false;
-    input.disabled = false;
+    input.disabled = Boolean(control.status?.textContent);
   }
   if (saved) await loadMidiChords({ preserveEditor: true });
 }
@@ -187,7 +280,8 @@ async function saveMidiChord(method, chord, button) {
       })) return;
     const configurationScript = method === 'POST' &&
       (Boolean(chord.config_write_allowed) ||
-        /\b(?:config|settings|system|bluetooth)\b/.test(chordHexDecode(chord.script_hex || '')));
+        /\b(?:config|settings|system|bluetooth)\b|\bdesktop\s*\.\s*(?:route|set_default_sink)\b/
+          .test(chordHexDecode(chord.script_hex || '')));
     if (configurationScript && !await AudioxUI.confirm(
       'This script may write official configuration, restart the system, or manage Bluetooth devices. Configuration writes can replace persistent settings, including MIDI bindings, routing and startup configuration, and whole-file writes are not format-validated. Back up your settings first; reload or restart may be required. Allow these permissions and save this script?', {
         title: 'Allow configuration and system management?', label: 'Allow and save script',

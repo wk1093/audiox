@@ -50,6 +50,8 @@ void ScriptContext::syncMacros() {
                  midi.cachedMidiMap.chords, scriptMacroEqual))
     return;
   stopMacros();
+  scriptBluetoothConnectedCount = 0;
+  scriptBluetoothQueueBlocked = false;
   for (auto &activity : deviceActivity) activity = {};
   compiledMacroCount = count;
   memcpy(compiledMacros, midi.cachedMidiMap.chords,
@@ -171,6 +173,74 @@ void ScriptContext::pollBluetoothMediaEvents() {
            dropped);
 }
 
+bool ScriptContext::dispatchBluetoothConnection(const char *address, bool connected) {
+  ScriptEvent event{};
+  event.kind = connected ? ScriptEventKind::BluetoothConnect : ScriptEventKind::BluetoothDisconnect;
+  event.pressed = connected;
+  snprintf(event.device, sizeof(event.device), "%s", address);
+  const unsigned bit = 1U << static_cast<unsigned>(event.kind);
+  unsigned subscribers = 0;
+  for (unsigned i = 0; i < compiledMacroCount; ++i)
+    if (macroValid[i] && (macroEventMasks[i] & bit)) ++subscribers;
+  if (subscribers > SCRIPTS_MAX - macroQueueCount) {
+    if (!scriptBluetoothQueueBlocked)
+      printf("[SCRIPT] [WARN] Bluetooth connection event deferred: macro queue full\n");
+    scriptBluetoothQueueBlocked = true;
+    return false;
+  }
+  struct timespec monotonic{}, wall{};
+  if (subscribers && (clock_gettime(CLOCK_MONOTONIC, &monotonic) != 0 ||
+                      clock_gettime(CLOCK_REALTIME, &wall) != 0)) {
+    printf("[SCRIPT] [WARN] Cannot capture Bluetooth event clocks: %s\n", strerror(errno));
+    return false;
+  }
+  event.monotonicMs = static_cast<uint64_t>(monotonic.tv_sec) * 1000 +
+                      static_cast<uint64_t>(monotonic.tv_nsec) / 1000000;
+  event.epochSeconds = static_cast<int64_t>(wall.tv_sec);
+  for (unsigned i = 0; i < compiledMacroCount; ++i)
+    if (macroValid[i] && (macroEventMasks[i] & bit))
+      macroQueue[macroQueueCount++] = {static_cast<uint8_t>(i), event};
+  scriptBluetoothQueueBlocked = false;
+  return true;
+}
+
+void ScriptContext::pollDesktopDefaultEvents() {
+  auto *http = midi.app ? midi.app->http : nullptr;
+  if (!http) return;
+  DesktopDefaultEvent change{};
+  while (http->peekDesktopDefaultEvent(change)) {
+    const unsigned bit = 1U << static_cast<unsigned>(ScriptEventKind::DesktopDefaultChange);
+    unsigned subscribers = 0;
+    for (unsigned i = 0; i < compiledMacroCount; ++i)
+      if (macroValid[i] && (macroEventMasks[i] & bit)) ++subscribers;
+    if (subscribers > SCRIPTS_MAX - macroQueueCount) {
+      if (!scriptDesktopQueueBlocked)
+        printf("[SCRIPT] [WARN] Desktop default-sink event deferred: macro queue full\n");
+      scriptDesktopQueueBlocked = true;
+      return;
+    }
+    ScriptEvent event{};
+    event.kind = ScriptEventKind::DesktopDefaultChange;
+    event.initial = change.initial;
+    event.desktopSession = change.session;
+    snprintf(event.device, sizeof(event.device), "%s", change.name);
+    struct timespec monotonic{}, wall{};
+    if (subscribers && (clock_gettime(CLOCK_MONOTONIC, &monotonic) != 0 ||
+                        clock_gettime(CLOCK_REALTIME, &wall) != 0)) {
+      printf("[SCRIPT] [WARN] Cannot capture desktop event clocks: %s\n", strerror(errno));
+      return;
+    }
+    event.monotonicMs = static_cast<uint64_t>(monotonic.tv_sec) * 1000 +
+                        static_cast<uint64_t>(monotonic.tv_nsec) / 1000000;
+    event.epochSeconds = static_cast<int64_t>(wall.tv_sec);
+    for (unsigned i = 0; i < compiledMacroCount; ++i)
+      if (macroValid[i] && (macroEventMasks[i] & bit))
+        macroQueue[macroQueueCount++] = {static_cast<uint8_t>(i), event};
+    http->acknowledgeDesktopDefaultEvent(change.serial);
+    scriptDesktopQueueBlocked = false;
+  }
+}
+
 void ScriptContext::pollDeviceActivity(uint64_t now) {
   if (now < nextDeviceActivityMs) return;
   nextDeviceActivityMs = now + 100;
@@ -217,17 +287,6 @@ void ScriptContext::pollScriptLifecycle(uint64_t now, bool startupStable) {
   if (midi.passthroughOnly) return;
   if (!startupStable)
     return;
-  ScriptBluetoothSnapshot bluetooth{};
-  if (scriptBluetoothSnapshot(midi.app, bluetooth)) {
-    const uint64_t hash = ::scriptBluetoothHash(bluetooth);
-    if (scriptBluetoothKnown && hash != scriptBluetoothHash) {
-      ScriptEvent event{};
-      event.kind = ScriptEventKind::BluetoothChange;
-      dispatchMacroEvent(event);
-    }
-    scriptBluetoothHash = hash;
-    scriptBluetoothKnown = true;
-  }
   if (!bootHooksDispatched) {
     unsigned subscribers = 0;
     for (unsigned i = 0; i < compiledMacroCount; ++i)
@@ -240,6 +299,47 @@ void ScriptContext::pollScriptLifecycle(uint64_t now, bool startupStable) {
     dispatchMacroEvent(event);
     bootHooksDispatched = true;
     nextScriptTimerMs = now + 1000;
+  }
+  pollDesktopDefaultEvents();
+  ScriptBluetoothSnapshot bluetooth{};
+  if (scriptBluetoothSnapshot(midi.app, bluetooth)) {
+    const uint64_t hash = ::scriptBluetoothHash(bluetooth);
+    if (scriptBluetoothKnown && hash != scriptBluetoothHash) {
+      ScriptEvent event{};
+      event.kind = ScriptEventKind::BluetoothChange;
+      dispatchMacroEvent(event);
+    }
+    scriptBluetoothHash = hash;
+    scriptBluetoothKnown = true;
+    bool blocked = false;
+    for (unsigned i = 0; i < scriptBluetoothConnectedCount;) {
+      bool connected = false;
+      for (unsigned d = 0; d < bluetooth.count; ++d)
+        if (bluetooth.devices[d].connected &&
+            !strcmp(bluetooth.devices[d].address, scriptBluetoothConnected[i]))
+          connected = true;
+      if (connected) { ++i; continue; }
+      if (!dispatchBluetoothConnection(scriptBluetoothConnected[i], false)) {
+        blocked = true;
+        break;
+      }
+      --scriptBluetoothConnectedCount;
+      if (i != scriptBluetoothConnectedCount)
+        memcpy(scriptBluetoothConnected[i], scriptBluetoothConnected[scriptBluetoothConnectedCount],
+               sizeof(scriptBluetoothConnected[i]));
+    }
+    for (unsigned d = 0; !blocked && d < bluetooth.count; ++d) {
+      const auto &device = bluetooth.devices[d];
+      if (!device.connected) continue;
+      unsigned i = 0;
+      for (; i < scriptBluetoothConnectedCount; ++i)
+        if (!strcmp(scriptBluetoothConnected[i], device.address)) break;
+      if (i != scriptBluetoothConnectedCount) continue;
+      if (scriptBluetoothConnectedCount == BT_MAX_DEVICES) break;
+      if (!dispatchBluetoothConnection(device.address, true)) break;
+      snprintf(scriptBluetoothConnected[scriptBluetoothConnectedCount++], BT_ADDRESS_TEXT,
+               "%s", device.address);
+    }
   }
   pollDeviceActivity(now);
   if (now < nextScriptTimerMs)
@@ -320,14 +420,37 @@ void ScriptContext::pollMacros(uint64_t now) {
                 node.levels[ch] = audio->nodeChannelLevels[i][ch].load(std::memory_order_relaxed);
         }
     }
+    uint32_t desktopSession = 0;
+    bool desktopDefaultPending = false;
+    DesktopDefaultAvailability availability = DesktopDefaultAvailability::Disconnected;
     {
+      char desktopDefault[128]{};
+      const bool hasDesktopDefault = midi.app && midi.app->http &&
+                                     midi.app->http->desktopDefault(desktopDefault, 0, &desktopSession,
+                                                                    &desktopDefaultPending, &availability);
+      const char *desktopDefaultError = "desktop default sink unavailable";
+      switch (availability) {
+      case DesktopDefaultAvailability::Disconnected:
+        desktopDefaultError = "desktop companion is not connected"; break;
+      case DesktopDefaultAvailability::Unsupported:
+        desktopDefaultError = "desktop companion does not advertise default sink control"; break;
+      case DesktopDefaultAvailability::Waiting:
+        desktopDefaultError = "waiting for the companion's default sink snapshot"; break;
+      case DesktopDefaultAvailability::Unavailable:
+        desktopDefaultError = "companion could not read the default sink; check its logs"; break;
+      case DesktopDefaultAvailability::StaleSession:
+        desktopDefaultError = "desktop session changed"; break;
+      case DesktopDefaultAvailability::Available: break;
+      }
       if (!scriptEvaluate(
               macro.script, trigger.event, nextState, macroPlan,
               macroErrors[activeMacro], sizeof(macroErrors[activeMacro]),
               midi.app ? midi.app->config : nullptr, macro.configWriteAllowed,
               macro.hookMode, macroEventMasks[activeMacro], macro.id,
               midi.app && midi.app->audio ? &meters : nullptr,
-              midi.app && midi.app->http ? midi.app->http->desktopMedia.load() : DesktopMedia::Unavailable)) {
+              midi.app && midi.app->http ? midi.app->http->desktopMedia.load() : DesktopMedia::Unavailable,
+              hasDesktopDefault ? desktopDefault : nullptr, desktopSession, desktopDefaultPending,
+              desktopDefaultError)) {
         printf("[SCRIPT] [WARN] Macro ch=%u note=%u failed: %s\n",
                macro.channel, macro.note, macroErrors[activeMacro]);
         activeMacro = -1;
@@ -338,6 +461,9 @@ void ScriptContext::pollMacros(uint64_t now) {
          needsStandard = false;
     for (unsigned i = 0; i < macroPlan.count; ++i) {
       auto kind = macroPlan.actions[i].kind;
+      if (kind == ScriptKind::DesktopDefaultSet)
+        macroPlan.actions[i].value = trigger.event.kind == ScriptEventKind::DesktopDefaultChange
+            ? trigger.event.desktopSession : desktopSession;
       if (kind == ScriptKind::Light && !macro.midiEnabled) {
         snprintf(macroErrors[activeMacro], sizeof(macroErrors[activeMacro]),
                  "light actions require a MIDI binding");
@@ -521,6 +647,18 @@ void ScriptContext::pollMacros(uint64_t now) {
       if (!midi.app || !midi.app->http ||
           midi.app->http->requestDesktopRoute(action.value, static_cast<uint32_t>(action.number)) != RET_OK) {
         failMacro("desktop.route failed: companion unavailable or another route request is pending");
+        return;
+      }
+    } else if (action.kind == ScriptKind::DesktopDefaultSet) {
+      if (!action.value || !midi.app || !midi.app->http ||
+          midi.app->http->requestDesktopDefault(action.text, nullptr, action.value) != RET_OK) {
+        char current[128]{};
+        if (action.value && midi.app && midi.app->http &&
+            midi.app->http->desktopDefault(current, action.value)) {
+          macroWakeMs = now + 50;
+          return;
+        }
+        failMacro("desktop.set_default_sink failed: companion unavailable or desktop session changed");
         return;
       }
     } else if (action.kind == ScriptKind::BluetoothScan ||

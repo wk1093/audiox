@@ -5,11 +5,16 @@ network. When connected, the WebUI shows a **Desktop** page with the host name,
 operating system, and detected capabilities. The page disappears on disconnect.
 Only one companion can be connected at a time.
 
-This is an early version: audio device controls, media controls, and shortcuts
-are not implemented yet. On Linux, the Desktop page supports
-automatic playback and capture routing without scripts. On Linux, `pipewire` indicates a
-detected PipeWire socket, and `default_sink` additionally requires `wpctl` on
-the service's PATH. On Windows, `default_sink` indicates platform support.
+This is an early version: media controls and shortcuts are not implemented yet.
+On Linux, the Desktop page supports default playback device selection and
+automatic playback and capture routing without scripts. `pipewire` indicates a
+detected PipeWire socket. `default_sink` requires a PipeWire socket and either
+`pactl`, or both `wpctl` and `pw-dump`, on the companion's PATH. The companion
+uses WirePlumber if `pactl` cannot read the default; `pw-dump` is also required
+for the device dropdowns. Default-device control is not available on Windows or
+macOS. Select a discovered playback device under **Default playback device**.
+The displayed default is sampled approximately once a second, so very brief
+changes can be missed.
 Detection does not guarantee that the host audio service accepts a command.
 The `route_stream` capability requires `pactl` on the companion's PATH, and
 `auto_route` also requires `pw-dump`, `pw-loopback`, and `pw-metadata`.
@@ -17,6 +22,24 @@ On Linux, if `playerctl` is on PATH, the page also reports the aggregate MPRIS
 playback status. Any playing player takes precedence over paused or stopped
 players. No players and query errors are shown separately. Lua scripts can read
 the status with `desktop.media_status()` and `desktop.is_playing()`.
+
+If a script reports that the desktop default sink is unavailable, check that
+the Desktop page shows the connected host and `default_sink` capability. The
+companion log explains missing tools, a missing PipeWire socket, or a failed
+default query, and reports whether the Pi requested default tracking; for the user service, inspect
+`journalctl --user -u audiox-companion.service -b`. A command permission error
+may have several causes, including SELinux; inspect the host's denial logs
+before changing security settings. A companion started outside systemd writes
+the same diagnostics to its standard error.
+
+For a manual end-to-end test, download
+<a :href="withBase('/scripts/desktop-default-toggle.lua')">desktop-default-toggle.lua</a>, add it as a
+script with device-management permission, and select a desktop playback device.
+The **Toggle desktop default** button requests the selected device; press it
+again to restore the previous default. Check the script and companion logs for
+errors. The remembered device is runtime-only and is discarded when a different
+desktop session connects. If another application changes the default in between,
+the next press remembers that new default instead of restoring an old one.
 
 When `pw-dump` is available on Linux, the Desktop page also lists PipeWire
 nodes, including active application streams. The dropdowns refresh automatically
@@ -115,3 +138,7 @@ The companion uses the separate `audiox.desktop.v1` WebSocket protocol. Like
 the WebUI, it does not authenticate native peers: use only on a trusted USB
 network and do not expose it to the internet. See the [API reference](./reference#live-status-events)
 for the hello and status-event formats.
+
+<script setup>
+import { withBase } from 'vitepress'
+</script>

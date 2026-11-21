@@ -1,11 +1,24 @@
 (function (root) {
   'use strict';
 
+  let inventorySnapshot = { nodes: [], error: 'Desktop discovery unavailable' };
+  const inventoryListeners = new Set();
+  function publishInventory(nodes, error = '') {
+    inventorySnapshot = { nodes, error };
+    for (const listener of inventoryListeners) listener(inventorySnapshot);
+  }
+  function subscribeInventory(listener) {
+    inventoryListeners.add(listener);
+    listener(inventorySnapshot);
+    return () => inventoryListeners.delete(listener);
+  }
+
   function create({ api, tab, host, os, capabilities, media, routing, routeForm,
     stream, sink, routeSubmit, routeStatus, inventory, inventoryRefresh,
     inventoryStatus, inventoryList, autoRouting, autoForm, autoDirection, autoApp,
     autoTarget, autoPair, autoAppPattern, autoTargetPattern, autoSubmit, virtualChannels,
-    autoStatus, autoRules, onDisconnect }) {
+    autoStatus, autoRules, onDisconnect, defaultSection, defaultForm, defaultSink,
+    defaultSubmit, defaultCurrent, defaultStatus }) {
     let routeAvailable = false;
     let session = 0;
     let busy = false;
@@ -20,6 +33,7 @@
     let rules = [];
     let virtualEnabled = true;
     let autoBusy = false;
+    let defaultSession = 0, defaultGeneration = 0, defaultTimer, defaultBusy = false;
     const showStatus = (text) => { if (routeStatus) routeStatus.textContent = text; };
 
     function setOptions(element, entries, placeholder) {
@@ -56,6 +70,17 @@
     }
 
     function refreshChoices() {
+      if (defaultSink) {
+        const targets = new Map();
+        for (const node of nodes) {
+          if ((node['media.class'] === 'Audio/Sink' || node['media.class']?.startsWith('Audio/Sink/')) &&
+              node['node.name'] && !node['node.name'].startsWith('audiox_auto_'))
+            targets.set(node['node.name'], { value: node['node.name'],
+              label: node['node.description'] || node['node.name'] });
+        }
+        setOptions(defaultSink, [...targets.values()], 'No playback devices');
+        if (defaultSubmit) defaultSubmit.disabled = defaultBusy || !defaultSink.value;
+      }
       if (!autoForm) return;
       const capture = autoDirection.value === 'c';
       const appClass = capture ? 'Stream/Input/Audio' : 'Stream/Output/Audio';
@@ -246,6 +271,7 @@
                 node[key] === undefined || typeof node[key] === 'string')))
               throw new Error('Invalid discovery result.');
             nodes = result.nodes;
+            publishInventory(nodes);
             const entries = nodes.map((node) => {
               const label = node['application.name'] || node['node.description'] || node['node.name'] || '(unnamed)';
               const name = node['node.name'] ? ` - ${node['node.name']}` : '';
@@ -264,6 +290,7 @@
       } catch (error) {
         if (current === inventoryGeneration) {
           nodes = [];
+          publishInventory([], error.message || 'Desktop discovery failed');
           setOptions(inventoryList, [], 'Discovery failed');
           refreshChoices();
           inventoryStatus.textContent = error.message || 'Discovery failed.';
@@ -277,6 +304,70 @@
     }
 
     inventoryRefresh?.addEventListener('click', refreshInventory);
+    async function defaultRequest(url, options) {
+      const response = await api.request(url, { ...options, cache: 'no-store', signal: AbortSignal.timeout(15000) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `Request failed (${response.status}).`);
+      return data;
+    }
+    async function refreshDefault() {
+      if (!defaultSession) return;
+      const current = defaultGeneration, savedSession = defaultSession;
+      root.clearTimeout(defaultTimer);
+      try {
+        const result = await defaultRequest(`/api/desktop/default?session=${savedSession}`, { method: 'GET' });
+        if (current !== defaultGeneration) return;
+        if (typeof result.name !== 'string' || !result.name) throw new Error('Invalid default-sink response.');
+        const node = nodes.find(item => item['node.name'] === result.name);
+        defaultCurrent.textContent = node?.['node.description'] || result.name;
+        if (!defaultBusy) defaultStatus.textContent = '';
+      } catch (error) {
+        if (current === defaultGeneration) {
+          defaultCurrent.textContent = 'Unavailable';
+          if (!defaultBusy) defaultStatus.textContent = error.message || 'Default sink unavailable.';
+        }
+      } finally {
+        if (current === defaultGeneration) defaultTimer = root.setTimeout(refreshDefault, 2000);
+      }
+    }
+    async function setDefault(event) {
+      event.preventDefault();
+      if (!defaultSession || defaultBusy || !defaultSink.value) return;
+      const current = defaultGeneration, savedSession = defaultSession;
+      const name = defaultSink.value;
+      defaultBusy = true;
+      defaultSubmit.disabled = true;
+      defaultStatus.textContent = 'Setting default device...';
+      try {
+        const hex = [...new TextEncoder().encode(name)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+        const accepted = await defaultRequest('/api/desktop/default', {
+          method: 'POST', body: `session=${savedSession}&name_hex=${hex}`,
+        });
+        if (!Number.isInteger(accepted.id) || accepted.id <= 0 || accepted.id > 4294967295)
+          throw new Error('Invalid default-sink response.');
+        const deadline = Date.now() + 15000;
+        while (current === defaultGeneration) {
+          const result = await defaultRequest(`/api/desktop/default?id=${accepted.id}`, { method: 'GET' });
+          if (current !== defaultGeneration) return;
+          if (result.id !== accepted.id) throw new Error('Invalid default-sink result.');
+          if (result.status === 'succeeded') {
+            defaultStatus.textContent = 'Default device changed.';
+            return;
+          }
+          if (result.status !== 'pending') throw new Error(`Default device change ${result.status}.`);
+          if (Date.now() >= deadline) throw new Error('Timed out waiting for the default device change.');
+          await new Promise(resolve => root.setTimeout(resolve, 300));
+        }
+      } catch (error) {
+        if (current === defaultGeneration) defaultStatus.textContent = error.message || 'Default device change failed.';
+      } finally {
+        if (current === defaultGeneration) {
+          defaultBusy = false;
+          defaultSubmit.disabled = !defaultSink.value;
+        }
+      }
+    }
+    defaultForm?.addEventListener('submit', setDefault);
     async function route(event) {
       event.preventDefault();
       if (!routeAvailable || busy) return;
@@ -342,11 +433,24 @@
       const canDiscover = inventory && inventoryRefresh && inventoryStatus && inventoryList &&
         connected && hello.os === 'linux' && hello.capabilities.includes('pipewire_nodes') &&
         Number.isInteger(data.session) && data.session > 0 && data.session <= 4294967295;
+      const canDefault = canDiscover && defaultSection && defaultForm && defaultSink && defaultSubmit &&
+        defaultCurrent && defaultStatus && hello.capabilities.includes('default_sink');
+      if (defaultSection) defaultSection.hidden = !canDefault;
+      if (defaultSession !== (canDefault ? data.session : 0)) {
+        defaultGeneration++;
+        root.clearTimeout(defaultTimer);
+        defaultSession = canDefault ? data.session : 0;
+        defaultBusy = false;
+        if (defaultCurrent) defaultCurrent.textContent = 'Unavailable';
+        if (defaultStatus) defaultStatus.textContent = '';
+        if (defaultSession) void refreshDefault();
+      }
       if (inventory) inventory.hidden = !canDiscover;
       if (inventorySession !== (canDiscover ? data.session : 0)) {
         inventoryGeneration++;
         root.clearTimeout(inventoryTimer);
         nodes = [];
+        publishInventory([], canDiscover ? 'Discovering PipeWire nodes' : 'Desktop discovery unavailable');
         if (inventoryList && root.document) setOptions(inventoryList, [], 'No nodes found');
         if (inventoryStatus) inventoryStatus.textContent = '';
         if (inventoryRefresh) inventoryRefresh.disabled = false;
@@ -402,6 +506,10 @@
       generation++;
       inventoryGeneration++;
       inventorySession = 0;
+      defaultGeneration++;
+      defaultSession = 0;
+      root.clearTimeout(defaultTimer);
+      publishInventory([], 'Desktop discovery unavailable');
       root.clearTimeout(inventoryTimer);
       autoGeneration++;
       autoSession = 0;
@@ -411,11 +519,12 @@
       autoDirection?.removeEventListener('change', refreshChoices);
       autoTarget?.removeEventListener('change', refreshPairs);
       routeForm?.removeEventListener('submit', route);
+      defaultForm?.removeEventListener('submit', setDefault);
       unsubscribe?.();
       unobserve?.();
     };
   }
 
-  root.AudioxDesktop = { create };
+  root.AudioxDesktop = { create, subscribeInventory };
   if (typeof module !== 'undefined' && module.exports) module.exports = root.AudioxDesktop;
 })(globalThis);

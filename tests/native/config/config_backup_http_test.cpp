@@ -251,6 +251,10 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
         return response.find("Sec-WebSocket-Protocol: audiox.desktop.v1") != std::string::npos;
     });
     assert(server.requestDesktopRoute(11, 2) == RET_WARN);
+    char defaultName[128]{};
+    DesktopDefaultAvailability defaultAvailability{};
+    assert(!server.desktopDefault(defaultName, 0, nullptr, nullptr, &defaultAvailability) &&
+           defaultAvailability == DesktopDefaultAvailability::Disconnected);
     const std::string hello = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["pipewire","default_sink","route_stream","pipewire_nodes","auto_route"]})";
     assert(parseDesktopHello(reinterpret_cast<const uint8_t *>(hello.data()), hello.size()));
     const std::string mediaHello = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["mpris"],"media":"playing"})";
@@ -275,10 +279,65 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
         for (size_t i = 0; i < message.size(); ++i) packet += char(message[i] ^ packet[2 + i % 4]);
         sendBytes(fd, packet);
     };
-    readUntil(desktop, [](const auto &response) { return response.find("\"type\":\"rules_chunk\"") != std::string::npos; });
+    readUntil(desktop, [](const auto &response) {
+        return response.find("\"type\":\"rules_chunk\"") != std::string::npos &&
+               response.find("\"type\":\"default_watch\"") != std::string::npos;
+    });
     sendDesktopText(desktop, desktop::rulesAck(1, strlen(desktop::rulesHeader), true));
     std::string savedRules;
     pumpUntil(server, [&]() { return server.desktopRules(savedRules) == DesktopRulesState::Succeeded; });
+    assert(!server.desktopDefault(defaultName, 0, nullptr, nullptr, &defaultAvailability) &&
+           defaultAvailability == DesktopDefaultAvailability::Waiting);
+    sendDesktopText(desktop, desktop::defaultSnapshot(""));
+    pumpUntil(server, [&]() {
+        return !server.desktopDefault(defaultName, 0, nullptr, nullptr, &defaultAvailability) &&
+               defaultAvailability == DesktopDefaultAvailability::Unavailable;
+    });
+    DesktopDefaultEvent defaultEvent{};
+    assert(server.peekDesktopDefaultEvent(defaultEvent));
+    server.acknowledgeDesktopDefaultEvent(defaultEvent.serial);
+    sendDesktopText(desktop, desktop::defaultSnapshot("sink.original"));
+    pumpUntil(server, [&]() { return server.desktopDefault(defaultName); });
+    assert(!strcmp(defaultName, "sink.original"));
+    assert(server.peekDesktopDefaultEvent(defaultEvent) && defaultEvent.initial && defaultEvent.session == 1 &&
+           !strcmp(defaultEvent.name, "sink.original"));
+    server.acknowledgeDesktopDefaultEvent(defaultEvent.serial);
+    sendDesktopText(desktop, desktop::defaultSnapshot("sink.external"));
+    pumpUntil(server, [&]() { return server.peekDesktopDefaultEvent(defaultEvent); });
+    assert(!defaultEvent.initial && !strcmp(defaultEvent.name, "sink.external"));
+    server.acknowledgeDesktopDefaultEvent(defaultEvent.serial);
+    uint32_t defaultId = 0;
+    assert(server.requestDesktopDefault("sink.audiox", &defaultId, 2) == RET_WARN);
+    assert(server.requestDesktopDefault("sink.audiox", &defaultId, 1) == RET_OK);
+    uint32_t observedSession = 0;
+    bool defaultPending = false;
+    assert(server.desktopDefault(defaultName, 1, &observedSession, &defaultPending) &&
+           observedSession == 1 && defaultPending);
+    assert(server.requestDesktopDefault("sink.other") == RET_WARN);
+    readUntil(desktop, [](const auto &response) {
+        return response.find("\"type\":\"default_set\"") != std::string::npos;
+    });
+    sendDesktopText(desktop, desktop::defaultResult(defaultId, "sink.audiox", true));
+    pumpUntil(server, [&]() { return server.desktopDefaultState(defaultId) == DesktopRouteState::Succeeded; });
+    assert(server.desktopDefault(defaultName, 1, &observedSession, &defaultPending) && !defaultPending);
+    assert(server.desktopDefault(defaultName) && !strcmp(defaultName, "sink.audiox"));
+    assert(!server.peekDesktopDefaultEvent(defaultEvent));
+    assert(server.requestDesktopDefault("sink.user", &defaultId, 1, true) == RET_OK);
+    readUntil(desktop, [](const auto &response) {
+        return response.find("\"type\":\"default_set\"") != std::string::npos;
+    });
+    sendDesktopText(desktop, desktop::defaultResult(defaultId, "sink.user", true));
+    pumpUntil(server, [&]() { return server.desktopDefaultState(defaultId) == DesktopRouteState::Succeeded; });
+    assert(server.peekDesktopDefaultEvent(defaultEvent) && !defaultEvent.initial &&
+           !strcmp(defaultEvent.name, "sink.user"));
+    server.acknowledgeDesktopDefaultEvent(defaultEvent.serial);
+    assert(server.requestDesktopDefault("sink.missing", &defaultId, 1) == RET_OK);
+    readUntil(desktop, [](const auto &response) {
+        return response.find("\"type\":\"default_set\"") != std::string::npos;
+    });
+    sendDesktopText(desktop, desktop::defaultResult(defaultId, "sink.user", false));
+    pumpUntil(server, [&]() { return server.desktopDefaultState(defaultId) == DesktopRouteState::Failed; });
+    assert(server.desktopDefault(defaultName) && !strcmp(defaultName, "sink.user"));
     desktop::Rule newRule;
     newRule.app = "Audio player";
     newRule.target = "usb.sink";
@@ -342,6 +401,8 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
         return response.find("\"media\":\"playing\"") != std::string::npos;
     });
     assert(server.desktopMedia.load() == DesktopMedia::Playing);
+    assert(!server.desktopDefault(defaultName, 0, nullptr, nullptr, &defaultAvailability) &&
+           defaultAvailability == DesktopDefaultAvailability::Unsupported);
     assert(server.desktopInventory(inventoryId, inventory) == DesktopInventoryState::Failed);
     expect(request(desktopUpgrade), "400 Bad Request");
     sendBytes(desktop, helloFrame);
@@ -350,6 +411,8 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
     close(desktop);
     readUntil(ws, [](const auto &response) { return response.find("\"connected\":false") != std::string::npos; });
     assert(server.desktopMedia.load() == DesktopMedia::Unavailable);
+    assert(!server.desktopDefault(defaultName, 0, nullptr, nullptr, &defaultAvailability) &&
+           defaultAvailability == DesktopDefaultAvailability::Disconnected);
     assert(server.desktopInventory(inventoryId, inventory) == DesktopInventoryState::Disconnected);
     const std::string browserDesktopUpgrade = desktopUpgrade.substr(0, desktopUpgrade.size() - 2) +
         "Origin: http://localhost\r\n\r\n";
@@ -364,6 +427,16 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
     sendDesktopText(replacement, desktop::rulesAck(4, static_cast<uint32_t>(newRules.size()), true));
     pumpUntil(server, [&]() { return server.desktopRules(savedRules) == DesktopRulesState::Succeeded; });
     assert(savedRules == newRules);
+    while (server.peekDesktopDefaultEvent(defaultEvent))
+        server.acknowledgeDesktopDefaultEvent(defaultEvent.serial);
+    sendDesktopText(replacement, desktop::defaultSnapshot("sink.replacement"));
+    uint32_t currentSession = 0;
+    pumpUntil(server, [&]() { return server.desktopDefault(defaultName, 2, &currentSession); });
+    assert(currentSession == 2 && !strcmp(defaultName, "sink.replacement"));
+    assert(!server.desktopDefault(defaultName, 1));
+    assert(server.requestDesktopDefault("sink.audiox", nullptr, 1) == RET_WARN);
+    assert(server.peekDesktopDefaultEvent(defaultEvent) && defaultEvent.initial && defaultEvent.session == 2);
+    server.acknowledgeDesktopDefaultEvent(defaultEvent.serial);
     assert(server.requestDesktopRoute(11, 4, &routeId, 1) == RET_WARN);
     assert(server.requestDesktopRoute(11, 4, &routeId, 2) == RET_OK);
     assert(server.desktopRouteState(2) == DesktopRouteState::Unknown);

@@ -3,7 +3,8 @@
 **Status:** The background companion connects and reports detected host
 capabilities and Linux media playback status. Linux supports Pi-managed
 automatic app routing, stereo-pair selection, and a system tray. Audio device
-controls, media controls, and shortcuts are not yet implemented.
+default selection is supported on Linux; media controls and shortcuts are not
+yet implemented.
 
 ## Connection
 
@@ -19,9 +20,13 @@ are saved by the companion. On connection, the WebUI shows a **Desktop** page
 with the hostname, OS, and detected capability strings; the page disappears
 when disconnected.
 
-`pipewire` means a PipeWire socket was detected. On Linux, `default_sink` means
-that socket and an executable `wpctl` were detected; on Windows it denotes
-platform support. These are host detections, **not** implemented AudioX actions.
+`pipewire` means a PipeWire socket was detected. On Linux, `default_sink`
+requires `pactl` or both `wpctl` and `pw-dump` on PATH and allows the WebUI or
+Lua to change the default playback device. If `pactl` cannot read the default,
+the companion uses WirePlumber instead. It keeps the chosen backend for the
+connection so a temporary failure cannot redirect changes to a different audio
+server. Changes are sampled approximately once per second; rapid changes can
+be missed. Windows and macOS do not currently support this.
 Detection does not guarantee that the host audio service will accept a command.
 
 On Linux, `route_stream` indicates that a PipeWire socket and `pactl` are

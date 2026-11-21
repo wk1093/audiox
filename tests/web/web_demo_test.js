@@ -67,9 +67,36 @@ test('demo gateway answers every API path the UI requests', async () => {
   // Upload/download paths are handled by AudioxApi.upload/download rather than request().
   for (const p of ['/api/update', '/api/config/restore', '/api/config/backup']) paths.delete(p);
   assert.ok(paths.size > 60);
+  const missing = [];
   for (const p of paths) {
     const text = await (await context.apiFetch(p)).text();
-    assert.ok(!text.startsWith('not found:'), `${p} is not simulated`);
+    if (text.startsWith('not found:')) missing.push(p);
+  }
+  assert.deepEqual(missing, [], `API paths not simulated: ${missing.join(', ')}`);
+});
+
+test('desktop endpoints report that no companion is connected in the demo', async () => {
+  const context = demoContext();
+  const get = (url, options) => context.apiFetch(url, options);
+  const rules = await get('/api/desktop/rules');
+  assert.equal(rules.status, 200);
+  assert.deepEqual(await rules.json(), {
+    status: 'unavailable', routing_ok: null, rules: '# audiox desktop routes v1\n',
+  });
+  const cases = [
+    ['/api/desktop/rules?session=1', { method: 'PUT', body: '# audiox desktop routes v1\n' }, 409],
+    ['/api/desktop/inventory', { method: 'POST', body: 'session=1' }, 409],
+    ['/api/desktop/inventory', undefined, 400],
+    ['/api/desktop/inventory?id=1', undefined, 404],
+    ['/api/desktop/default', { method: 'POST', body: 'session=1&name_hex=73696e6b' }, 409],
+    ['/api/desktop/default', undefined, 400],
+    ['/api/desktop/default?session=1', undefined, 409],
+    ['/api/desktop/default?id=1', undefined, 404],
+  ];
+  for (const [url, options, status] of cases) {
+    const response = await get(url, options);
+    assert.equal(response.status, status, url);
+    assert.ok((await response.json()).error, url);
   }
 });
 

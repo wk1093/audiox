@@ -2182,6 +2182,38 @@ int main() {
             assert(hookState("changes").integerValue == 1 && !midi.scripts.macroErrors[1][0]);
             midi.scripts.pollScriptLifecycle(testNowMs + 1, true);
             assert(!midi.scripts.macroQueueCount);
+            saveCallbacks("hook('bluetooth_connect',function(e) "
+                          "assert(e.device=='AA:BB:CC:DD:EE:FF' and e.source=='bluetooth'); "
+                          "state.connected=(state.connected or 0)+1 end); "
+                          "hook('bluetooth_disconnect',function(e) "
+                          "assert(e.device=='AA:BB:CC:DD:EE:FF'); "
+                          "state.disconnected=(state.disconnected or 0)+1 end)",
+                          "200 OK", true);
+            assert(config.readMidiMapFile().chords[1].eventMask == 98304);
+            bluetooth.linkStatus[0].used = true;
+            bluetooth.linkStatus[0].address = bluetooth.devices[0].address;
+            bluetooth.linkStatus[0].inputConnected = true;
+            midi.scripts.pollScriptLifecycle(testNowMs + 1, false);
+            assert(!midi.scripts.macroQueueCount);
+            midi.scripts.macroQueueCount = SCRIPTS_MAX;
+            midi.scripts.pollScriptLifecycle(testNowMs + 1, true);
+            assert(midi.scripts.macroQueueCount == SCRIPTS_MAX);
+            midi.scripts.macroQueueCount = 0;
+            midi.scripts.pollScriptLifecycle(testNowMs + 1, true);
+            assert(midi.scripts.macroQueueCount == 1);
+            testNowMs += 20;
+            midi.scripts.pollMacros(testNowMs);
+            assert(hookState("connected").integerValue == 1);
+            midi.scripts.pollScriptLifecycle(testNowMs + 1, true);
+            assert(!midi.scripts.macroQueueCount);
+            bluetooth.linkStatus[0].inputConnected = false;
+            midi.scripts.pollScriptLifecycle(testNowMs + 2, true);
+            assert(midi.scripts.macroQueueCount == 1);
+            testNowMs += 20;
+            midi.scripts.pollMacros(testNowMs);
+            assert(hookState("disconnected").integerValue == 1);
+            saveCallbacks("hook('run',function() bluetooth.connect('AA:BB:CC:DD:EE:FF') end)",
+                          "200 OK", true);
             macroRequest("POST", "id=" + std::to_string(midiId), "200 OK", true);
             testNowMs += 20;
             midi.scripts.pollMacros(testNowMs);
@@ -2284,6 +2316,8 @@ int main() {
             "ui.option('enabled',{label='Enabled',type='boolean',default=true}); "
             "ui.option('level',{label='Level',type='number',default=50,min=0,max=100}); "
             "ui.option('name',{label='Name',type='string',default='default'}); "
+            "ui.option('count',{label='Count',type='int',default=1,min=0,max=10}); "
+            "ui.option('mode',{label='Mode',type='enum',default='one',choices={'one','two'}}); "
             "ui.button('apply','<Apply>'); "
             "hook('config_change',function(e) state.key=e.key; state.value=e.value; "
             "assert(script_config.get(e.key)==e.value) end); "
@@ -2347,6 +2381,18 @@ int main() {
         std::string binary;
         assert(privateStorage.readFile("private.bin", binary) == RET_OK && binary == std::string("A\0B", 3));
         assert(privateStorage.readSettings(savedOptions) == RET_OK && savedOptions.count == 4);
+        macroRequest("GET", "", "\"choices\":[\"one\",\"two\"]", false, true);
+        option("count", "1.5", "400 Bad Request");
+        option("count", "9007199254740992", "400 Bad Request");
+        option("mode", "invalid", "400 Bad Request");
+        option("count", "3");
+        testNowMs += 20;
+        midi.scripts.pollMacros(testNowMs);
+        assert(hookState("value").numberIsInteger && hookState("value").integerValue == 3);
+        option("mode", "two");
+        testNowMs += 20;
+        midi.scripts.pollMacros(testNowMs);
+        assert(!strcmp(hookState("value").stringValue, "two"));
         const uint32_t orphanId = saveNamed("Temporary storage owner", "log('temporary')");
         ScriptStorage orphan(orphanId);
         assert(orphan.writeFile("owned.txt", "private", 7) == RET_OK);

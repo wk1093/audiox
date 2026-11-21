@@ -44,6 +44,20 @@ case "$1 $2 $3" in
   '-f json list')
     [ -f "$XDG_RUNTIME_DIR/json-enabled" ] || exit 1
     printf '[]\\n' ;;
+  'get-default-sink  ')
+    if [ -s "$XDG_RUNTIME_DIR/default-before" ]; then
+      IFS= read -r default_sink < "$XDG_RUNTIME_DIR/default-before"
+      : > "$XDG_RUNTIME_DIR/default-before"
+    else
+      IFS= read -r default_sink < "$XDG_RUNTIME_DIR/default-sink"
+    fi
+    printf '%s\\n' "$default_sink" ;;
+  'list short sinks')
+    printf '1\\tsink.original\\tmodule\\tformat\\tRUNNING\\n2\\tsink.audiox\\tmodule\\tformat\\tRUNNING\\n3\\tsink.external\\tmodule\\tformat\\tRUNNING\\n' ;;
+  'set-default-sink '*)
+    IFS= read -r default_sink < "$XDG_RUNTIME_DIR/default-sink"
+    printf '%s\\n' "$default_sink" > "$XDG_RUNTIME_DIR/default-before"
+    printf '%s\\n' "$2" > "$XDG_RUNTIME_DIR/default-sink" ;;
   'list short sink-inputs')
     IFS= read -r sink < "$XDG_RUNTIME_DIR/sink"
     IFS= read -r client < "$XDG_RUNTIME_DIR/client"
@@ -58,6 +72,7 @@ case "$1 $2 $3" in
 esac
 `, { mode: 0o755 });
     fs.writeFileSync(path.join(dir, 'sink'), '1\n');
+    fs.writeFileSync(path.join(dir, 'default-sink'), 'sink.original\n');
     fs.writeFileSync(path.join(dir, 'client'), '-\n');
     fs.writeFileSync(path.join(dir, 'pw-dump'), `#!/bin/sh
 IFS= read -r data < "$XDG_RUNTIME_DIR/nodes"
@@ -137,14 +152,15 @@ esac
   const runner = process.env.AUDIOX_DESKTOP_RUNNER;
   const args = ['--host', '127.0.0.1', '--port', String(server.address().port)];
   child = spawn(runner || binary, runner ? [binary, ...args] : args,
-    { env: windows ? process.env : { ...process.env, XDG_RUNTIME_DIR: dir, PIPEWIRE_REMOTE: 'pipewire-0', PATH: dir }, stdio: 'ignore' });
+    { env: windows ? process.env : { ...process.env, XDG_RUNTIME_DIR: dir, PIPEWIRE_RUNTIME_DIR: dir,
+      PIPEWIRE_REMOTE: 'pipewire-0', PATH: dir }, stdio: 'ignore' });
   assert.match((await request)[0], /^GET \/ws\/desktop HTTP\/1\.1\r\n/);
   const first = (await firstFrame)[0];
   assert.equal(first.opcode, 1);
   assert.equal(first.masked, true);
   const firstHello = JSON.parse(first.payload);
-  assert.deepEqual(firstHello.capabilities, windows ? ['default_sink'] :
-    ['pipewire', 'default_sink', 'route_stream', 'pipewire_nodes', 'auto_route']);
+  assert.deepEqual(firstHello.capabilities, windows ? [] :
+    ['pipewire', 'route_stream', 'default_sink', 'pipewire_nodes', 'auto_route']);
   if (!windows) {
     const sendText = (text) => {
       const payload = Buffer.from(text);
@@ -152,6 +168,29 @@ esac
         Buffer.from([0x81, 126, payload.length >> 8, payload.length & 255]);
       first.socket.write(Buffer.concat([header, payload]));
     };
+    const snapshot = once(events, 'frame');
+    sendText('{"type":"default_watch"}');
+    assert.deepEqual(JSON.parse((await snapshot)[0].payload), {
+      type: 'default_snapshot', id: 1, offset: 0, data: Buffer.from('sink.original').toString('hex'), done: true,
+    });
+    const externallyChanged = once(events, 'frame');
+    fs.writeFileSync(path.join(dir, 'default-sink'), 'sink.external\n');
+    assert.deepEqual(JSON.parse((await externallyChanged)[0].payload), {
+      type: 'default_snapshot', id: 1, offset: 0, data: Buffer.from('sink.external').toString('hex'), done: true,
+    });
+    const setResult = once(events, 'frame');
+    sendText(JSON.stringify({ type: 'default_set', id: 7, offset: 0,
+      data: Buffer.from('sink.audiox').toString('hex'), done: true }));
+    assert.deepEqual(JSON.parse((await setResult)[0].payload), {
+      type: 'default_result', id: 7, offset: 0, data: Buffer.from('sink.audiox').toString('hex'), done: true,
+    });
+    assert.equal(fs.readFileSync(path.join(dir, 'default-sink'), 'utf8'), 'sink.audiox\n');
+    const rejectedDefault = once(events, 'frame');
+    sendText(JSON.stringify({ type: 'default_set', id: 8, offset: 0,
+      data: Buffer.from('sink.missing').toString('hex'), done: true }));
+    assert.deepEqual(JSON.parse((await rejectedDefault)[0].payload), {
+      type: 'default_failed', id: 8, offset: 0, data: Buffer.from('sink.audiox').toString('hex'), done: true,
+    });
     const sendRules = async (id, text) => {
       const bytes = Buffer.from(text);
       for (let offset = 0; offset < bytes.length;) {
@@ -224,7 +263,7 @@ esac
     const ready = Buffer.from('{"type":"ready","protocol":"audiox.desktop.v1","media_status":true}');
     first.socket.write(Buffer.concat([Buffer.from([0x81, ready.length]), ready]));
     const mediaHello = JSON.parse((await updated)[0].payload);
-    assert.deepEqual(mediaHello.capabilities, ['pipewire', 'default_sink', 'route_stream', 'pipewire_nodes', 'auto_route', 'mpris']);
+    assert.deepEqual(mediaHello.capabilities, ['pipewire', 'route_stream', 'default_sink', 'pipewire_nodes', 'auto_route', 'mpris']);
     assert.equal(mediaHello.media, 'playing');
   }
 
@@ -258,7 +297,7 @@ esac
   const again = (await reconnected)[0];
   if (!windows) assert.equal(fs.readFileSync(path.join(dir, 'sink'), 'utf8'), '3\n');
   assert.equal(again.opcode, 1);
-  assert.deepEqual(JSON.parse(again.payload).capabilities, windows ? ['default_sink'] : []);
+  assert.deepEqual(JSON.parse(again.payload).capabilities, []);
   const oldReady = Buffer.from('{"type":"ready","protocol":"audiox.desktop.v1"}');
   again.socket.write(Buffer.concat([Buffer.from([0x81, oldReady.length]), oldReady]));
   const oldPong = once(events, 'frame');

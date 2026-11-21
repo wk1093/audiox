@@ -117,6 +117,15 @@
         <p>Media playback: <span id="desktop-media">Unavailable</span></p>
         <p class="small">Capabilities describe detected host support; not all host controls are implemented.</p>
       </section>
+      <section id="desktop-default" class="card" hidden>
+        <h3>Default playback device</h3>
+        <p>Current default: <span id="desktop-default-current">Unavailable</span></p>
+        <form id="desktop-default-form" class="stack">
+          <label>Playback device <select id="desktop-default-sink"></select></label>
+          <button id="desktop-default-submit" type="submit">Set default device</button>
+        </form>
+        <p id="desktop-default-status" class="small" role="status" aria-live="polite"></p>
+      </section>
       <section id="desktop-inventory" class="card" hidden>
         <h3>PipeWire nodes</h3>
         <p class="small">Active application streams and other PipeWire nodes are refreshed automatically.

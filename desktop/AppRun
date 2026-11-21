@@ -1,0 +1,106 @@
+#!/bin/sh
+set -u
+
+appdir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+case "${1:-}" in
+  --help) exec "$appdir/audiox-companion" "$@" ;;
+esac
+
+setup_policy() {
+  if ! command -v wireplumber >/dev/null 2>&1; then
+    echo "AudioX: WirePlumber is unavailable; automatic routing policy was not installed." >&2
+    return 1
+  fi
+  version=$(wireplumber --version 2>&1) || {
+    echo "AudioX: could not determine the WirePlumber version." >&2
+    return 1
+  }
+  case "$version" in
+    *"libwireplumber 0.5."*) ;;
+    *)
+      echo "AudioX: automatic routing requires WirePlumber 0.5." >&2
+      return 1
+      ;;
+  esac
+  if [ -z "${HOME:-}" ]; then
+    echo "AudioX: HOME is unset; cannot install the routing policy." >&2
+    return 1
+  fi
+  data_dir=${XDG_DATA_HOME:-"$HOME/.local/share"}/wireplumber/scripts
+  config_dir=${XDG_CONFIG_HOME:-"$HOME/.config"}/wireplumber/wireplumber.conf.d
+  if ! mkdir -p "$data_dir" "$config_dir"; then
+    echo "AudioX: could not create WirePlumber configuration directories." >&2
+    return 1
+  fi
+  changed=0
+  for file in audiox-routing.lua 90-audiox-routing.conf; do
+    source="$appdir/usr/share/audiox/wireplumber/$file"
+    case "$file" in
+      *.lua) destination="$data_dir/$file" ;;
+      *) destination="$config_dir/$file" ;;
+    esac
+    if [ ! -f "$source" ]; then
+      echo "AudioX: packaged WirePlumber policy is missing: $file" >&2
+      return 1
+    fi
+    if cmp -s "$source" "$destination"; then continue; fi
+    temporary=$(mktemp "$destination.XXXXXX") || {
+      echo "AudioX: could not create a temporary policy file." >&2
+      return 1
+    }
+    if ! install -m 644 "$source" "$temporary" || ! mv -f "$temporary" "$destination"; then
+      rm -f "$temporary"
+      echo "AudioX: could not install the WirePlumber policy: $destination" >&2
+      return 1
+    fi
+    changed=1
+  done
+
+  policy_active() {
+    command -v pw-metadata >/dev/null 2>&1 &&
+      pw-metadata -n default 2>/dev/null | grep -q "key:'audiox.policy' value:'1'"
+  }
+  pending="$config_dir/.audiox-policy-pending"
+  if [ "$changed" -eq 1 ]; then
+    if ! touch "$pending"; then
+      echo "AudioX: could not record the pending policy activation." >&2
+      return 1
+    fi
+  fi
+  if [ -f "$pending" ] || ! policy_active; then
+    if ! command -v systemctl >/dev/null 2>&1; then
+      echo "AudioX: policy installed, but WirePlumber must be restarted; systemctl is unavailable." >&2
+      return 1
+    fi
+    if systemctl --user is-active --quiet wireplumber.service; then
+      echo "AudioX: activating the WirePlumber routing policy; audio may briefly restart." >&2
+      if ! systemctl --user restart wireplumber.service; then
+        echo "AudioX: could not restart WirePlumber to activate the routing policy." >&2
+        return 1
+      fi
+      attempts=0
+      while ! policy_active && [ "$attempts" -lt 10 ]; do
+        sleep 0.2
+        attempts=$((attempts + 1))
+      done
+      if ! policy_active; then
+        echo "AudioX: WirePlumber restarted, but the routing policy did not activate." >&2
+        return 1
+      fi
+      if ! rm -f "$pending"; then
+        echo "AudioX: could not clear the pending policy activation." >&2
+        return 1
+      fi
+    else
+      echo "AudioX: WirePlumber user service is not active or unavailable; policy will load when it starts." >&2
+    fi
+  fi
+}
+
+setup_policy || echo "AudioX: automatic routing setup failed; see the preceding message." >&2
+if [ -x "$appdir/usr/bin/audiox-tray" ]; then
+  "$appdir/usr/bin/audiox-tray" --icon "$appdir/audiox-companion.png" --appimage "${APPIMAGE:-}" "$@" &
+else
+  echo "AudioX: packaged system tray helper is missing." >&2
+fi
+exec "$appdir/audiox-companion" "$@"

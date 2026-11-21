@@ -41,6 +41,8 @@ static void closeSocket(Socket fd) { closesocket(fd); }
 #include <unistd.h>
 #ifdef __linux__
 #include "routing.hpp"
+#include "inventory.hpp"
+#include "auto_routing.hpp"
 #endif
 using Socket = int;
 constexpr Socket invalidSocket = -1;
@@ -325,6 +327,9 @@ std::string hello(const std::string &media) {
         capabilities = "\"pipewire\"";
         if (hasExecutable("wpctl")) capabilities += ",\"default_sink\"";
         if (hasExecutable("pactl")) capabilities += ",\"route_stream\"";
+        if (hasExecutable("pw-dump")) capabilities += ",\"pipewire_nodes\"";
+        if (hasExecutable("pactl") && hasExecutable("pw-dump") &&
+            hasExecutable("pw-loopback") && hasExecutable("pw-metadata")) capabilities += ",\"auto_route\"";
     }
     if (!media.empty()) {
         if (!capabilities.empty()) capabilities += ',';
@@ -352,8 +357,19 @@ void runConnection(Socket fd, bool &connected) {
     std::fprintf(stderr, "AudioX: desktop connected.\n");
 #ifdef __linux__
     desktop::Routing routing(fd);
+    desktop::AutoRouting automatic(fd);
+    bool automaticConfigured = false;
+    int lastAutoStatus = -1;
+    std::string stagedRules;
+    uint32_t stagedRulesId = 0;
+    std::string inventory;
+    uint32_t inventoryId = 0;
+    size_t inventoryOffset = 0;
 #endif
     auto nextCheck = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+#ifdef __linux__
+    auto nextRouteCheck = nextCheck;
+#endif
     while (true) {
 #ifndef _WIN32
         if (stopping) return;
@@ -376,9 +392,63 @@ void runConnection(Socket fd, bool &connected) {
                 else {
                     desktop::RouteCommand command;
                     if (desktop::parseRouteCommand(payload, command)) {
-                        const bool success = routing.move(command.stream, command.sink);
+                        const bool managed = automatic.manages(false, command.stream);
+                        if (managed) std::fprintf(stderr, "AudioX: stream %u is managed by an automatic route.\n", command.stream);
+                        const bool success = !managed && routing.move(command.stream, command.sink);
                         const std::string response = desktop::routeResult(command.id, success);
                         if (!sendFrame(fd, 0x1, response)) return;
+                    } else {
+                        uint32_t rulesId, rulesOffset;
+                        std::string rulesBytes;
+                        bool rulesDone;
+                        if (desktop::decodeChunk(payload, "rules_chunk", rulesId, rulesOffset, rulesBytes, rulesDone)) {
+                            if (!rulesOffset) {
+                                stagedRules.clear();
+                                stagedRulesId = rulesId;
+                            }
+                            bool valid = rulesId == stagedRulesId && rulesOffset == stagedRules.size() &&
+                                stagedRules.size() + rulesBytes.size() <= 16384;
+                            if (valid) stagedRules += rulesBytes;
+                            if (valid && rulesDone) {
+                                std::vector<desktop::Rule> parsed;
+                                valid = desktop::parseRules(stagedRules, parsed);
+                                if (valid) {
+                                    valid = automatic.setRules(std::move(parsed), desktop::virtualChannelsEnabled(stagedRules));
+                                    if (valid) {
+                                        automaticConfigured = true;
+                                        lastAutoStatus = -1;
+                                        nextRouteCheck = std::chrono::steady_clock::now();
+                                    }
+                                }
+                                if (!valid) std::fprintf(stderr, "AudioX: invalid or unavailable automatic routing rules.\n");
+                            }
+                            const uint32_t nextOffset = static_cast<uint32_t>(valid ? stagedRules.size() : rulesOffset);
+                            if (!valid || rulesDone) stagedRulesId = 0;
+                            if (!sendFrame(fd, 0x1, desktop::rulesAck(rulesId, nextOffset, valid))) return;
+                            continue;
+                        }
+                        desktop::InventoryCommand request;
+                        if (desktop::parseInventoryCommand(payload, request)) {
+                            if (!request.offset) {
+                                inventory.clear();
+                                inventoryId = request.id;
+                                inventoryOffset = 0;
+                                if (!desktop::discoverNodes(fd, inventory)) inventoryId = 0;
+                            }
+                            if (request.id != inventoryId || request.offset != inventoryOffset ||
+                                inventoryOffset > inventory.size()) {
+                                inventoryId = 0;
+                                if (!sendFrame(fd, 0x1, desktop::inventoryError(request.id))) return;
+                            } else {
+                                const size_t count = std::min<size_t>(400, inventory.size() - inventoryOffset);
+                                const bool done = inventoryOffset + count == inventory.size();
+                                const std::string response = desktop::inventoryChunk(request.id, request.offset,
+                                    std::string_view(inventory).substr(inventoryOffset, count), done);
+                                inventoryOffset += count;
+                                if (done) inventoryId = 0;
+                                if (!sendFrame(fd, 0x1, response)) return;
+                            }
+                        }
                     }
                 }
 #endif
@@ -399,6 +469,21 @@ void runConnection(Socket fd, bool &connected) {
             }
             nextCheck = std::chrono::steady_clock::now() + std::chrono::seconds(5);
         }
+#ifdef __linux__
+        if (std::chrono::steady_clock::now() >= nextRouteCheck) {
+            bool retry = false;
+            if (automaticConfigured) {
+                const bool ok = automatic.tick(&routing);
+                retry = !ok;
+                if (lastAutoStatus != static_cast<int>(ok)) {
+                    if (!sendFrame(fd, 0x1, desktop::autoStatus(ok))) return;
+                    lastAutoStatus = static_cast<int>(ok);
+                }
+            }
+            nextRouteCheck = std::chrono::steady_clock::now() +
+                (retry ? std::chrono::seconds(1) : std::chrono::seconds(5));
+        }
+#endif
     }
 }
 

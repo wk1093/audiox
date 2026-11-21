@@ -2,13 +2,281 @@
   'use strict';
 
   function create({ api, tab, host, os, capabilities, media, routing, routeForm,
-    stream, sink, routeSubmit, routeStatus, onDisconnect }) {
+    stream, sink, routeSubmit, routeStatus, inventory, inventoryRefresh,
+    inventoryStatus, inventoryList, autoRouting, autoForm, autoDirection, autoApp,
+    autoTarget, autoPair, autoAppPattern, autoTargetPattern, autoSubmit, virtualChannels,
+    autoStatus, autoRules, onDisconnect }) {
     let routeAvailable = false;
     let session = 0;
     let busy = false;
     let generation = 0;
+    let inventorySession = 0;
+    let inventoryGeneration = 0;
+    let inventoryTimer;
+    let nodes = [];
+    let autoSession = 0;
+    let autoGeneration = 0;
+    let autoTimer;
+    let rules = [];
+    let virtualEnabled = true;
+    let autoBusy = false;
     const showStatus = (text) => { if (routeStatus) routeStatus.textContent = text; };
 
+    function setOptions(element, entries, placeholder) {
+      const previous = element.value;
+      const options = entries.map(({ value, label }) => {
+        const option = root.document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        return option;
+      });
+      if (!options.length) {
+        const option = root.document.createElement('option');
+        option.value = '';
+        option.textContent = placeholder;
+        options.push(option);
+      }
+      element.replaceChildren(...options);
+      if (entries.some((entry) => entry.value === previous)) element.value = previous;
+    }
+
+    function refreshPairs() {
+      const node = nodes.find((item) => item['node.name'] === autoTarget.value);
+      let channels = node?.['audio.channels'];
+      if (!Number.isInteger(channels) && typeof node?.['audio.position'] === 'string') {
+        const positions = node['audio.position'].replace(/[\[\]]/g, '').split(/[,\s]+/).filter(Boolean);
+        channels = positions.length;
+      }
+      const entries = [];
+      if (Number.isInteger(channels) && channels > 0 && channels <= 32 && channels % 2 === 0)
+        for (let pair = 0; pair < channels / 2; pair++)
+          entries.push({ value: String(pair), label: `Channels ${pair * 2 + 1}/${pair * 2 + 2}` });
+      setOptions(autoPair, entries, 'No stereo pairs available');
+      autoSubmit.disabled = autoBusy || !autoApp.value || !autoTarget.value || !autoPair.value;
+    }
+
+    function refreshChoices() {
+      if (!autoForm) return;
+      const capture = autoDirection.value === 'c';
+      const appClass = capture ? 'Stream/Input/Audio' : 'Stream/Output/Audio';
+      const deviceClass = capture ? 'Audio/Source' : 'Audio/Sink';
+      const apps = new Map(), targets = new Map();
+      for (const node of nodes) {
+        if (node['media.class'] === appClass) {
+          const name = node['application.name'] || node['node.name'];
+          if (name) apps.set(name, { value: name, label: name });
+        } else if ((node['media.class'] === deviceClass ||
+                    node['media.class']?.startsWith(`${deviceClass}/`)) && node['node.name'] &&
+                   !node['node.name'].startsWith('audiox_auto_')) {
+          targets.set(node['node.name'], { value: node['node.name'],
+            label: node['node.description'] || node['node.name'] });
+        }
+      }
+      setOptions(autoApp, [...apps.values()], 'No active applications');
+      setOptions(autoTarget, [...targets.values()], 'No destinations');
+      refreshPairs();
+    }
+
+    function ruleText(list, enabled = virtualEnabled) {
+      const hex = (text) => [...new TextEncoder().encode(text)]
+        .map((byte) => byte.toString(16).padStart(2, '0')).join('');
+      return '# audiox desktop routes v1\n' + (enabled ? '' : '# virtual-channels off\n') + list.map((rule) =>
+        [rule.direction, rule.appRegex ? 'r' : 'e', rule.targetRegex ? 'r' : 'e',
+          String(rule.pair), hex(rule.app), hex(rule.target)].join('\t') + '\n').join('');
+    }
+
+    function parseRules(text) {
+      const lines = text.split('\n');
+      if (lines.shift() !== '# audiox desktop routes v1' || lines.pop() !== '') throw new Error('Invalid saved routing rules.');
+      virtualEnabled = lines[0] !== '# virtual-channels off';
+      if (!virtualEnabled) lines.shift();
+      if (virtualChannels) virtualChannels.checked = virtualEnabled;
+      const decode = (hex) => {
+        if (!/^(?:[0-9a-f]{2}){1,128}$/.test(hex)) throw new Error('Invalid saved routing name.');
+        return new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(hex.match(/../g), (byte) => parseInt(byte, 16)));
+      };
+      return lines.map((line) => {
+        const [direction, appMode, targetMode, pair, app, target, ...extra] = line.split('\t');
+        if (extra.length || !['p', 'c'].includes(direction) || !['e', 'r'].includes(appMode) ||
+            !['e', 'r'].includes(targetMode) || !/^(?:[0-9]|1[0-5])$/.test(pair))
+          throw new Error('Invalid saved routing rule.');
+        return { direction, appRegex: appMode === 'r', targetRegex: targetMode === 'r',
+          pair: Number(pair), app: decode(app), target: decode(target) };
+      });
+    }
+
+    function renderRules() {
+      const entries = rules.map((rule, index) => {
+        const item = root.document.createElement('li');
+        const text = root.document.createElement('span');
+        text.textContent = `${rule.direction === 'c' ? 'Capture' : 'Playback'}: ${rule.app}` +
+          `${rule.appRegex ? ' (pattern)' : ''} -> ${rule.target}${rule.targetRegex ? ' (pattern)' : ''}` +
+          `, channels ${rule.pair * 2 + 1}/${rule.pair * 2 + 2} `;
+        const remove = root.document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = 'Remove';
+        remove.disabled = autoBusy;
+        remove.addEventListener('click', () => { void saveRules(rules.filter((_, n) => n !== index)); });
+        item.append(text, remove);
+        return item;
+      });
+      autoRules.replaceChildren(...entries);
+    }
+
+    async function rulesRequest(url, options) {
+      const response = await api.request(url, { ...options, cache: 'no-store', signal: AbortSignal.timeout(15000) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `Request failed (${response.status}).`);
+      return data;
+    }
+
+    async function loadRules() {
+      if (!autoSession) return;
+      const current = ++autoGeneration;
+      root.clearTimeout(autoTimer);
+      autoBusy = true;
+      if (virtualChannels) virtualChannels.disabled = true;
+      refreshPairs();
+      try {
+        const data = await rulesRequest('/api/desktop/rules', { method: 'GET' });
+        if (current !== autoGeneration) return;
+        rules = parseRules(data.rules);
+        renderRules();
+        if (data.status === 'pending') {
+          autoStatus.textContent = 'Synchronizing rules with the desktop...';
+          autoTimer = root.setTimeout(loadRules, 500);
+          return;
+        }
+        if (data.status !== 'succeeded') throw new Error('Automatic routing is unavailable.');
+        autoStatus.textContent = data.routing_ok === false
+          ? 'A route could not be applied or restored. Check the companion logs, selected devices, and WirePlumber policy installation.'
+          : data.routing_ok === true ? 'Rules synchronized. Routes apply as matching streams appear.'
+            : 'Rules synchronized; waiting for the desktop to check routes.';
+        autoBusy = false;
+        if (virtualChannels) virtualChannels.disabled = false;
+        refreshPairs();
+        renderRules();
+        autoTimer = root.setTimeout(loadRules, 10000);
+      } catch (error) {
+        if (current === autoGeneration) {
+          autoStatus.textContent = error.message || 'Could not load routing rules.';
+          autoBusy = true;
+          if (virtualChannels) virtualChannels.disabled = true;
+          refreshPairs();
+          renderRules();
+          autoTimer = root.setTimeout(loadRules, 10000);
+        }
+      }
+    }
+
+    async function saveRules(next, enabled = virtualEnabled) {
+      if (!autoSession || autoBusy) return;
+      const current = ++autoGeneration;
+      root.clearTimeout(autoTimer);
+      const savedSession = autoSession;
+      autoBusy = true;
+      if (virtualChannels) virtualChannels.disabled = true;
+      refreshPairs();
+      renderRules();
+      autoStatus.textContent = 'Saving routing rules...';
+      try {
+        await rulesRequest(`/api/desktop/rules?session=${savedSession}`, {
+          method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body: ruleText(next, enabled),
+        });
+        if (current === autoGeneration) void loadRules();
+      } catch (error) {
+        if (current === autoGeneration) {
+          autoStatus.textContent = error.message || 'Could not save routing rules.';
+          autoBusy = false;
+          if (virtualChannels) { virtualChannels.checked = virtualEnabled; virtualChannels.disabled = false; }
+          refreshPairs();
+          renderRules();
+        }
+      }
+    }
+
+    function addRule(event) {
+      event.preventDefault();
+      if (!autoSession || autoBusy || !autoApp.value || !autoTarget.value || !autoPair.value) return;
+      const app = autoAppPattern.value || autoApp.value;
+      const target = autoTargetPattern.value || autoTarget.value;
+      if (rules.length >= 16 || new TextEncoder().encode(app).length > 128 ||
+          new TextEncoder().encode(target).length > 128) {
+        autoStatus.textContent = 'At most 16 rules are allowed; names and patterns must be at most 128 bytes.';
+        return;
+      }
+      void saveRules([...rules, { direction: autoDirection.value, app, target,
+        appRegex: !!autoAppPattern.value, targetRegex: !!autoTargetPattern.value, pair: Number(autoPair.value) }]);
+    }
+
+    autoForm?.addEventListener('submit', addRule);
+    virtualChannels?.addEventListener('change', () => {
+      void saveRules(rules, virtualChannels.checked);
+    });
+    autoDirection?.addEventListener('change', refreshChoices);
+    autoTarget?.addEventListener('change', refreshPairs);
+    async function refreshInventory() {
+      if (!inventorySession) return;
+      const current = ++inventoryGeneration;
+      const currentSession = inventorySession;
+      root.clearTimeout(inventoryTimer);
+      inventoryRefresh.disabled = true;
+      inventoryStatus.textContent = 'Discovering PipeWire nodes...';
+      try {
+        async function request(url, options) {
+          const response = await api.request(url, { ...options, cache: 'no-store', signal: AbortSignal.timeout(15000) });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || `Request failed (${response.status}).`);
+          return data;
+        }
+        const accepted = await request('/api/desktop/inventory', {
+          method: 'POST', body: new URLSearchParams({ session: String(currentSession) }).toString(),
+        });
+        if (!Number.isInteger(accepted.id) || accepted.id <= 0 || accepted.id > 4294967295)
+          throw new Error('Invalid discovery response.');
+        const deadline = Date.now() + 30000;
+        while (current === inventoryGeneration) {
+          const result = await request(`/api/desktop/inventory?id=${accepted.id}`, { method: 'GET' });
+          if (current !== inventoryGeneration) return;
+          if (result.id !== accepted.id) throw new Error('Invalid discovery result.');
+          if (result.status === 'succeeded') {
+            if (!Array.isArray(result.nodes) || !result.nodes.every((node) =>
+              node && Number.isInteger(node.id) &&
+              ['node.name', 'node.description', 'application.name', 'media.class'].every((key) =>
+                node[key] === undefined || typeof node[key] === 'string')))
+              throw new Error('Invalid discovery result.');
+            nodes = result.nodes;
+            const entries = nodes.map((node) => {
+              const label = node['application.name'] || node['node.description'] || node['node.name'] || '(unnamed)';
+              const name = node['node.name'] ? ` - ${node['node.name']}` : '';
+              const kind = node['media.class'] ? ` [${node['media.class']}]` : '';
+              return { value: String(node.id), label: `${label}${name}${kind}` };
+            });
+            setOptions(inventoryList, entries, 'No nodes found');
+            refreshChoices();
+            inventoryStatus.textContent = `${result.nodes.length} nodes found.`;
+            return;
+          }
+          if (result.status !== 'pending') throw new Error(`Discovery ${result.status}.`);
+          if (Date.now() >= deadline) throw new Error('Timed out waiting for discovery.');
+          await new Promise((resolve) => root.setTimeout(resolve, 300));
+        }
+      } catch (error) {
+        if (current === inventoryGeneration) {
+          nodes = [];
+          setOptions(inventoryList, [], 'Discovery failed');
+          refreshChoices();
+          inventoryStatus.textContent = error.message || 'Discovery failed.';
+        }
+      } finally {
+        if (current === inventoryGeneration) {
+          inventoryRefresh.disabled = false;
+          inventoryTimer = root.setTimeout(refreshInventory, 10000);
+        }
+      }
+    }
+
+    inventoryRefresh?.addEventListener('click', refreshInventory);
     async function route(event) {
       event.preventDefault();
       if (!routeAvailable || busy) return;
@@ -71,6 +339,37 @@
       tab.hidden = !connected;
       const canRoute = connected && hello.os === 'linux' && hello.capabilities.includes('route_stream') &&
         Number.isInteger(data.session) && data.session > 0 && data.session <= 4294967295;
+      const canDiscover = inventory && inventoryRefresh && inventoryStatus && inventoryList &&
+        connected && hello.os === 'linux' && hello.capabilities.includes('pipewire_nodes') &&
+        Number.isInteger(data.session) && data.session > 0 && data.session <= 4294967295;
+      if (inventory) inventory.hidden = !canDiscover;
+      if (inventorySession !== (canDiscover ? data.session : 0)) {
+        inventoryGeneration++;
+        root.clearTimeout(inventoryTimer);
+        nodes = [];
+        if (inventoryList && root.document) setOptions(inventoryList, [], 'No nodes found');
+        if (inventoryStatus) inventoryStatus.textContent = '';
+        if (inventoryRefresh) inventoryRefresh.disabled = false;
+        inventorySession = canDiscover ? data.session : 0;
+        if (inventorySession) void refreshInventory();
+      }
+      const canAuto = canDiscover && autoRouting && autoForm && autoDirection && autoApp && autoTarget &&
+        autoPair && autoAppPattern && autoTargetPattern && autoSubmit && autoStatus && autoRules &&
+        hello.capabilities.includes('auto_route');
+      if (autoRouting) autoRouting.hidden = !canAuto;
+      if (autoSession !== (canAuto ? data.session : 0)) {
+        autoGeneration++;
+        root.clearTimeout(autoTimer);
+        autoSession = canAuto ? data.session : 0;
+        rules = [];
+        autoBusy = true;
+        if (autoRules) autoRules.replaceChildren();
+        if (autoStatus) autoStatus.textContent = '';
+        if (canAuto) {
+          refreshChoices();
+          void loadRules();
+        }
+      }
       if (routing) routing.hidden = !canRoute;
       if (routeAvailable && (!canRoute || session !== data.session)) {
         generation++;
@@ -101,6 +400,16 @@
     const unobserve = api?.onConnectionChange?.((connected) => { if (!connected) update(null); });
     return () => {
       generation++;
+      inventoryGeneration++;
+      inventorySession = 0;
+      root.clearTimeout(inventoryTimer);
+      autoGeneration++;
+      autoSession = 0;
+      root.clearTimeout(autoTimer);
+      inventoryRefresh?.removeEventListener('click', refreshInventory);
+      autoForm?.removeEventListener('submit', addRule);
+      autoDirection?.removeEventListener('change', refreshChoices);
+      autoTarget?.removeEventListener('change', refreshPairs);
       routeForm?.removeEventListener('submit', route);
       unsubscribe?.();
       unobserve?.();

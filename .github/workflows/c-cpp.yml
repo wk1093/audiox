@@ -142,6 +142,13 @@ jobs:
           echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  $RUNNER_TEMP/appimagetool" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/appimagetool"
 
+      - name: Set up Linux Go toolchain
+        if: matrix.platform == 'linux'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: desktop/tray/go.sum
+
       - name: Set up Windows compiler
         if: matrix.platform == 'windows'
         uses: msys2/setup-msys2@v2
@@ -159,7 +166,9 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           make desktop-linux APPIMAGETOOL="$RUNNER_TEMP/appimagetool"
-          node --test tests/desktop/companion_test.js
+          (cd desktop/tray && dbus-run-session -- go test ./...)
+          node --test tests/desktop/companion_test.js tests/desktop/app_run_test.js
+          node --test tests/desktop/appimage_install_test.js tests/desktop/desktop_update_test.js
           out/desktop/audiox-companion-linux-x86_64.AppImage --appimage-extract-and-run --help
           (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/out/desktop/audiox-companion-linux-x86_64.AppImage" \
             --appimage-extract usr/lib/systemd/user/audiox-companion.service)

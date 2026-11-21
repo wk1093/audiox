@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <memory>
+#include <string>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -33,6 +34,8 @@ struct HttpServer;
 struct HttpTransport;
 
 enum class DesktopRouteState { Unknown, Pending, Succeeded, Failed, Disconnected, TimedOut };
+enum class DesktopInventoryState { Unknown, Pending, Succeeded, Failed, Disconnected, TimedOut };
+enum class DesktopRulesState { Unavailable, Pending, Succeeded, Failed };
 
 bool buildHttpEventJson(HttpServer *server, const char *topic,
                         char *out, size_t capacity, size_t *length);
@@ -74,6 +77,10 @@ struct HttpServer {
     int requestDesktopRoute(uint32_t stream, uint32_t sink, uint32_t *id = nullptr,
                             uint32_t session = 0);
     DesktopRouteState desktopRouteState(uint32_t id) const;
+    int requestDesktopInventory(uint32_t session, uint32_t *id);
+    DesktopInventoryState desktopInventory(uint32_t id, std::string &nodes) const;
+    DesktopRulesState desktopRules(std::string &text, int *routeStatus = nullptr) const;
+    int updateDesktopRules(uint32_t session, const std::string &text);
 
     int sendResponse(int cfd,
                      const char *status,

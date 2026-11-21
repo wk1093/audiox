@@ -13,6 +13,7 @@ inline constexpr uint32_t SCRIPTS_SCHEMA_VERSION = 1;
 inline constexpr uint32_t FX_PARAMS_SCHEMA_VERSION = 1;
 inline constexpr uint32_t VOLUMES_SCHEMA_VERSION = 1;
 inline constexpr uint32_t BLUETOOTH_PAIRED_SCHEMA_VERSION = 1;
+inline constexpr uint32_t DESKTOP_ROUTES_SCHEMA_VERSION = 1;
 
 enum class ConfigTextSchemaStatus {
     Legacy,
@@ -102,6 +103,9 @@ inline ConfigTextSchemaStatus checkNamedConfigSchema(const char *path, const cha
     else if (!strcmp(name, "scripts.txt")) { prefix = "# audiox scripts v"; version = SCRIPTS_SCHEMA_VERSION; }
     else if (!strcmp(name, "fx_params.txt")) { prefix = "# audiox fx params v"; version = FX_PARAMS_SCHEMA_VERSION; }
     else if (!strcmp(name, "volumes.txt")) { prefix = "# audiox volumes v"; version = VOLUMES_SCHEMA_VERSION; }
+    else if (!strcmp(name, "desktop-routes.txt")) {
+        prefix = "# audiox desktop routes v"; version = DESKTOP_ROUTES_SCHEMA_VERSION;
+    }
     else if (!strcmp(name, "bluetooth/paired.txt")) {
         prefix = "# audiox bluetooth paired v"; version = BLUETOOTH_PAIRED_SCHEMA_VERSION;
     }

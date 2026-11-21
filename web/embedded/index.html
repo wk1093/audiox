@@ -117,19 +117,35 @@
         <p>Media playback: <span id="desktop-media">Unavailable</span></p>
         <p class="small">Capabilities describe detected host support; not all host controls are implemented.</p>
       </section>
-      <section id="desktop-routing" class="card" hidden>
-        <h3>Move a Linux audio stream</h3>
-        <p class="small">On the desktop, run <code>pactl list sink-inputs</code> to find the application's
-          <code>Sink Input #</code> and <code>pactl list short sinks</code> for the destination sink ID.
-          IDs may change when audio devices or applications reconnect.</p>
-        <p class="small">This moves live audio. The companion attempts to restore its changes when it disconnects;
-          automatic app rules and USB channel-pair selection are not yet available.</p>
-        <form id="desktop-route-form">
-          <label>Stream ID <input id="desktop-route-stream" type="number" min="0" max="4294967295" step="1" required></label>
-          <label>Sink ID <input id="desktop-route-sink" type="number" min="0" max="4294967295" step="1" required></label>
-          <button id="desktop-route-submit" type="submit">Move stream</button>
+      <section id="desktop-inventory" class="card" hidden>
+        <h3>PipeWire nodes</h3>
+        <p class="small">Active application streams and other PipeWire nodes are refreshed automatically.
+          Select a node to inspect its name and type.</p>
+        <button id="desktop-inventory-refresh" type="button">Refresh nodes</button>
+        <p id="desktop-inventory-status" class="small" role="status" aria-live="polite"></p>
+        <label>Node <select id="desktop-inventory-list"></select></label>
+      </section>
+      <section id="desktop-auto-routing" class="card" hidden>
+        <h3>Automatic app routing</h3>
+        <label><input id="desktop-virtual-channels" type="checkbox" checked> Enable AudioX virtual stereo channels</label>
+        <p class="small">Choose an active application and destination. Rules stay on the Pi and apply
+          when the app reconnects. The companion attempts to restore streams when a rule is removed or
+          the desktop disconnects. The first matching rule takes priority.</p>
+        <form id="desktop-auto-form">
+          <label>Direction <select id="desktop-auto-direction"><option value="p">Playback</option><option value="c">Capture</option></select></label>
+          <label>Application <select id="desktop-auto-app" required></select></label>
+          <label>Destination <select id="desktop-auto-target" required></select></label>
+          <label>Stereo pair <select id="desktop-auto-pair" required></select></label>
+          <details>
+            <summary>Advanced name patterns</summary>
+            <p class="small">Optional POSIX extended regular expressions match substrings. Leave blank to use the selected exact name.</p>
+            <label>Application pattern <input id="desktop-auto-app-pattern" type="text"></label>
+            <label>Destination pattern <input id="desktop-auto-target-pattern" type="text"></label>
+          </details>
+          <button id="desktop-auto-submit" type="submit">Add rule</button>
         </form>
-        <p id="desktop-route-status" class="small" role="status" aria-live="polite"></p>
+        <p id="desktop-auto-status" class="small" role="status" aria-live="polite"></p>
+        <ul id="desktop-auto-rules"></ul>
       </section>
     </section>
 

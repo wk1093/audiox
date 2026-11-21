@@ -17,7 +17,8 @@
 
 namespace desktop {
 
-inline bool pactl(const std::vector<std::string> &arguments, int connection, std::string &output) {
+inline bool command(const char *program, const std::vector<std::string> &arguments, int connection,
+                    std::string &output, size_t maxOutput = 32768, unsigned timeoutMs = 2000) {
     int pipefd[2];
     if (pipe2(pipefd, O_CLOEXEC | O_NONBLOCK) != 0) return false;
     const pid_t child = fork();
@@ -35,24 +36,24 @@ inline bool pactl(const std::vector<std::string> &arguments, int connection, std
             _exit(127);
         close(pipefd[1]);
         std::vector<char *> argv;
-        argv.push_back(const_cast<char *>("pactl"));
+        argv.push_back(const_cast<char *>(program));
         for (const auto &argument : arguments) argv.push_back(const_cast<char *>(argument.c_str()));
         argv.push_back(nullptr);
-        execvp("pactl", argv.data());
+        execvp(program, argv.data());
         _exit(127);
     }
     close(pipefd[1]);
     output.clear();
     bool eof = false, exited = false, failed = false;
     int status = 0;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     while (!failed && !(eof && exited)) {
         char buffer[512];
         for (;;) {
             const ssize_t count = read(pipefd[0], buffer, sizeof(buffer));
             if (count > 0) {
                 output.append(buffer, static_cast<size_t>(count));
-                if (output.size() > 32768) { failed = true; break; }
+                if (output.size() > maxOutput) { failed = true; break; }
             } else if (count == 0) { eof = true; break; }
             else if (errno == EINTR) continue;
             else if (errno == EAGAIN || errno == EWOULDBLOCK) break;
@@ -74,6 +75,10 @@ inline bool pactl(const std::vector<std::string> &arguments, int connection, std
         while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
     }
     return !failed && exited && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+inline bool pactl(const std::vector<std::string> &arguments, int connection, std::string &output) {
+    return command("pactl", arguments, connection, output);
 }
 
 struct Stream {
@@ -129,6 +134,11 @@ public:
     ~Routing() { restore(); }
     Routing(const Routing &) = delete;
     Routing &operator=(const Routing &) = delete;
+
+    bool manages(unsigned streamId) const {
+        for (const auto &change : changes) if (change.stream == streamId) return true;
+        return false;
+    }
 
     bool move(unsigned streamId, unsigned sinkId) {
         std::vector<Stream> current;

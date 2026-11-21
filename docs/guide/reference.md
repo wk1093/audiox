@@ -137,6 +137,17 @@ and returns a route request ID. `GET /api/desktop/route?id=<id>` reports
 recent result is retained. The session must match the current connected
 desktop, preventing a delayed request from routing a replacement host.
 
+`POST /api/desktop/inventory` accepts `session=<session>` and returns a request
+ID when a Linux companion advertises `pipewire_nodes`. Poll
+`GET /api/desktop/inventory?id=<id>` for `pending`, `succeeded`, `failed`,
+`disconnected`, or `timed_out`. A successful result contains `nodes`, an array
+of PipeWire node IDs and available `node.name`, `node.description`, `node.nick`,
+`application.name`, `application.id`, `media.class`, and `object.serial`
+properties. The inventory is a bounded snapshot and may become stale as the
+desktop changes; only the most recent request is retained. It is cleared when
+the companion disconnects or loses the capability.
+`object.serial` is a decimal string to preserve 64-bit values.
+
 For example, these **read-only** requests inspect the running device:
 
 ```sh

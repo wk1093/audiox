@@ -4,8 +4,8 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart="%h/.local/bin/audiox-companion.AppImage" --appimage-extract-and-run
-Restart=on-failure
+ExecStart="%h/.local/share/audiox/audiox-desktop"
+Restart=always
 RestartSec=5
 
 [Install]

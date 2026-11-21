@@ -1,6 +1,8 @@
 #include "http/context.hpp"
 #include "http/websocket.hpp"
 #include "desktop/routing.hpp"
+#include "desktop/json.hpp"
+#include "desktop/config.hpp"
 #include <limits.h>
 #include "http/ffmpeg.hpp"
 #include "audio/context.hpp"
@@ -115,6 +117,8 @@ struct HttpTransport {
     int rebootCommand{};
     uint64_t rebootAt{};
     bool desktopCanRoute{};
+    bool desktopCanDiscover{};
+    bool desktopCanAutoRoute{};
     uint32_t desktopSession{};
     bool routePending{};
     bool routeSent{};
@@ -122,6 +126,21 @@ struct HttpTransport {
     desktop::RouteCommand route{};
     uint64_t routeDeadline{};
     DesktopRouteState routeState{DesktopRouteState::Unknown};
+    bool inventoryPending{};
+    bool inventorySent{};
+    uint32_t inventorySequence{};
+    uint32_t inventoryId{};
+    uint64_t inventoryDeadline{};
+    std::string inventory;
+    DesktopInventoryState inventoryState{DesktopInventoryState::Unknown};
+    std::string rules;
+    bool rulesValid{};
+    bool rulesPending{}, rulesSent{};
+    uint32_t rulesId{};
+    size_t rulesOffset{}, rulesExpected{};
+    uint64_t rulesDeadline{};
+    DesktopRulesState rulesState{DesktopRulesState::Unavailable};
+    int autoStatus{-1};
 };
 
 #define HTTP_REQ_MAX 65536
@@ -366,7 +385,8 @@ static bool desktopToken(const char *text, size_t length, size_t limit) {
 }
 
 static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *media = nullptr,
-                              bool *canRoute = nullptr) {
+                              bool *canRoute = nullptr, bool *canDiscover = nullptr,
+                              bool *canAutoRoute = nullptr) {
     if (!data || !length || length > 1024) return false;
     SubscriptionParser parser{reinterpret_cast<const char *>(data),
                               reinterpret_cast<const char *>(data) + length};
@@ -375,6 +395,8 @@ static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *
     bool closed = false;
     DesktopMedia parsedMedia = DesktopMedia::Unavailable;
     bool parsedRoute = false;
+    bool parsedDiscover = false;
+    bool parsedAutoRoute = false;
     for (unsigned i = 0; i < 5; ++i) {
         const char *key, *value;
         size_t keyLength, valueLength;
@@ -398,6 +420,8 @@ static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *
                 if (++count > 16 || !parser.string(&value, &valueLength) ||
                     !desktopToken(value, valueLength, 32)) return false;
                 if (valueLength == 12 && !memcmp(value, "route_stream", 12)) parsedRoute = true;
+                if (valueLength == 14 && !memcmp(value, "pipewire_nodes", 14)) parsedDiscover = true;
+                if (valueLength == 10 && !memcmp(value, "auto_route", 10)) parsedAutoRoute = true;
             }
         } else {
             if (!parser.string(&value, &valueLength)) return false;
@@ -419,6 +443,8 @@ static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *
     if (parser.cursor != parser.end) return false;
     if (media) *media = parsedMedia;
     if (canRoute) *canRoute = parsedRoute;
+    if (canDiscover) *canDiscover = parsedDiscover;
+    if (canAutoRoute) *canAutoRoute = parsedAutoRoute;
     return true;
 }
 
@@ -504,19 +530,108 @@ static bool receiveWebSocket(HttpWebSocketClient *client, uint64_t now, HttpServ
                     transport.routePending = transport.routeSent = false;
                     continue;
                 }
+                uint32_t ackId, ackOffset;
+                bool ackOk;
+                bool autoOk;
+                if (desktop::parseAutoStatus(
+                        std::string_view(reinterpret_cast<const char *>(payload), frame.length), autoOk)) {
+                    std::lock_guard<std::mutex> lock(desktopServer->transport->mutex);
+                    if (!client->desktopIdentified || !desktopServer->transport->desktopCanAutoRoute) return false;
+                    if (!desktopServer->transport->rulesPending)
+                        desktopServer->transport->autoStatus = autoOk ? 1 : 0;
+                    continue;
+                }
+                if (desktop::parseRulesAck(
+                        std::string_view(reinterpret_cast<const char *>(payload), frame.length),
+                        ackId, ackOffset, ackOk)) {
+                    std::lock_guard<std::mutex> lock(desktopServer->transport->mutex);
+                    auto &transport = *desktopServer->transport;
+                    if (!transport.rulesPending || !transport.rulesSent || ackId != transport.rulesId ||
+                        (ackOk && ackOffset != transport.rulesExpected)) return false;
+                    transport.rulesSent = false;
+                    if (!ackOk) {
+                        printf("[HTTP] [WARN] Desktop rejected automatic routing rules\n");
+                        transport.rulesPending = false;
+                        transport.rulesState = DesktopRulesState::Failed;
+                    } else {
+                        transport.rulesOffset = ackOffset;
+                        if (transport.rulesOffset == transport.rules.size()) {
+                            transport.rulesPending = false;
+                            transport.rulesState = DesktopRulesState::Succeeded;
+                        }
+                    }
+                    continue;
+                }
+                uint32_t inventoryId, inventoryOffset;
+                bool inventoryDone;
+                std::string inventoryBytes;
+                const std::string_view message(reinterpret_cast<const char *>(payload), frame.length);
+                const bool inventoryError = desktop::parseInventoryError(message, inventoryId);
+                const bool inventoryChunk = !inventoryError && desktop::parseInventoryChunk(
+                    message, inventoryId, inventoryOffset, inventoryBytes, inventoryDone);
+                if (inventoryError || inventoryChunk) {
+                    std::lock_guard<std::mutex> lock(desktopServer->transport->mutex);
+                    auto &transport = *desktopServer->transport;
+                    if (!transport.inventoryPending || !transport.inventorySent ||
+                        transport.inventoryId != inventoryId) return false;
+                    transport.inventorySent = false;
+                    if (inventoryError) {
+                        printf("[HTTP] [WARN] Desktop discovery failed\n");
+                        transport.inventory.clear();
+                        transport.inventoryPending = false;
+                        transport.inventoryState = DesktopInventoryState::Failed;
+                    } else {
+                        if (inventoryOffset != transport.inventory.size() ||
+                            transport.inventory.size() + inventoryBytes.size() > 262145) return false;
+                        transport.inventory += inventoryBytes;
+                        if (inventoryDone) {
+                            transport.inventoryPending = false;
+                            desktop::JsonCursor parser(transport.inventory);
+                            std::string_view value;
+                            if (!parser.next(value) || !parser.finished() || value.empty() || value.front() != '[') {
+                                printf("[HTTP] [WARN] Invalid desktop discovery response\n");
+                                transport.inventory.clear();
+                                transport.inventoryState = DesktopInventoryState::Failed;
+                            } else transport.inventoryState = DesktopInventoryState::Succeeded;
+                        }
+                    }
+                    continue;
+                }
                 DesktopMedia media;
-                bool canRoute;
-                if (!parseDesktopHello(payload, frame.length, &media, &canRoute)) return false;
+                bool canRoute, canDiscover, canAutoRoute;
+                if (!parseDesktopHello(payload, frame.length, &media, &canRoute, &canDiscover, &canAutoRoute)) return false;
                 {
                     std::lock_guard<std::mutex> lock(desktopServer->transport->mutex);
                     if (!client->desktopIdentified && ++desktopServer->transport->desktopSession == 0)
                         ++desktopServer->transport->desktopSession;
                     desktopServer->transport->desktopCanRoute = canRoute;
+                    desktopServer->transport->desktopCanDiscover = canDiscover;
+                    if (canAutoRoute && !desktopServer->transport->desktopCanAutoRoute &&
+                        desktopServer->transport->rulesValid) {
+                        if (++desktopServer->transport->rulesId == 0) ++desktopServer->transport->rulesId;
+                        desktopServer->transport->rulesOffset = 0;
+                        desktopServer->transport->rulesPending = true;
+                        desktopServer->transport->rulesSent = false;
+                        desktopServer->transport->rulesState = DesktopRulesState::Pending;
+                        desktopServer->transport->autoStatus = -1;
+                    } else if (!canAutoRoute && desktopServer->transport->desktopCanAutoRoute) {
+                        desktopServer->transport->rulesPending = desktopServer->transport->rulesSent = false;
+                        desktopServer->transport->rulesState = DesktopRulesState::Unavailable;
+                    }
+                    desktopServer->transport->desktopCanAutoRoute = canAutoRoute;
                     if (!canRoute && desktopServer->transport->routePending &&
                         !desktopServer->transport->routeSent) {
                         printf("[HTTP] [WARN] Desktop route request cancelled: capability unavailable\n");
                         desktopServer->transport->routePending = false;
                         desktopServer->transport->routeState = DesktopRouteState::Failed;
+                    }
+                    if (!canDiscover && (desktopServer->transport->inventoryPending ||
+                        desktopServer->transport->inventoryState == DesktopInventoryState::Succeeded)) {
+                        printf("[HTTP] [WARN] Desktop discovery cancelled: capability unavailable\n");
+                        desktopServer->transport->inventoryPending = false;
+                        desktopServer->transport->inventorySent = false;
+                        desktopServer->transport->inventoryState = DesktopInventoryState::Failed;
+                        desktopServer->transport->inventory.clear();
                     }
                 }
                 desktopServer->desktopMedia.store(media);
@@ -2210,6 +2325,39 @@ static void pollDesktopWebSocket(HttpServer *server, uint64_t now) {
                 transport.routeDeadline = now + 10000;
             }
         }
+        if (ok && transport.inventoryPending && now >= transport.inventoryDeadline) {
+            printf("[HTTP] [WARN] Desktop discovery timed out\n");
+            transport.inventoryState = DesktopInventoryState::TimedOut;
+            ok = false;
+        } else if (ok && transport.inventoryPending && !transport.inventorySent &&
+                   client.outputSize == client.outputOffset && !client.closeAfterFlush) {
+            const desktop::InventoryCommand request{
+                transport.inventoryId, static_cast<uint32_t>(transport.inventory.size())};
+            const std::string command = desktop::inventoryCommand(request);
+            ok = queueWebSocketFrame(&client, 0x1, command.data(), command.size());
+            if (ok) {
+                transport.inventorySent = true;
+                transport.inventoryDeadline = now + 10000;
+            }
+        }
+        if (ok && transport.rulesPending && transport.rulesSent && now >= transport.rulesDeadline) {
+            printf("[HTTP] [WARN] Desktop automatic routing update timed out\n");
+            transport.rulesState = DesktopRulesState::Failed;
+            ok = false;
+        } else if (ok && transport.rulesPending && !transport.rulesSent &&
+                   client.outputSize == client.outputOffset && !client.closeAfterFlush) {
+            const size_t count = std::min<size_t>(400, transport.rules.size() - transport.rulesOffset);
+            const bool done = transport.rulesOffset + count == transport.rules.size();
+            const std::string command = desktop::encodeChunk("rules_chunk", transport.rulesId,
+                static_cast<uint32_t>(transport.rulesOffset),
+                std::string_view(transport.rules).substr(transport.rulesOffset, count), done);
+            ok = queueWebSocketFrame(&client, 0x1, command.data(), command.size());
+            if (ok) {
+                transport.rulesExpected = transport.rulesOffset + count;
+                transport.rulesSent = true;
+                transport.rulesDeadline = now + 10000;
+            }
+        }
     }
     if (ok && !client.pingAtMs && now - client.lastActivityMs >= 5000 &&
         client.outputSize == client.outputOffset) {
@@ -2226,6 +2374,17 @@ static void pollDesktopWebSocket(HttpServer *server, uint64_t now) {
                 server->transport->routeState = DesktopRouteState::Disconnected;
             server->transport->routePending = server->transport->routeSent = false;
             server->transport->desktopCanRoute = false;
+            if ((server->transport->inventoryPending ||
+                 server->transport->inventoryState == DesktopInventoryState::Succeeded) &&
+                server->transport->inventoryState != DesktopInventoryState::TimedOut)
+                server->transport->inventoryState = DesktopInventoryState::Disconnected;
+            server->transport->inventoryPending = server->transport->inventorySent = false;
+            server->transport->desktopCanDiscover = false;
+            server->transport->inventory.clear();
+            server->transport->desktopCanAutoRoute = false;
+            server->transport->rulesPending = server->transport->rulesSent = false;
+            server->transport->rulesState = DesktopRulesState::Unavailable;
+            server->transport->autoStatus = -1;
         }
         server->desktopMedia.store(DesktopMedia::Unavailable);
         if (client.desktopIdentified) publishDesktopStatus(server);
@@ -2561,6 +2720,58 @@ DesktopRouteState HttpServer::desktopRouteState(uint32_t id) const {
     return transport->route.id == id ? transport->routeState : DesktopRouteState::Unknown;
 }
 
+int HttpServer::requestDesktopInventory(uint32_t session, uint32_t *id) {
+    if (!transport || !session || !id) return RET_WARN;
+    std::lock_guard<std::mutex> lock(transport->mutex);
+    if (!transport->desktopCanDiscover || transport->inventoryPending ||
+        session != transport->desktopSession) return RET_WARN;
+    if (++transport->inventorySequence == 0) ++transport->inventorySequence;
+    transport->inventoryId = transport->inventorySequence;
+    transport->inventory.clear();
+    transport->inventoryPending = true;
+    transport->inventorySent = false;
+    transport->inventoryDeadline = httpMonotonicMs() + 10000;
+    transport->inventoryState = DesktopInventoryState::Pending;
+    *id = transport->inventoryId;
+    return RET_OK;
+}
+
+DesktopInventoryState HttpServer::desktopInventory(uint32_t id, std::string &nodes) const {
+    if (!transport || !id) return DesktopInventoryState::Unknown;
+    std::lock_guard<std::mutex> lock(transport->mutex);
+    if (transport->inventoryId != id) return DesktopInventoryState::Unknown;
+    if (transport->inventoryState == DesktopInventoryState::Succeeded)
+        nodes = transport->inventory;
+    return transport->inventoryState;
+}
+
+DesktopRulesState HttpServer::desktopRules(std::string &text, int *routeStatus) const {
+    if (!transport) return DesktopRulesState::Unavailable;
+    std::lock_guard<std::mutex> lock(transport->mutex);
+    if (!transport->rulesValid) return DesktopRulesState::Failed;
+    text = transport->rules;
+    if (routeStatus) *routeStatus = transport->autoStatus;
+    return transport->rulesState;
+}
+
+int HttpServer::updateDesktopRules(uint32_t session, const std::string &text) {
+    if (!transport || !session) return RET_WARN;
+    std::vector<desktop::Rule> parsed;
+    if (!desktop::parseRules(text, parsed)) return RET_ERR;
+    std::lock_guard<std::mutex> lock(transport->mutex);
+    if (!transport->desktopCanAutoRoute || session != transport->desktopSession ||
+        transport->rulesPending) return RET_WARN;
+    if (!transport->rulesValid || !desktop::saveRules(text)) return RET_ERR;
+    transport->rules = text;
+    if (++transport->rulesId == 0) ++transport->rulesId;
+    transport->rulesOffset = 0;
+    transport->rulesPending = true;
+    transport->rulesSent = false;
+    transport->rulesState = DesktopRulesState::Pending;
+    transport->autoStatus = -1;
+    return RET_OK;
+}
+
 HttpServer::~HttpServer() {
     if (transport) {
         transport->stopping.store(true);
@@ -2623,6 +2834,7 @@ int HttpServer::startSocket() {
     }
 
     transport = std::make_unique<HttpTransport>();
+    transport->rulesValid = desktop::loadRules(transport->rules);
     const int error = pthread_create(&transport->thread, nullptr, runHttpTransport, this);
     if (error) {
         printf("[INIT] [ERR] HTTP transport thread failed: %s\n", strerror(error));

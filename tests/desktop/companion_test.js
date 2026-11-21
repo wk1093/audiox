@@ -34,8 +34,16 @@ test('companion announces detected capabilities, responds to ping, and reconnect
   });
   if (!windows) {
     fs.writeFileSync(path.join(dir, 'wpctl'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(dir, 'pw-loopback'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(dir, 'pw-metadata'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     fs.writeFileSync(path.join(dir, 'pactl'), `#!/bin/sh
 case "$1 $2 $3" in
+  '-f json info')
+    [ -f "$XDG_RUNTIME_DIR/json-enabled" ] || exit 1
+    printf '{"cookie":"test"}\\n' ;;
+  '-f json list')
+    [ -f "$XDG_RUNTIME_DIR/json-enabled" ] || exit 1
+    printf '[]\\n' ;;
   'list short sink-inputs')
     IFS= read -r sink < "$XDG_RUNTIME_DIR/sink"
     IFS= read -r client < "$XDG_RUNTIME_DIR/client"
@@ -51,6 +59,20 @@ esac
 `, { mode: 0o755 });
     fs.writeFileSync(path.join(dir, 'sink'), '1\n');
     fs.writeFileSync(path.join(dir, 'client'), '-\n');
+    fs.writeFileSync(path.join(dir, 'pw-dump'), `#!/bin/sh
+IFS= read -r data < "$XDG_RUNTIME_DIR/nodes"
+printf '%s' "$data"
+`, { mode: 0o755 });
+    const nodes = [
+      { id: 21, type: 'PipeWire:Interface:Node', info: { props: {
+        'node.name': 'player"\\名字', 'application.name': 'Music ♪', 'media.class': 'Stream/Output/Audio',
+        'object.serial': 555, 'node.description': 'a'.repeat(500),
+      } } },
+      { id: 22, type: 'PipeWire:Interface:Node', info: { props: { 'node.name': 'usb.sink', 'media.class': 'Audio/Sink' } } },
+      { id: 23, type: 'PipeWire:Interface:Port', info: { props: { 'node.name': 'ignored' } } },
+    ];
+    fs.writeFileSync(path.join(dir, 'nodes'),
+      JSON.stringify(nodes).replace('"object.serial":555', '"object.serial":18446744073709551615') + '\n');
     fs.writeFileSync(path.join(dir, 'playerctl'), `#!/bin/sh
 IFS= read -r status < "$XDG_RUNTIME_DIR/media-status"
 case "$status" in
@@ -121,8 +143,65 @@ esac
   assert.equal(first.opcode, 1);
   assert.equal(first.masked, true);
   const firstHello = JSON.parse(first.payload);
-  assert.deepEqual(firstHello.capabilities, windows ? ['default_sink'] : ['pipewire', 'default_sink', 'route_stream']);
+  assert.deepEqual(firstHello.capabilities, windows ? ['default_sink'] :
+    ['pipewire', 'default_sink', 'route_stream', 'pipewire_nodes', 'auto_route']);
   if (!windows) {
+    const sendText = (text) => {
+      const payload = Buffer.from(text);
+      const header = payload.length < 126 ? Buffer.from([0x81, payload.length]) :
+        Buffer.from([0x81, 126, payload.length >> 8, payload.length & 255]);
+      first.socket.write(Buffer.concat([header, payload]));
+    };
+    const sendRules = async (id, text) => {
+      const bytes = Buffer.from(text);
+      for (let offset = 0; offset < bytes.length;) {
+        const chunk = bytes.subarray(offset, offset + 400);
+        const done = offset + chunk.length === bytes.length;
+        const response = once(events, 'frame');
+        sendText(JSON.stringify({ type: 'rules_chunk', id, offset, data: chunk.toString('hex'), done }));
+        offset += chunk.length;
+        assert.deepEqual(JSON.parse((await response)[0].payload), { type: 'rules_ack', id, offset, ok: true });
+      }
+    };
+    const rule = `p\te\te\t1\t${Buffer.from('app'.repeat(20)).toString('hex')}\t${Buffer.from('sink').toString('hex')}\n`;
+    await sendRules(1, '# audiox desktop routes v1\n' + rule.repeat(4));
+    const failedRules = once(events, 'frame');
+    assert.deepEqual(JSON.parse((await failedRules)[0].payload), { type: 'auto_status', ok: false });
+    fs.writeFileSync(path.join(dir, 'json-enabled'), '');
+    await sendRules(2, '# audiox desktop routes v1\n');
+    const clearedRules = once(events, 'frame');
+    assert.deepEqual(JSON.parse((await clearedRules)[0].payload), { type: 'auto_status', ok: true });
+    const badRules = once(events, 'frame');
+    sendText(JSON.stringify({ type: 'rules_chunk', id: 3, offset: 0,
+      data: Buffer.from('unsupported').toString('hex'), done: true }));
+    assert.deepEqual(JSON.parse((await badRules)[0].payload), { type: 'rules_ack', id: 3, offset: 0, ok: false });
+    let offset = 0;
+    const chunks = [];
+    do {
+      const response = once(events, 'frame');
+      const payload = Buffer.from(`{"type":"inventory","id":9,"offset":${offset}}`);
+      first.socket.write(Buffer.concat([Buffer.from([0x81, payload.length]), payload]));
+      const result = JSON.parse((await response)[0].payload);
+      assert.equal(result.type, 'inventory_chunk');
+      assert.equal(result.id, 9);
+      assert.equal(result.offset, offset);
+      const bytes = Buffer.from(result.data, 'hex');
+      chunks.push(bytes);
+      offset += bytes.length;
+      if (result.done) break;
+    } while (offset < 10000);
+    const inventory = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    assert.equal(inventory.length, 2);
+    assert.equal(inventory[0]['node.name'], 'player"\\名字');
+    assert.equal(inventory[0]['application.name'], 'Music ♪');
+    assert.equal(inventory[0]['object.serial'], '18446744073709551615');
+    assert.equal(inventory[1]['node.name'], 'usb.sink');
+    assert.ok(offset > 400, 'inventory crosses a frame boundary');
+    fs.writeFileSync(path.join(dir, 'nodes'), '[invalid]\n');
+    const failure = once(events, 'frame');
+    const invalidRequest = Buffer.from('{"type":"inventory","id":10,"offset":0}');
+    first.socket.write(Buffer.concat([Buffer.from([0x81, invalidRequest.length]), invalidRequest]));
+    assert.deepEqual(JSON.parse((await failure)[0].payload), { type: 'inventory_error', id: 10 });
     const route = async (id, sink, ok, stream = 11) => {
       const response = once(events, 'frame');
       const payload = Buffer.from(`{"type":"route","id":${id},"stream":${stream},"sink":${sink}}`);
@@ -145,7 +224,7 @@ esac
     const ready = Buffer.from('{"type":"ready","protocol":"audiox.desktop.v1","media_status":true}');
     first.socket.write(Buffer.concat([Buffer.from([0x81, ready.length]), ready]));
     const mediaHello = JSON.parse((await updated)[0].payload);
-    assert.deepEqual(mediaHello.capabilities, ['pipewire', 'default_sink', 'route_stream', 'mpris']);
+    assert.deepEqual(mediaHello.capabilities, ['pipewire', 'default_sink', 'route_stream', 'pipewire_nodes', 'auto_route', 'mpris']);
     assert.equal(mediaHello.media, 'playing');
   }
 

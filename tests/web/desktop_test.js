@@ -2,6 +2,22 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { create } = require('../../web/embedded/desktop.js');
 
+function element() {
+  return {
+    value: '', textContent: '', children: [], listeners: {},
+    addEventListener(name, fn) { this.listeners[name] = fn; },
+    removeEventListener(name) { delete this.listeners[name]; },
+    replaceChildren(...children) { this.children = children; this.value = children[0]?.value || ''; },
+    append(...children) { this.children.push(...children); },
+  };
+}
+
+function documentForTest(t) {
+  const previous = globalThis.document;
+  globalThis.document = { createElement: element };
+  t.after(() => { globalThis.document = previous; });
+}
+
 test('desktop page follows connection and displays detected capabilities as text', () => {
   const tab = { hidden: true };
   const host = { textContent: '' };
@@ -104,4 +120,132 @@ test('a late route response cannot update a replacement desktop', async () => {
   assert.equal(routeSubmit.disabled, false);
   assert.equal(stream.value, '');
   assert.equal(sink.value, '');
+});
+
+test('discovery displays names as text and discards results from an old desktop', async (t) => {
+  documentForTest(t);
+  let event, resolveResult, refresh;
+  const pending = new Promise((resolve) => { resolveResult = resolve; });
+  const inventory = {}, inventoryRefresh = {
+    addEventListener(name, listener) { refresh = listener; },
+    removeEventListener() {},
+  }, inventoryStatus = {}, inventoryList = element();
+  const api = {
+    subscribe(topic, listener) { event = listener; },
+    request(url) {
+      if (url === '/api/desktop/inventory')
+        return Promise.resolve({ ok: true, json: async () => ({ id: 1 }) });
+      return pending;
+    },
+  };
+  const dispose = create({ api, tab: {}, host: {}, os: {}, capabilities: {}, media: {},
+    inventory, inventoryRefresh, inventoryStatus, inventoryList, onDisconnect() {} });
+  const hello = { hostname: 'pc', os: 'linux', capabilities: ['pipewire_nodes'] };
+  event({ connected: true, session: 1, hello });
+  assert.equal(inventory.hidden, false);
+  assert.equal(inventoryRefresh.disabled, true);
+  await Promise.resolve();
+  await Promise.resolve();
+  event({ connected: false });
+  resolveResult({ ok: true, json: async () => ({ id: 1, status: 'succeeded',
+    nodes: [{ id: 7, 'node.name': '<node>', 'application.name': '<app>' }] }) });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(inventory.hidden, true);
+  assert.equal(inventoryList.children[0].textContent, 'No nodes found');
+  assert.equal(inventoryStatus.textContent, '');
+  assert.equal(typeof refresh, 'function');
+  dispose();
+});
+
+test('discovery renders available nodes without interpreting names as markup', async (t) => {
+  documentForTest(t);
+  let event;
+  const inventoryList = element(), inventoryStatus = {};
+  const api = {
+    subscribe(topic, listener) { event = listener; },
+    async request(url) {
+      return { ok: true, async json() {
+        return url.includes('?') ? { id: 1, status: 'succeeded', nodes: [
+          { id: 7, 'node.name': '<node>', 'application.name': '<app>', 'media.class': 'Stream/Output/Audio' },
+        ] } : { id: 1 };
+      } };
+    },
+  };
+  const dispose = create({ api, tab: {}, host: {}, os: {}, capabilities: {}, media: {},
+    inventory: {}, inventoryRefresh: { addEventListener() {}, removeEventListener() {} },
+    inventoryStatus, inventoryList, onDisconnect() {} });
+  event({ connected: true, session: 1,
+    hello: { hostname: 'pc', os: 'linux', capabilities: ['pipewire_nodes'] } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(inventoryList.children[0].textContent, '<app> - <node> [Stream/Output/Audio]');
+  assert.equal(inventoryStatus.textContent, '1 nodes found.');
+  dispose();
+});
+
+test('automatic rules select discovered apps, devices and stereo pairs', async (t) => {
+  documentForTest(t);
+  let event, saved = '# audiox desktop routes v1\n';
+  const requests = [];
+  const api = {
+    subscribe(topic, listener) { event = listener; },
+    async request(url, options) {
+      requests.push({ url, options });
+      if (url.startsWith('/api/desktop/rules?')) saved = options.body;
+      return { ok: true, async json() {
+        if (url.startsWith('/api/desktop/rules')) return { status: 'succeeded', routing_ok: true, rules: saved };
+        if (!url.includes('?')) return { id: 1 };
+        return { id: 1, status: 'succeeded', nodes: [
+          { id: 5, 'media.class': 'Stream/Output/Audio', 'application.name': 'Music', 'node.name': 'music' },
+          { id: 6, 'media.class': 'Audio/Sink', 'node.name': 'usb.sink', 'node.description': 'USB',
+            'audio.channels': 4 },
+          { id: 7, 'media.class': 'Stream/Input/Audio', 'application.name': 'Recorder' },
+          { id: 8, 'media.class': 'Audio/Source/Virtual', 'node.name': 'virtual.source',
+            'audio.channels': 2 },
+          { id: 9, 'media.class': 'Audio/Source/Virtual', 'node.name': 'audiox_auto_1_1',
+            'audio.channels': 2 },
+        ] };
+      } };
+    },
+  };
+  const autoDirection = element(), autoForm = element(), autoApp = element(), autoTarget = element();
+  const autoPair = element(), autoRules = element(), autoStatus = element(), autoSubmit = element();
+  const virtualChannels = element();
+  autoDirection.value = 'p';
+  const dispose = create({ api, tab: {}, host: {}, os: {}, capabilities: {}, media: {},
+    inventory: {}, inventoryRefresh: element(), inventoryStatus: element(), inventoryList: element(),
+    autoRouting: {}, autoForm, autoDirection, autoApp, autoTarget, autoPair,
+    autoAppPattern: element(), autoTargetPattern: element(), autoSubmit, autoStatus, autoRules, virtualChannels,
+    onDisconnect() {} });
+  event({ connected: true, session: 8, hello: { hostname: 'pc', os: 'linux',
+    capabilities: ['pipewire_nodes', 'auto_route'] } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(virtualChannels.checked, true);
+  virtualChannels.checked = false;
+  virtualChannels.listeners.change();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(saved, '# audiox desktop routes v1\n# virtual-channels off\n');
+  assert.equal(virtualChannels.checked, false);
+  virtualChannels.checked = true;
+  virtualChannels.listeners.change();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(saved, '# audiox desktop routes v1\n');
+  assert.equal(autoApp.value, 'Music');
+  assert.equal(autoTarget.value, 'usb.sink');
+  assert.deepEqual(autoPair.children.map((option) => option.textContent), ['Channels 1/2', 'Channels 3/4']);
+  autoPair.value = '1';
+  autoForm.listeners.submit({ preventDefault() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(saved, /\np\te\te\t1\t4d75736963\t7573622e73696e6b\n$/);
+  assert.ok(requests.some((entry) => entry.url === '/api/desktop/rules?session=8' && entry.options.method === 'PUT'));
+  assert.match(autoRules.children[0].children[0].textContent, /channels 3\/4/);
+  autoRules.children[0].children[1].listeners.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(saved, '# audiox desktop routes v1\n');
+  autoDirection.value = 'c';
+  autoDirection.listeners.change();
+  assert.equal(autoApp.value, 'Recorder');
+  assert.equal(autoTarget.value, 'virtual.source');
+  assert.equal(autoTarget.children.length, 1);
+  assert.deepEqual(autoPair.children.map((option) => option.textContent), ['Channels 1/2']);
+  dispose();
 });

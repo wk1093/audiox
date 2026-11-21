@@ -2538,10 +2538,12 @@ int main() {
 
     {
         HttpServer storageServer(&app);
-        auto desktopRequest = [&](const char *method, const char *body, const char *query = nullptr) {
+        auto desktopRequest = [&](const char *method, const char *body, const char *query = nullptr,
+                                  bool inventory = false) {
             int sockets[2];
             assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
-            assert(handleDesktopRoute(&storageServer, sockets[0], method, body, strlen(body), query) == 0);
+            assert((inventory ? handleDesktopInventory(&storageServer, sockets[0], method, body, strlen(body), query) :
+                    handleDesktopRoute(&storageServer, sockets[0], method, body, strlen(body), query)) == 0);
             assert(shutdown(sockets[0], SHUT_WR) == 0);
             std::string response;
             char buffer[1024];
@@ -2557,6 +2559,9 @@ int main() {
         assert(desktopRequest("POST", "stream=1&sink=2&session=1").find("409 Conflict") != std::string::npos);
         assert(desktopRequest("GET", "", "id=1").find("404 Not Found") != std::string::npos);
         assert(desktopRequest("GET", "", "id=0").find("400 Bad Request") != std::string::npos);
+        assert(desktopRequest("POST", "session=0", nullptr, true).find("400 Bad Request") != std::string::npos);
+        assert(desktopRequest("POST", "session=1", nullptr, true).find("409 Conflict") != std::string::npos);
+        assert(desktopRequest("GET", "", "id=1", true).find("404 Not Found") != std::string::npos);
         auto request = [&](const char *method, const char *path) {
             int sockets[2];
             assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);

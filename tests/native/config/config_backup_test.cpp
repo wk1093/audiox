@@ -29,7 +29,7 @@ namespace {
 const char *const names[] = {
     "config.txt", "config.staging.txt", "routing.txt", "midi_map.txt",
     "fx_params.txt", "volumes.txt", "bluetooth", "sfx", "scenes",
-    "scripts.txt", "scripts",
+    "scripts.txt", "scripts", "desktop-routes.txt",
 };
 
 fs::path live(const fs::path &root, const std::string &name) {
@@ -86,6 +86,7 @@ void fixture(const fs::path &root) {
     put(root / "config/midi_map.txt", "note_map=36,kick.wav\nfx_state=fx_7,cut,1\n");
     put(root / "config/fx_params.txt", "fx_param=fx_7,channels,6\n");
     put(root / "config/volumes.txt", "usb_0=0.75\n");
+    put(root / "config/desktop-routes.txt", "# audiox desktop routes v1\np\te\te\t1\t617070\t757362\n");
     put(root / "config/bluetooth/paired.txt", "00:11:22:33:44:55 0123456789abcdef0123456789abcdef 4 Headphones\n");
     put(root / "config/scripts.txt", "# audiox scripts v1\nmacro=test\n");
     put(root / "config/scripts/nested/data.bin", "script data");

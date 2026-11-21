@@ -28,6 +28,7 @@ int captureBackupReboot(int command) {
 #define reboot captureBackupReboot
 #define statvfs(...) captureStatvfs(__VA_ARGS__)
 #include "../../../src/http/server.cpp"
+#include "../../../desktop/src/auto_routing.hpp"
 #undef reboot
 #undef statvfs
 
@@ -138,6 +139,28 @@ void pumpUntil(HttpServer &server, const std::function<bool()> &done) {
 }
 
 void testTransport(const char *upgrade, const std::string &badArchive) {
+    desktop::Rule matchRule;
+    matchRule.app = "usic";
+    matchRule.target = "usb";
+    matchRule.appRegex = true;
+    matchRule.targetRegex = true;
+    matchRule.pair = 1;
+    std::vector<desktop::Rule> parsedRules;
+    assert(desktop::parseRules(desktop::rulesText({matchRule}), parsedRules));
+    assert(desktop::ruleMatches(parsedRules[0].app, true, "Music player"));
+    assert(!desktop::ruleMatches(parsedRules[0].app, false, "Music player"));
+    assert(desktop::virtualChannelsEnabled(desktop::rulesText({matchRule})));
+    const std::string disabledRules = std::string(desktop::rulesHeader) +
+        desktop::virtualChannelsOff + desktop::ruleLine(matchRule);
+    assert(desktop::parseRules(disabledRules, parsedRules) && parsedRules.size() == 1);
+    assert(!desktop::virtualChannelsEnabled(disabledRules));
+    matchRule.app = "[";
+    assert(!desktop::parseRules(desktop::rulesText({matchRule}), parsedRules));
+    assert(!desktop::parseRules("# audiox desktop routes v2\n", parsedRules));
+    std::string decoded;
+    assert(desktop::jsonString(R"("music \u00e9 \ud83c\udfb5 \"\\")", decoded));
+    assert(decoded == "music \xc3\xa9 \xf0\x9f\x8e\xb5 \"\\");
+    assert(!desktop::jsonString(R"("\ud800")", decoded));
     HttpServer server(nullptr);
     server.listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     assert(server.listen_fd >= 0);
@@ -149,6 +172,8 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
     assert(getsockname(server.listen_fd, reinterpret_cast<sockaddr *>(&local), &localSize) == 0);
     assert(listen(server.listen_fd, 4) == 0);
     server.transport = std::make_unique<HttpTransport>();
+    server.transport->rulesValid = desktop::loadRules(server.transport->rules);
+    assert(server.transport->rulesValid);
     assert(pthread_create(&server.transport->thread, nullptr, runHttpTransport, &server) == 0);
     server.transport->running = true;
 
@@ -226,7 +251,7 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
         return response.find("Sec-WebSocket-Protocol: audiox.desktop.v1") != std::string::npos;
     });
     assert(server.requestDesktopRoute(11, 2) == RET_WARN);
-    const std::string hello = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["pipewire","default_sink","route_stream"]})";
+    const std::string hello = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["pipewire","default_sink","route_stream","pipewire_nodes","auto_route"]})";
     assert(parseDesktopHello(reinterpret_cast<const uint8_t *>(hello.data()), hello.size()));
     const std::string mediaHello = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["mpris"],"media":"playing"})";
     assert(parseDesktopHello(reinterpret_cast<const uint8_t *>(mediaHello.data()), mediaHello.size()));
@@ -236,13 +261,54 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
     assert(!parseDesktopHello(reinterpret_cast<const uint8_t *>(duplicateMedia.data()), duplicateMedia.size()));
     const std::string badHello = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["bad\"value"]})";
     assert(!parseDesktopHello(reinterpret_cast<const uint8_t *>(badHello.data()), badHello.size()));
-    std::string helloFrame{char(0x81), char(0x80 | hello.size()), 1, 2, 3, 4};
-    for (size_t i = 0; i < hello.size(); ++i) helloFrame += char(hello[i] ^ helloFrame[2 + i % 4]);
+    assert(hello.size() >= 126 && hello.size() <= 65535);
+    std::string helloFrame{char(0x81), char(0xfe), char(hello.size() >> 8), char(hello.size()), 1, 2, 3, 4};
+    for (size_t i = 0; i < hello.size(); ++i) helloFrame += char(hello[i] ^ helloFrame[4 + i % 4]);
     sendBytes(desktop, helloFrame);
     readUntil(ws, [](const auto &response) {
         return response.find("\"hostname\":\"workstation\"") != std::string::npos &&
             response.find("\"default_sink\"") != std::string::npos;
     });
+    const auto sendDesktopText = [&](int fd, const std::string &message) {
+        assert(message.size() < 126);
+        std::string packet{char(0x81), char(0x80 | message.size()), 1, 2, 3, 4};
+        for (size_t i = 0; i < message.size(); ++i) packet += char(message[i] ^ packet[2 + i % 4]);
+        sendBytes(fd, packet);
+    };
+    readUntil(desktop, [](const auto &response) { return response.find("\"type\":\"rules_chunk\"") != std::string::npos; });
+    sendDesktopText(desktop, desktop::rulesAck(1, strlen(desktop::rulesHeader), true));
+    std::string savedRules;
+    pumpUntil(server, [&]() { return server.desktopRules(savedRules) == DesktopRulesState::Succeeded; });
+    desktop::Rule newRule;
+    newRule.app = "Audio player";
+    newRule.target = "usb.sink";
+    newRule.pair = 1;
+    const std::string newRules = desktop::rulesText({newRule});
+    assert(server.updateDesktopRules(2, newRules) == RET_WARN);
+    assert(server.updateDesktopRules(1, newRules) == RET_OK);
+    assert(get("config/desktop-routes.txt") == newRules);
+    readUntil(desktop, [](const auto &response) { return response.find("\"type\":\"rules_chunk\"") != std::string::npos; });
+    sendDesktopText(desktop, desktop::rulesAck(2, static_cast<uint32_t>(newRules.size()), true));
+    pumpUntil(server, [&]() { return server.desktopRules(savedRules) == DesktopRulesState::Succeeded; });
+    assert(savedRules == newRules);
+    uint32_t inventoryId = 0;
+    std::string inventory;
+    assert(server.requestDesktopInventory(2, &inventoryId) == RET_WARN);
+    assert(server.requestDesktopInventory(1, &inventoryId) == RET_OK);
+    assert(server.desktopInventory(inventoryId, inventory) == DesktopInventoryState::Pending);
+    readUntil(desktop, [](const auto &response) {
+        return response.find(R"({"type":"inventory","id":1,"offset":0})") != std::string::npos;
+    });
+    const std::string nodes = R"([{"id":7,"node.name":"m\u00fasica"}])";
+    sendDesktopText(desktop, desktop::inventoryChunk(inventoryId, 0, std::string_view(nodes).substr(0, 10), false));
+    readUntil(desktop, [](const auto &response) {
+        return response.find(R"({"type":"inventory","id":1,"offset":10})") != std::string::npos;
+    });
+    sendDesktopText(desktop, desktop::inventoryChunk(inventoryId, 10, std::string_view(nodes).substr(10), true));
+    pumpUntil(server, [&]() {
+        return server.desktopInventory(inventoryId, inventory) == DesktopInventoryState::Succeeded;
+    });
+    assert(inventory == nodes);
     uint32_t routeId = 0;
     assert(server.requestDesktopRoute(11, 2, &routeId, 2) == RET_WARN);
     assert(server.requestDesktopRoute(11, 2, &routeId, 1) == RET_OK);
@@ -276,10 +342,15 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
         return response.find("\"media\":\"playing\"") != std::string::npos;
     });
     assert(server.desktopMedia.load() == DesktopMedia::Playing);
+    assert(server.desktopInventory(inventoryId, inventory) == DesktopInventoryState::Failed);
     expect(request(desktopUpgrade), "400 Bad Request");
+    sendBytes(desktop, helloFrame);
+    readUntil(ws, [](const auto &response) { return response.find("\"pipewire_nodes\"") != std::string::npos; });
+    assert(server.requestDesktopInventory(1, &inventoryId) == RET_OK);
     close(desktop);
     readUntil(ws, [](const auto &response) { return response.find("\"connected\":false") != std::string::npos; });
     assert(server.desktopMedia.load() == DesktopMedia::Unavailable);
+    assert(server.desktopInventory(inventoryId, inventory) == DesktopInventoryState::Disconnected);
     const std::string browserDesktopUpgrade = desktopUpgrade.substr(0, desktopUpgrade.size() - 2) +
         "Origin: http://localhost\r\n\r\n";
     expect(request(browserDesktopUpgrade), "400 Bad Request");
@@ -287,6 +358,12 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
     readUntil(replacement, [](const auto &response) { return response.find("101 Switching Protocols") != std::string::npos; });
     sendBytes(replacement, helloFrame);
     readUntil(ws, [](const auto &response) { return response.find("\"hostname\":\"workstation\"") != std::string::npos; });
+    readUntil(replacement, [](const auto &response) {
+        return response.find(R"({"type":"rules_chunk","id":4,")") != std::string::npos;
+    });
+    sendDesktopText(replacement, desktop::rulesAck(4, static_cast<uint32_t>(newRules.size()), true));
+    pumpUntil(server, [&]() { return server.desktopRules(savedRules) == DesktopRulesState::Succeeded; });
+    assert(savedRules == newRules);
     assert(server.requestDesktopRoute(11, 4, &routeId, 1) == RET_WARN);
     assert(server.requestDesktopRoute(11, 4, &routeId, 2) == RET_OK);
     assert(server.desktopRouteState(2) == DesktopRouteState::Unknown);
@@ -310,6 +387,83 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
             _exit(127);
         }
         readUntil(ws, [](const auto &response) { return response.find("\"connected\":true") != std::string::npos; });
+        if (getenv("AUDIOX_DESKTOP_DISCOVERY_TEST")) {
+            uint32_t liveSession;
+            {
+                std::lock_guard<std::mutex> lock(server.transport->mutex);
+                liveSession = server.transport->desktopSession;
+            }
+            uint32_t liveId;
+            assert(server.requestDesktopInventory(liveSession, &liveId) == RET_OK);
+            std::string liveNodes;
+            pumpUntil(server, [&]() {
+                const auto state = server.desktopInventory(liveId, liveNodes);
+                assert(state == DesktopInventoryState::Pending || state == DesktopInventoryState::Succeeded);
+                return state == DesktopInventoryState::Succeeded;
+            });
+            assert(liveNodes.find("\"node.name\":\"test_quad\"") != std::string::npos);
+            std::string currentRules;
+            pumpUntil(server, [&]() {
+                return server.desktopRules(currentRules) == DesktopRulesState::Succeeded;
+            });
+            std::vector<desktop::PulseStream> beforePlayback, beforeCapture;
+            assert(desktop::pulseStreams(-1, false, beforePlayback));
+            assert(desktop::pulseStreams(-1, true, beforeCapture));
+            const auto findStream = [](const std::vector<desktop::PulseStream> &streams, const char *name) {
+                for (const auto &stream : streams) if (stream.app == name) return stream;
+                assert(false);
+                return desktop::PulseStream{};
+            };
+            const auto playback = findStream(beforePlayback, "AudioX isolated test");
+            const auto capture = findStream(beforeCapture, "AudioX capture test");
+            desktop::Rule playbackRule, captureRule;
+            playbackRule.app = playback.app;
+            playbackRule.target = "test_quad";
+            playbackRule.pair = 1;
+            captureRule.capture = true;
+            captureRule.app = capture.app;
+            captureRule.target = "test_quad.monitor";
+            captureRule.pair = 1;
+            assert(server.updateDesktopRules(liveSession, desktop::rulesText({playbackRule, captureRule})) == RET_OK);
+            pumpUntil(server, [&]() { return server.desktopRules(currentRules) == DesktopRulesState::Succeeded; });
+            const auto waitRoutes = [&](bool moved) {
+                const uint64_t deadline = httpMonotonicMs() + 25000;
+                for (;;) {
+                    std::vector<desktop::PulseStream> currentPlayback, currentCapture;
+                    assert(desktop::pulseStreams(-1, false, currentPlayback));
+                    assert(desktop::pulseStreams(-1, true, currentCapture));
+                    const auto p = findStream(currentPlayback, "AudioX isolated test");
+                    const auto c = findStream(currentCapture, "AudioX capture test");
+                    if ((p.destination != playback.destination) == moved &&
+                        (c.destination != capture.destination) == moved) break;
+                    if (httpMonotonicMs() >= deadline) {
+                        std::fprintf(stderr, "desktop routes moved=%d playback=%u/%u capture=%u/%u\n",
+                                     moved, p.destination, playback.destination,
+                                     c.destination, capture.destination);
+                        assert(false);
+                    }
+                    usleep(100000);
+                }
+            };
+            waitRoutes(true);
+            std::string links;
+            assert(desktop::command("pw-link", {"-l"}, -1, links));
+            const auto hasAutoLink = [&](const char *prefix, const char *suffix) {
+                for (size_t pos = links.find(prefix); pos != std::string::npos; pos = links.find(prefix, pos + 1)) {
+                    const size_t end = links.find('\n', pos);
+                    const size_t found = links.find(suffix, pos);
+                    if (end != std::string::npos && found != std::string::npos && found < end) return true;
+                }
+                return false;
+            };
+            assert(hasAutoLink("output.audiox_auto_", ":output_RL\n  |-> test_quad:playback_RL"));
+            assert(hasAutoLink("output.audiox_auto_", ":output_RR\n  |-> test_quad:playback_RR"));
+            assert(hasAutoLink("input.audiox_auto_", ":input_RL\n  |<- test_quad:monitor_RL"));
+            assert(hasAutoLink("input.audiox_auto_", ":input_RR\n  |<- test_quad:monitor_RR"));
+            assert(server.updateDesktopRules(liveSession, desktop::rulesHeader) == RET_OK);
+            pumpUntil(server, [&]() { return server.desktopRules(currentRules) == DesktopRulesState::Succeeded; });
+            waitRoutes(false);
+        }
         assert(kill(child, SIGTERM) == 0);
         int status = 0;
         assert(waitpid(child, &status, 0) == child);

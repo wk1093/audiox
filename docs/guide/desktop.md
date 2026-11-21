@@ -5,18 +5,22 @@ network. When connected, the WebUI shows a **Desktop** page with the host name,
 operating system, and detected capabilities. The page disappears on disconnect.
 Only one companion can be connected at a time.
 
-This is an early version: automatic app routing, audio device controls, media
-controls, shortcuts, and the system tray are not implemented yet. On Linux,
-experimental manual stream routing is available in the Desktop page and via
-`desktop.route`; see the [Lua API](/lua/api#desktop-stream-routing). On Linux, `pipewire` indicates a
+This is an early version: audio device controls, media controls, and shortcuts
+are not implemented yet. On Linux, the Desktop page supports
+automatic playback and capture routing without scripts. On Linux, `pipewire` indicates a
 detected PipeWire socket, and `default_sink` additionally requires `wpctl` on
 the service's PATH. On Windows, `default_sink` indicates platform support.
 Detection does not guarantee that the host audio service accepts a command.
-The `route_stream` capability requires `pactl` on the companion's PATH.
+The `route_stream` capability requires `pactl` on the companion's PATH, and
+`auto_route` also requires `pw-dump`, `pw-loopback`, and `pw-metadata`.
 On Linux, if `playerctl` is on PATH, the page also reports the aggregate MPRIS
 playback status. Any playing player takes precedence over paused or stopped
 players. No players and query errors are shown separately. Lua scripts can read
 the status with `desktop.media_status()` and `desktop.is_playing()`.
+
+When `pw-dump` is available on Linux, the Desktop page also lists PipeWire
+nodes, including active application streams. The dropdowns refresh automatically
+and can be refreshed manually.
 
 ## Connecting
 
@@ -30,30 +34,42 @@ To try a different IPv4 address or port without saving settings, run the
 executable with `--host <IPv4-address> --port <port>`. The Pi's HTTP service
 normally listens only on its USB network address.
 
-## Testing Linux stream routing
+## Automatic Linux app routing
 
-Start audio playback on the desktop, then run:
+Start playback or capture in the application, open **Desktop**, and select the
+direction, application, destination, and stereo pair. Select **Add rule**.
+For a four-channel USB device, channels 3/4 select its second stereo pair.
+The application must have an active audio stream when you create the rule;
+afterwards the companion reapplies it when matching streams appear.
 
-```sh
-pactl list sink-inputs
-pactl list short sinks
-```
+With **Enable AudioX virtual stereo channels** on (the default), each stereo
+pair on an AudioX USB device is also exposed as a separate desktop device,
+such as **AudioX Channel 1** and **AudioX Channel 2**. Select these directly
+in applications or in EasyEffects. The setting is stored on the Pi. Virtual
+devices exist while the companion is connected; disabling them or disconnecting
+the companion removes them, and applications may fall back to another device.
 
-Find the desired application in the sink-input listing and use the number
-after `Sink Input #` as the stream ID. In the Desktop page's **Move a Linux
-audio stream** section, enter that ID and the first column of the destination
-sink listing as the sink ID. Select **Move stream** and check the result.
-This changes live playback; choose a stream and destination you are prepared to
-move. IDs can change when applications or devices reconnect. If the section
-doesn't appear, check that the companion is connected, PipeWire is running,
-and `pactl` is on its PATH.
+Rules are stored on the Pi and included in configuration backups. They apply
+to any connected Linux desktop with matching names. The first matching rule
+wins. Exact names are case-sensitive; the optional advanced patterns are POSIX
+extended regular expressions and match substrings. A destination pattern must
+match exactly one device. At most 16 rules and 32 active automatic moves are
+supported. A destination must expose an even channel map; unavailable devices,
+invalid pairs, and routing failures are reported in the page and companion logs.
 
-The companion attempts to restore its moves on disconnect or termination,
-unless the stream has since been moved elsewhere. Restoration is best-effort,
-not guaranteed after a crash, audio server restart, or device removal.
-Manual routing rejects streams without a PulseAudio client identity because
-the companion cannot safely identify them for restoration.
-The page does not yet discover names or save automatic routing rules.
+The companion uses PipeWire loopbacks for AudioX stereo pairs and PulseAudio
+remap modules for other destinations. The Linux AppImage automatically installs
+the WirePlumber 0.5 routing policy to apply AudioX app rules before initial
+linking; it also protects internal remap streams from being redirected by
+other applications. Installation or upgrades restart the active WirePlumber
+user service and briefly interrupt audio.
+See the [companion README](../../desktop/README.md#wireplumber-routing-policy).
+It attempts to restore streams when a rule is removed or the connection closes,
+without overwriting a stream that was moved elsewhere. Restoration is best-effort
+and cannot be guaranteed after a crash, audio-server restart, or device removal.
+Manual Lua moves cannot override streams currently managed by an automatic rule.
+
+## Lua stream routing
 
 For custom automation, scripts can use the same IDs with
 `desktop.route(stream_id, sink_id)`. For example, replace the numbers below
@@ -75,25 +91,19 @@ hook("run", function()
 end)
 ```
 
-## Linux user service
+## Linux installation and tray
 
-The Linux release AppImage includes an optional systemd user unit. To install
-it, run the following in an empty directory, substituting your downloaded
-AppImage path:
+Running the release AppImage installs a user-local copy, launcher, and systemd
+user unit. On first launch, choose whether to enable the unit at login in the
+browser page; it is not enabled automatically. The launcher uses AppImage
+extraction, so a FUSE mount is not required.
 
-```sh
-mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user"
-install -m 755 /path/to/audiox-companion-linux-x86_64.AppImage "$HOME/.local/bin/audiox-companion.AppImage"
-"$HOME/.local/bin/audiox-companion.AppImage" --appimage-extract usr/lib/systemd/user/audiox-companion.service
-install -m 644 squashfs-root/usr/lib/systemd/user/audiox-companion.service "$HOME/.config/systemd/user/"
-systemctl --user daemon-reload
-systemctl --user enable --now audiox-companion.service
-```
-
-The unit uses AppImage extraction at launch, so a FUSE mount is not required.
+Right-click the AudioX tray icon to open the Pi, configure login startup, or
+update the desktop and connected Pi together. The update page lets you select
+stable or nightly and confirm the Pi reboot; it verifies both downloads before
+uploading firmware. See the [companion README](../../desktop/README.md#linux-installation-and-updates).
 Use `systemctl --user status audiox-companion.service` and
 `journalctl --user -u audiox-companion.service` to inspect its status and logs.
-Stop and disable it with `systemctl --user disable --now audiox-companion.service`.
 
 Windows releases provide an executable; an installer is not yet available.
 macOS releases provide an unsigned Apple Silicon archive and have not yet been

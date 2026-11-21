@@ -4,6 +4,7 @@
 #include "http/diagnostic_summary.hpp"
 #include "http/scenes.hpp"
 #include "desktop/routing.hpp"
+#include "desktop/rules.hpp"
 #include "hardware_telemetry.hpp"
 #include "system_history.hpp"
 #include "usage_telemetry.hpp"
@@ -4877,6 +4878,85 @@ static int handleDesktopRoute(HttpServer *server, int cfd, const char *method,
     return sendMethodNotAllowed(server, cfd);
 }
 
+static int handleDesktopInventory(HttpServer *server, int cfd, const char *method,
+                                  const char *body, size_t bodyLength, const char *query) {
+    auto reply = [&](const char *status, const std::string &text) {
+        return server->sendResponseWithHeaders(cfd, status, "application/json", text.data(),
+                                               text.size(), nullptr, "Cache-Control: no-store\r\n");
+    };
+    if (!strcmp(method, "POST")) {
+        std::string_view input(body ? body : "", body ? bodyLength : 0);
+        uint32_t session, id;
+        if (!desktop::consume(input, "session=") || !desktop::number(input, session) ||
+            !session || !input.empty())
+            return reply("400 Bad Request", "{\"error\":\"Invalid desktop session.\"}");
+        if (server->requestDesktopInventory(session, &id) != RET_OK)
+            return reply("409 Conflict", "{\"error\":\"Desktop changed, discovery is unavailable, or another request is pending.\"}");
+        return reply("202 Accepted", "{\"id\":" + std::to_string(id) + "}");
+    }
+    if (!strcmp(method, "GET")) {
+        std::string_view input(query ? query : "");
+        uint32_t id;
+        if (!desktop::consume(input, "id=") || !desktop::number(input, id) || !id || !input.empty())
+            return reply("400 Bad Request", "{\"error\":\"Invalid request ID.\"}");
+        std::string nodes;
+        const char *status;
+        switch (server->desktopInventory(id, nodes)) {
+        case DesktopInventoryState::Pending: status = "pending"; break;
+        case DesktopInventoryState::Succeeded:
+            return reply("200 OK", "{\"id\":" + std::to_string(id) +
+                         ",\"status\":\"succeeded\",\"nodes\":" + nodes + "}");
+        case DesktopInventoryState::Failed: status = "failed"; break;
+        case DesktopInventoryState::Disconnected: status = "disconnected"; break;
+        case DesktopInventoryState::TimedOut: status = "timed_out"; break;
+        default: return reply("404 Not Found", "{\"error\":\"Discovery result is unavailable or was replaced.\"}");
+        }
+        return reply("200 OK", "{\"id\":" + std::to_string(id) + ",\"status\":\"" + status + "\"}");
+    }
+    return sendMethodNotAllowed(server, cfd);
+}
+
+static int handleDesktopRules(HttpServer *server, int cfd, const char *method,
+                              const char *body, size_t bodyLength, const char *query) {
+    auto reply = [&](const char *status, const std::string &text) {
+        return server->sendResponseWithHeaders(cfd, status, "application/json", text.data(),
+                                               text.size(), nullptr, "Cache-Control: no-store\r\n");
+    };
+    if (!strcmp(method, "GET")) {
+        std::string text;
+        int routeStatus = -1;
+        const char *state;
+        switch (server->desktopRules(text, &routeStatus)) {
+        case DesktopRulesState::Pending: state = "pending"; break;
+        case DesktopRulesState::Succeeded: state = "succeeded"; break;
+        case DesktopRulesState::Failed:
+            return reply("500 Internal Server Error", "{\"error\":\"Routing rules are invalid, unreadable, or were rejected.\"}");
+        default: state = "unavailable"; break;
+        }
+        return reply("200 OK", "{\"status\":\"" + std::string(state) +
+                     "\",\"routing_ok\":" + (routeStatus < 0 ? "null" : routeStatus ? "true" : "false") +
+                     ",\"rules\":\"" + audiox::json::escape(text.c_str()) + "\"}");
+    }
+    if (!strcmp(method, "PUT")) {
+        std::string_view input(query ? query : "");
+        uint32_t session;
+        if (!desktop::consume(input, "session=") || !desktop::number(input, session) ||
+            !session || !input.empty() || !body || bodyLength > 16384)
+            return reply("400 Bad Request", "{\"error\":\"Invalid desktop session or rules.\"}");
+        const std::string text(body, bodyLength);
+        std::vector<desktop::Rule> parsed;
+        if (!desktop::parseRules(text, parsed))
+            return reply("400 Bad Request", "{\"error\":\"Invalid routing rules or regular expression.\"}");
+        const int result = server->updateDesktopRules(session, text);
+        if (result == RET_WARN)
+            return reply("409 Conflict", "{\"error\":\"Desktop changed, routing is unavailable, or rules are being synchronized.\"}");
+        if (result != RET_OK)
+            return reply("500 Internal Server Error", "{\"error\":\"Could not save routing rules.\"}");
+        return reply("202 Accepted", "{\"status\":\"pending\"}");
+    }
+    return sendMethodNotAllowed(server, cfd);
+}
+
 } // namespace
 
 bool buildHttpEventJson(HttpServer *server, const char *topic,
@@ -6048,6 +6128,10 @@ int handleApiRequest(HttpServer *server,
 	}
 	if (!strcmp(path, "/api/desktop/route"))
 		return handleDesktopRoute(server, cfd, method, body, body_len, query);
+	if (!strcmp(path, "/api/desktop/inventory"))
+		return handleDesktopInventory(server, cfd, method, body, body_len, query);
+	if (!strcmp(path, "/api/desktop/rules"))
+		return handleDesktopRules(server, cfd, method, body, body_len, query);
 	if (!strcmp(path, "/api/plugins") || !strncmp(path, "/api/plugins/", 13))
 	    return handlePlugins(server, cfd, method, path, body, body_len);
 

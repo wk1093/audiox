@@ -24,7 +24,7 @@ namespace {
 const char *const roots[] = {
     "config.txt", "config.staging.txt", "routing.txt", "midi_map.txt",
     "fx_params.txt", "volumes.txt", "bluetooth", "sfx", "scenes",
-    "scripts.txt", "scripts",
+    "scripts.txt", "scripts", "desktop-routes.txt",
 };
 constexpr size_t rootCount = sizeof(roots) / sizeof(roots[0]);
 constexpr uint64_t configMax = 1024 * 1024;
@@ -141,6 +141,9 @@ int validateConfigVersion(const char *root, const char *name, Error &error) {
     } else if (!strcmp(name, "scripts.txt")) {
         prefix = "# audiox scripts v";
         supportedVersion = SCRIPTS_SCHEMA_VERSION;
+    } else if (!strcmp(name, "desktop-routes.txt")) {
+        prefix = "# audiox desktop routes v";
+        supportedVersion = DESKTOP_ROUTES_SCHEMA_VERSION;
     }
     ConfigTextSchemaStatus status =
         checkConfigTextSchema(file, prefix, supportedVersion);

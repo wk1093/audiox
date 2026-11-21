@@ -122,7 +122,7 @@ RUNTIME_LIBS += $(LUA_STATIC_LIB) -lm
 AUDIOX_VERSION_MAJOR ?= 2
 AUDIOX_VERSION_MINOR ?= 0
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.6
+AUDIOX_VERSION_PRERELEASE ?= beta.7
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
 $(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
@@ -348,9 +348,12 @@ BOOTLOADER_DEPS_FILES := $(BOOTLOADER_OBJS:.o=.d)
 
 all: initramfs
 
-.PHONY: desktop-linux desktop-windows desktop-macos desktop-clean
+.PHONY: desktop-linux desktop-update desktop-windows desktop-macos desktop-clean
 desktop-linux:
 	$(MAKE) -C desktop linux
+
+desktop-update:
+	$(MAKE) -C desktop linux-update
 
 desktop-windows:
 	$(MAKE) -C desktop windows

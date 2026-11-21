@@ -59,6 +59,7 @@ test-build-dependencies:
 	bash tests/build/build_dependencies_test.sh
 	bash tests/build/build_parallelism_test.sh
 	bash tests/build/graph_llvm_release_test.sh
+	bash tests/build/dev_target_test.sh
 
 .PHONY: test-image-layout
 test-native: test-image-layout

@@ -994,9 +994,11 @@ upload_update: update_archive
 	@echo "Update upload complete. Device will install the staged runtime and reboot."
 
 dev: $(BOOT_CONFIG_FILE) $(BOOT_CMDLINE_FILE)
+	@bash "$(TOOLS_DIR)/dev/check_target_board.sh" "$(AUDIOX_BOARD)" "$(PI_HOST)" "$(PI_PORT)" "$(CONFIG_BOARD_PI4)" "$(CONFIG_BOARD_PI5)"
 	@$(MAKE) fetch_deps
 	@$(MAKE) initramfs
 	@$(MAKE) boot_config
+	@bash "$(TOOLS_DIR)/dev/check_target_board.sh" "$(AUDIOX_BOARD)" "$(PI_HOST)" "$(PI_PORT)" "$(CONFIG_BOARD_PI4)" "$(CONFIG_BOARD_PI5)"
 	@echo "Uploading kernel to http://$(PI_HOST):$(PI_PORT)/api/boot/kernel ..."
 	@status=$$(curl --silent --show-error --output "$(OUT_DIR)/dev-kernel.response" --write-out "%{http_code}" -X PUT --data-binary @"$(BOOT_KERNEL_FILE)" "http://$(PI_HOST):$(PI_PORT)/api/boot/kernel?name=$(KERNEL_IMAGE)") || { cat "$(OUT_DIR)/dev-kernel.response"; exit 1; }; \
 	cat "$(OUT_DIR)/dev-kernel.response"; \

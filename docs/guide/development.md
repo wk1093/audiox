@@ -321,11 +321,17 @@ Back up [Config](/guide/config), confirm the destination board/model, and keep s
 
 | Command | Behavior |
 | --- | --- |
-| `make dev PI_HOST=audiox.local` | Fetches/builds matching components, uploads kernel, bootloader, command line, boot config, then runtime; final runtime staging triggers installation/reboots |
+| `make dev PI_HOST=audiox.local` | Checks the device hardware against the configured Pi 4/5 target before building and again before uploading kernel, bootloader, command line, boot config, then runtime; final runtime staging triggers installation/reboots |
 | `make upload_bootloader` | Replaces bootloader file; does not itself reboot |
 | `make upload_kernel` | Uploads configured kernel with its filename; does not itself reboot |
 | `make upload_cmdline` | Replaces single-line command line; does not itself reboot |
 | `make upload_ffmpeg` | Uploads converter to persistent storage |
+
+`make dev` requires `jq` and a reachable `/api/system/info` reporting a
+recognizable physical Pi 4/5 model. It stops if the model is unknown or
+conflicts with the board or build configuration. This check is not applied to
+the individual upload targets or card exports. Avoid switching devices during
+deployment.
 
 The separate targets do not ensure that an unrelated existing kernel/module/runtime set is compatible. Runtime-only `PUT /api/initram` is appropriate only when its boot/kernel prerequisites match.
 

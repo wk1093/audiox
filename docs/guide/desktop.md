@@ -63,7 +63,7 @@ the WirePlumber 0.5 routing policy to apply AudioX app rules before initial
 linking; it also protects internal remap streams from being redirected by
 other applications. Installation or upgrades restart the active WirePlumber
 user service and briefly interrupt audio.
-See the [companion README](../../desktop/README.md#wireplumber-routing-policy).
+See the [companion README](https://github.com/wk1093/audiox/blob/main/desktop/README.md#wireplumber-routing-policy).
 It attempts to restore streams when a rule is removed or the connection closes,
 without overwriting a stream that was moved elsewhere. Restoration is best-effort
 and cannot be guaranteed after a crash, audio-server restart, or device removal.
@@ -101,7 +101,7 @@ extraction, so a FUSE mount is not required.
 Right-click the AudioX tray icon to open the Pi, configure login startup, or
 update the desktop and connected Pi together. The update page lets you select
 stable or nightly and confirm the Pi reboot; it verifies both downloads before
-uploading firmware. See the [companion README](../../desktop/README.md#linux-installation-and-updates).
+uploading firmware. See the [companion README](https://github.com/wk1093/audiox/blob/main/desktop/README.md#linux-installation-and-updates).
 Use `systemctl --user status audiox-companion.service` and
 `journalctl --user -u audiox-companion.service` to inspect its status and logs.
 

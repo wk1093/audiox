@@ -113,6 +113,10 @@ func TestCombinedUpdateAndFailures(t *testing.T) {
 		if r.URL.Path == "/api/system/info" {
 			fmt.Fprint(w, `{"board":"pi4","version":"1.0.0"}`)
 		} else if r.URL.Path == "/api/update" {
+			if r.Method != http.MethodPut {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
 			uploads++
 			body, err := io.ReadAll(r.Body)
 			if err != nil || string(body) != string(firmware) || r.ContentLength != int64(len(firmware)) {
@@ -155,6 +159,62 @@ func TestCombinedUpdateAndFailures(t *testing.T) {
 	pi.Close()
 	if err := run(); err == nil || uploads != 2 {
 		t.Fatalf("disconnected Pi: err=%v uploads=%d", err, uploads)
+	}
+}
+
+func TestInstallDesktopRelease(t *testing.T) {
+	dir := t.TempDir()
+	images := filepath.Join(dir, "appimages")
+	if err := os.Mkdir(images, 0755); err != nil {
+		t.Fatal(err)
+	}
+	inst := installation{current: filepath.Join(images, "current.AppImage")}
+	if err := os.Symlink("old.AppImage", inst.current); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("\x7fELF test AppImage")
+	name := "audiox-companion-linux-x86_64.AppImage"
+	sum := sha256.Sum256(content)
+	corrupt := false
+	published := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/releases/tags/v2.0.0":
+			json.NewEncoder(w).Encode(release{Tag: "v2.0.0", Assets: []asset{{
+				Name: name, State: "uploaded", Size: int64(len(content)),
+				Digest: "sha256:" + hex.EncodeToString(sum[:]),
+			}}})
+		case "/download/v2.0.0/" + name + ".sha256":
+			fmt.Fprintf(w, "%x  %s\n", sum, name)
+		case "/download/v2.0.0/" + name:
+			if corrupt {
+				w.Write([]byte("not the expected AppImage"))
+			} else {
+				w.Write(content)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer published.Close()
+	run := func(tag string) error {
+		return installDesktopRelease(inst, tag, published.URL+"/api", published.URL+"/download/", published.Client())
+	}
+	if err := run("../../wrong"); err == nil {
+		t.Fatal("invalid tag accepted")
+	}
+	corrupt = true
+	if err := run("v2.0.0"); err == nil {
+		t.Fatal("corrupt image accepted")
+	}
+	if target, _ := os.Readlink(inst.current); target != "old.AppImage" {
+		t.Fatal("failed download changed active image")
+	}
+	corrupt = false
+	if err := run("v2.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(inst.current); err != nil || string(got) != string(content) {
+		t.Fatalf("installed image %q: %v", got, err)
 	}
 }
 

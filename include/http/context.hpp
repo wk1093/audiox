@@ -84,6 +84,8 @@ struct HttpServer {
     int requestDesktopRoute(uint32_t stream, uint32_t sink, uint32_t *id = nullptr,
                             uint32_t session = 0);
     DesktopRouteState desktopRouteState(uint32_t id) const;
+    int requestDesktopUpdate(const char *tag, uint32_t *id);
+    DesktopRouteState desktopUpdateState(uint32_t id) const;
     int requestDesktopDefault(const char *name, uint32_t *id = nullptr, uint32_t session = 0,
                               bool userRequested = false);
     DesktopRouteState desktopDefaultState(uint32_t id) const;

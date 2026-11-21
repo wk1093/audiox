@@ -4878,6 +4878,41 @@ static int handleDesktopRoute(HttpServer *server, int cfd, const char *method,
     return sendMethodNotAllowed(server, cfd);
 }
 
+static int handleDesktopUpdate(HttpServer *server, int cfd, const char *method,
+                               const char *body, size_t bodyLength, const char *query) {
+    auto reply = [&](const char *status, const std::string &text) {
+        return server->sendResponseWithHeaders(cfd, status, "application/json", text.data(),
+                                               text.size(), nullptr, "Cache-Control: no-store\r\n");
+    };
+    if (!strcmp(method, "POST")) {
+        std::string_view input(body ? body : "", body ? bodyLength : 0);
+        if (!desktop::consume(input, "tag=") || !desktop::validReleaseTag(input))
+            return reply("400 Bad Request", "{\"error\":\"Invalid release tag.\"}");
+        const std::string tag(input);
+        uint32_t id;
+        if (server->requestDesktopUpdate(tag.c_str(), &id) != RET_OK)
+            return reply("409 Conflict", "{\"error\":\"Desktop update unavailable or already pending.\"}");
+        return reply("202 Accepted", "{\"id\":" + std::to_string(id) + "}");
+    }
+    if (!strcmp(method, "GET")) {
+        std::string_view input(query ? query : "");
+        uint32_t id;
+        if (!desktop::consume(input, "id=") || !desktop::number(input, id) || !id || !input.empty())
+            return reply("400 Bad Request", "{\"error\":\"Invalid request ID.\"}");
+        const char *status;
+        switch (server->desktopUpdateState(id)) {
+        case DesktopRouteState::Pending: status = "pending"; break;
+        case DesktopRouteState::Succeeded: status = "succeeded"; break;
+        case DesktopRouteState::Failed: status = "failed"; break;
+        case DesktopRouteState::Disconnected: status = "disconnected"; break;
+        case DesktopRouteState::TimedOut: status = "timed_out"; break;
+        default: return reply("404 Not Found", "{\"error\":\"Desktop update result unavailable.\"}");
+        }
+        return reply("200 OK", "{\"id\":" + std::to_string(id) + ",\"status\":\"" + status + "\"}");
+    }
+    return sendMethodNotAllowed(server, cfd);
+}
+
 static int handleDesktopInventory(HttpServer *server, int cfd, const char *method,
                                   const char *body, size_t bodyLength, const char *query) {
     auto reply = [&](const char *status, const std::string &text) {
@@ -6198,6 +6233,8 @@ int handleApiRequest(HttpServer *server,
 	}
 	if (!strcmp(path, "/api/desktop/route"))
 		return handleDesktopRoute(server, cfd, method, body, body_len, query);
+	if (!strcmp(path, "/api/desktop/update"))
+		return handleDesktopUpdate(server, cfd, method, body, body_len, query);
 	if (!strcmp(path, "/api/desktop/inventory"))
 		return handleDesktopInventory(server, cfd, method, body, body_len, query);
 	if (!strcmp(path, "/api/desktop/default"))

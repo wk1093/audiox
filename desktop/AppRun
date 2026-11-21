@@ -98,6 +98,7 @@ setup_policy() {
 }
 
 setup_policy || echo "AudioX: automatic routing setup failed; see the preceding message." >&2
+export AUDIOX_TRAY_PATH="$appdir/usr/bin/audiox-tray"
 if [ -x "$appdir/usr/bin/audiox-tray" ]; then
   "$appdir/usr/bin/audiox-tray" --icon "$appdir/audiox-companion.png" --appimage "${APPIMAGE:-}" "$@" &
 else

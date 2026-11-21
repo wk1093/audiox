@@ -84,6 +84,9 @@ test('desktop endpoints report that no companion is connected in the demo', asyn
     status: 'unavailable', routing_ok: null, rules: '# audiox desktop routes v1\n',
   });
   const cases = [
+    ['/api/desktop/update', { method: 'POST', body: 'tag=v1.2.3' }, 409],
+    ['/api/desktop/update', undefined, 400],
+    ['/api/desktop/update?id=1', undefined, 404],
     ['/api/desktop/rules?session=1', { method: 'PUT', body: '# audiox desktop routes v1\n' }, 409],
     ['/api/desktop/inventory', { method: 'POST', body: 'session=1' }, 409],
     ['/api/desktop/inventory', undefined, 400],

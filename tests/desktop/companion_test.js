@@ -8,7 +8,100 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { test } = require('node:test');
 
-test('companion announces detected capabilities, responds to ping, and reconnects', { timeout: 45000 }, async (t) => {
+for (const mode of ['service', 'manual', 'disconnected']) test(`desktop update waits for Pi acknowledgement (${mode})`, {
+  timeout: 15000, skip: process.env.AUDIOX_DESKTOP_WINDOWS === '1',
+}, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'audiox-update-protocol-'));
+  const helper = path.join(dir, 'helper');
+  fs.writeFileSync(helper, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const data = path.join(dir, 'data');
+  fs.mkdirSync(path.join(data, 'audiox'), { recursive: true });
+  fs.writeFileSync(path.join(data, 'audiox/audiox-desktop'),
+    '#!/bin/sh\nprintf "%s\\n" "$*" > "$HOME/restarted"\n', { mode: 0o755 });
+  const server = net.createServer();
+  const frames = new EventEmitter();
+  let connection;
+  server.on('connection', socket => {
+    connection = socket;
+    let input = Buffer.alloc(0), upgraded = false;
+    socket.on('data', data => {
+      input = Buffer.concat([input, data]);
+      if (!upgraded) {
+        const end = input.indexOf('\r\n\r\n');
+        if (end < 0) return;
+        const key = input.subarray(0, end).toString().match(/Sec-WebSocket-Key: ([^\r\n]+)/i)[1];
+        const accept = crypto.createHash('sha1')
+          .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
+        socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\nSec-WebSocket-Protocol: audiox.desktop.v1\r\n\r\n`);
+        input = input.subarray(end + 4);
+        upgraded = true;
+      }
+      while (input.length >= 2) {
+        let length = input[1] & 127, offset = 2;
+        if (length === 126) {
+          if (input.length < 4) return;
+          length = input.readUInt16BE(2);
+          offset = 4;
+        }
+        if (input.length < offset + 4 + length) return;
+        const mask = input.subarray(offset, offset + 4);
+        const payload = Buffer.from(input.subarray(offset + 4, offset + 4 + length));
+        for (let i = 0; i < payload.length; ++i) payload[i] ^= mask[i % 4];
+        frames.emit('frame', JSON.parse(payload.toString()));
+        input = input.subarray(offset + 4 + length);
+      }
+    });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const first = once(frames, 'frame');
+  const binary = path.resolve(__dirname, '../../out/desktop/linux/x86_64/audiox-companion');
+  const child = spawn(binary, ['--host', '127.0.0.1', '--port', String(server.address().port)], {
+    env: { ...process.env, XDG_RUNTIME_DIR: dir, PIPEWIRE_RUNTIME_DIR: dir,
+      HOME: dir, XDG_DATA_HOME: data, AUDIOX_TRAY_PATH: helper, APPIMAGE: path.join(dir, 'image'),
+      INVOCATION_ID: mode === 'manual' ? '' : 'test', PATH: `${dir}:/usr/bin:/bin` },
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  let errors = '';
+  child.stderr.on('data', data => { errors += data; });
+  t.after(async () => {
+    connection?.destroy();
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = once(child, 'exit');
+      child.kill('SIGTERM');
+      await exited;
+    }
+    await new Promise(resolve => server.close(resolve));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  assert.ok((await first)[0].capabilities.includes('desktop_update'));
+  const send = message => {
+    const bytes = Buffer.from(JSON.stringify(message));
+    assert.ok(bytes.length < 126);
+    connection.write(Buffer.concat([Buffer.from([0x81, bytes.length]), bytes]));
+  };
+  const result = once(frames, 'frame');
+  send({ type: 'update_release', id: 1, offset: 0, data: Buffer.from('v1.2.3').toString('hex'), done: true });
+  assert.deepEqual((await result)[0], { type: 'update_result', id: 1, ok: true });
+  assert.equal(child.exitCode, null);
+  if (mode === 'disconnected') {
+    connection.destroy();
+    for (let i = 0; i < 50 && !errors.includes('acknowledgement was lost'); ++i)
+      await new Promise(resolve => setTimeout(resolve, 100));
+    assert.match(errors, /update installed, but Pi acknowledgement was lost; restart the companion manually/);
+    assert.equal(child.exitCode, null);
+    return;
+  }
+  const exited = once(child, 'exit');
+  send({ type: 'update_ack', id: 1 });
+  assert.equal((await exited)[0], 0);
+  if (mode === 'manual') {
+    for (let i = 0; i < 50 && !fs.existsSync(path.join(dir, 'restarted')); ++i)
+      await new Promise(resolve => setTimeout(resolve, 100));
+    assert.match(fs.readFileSync(path.join(dir, 'restarted'), 'utf8'), /--host 127\.0\.0\.1 --port \d+/);
+  }
+});
+
+test('companion announces detected capabilities, responds to ping, and reconnects', { timeout: 60000 }, async (t) => {
   const windows = process.env.AUDIOX_DESKTOP_WINDOWS === '1';
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'audiox-desktop-'));
   const pipewire = net.createServer();
@@ -33,6 +126,10 @@ test('companion announces detected capabilities, responds to ping, and reconnect
     fs.rmSync(dir, { recursive: true, force: true });
   });
   if (!windows) {
+    fs.writeFileSync(path.join(dir, 'update-helper'), `#!/bin/sh
+printf '%s\\n' "$*" >> "$XDG_RUNTIME_DIR/update-calls"
+exit 1
+`, { mode: 0o755 });
     fs.writeFileSync(path.join(dir, 'wpctl'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     fs.writeFileSync(path.join(dir, 'pw-loopback'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     fs.writeFileSync(path.join(dir, 'pw-metadata'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
@@ -153,14 +250,15 @@ esac
   const args = ['--host', '127.0.0.1', '--port', String(server.address().port)];
   child = spawn(runner || binary, runner ? [binary, ...args] : args,
     { env: windows ? process.env : { ...process.env, XDG_RUNTIME_DIR: dir, PIPEWIRE_RUNTIME_DIR: dir,
-      PIPEWIRE_REMOTE: 'pipewire-0', PATH: dir }, stdio: 'ignore' });
+      PIPEWIRE_REMOTE: 'pipewire-0', AUDIOX_TRAY_PATH: path.join(dir, 'update-helper'),
+      APPIMAGE: path.join(dir, 'image.AppImage'), PATH: dir }, stdio: 'ignore' });
   assert.match((await request)[0], /^GET \/ws\/desktop HTTP\/1\.1\r\n/);
   const first = (await firstFrame)[0];
   assert.equal(first.opcode, 1);
   assert.equal(first.masked, true);
   const firstHello = JSON.parse(first.payload);
   assert.deepEqual(firstHello.capabilities, windows ? [] :
-    ['pipewire', 'route_stream', 'default_sink', 'pipewire_nodes', 'auto_route']);
+    ['pipewire', 'route_stream', 'default_sink', 'pipewire_nodes', 'auto_route', 'desktop_update']);
   if (!windows) {
     const sendText = (text) => {
       const payload = Buffer.from(text);
@@ -168,6 +266,11 @@ esac
         Buffer.from([0x81, 126, payload.length >> 8, payload.length & 255]);
       first.socket.write(Buffer.concat([header, payload]));
     };
+    const updateResult = once(events, 'frame');
+    sendText(JSON.stringify({ type: 'update_release', id: 8, offset: 0,
+      data: Buffer.from('v1.2.3+4').toString('hex'), done: true }));
+    assert.deepEqual(JSON.parse((await updateResult)[0].payload), { type: 'update_result', id: 8, ok: false });
+    assert.match(fs.readFileSync(path.join(dir, 'update-calls'), 'utf8'), /--release-update v1\.2\.3\+4/);
     const snapshot = once(events, 'frame');
     sendText('{"type":"default_watch"}');
     assert.deepEqual(JSON.parse((await snapshot)[0].payload), {
@@ -263,7 +366,7 @@ esac
     const ready = Buffer.from('{"type":"ready","protocol":"audiox.desktop.v1","media_status":true}');
     first.socket.write(Buffer.concat([Buffer.from([0x81, ready.length]), ready]));
     const mediaHello = JSON.parse((await updated)[0].payload);
-    assert.deepEqual(mediaHello.capabilities, ['pipewire', 'route_stream', 'default_sink', 'pipewire_nodes', 'auto_route', 'mpris']);
+    assert.deepEqual(mediaHello.capabilities, ['pipewire', 'route_stream', 'default_sink', 'pipewire_nodes', 'auto_route', 'desktop_update', 'mpris']);
     assert.equal(mediaHello.media, 'playing');
   }
 
@@ -289,7 +392,7 @@ esac
     changed = once(events, 'frame');
     await new Promise((resolve) => pipewire.close(resolve));
     const refreshed = (await changed)[0];
-    assert.deepEqual(JSON.parse(refreshed.payload).capabilities, ['mpris']);
+    assert.deepEqual(JSON.parse(refreshed.payload).capabilities, ['desktop_update', 'mpris']);
   }
 
   const reconnected = once(events, 'frame');
@@ -297,7 +400,7 @@ esac
   const again = (await reconnected)[0];
   if (!windows) assert.equal(fs.readFileSync(path.join(dir, 'sink'), 'utf8'), '3\n');
   assert.equal(again.opcode, 1);
-  assert.deepEqual(JSON.parse(again.payload).capabilities, []);
+  assert.deepEqual(JSON.parse(again.payload).capabilities, windows ? [] : ['desktop_update']);
   const oldReady = Buffer.from('{"type":"ready","protocol":"audiox.desktop.v1"}');
   again.socket.write(Buffer.concat([Buffer.from([0x81, oldReady.length]), oldReady]));
   const oldPong = once(events, 'frame');

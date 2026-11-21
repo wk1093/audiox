@@ -120,6 +120,7 @@ struct HttpTransport {
     bool desktopCanDiscover{};
     bool desktopCanAutoRoute{};
     bool desktopCanDefault{};
+    bool desktopCanUpdate{};
     bool desktopConnected{};
     uint32_t desktopSession{};
     bool routePending{};
@@ -128,6 +129,12 @@ struct HttpTransport {
     desktop::RouteCommand route{};
     uint64_t routeDeadline{};
     DesktopRouteState routeState{DesktopRouteState::Unknown};
+    bool updatePending{}, updateSent{};
+    bool updateAckPending{}, updateAckSent{};
+    uint32_t updateSequence{}, updateId{};
+    uint64_t updateDeadline{};
+    std::string updateTag;
+    DesktopRouteState updateState{DesktopRouteState::Unknown};
     bool defaultWatchSent{}, defaultKnown{}, defaultPending{}, defaultSent{}, defaultUserRequested{};
     uint32_t defaultSequence{}, defaultId{};
     uint64_t defaultDeadline{}, defaultEventSerial{};
@@ -394,7 +401,8 @@ static bool desktopToken(const char *text, size_t length, size_t limit) {
 
 static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *media = nullptr,
                               bool *canRoute = nullptr, bool *canDiscover = nullptr,
-                              bool *canAutoRoute = nullptr, bool *canDefault = nullptr) {
+                              bool *canAutoRoute = nullptr, bool *canDefault = nullptr,
+                              bool *canUpdate = nullptr) {
     if (!data || !length || length > 1024) return false;
     SubscriptionParser parser{reinterpret_cast<const char *>(data),
                               reinterpret_cast<const char *>(data) + length};
@@ -406,6 +414,7 @@ static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *
     bool parsedDiscover = false;
     bool parsedAutoRoute = false;
     bool parsedDefault = false;
+    bool parsedUpdate = false;
     for (unsigned i = 0; i < 5; ++i) {
         const char *key, *value;
         size_t keyLength, valueLength;
@@ -432,6 +441,7 @@ static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *
                 if (valueLength == 14 && !memcmp(value, "pipewire_nodes", 14)) parsedDiscover = true;
                 if (valueLength == 10 && !memcmp(value, "auto_route", 10)) parsedAutoRoute = true;
                 if (valueLength == 12 && !memcmp(value, "default_sink", 12)) parsedDefault = true;
+                if (valueLength == 14 && !memcmp(value, "desktop_update", 14)) parsedUpdate = true;
             }
         } else {
             if (!parser.string(&value, &valueLength)) return false;
@@ -456,6 +466,7 @@ static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *
     if (canDiscover) *canDiscover = parsedDiscover;
     if (canAutoRoute) *canAutoRoute = parsedAutoRoute;
     if (canDefault) *canDefault = parsedDefault;
+    if (canUpdate) *canUpdate = parsedUpdate;
     return true;
 }
 
@@ -582,6 +593,19 @@ static bool receiveWebSocket(HttpWebSocketClient *client, uint64_t now, HttpServ
                 }
                 uint32_t resultId;
                 bool resultOk;
+                if (desktop::parseUpdateResult(desktopMessage, resultId, resultOk)) {
+                    std::lock_guard<std::mutex> lock(desktopServer->transport->mutex);
+                    auto &transport = *desktopServer->transport;
+                    if (!transport.updatePending || !transport.updateSent || resultId != transport.updateId)
+                        return false;
+                    if (resultOk) {
+                        transport.updateAckPending = true;
+                    } else {
+                        transport.updateState = DesktopRouteState::Failed;
+                        transport.updatePending = transport.updateSent = false;
+                    }
+                    continue;
+                }
                 if (desktop::parseRouteResult(
                         std::string_view(reinterpret_cast<const char *>(payload), frame.length),
                         resultId, resultOk)) {
@@ -662,8 +686,8 @@ static bool receiveWebSocket(HttpWebSocketClient *client, uint64_t now, HttpServ
                     continue;
                 }
                 DesktopMedia media;
-                bool canRoute, canDiscover, canAutoRoute, canDefault;
-                if (!parseDesktopHello(payload, frame.length, &media, &canRoute, &canDiscover, &canAutoRoute, &canDefault)) return false;
+                bool canRoute, canDiscover, canAutoRoute, canDefault, canUpdate;
+                if (!parseDesktopHello(payload, frame.length, &media, &canRoute, &canDiscover, &canAutoRoute, &canDefault, &canUpdate)) return false;
                 {
                     std::lock_guard<std::mutex> lock(desktopServer->transport->mutex);
                     if (!client->desktopIdentified && ++desktopServer->transport->desktopSession == 0)
@@ -671,6 +695,7 @@ static bool receiveWebSocket(HttpWebSocketClient *client, uint64_t now, HttpServ
                     desktopServer->transport->desktopCanRoute = canRoute;
                     desktopServer->transport->desktopCanDiscover = canDiscover;
                     auto &transport = *desktopServer->transport;
+                    transport.desktopCanUpdate = canUpdate;
                     if (!transport.desktopConnected || transport.desktopCanDefault != canDefault)
                         printf("[HTTP] Desktop default-sink capability: %s\n",
                                canDefault ? "available" : "not advertised");
@@ -2392,6 +2417,27 @@ static void pollDesktopWebSocket(HttpServer *server, uint64_t now) {
     if (ok && client.desktopIdentified) {
         std::lock_guard<std::mutex> lock(server->transport->mutex);
         auto &transport = *server->transport;
+        if (transport.updatePending && now >= transport.updateDeadline) {
+            transport.updateState = DesktopRouteState::TimedOut;
+            transport.updatePending = transport.updateSent = transport.updateAckPending = transport.updateAckSent = false;
+        } else if (transport.updatePending && transport.updateAckPending) {
+            if (!transport.updateAckSent && client.outputSize == client.outputOffset && !client.closeAfterFlush) {
+                const std::string ack = desktop::updateAck(transport.updateId);
+                ok = queueWebSocketFrame(&client, 0x1, ack.data(), ack.size());
+                if (ok) transport.updateAckSent = true;
+            }
+            if (ok && transport.updateAckSent && !flushWebSocket(&client)) ok = false;
+            if (ok && transport.updateAckSent && client.outputSize == client.outputOffset) {
+                transport.updateState = DesktopRouteState::Succeeded;
+                transport.updatePending = transport.updateSent = transport.updateAckPending = transport.updateAckSent = false;
+            }
+        } else if (transport.updatePending && !transport.updateSent &&
+                   client.outputSize == client.outputOffset && !client.closeAfterFlush) {
+            const std::string command = desktop::encodeChunk("update_release", transport.updateId, 0,
+                                                              transport.updateTag, true);
+            ok = queueWebSocketFrame(&client, 0x1, command.data(), command.size());
+            if (ok) transport.updateSent = true;
+        }
         if (transport.desktopCanDefault && !transport.defaultWatchSent &&
             client.outputSize == client.outputOffset && !client.closeAfterFlush) {
             const std::string watch = desktop::defaultWatch();
@@ -2468,6 +2514,9 @@ static void pollDesktopWebSocket(HttpServer *server, uint64_t now) {
         {
             std::lock_guard<std::mutex> lock(server->transport->mutex);
             auto &transport = *server->transport;
+            if (transport.updatePending) transport.updateState = DesktopRouteState::Disconnected;
+            transport.updatePending = transport.updateSent = transport.updateAckPending = transport.updateAckSent =
+                transport.desktopCanUpdate = false;
             if (transport.defaultPending) {
                 printf("[HTTP] [WARN] Desktop default-sink request lost its connection\n");
                 if (transport.defaultState != DesktopRouteState::TimedOut)
@@ -2829,6 +2878,26 @@ int HttpServer::requestDesktopRoute(uint32_t stream, uint32_t sink, uint32_t *id
     transport->routeState = DesktopRouteState::Pending;
     if (id) *id = transport->route.id;
     return RET_OK;
+}
+
+int HttpServer::requestDesktopUpdate(const char *tag, uint32_t *id) {
+    if (!transport || !tag || !id || !desktop::validReleaseTag(tag)) return RET_WARN;
+    std::lock_guard<std::mutex> lock(transport->mutex);
+    if (!transport->desktopConnected || !transport->desktopCanUpdate || transport->updatePending) return RET_WARN;
+    if (++transport->updateSequence == 0) ++transport->updateSequence;
+    *id = transport->updateId = transport->updateSequence;
+    transport->updateTag = tag;
+    transport->updatePending = true;
+    transport->updateSent = transport->updateAckPending = transport->updateAckSent = false;
+    transport->updateState = DesktopRouteState::Pending;
+    transport->updateDeadline = httpMonotonicMs() + 150000;
+    return RET_OK;
+}
+
+DesktopRouteState HttpServer::desktopUpdateState(uint32_t id) const {
+    if (!transport || !id) return DesktopRouteState::Unknown;
+    std::lock_guard<std::mutex> lock(transport->mutex);
+    return transport->updateId == id ? transport->updateState : DesktopRouteState::Unknown;
 }
 
 DesktopRouteState HttpServer::desktopRouteState(uint32_t id) const {

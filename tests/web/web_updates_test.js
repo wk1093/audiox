@@ -113,6 +113,23 @@ test('browser downloads mirror bytes, checks length and magic, and reports progr
   await assert.rejects(updates.downloadArchive(asset, mirrorUrl, () => {}, async () => new Response('', { status: 404 })), /download failed/);
 });
 
+test('desktop release requests report success, failure and unavailable companions', async () => {
+  let polls = 0;
+  const request = async (url, options) => {
+    if (url === '/api/desktop/update') {
+      assert.equal(options.body, 'tag=v1.9.2');
+      return response({ id: 8 }, 202);
+    }
+    assert.equal(url, '/api/desktop/update?id=8');
+    return response({ status: ++polls === 1 ? 'pending' : 'succeeded' });
+  };
+  await updates.updateDesktop('v1.9.2', request, async () => {});
+  assert.equal(polls, 2);
+  await assert.rejects(updates.updateDesktop('v1.9.2', async () => response({}, 409)), /No compatible desktop/);
+  await assert.rejects(updates.updateDesktop('v1.9.2', async (url) =>
+    response(url.includes('?') ? { status: 'failed' } : { id: 1 })), /failed/);
+});
+
 function controller({ storage = memoryStorage(), device = { channel: 'stable' }, request = global.fetch } = {}) {
   global.fetch = async (url, options = {}) => {
     if (url !== '/api/updates/channel') return request(url, options);
@@ -136,6 +153,7 @@ function controller({ storage = memoryStorage(), device = { channel: 'stable' },
     runTask: async (_title, action) => action(),
   };
   const uploads = [];
+  const notices = [];
   global.XMLHttpRequest = class {
     constructor() {
       this.events = {};
@@ -151,8 +169,8 @@ function controller({ storage = memoryStorage(), device = { channel: 'stable' },
       this.events.load();
     }
   };
-  const ready = updates.init({ setStatus: () => {}, ui: popup, storage });
-  return { elements, uploads, popup, ready, click: (id) => elements.get(id).listeners.click() };
+  const ready = updates.init({ setStatus: (...args) => notices.push(args), ui: popup, storage });
+  return { elements, uploads, notices, popup, ready, click: (id) => elements.get(id).listeners.click() };
 }
 
 test('device channel persists across browsers and overrides old browser preferences', async () => {
@@ -248,6 +266,54 @@ test('controller checks, confirms, downloads and uploads without Pi internet; ca
   assert.deepEqual(Buffer.from(await uploads[0].arrayBuffer()), bytes);
   assert.equal(elements.get('btn-update-upload').disabled, true);
   assert.ok(urls.includes(mirrorUrl));
+});
+
+test('Pi update continues with a visible warning when desktop update fails', async () => {
+  const { uploads, notices, click } = controller();
+  global.fetch = async (url) => {
+    if (url === '/api/system/info') return response({ board: 'pi4', version: '1.9.1' });
+    if (url.endsWith('/releases/latest')) return response(release);
+    if (url.endsWith('/updates.json')) return response({ stable: { tag: 'v1.9.2', assets: {
+      pi4: { size: asset.size, url: 'updates/v1.9.2/audiox-update-pi4.axu' },
+    } } });
+    if (url === '/api/desktop/update') return response({}, 409);
+    assert.equal(url, mirrorUrl);
+    return new Response(bytes);
+  };
+  await click('btn-update-check');
+  await click('btn-update-online');
+  assert.equal(uploads.length, 1);
+  assert.ok(notices.some(([text, kind]) => kind === 'warn' &&
+    /Desktop companion was not updated.*Pi update will continue/.test(text)));
+});
+
+test('online update selects the same desktop release before uploading firmware', async () => {
+  const { uploads, notices, click } = controller();
+  const steps = [];
+  global.fetch = async (url, options = {}) => {
+    if (url === '/api/system/info') return response({ board: 'pi4', version: '1.9.1' });
+    if (url.endsWith('/releases/latest')) return response(release);
+    if (url.endsWith('/updates.json')) return response({ stable: { tag: 'v1.9.2', assets: {
+      pi4: { size: asset.size, url: 'updates/v1.9.2/audiox-update-pi4.axu' },
+    } } });
+    if (url === '/api/desktop/update') {
+      assert.equal(options.body, 'tag=v1.9.2');
+      steps.push('requested');
+      return response({ id: 4 }, 202);
+    }
+    if (url === '/api/desktop/update?id=4') {
+      assert.equal(uploads.length, 0);
+      steps.push('confirmed');
+      return response({ status: 'succeeded' });
+    }
+    assert.equal(url, mirrorUrl);
+    return new Response(bytes);
+  };
+  await click('btn-update-check');
+  await click('btn-update-online');
+  assert.deepEqual(steps, ['requested', 'confirmed']);
+  assert.equal(uploads.length, 1);
+  assert.ok(notices.some(([text, kind]) => kind === 'ok' && /Desktop update installed/.test(text)));
 });
 
 test('nightly controller downloads and installs the stable archive when nightly is older', async () => {

@@ -137,6 +137,14 @@ and returns a route request ID. `GET /api/desktop/route?id=<id>` reports
 recent result is retained. The session must match the current connected
 desktop, preventing a delayed request from routing a replacement host.
 
+`POST /api/desktop/update` accepts `tag=<release-tag>` and queues installation
+on the currently connected companion advertising `desktop_update`. Poll
+`GET /api/desktop/update?id=<id>` for `pending`, `succeeded`, `failed`,
+`disconnected`, or `timed_out`. Only the latest result is retained. The Linux
+companion resolves the exact published release and verifies its AppImage
+checksum. A successful result means the image was selected; check companion
+logs if its restart fails. This endpoint does not update the Pi.
+
 `POST /api/desktop/inventory` accepts `session=<session>` and returns a request
 ID when a Linux companion advertises `pipewire_nodes`. Poll
 `GET /api/desktop/inventory?id=<id>` for `pending`, `succeeded`, `failed`,

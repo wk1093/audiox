@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -197,6 +198,7 @@ func run() error {
 	iconPath := flags.String("icon", "", "packaged icon")
 	image := flags.String("appimage", "", "source AppImage")
 	installOnly := flags.Bool("install-only", false, "install the AppImage without starting the tray")
+	releaseUpdate := flags.String("release-update", "", "install a specific desktop release")
 	host := flags.String("host", "172.31.73.1", "Pi IPv4 address")
 	port := flags.Uint("port", 80, "Pi HTTP port")
 	if err := flags.Parse(os.Args[1:]); err != nil {
@@ -217,6 +219,20 @@ func run() error {
 		return fmt.Errorf("invalid Pi address")
 	}
 	parent := os.Getppid()
+	if *releaseUpdate != "" {
+		data, _, err := userDirs()
+		if err != nil {
+			return err
+		}
+		dir := filepath.Join(data, "audiox")
+		inst := installation{dir: dir, launcher: filepath.Join(dir, "audiox-desktop"),
+			current: filepath.Join(dir, "appimages", "current.AppImage")}
+		if _, err := os.Readlink(inst.current); err != nil {
+			return fmt.Errorf("desktop installation unavailable: %w", err)
+		}
+		return installDesktopRelease(inst, *releaseUpdate, githubAPI, githubDownload,
+			&http.Client{Timeout: 45 * time.Second})
+	}
 	var inst installation
 	var first bool
 	var installErr error

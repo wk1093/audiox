@@ -174,6 +174,58 @@ func update(inst installation, piAddress, channel, expectedTag string) error {
 	return performUpdate(inst, piAddress, channel, expectedTag, githubAPI, githubDownload, internet, local)
 }
 
+// installDesktopRelease installs exactly the release selected by the Pi WebUI.
+func installDesktopRelease(inst installation, tag, api, downloads string, client *http.Client) error {
+	if !tagPattern.MatchString(tag) {
+		return fmt.Errorf("invalid release tag")
+	}
+	var r release
+	if err := fetchJSON(client, api+"/releases/tags/"+url.PathEscape(tag), &r); err != nil {
+		return err
+	}
+	if r.Draft || r.Tag != tag {
+		return fmt.Errorf("release is unpublished or does not match the requested tag")
+	}
+	a, err := findAsset(r, "audiox-companion-linux-x86_64.AppImage")
+	if err != nil {
+		return err
+	}
+	images := filepath.Dir(inst.current)
+	file, err := download(client, downloads, r, a, images)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file)
+	f, err := os.Open(file)
+	if err != nil {
+		return err
+	}
+	header := make([]byte, 4)
+	_, readErr := io.ReadFull(f, header)
+	if readErr != nil || !bytes.Equal(header, []byte{0x7f, 'E', 'L', 'F'}) {
+		f.Close()
+		return fmt.Errorf("invalid desktop AppImage")
+	}
+	hash := sha256.New()
+	if _, err = hash.Write(header); err == nil {
+		_, err = io.Copy(hash, f)
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	name := "audiox-" + hex.EncodeToString(hash.Sum(nil)) + ".AppImage"
+	if err = os.Chmod(file, 0755); err != nil {
+		return err
+	}
+	if err = os.Rename(file, filepath.Join(images, name)); err != nil {
+		return err
+	}
+	return activate(inst.current, name)
+}
+
 func performUpdate(inst installation, piAddress, channel, expectedTag, api, downloads string, internet, local *http.Client) error {
 	deviceBoard, err := board(local, piAddress)
 	if err != nil {
@@ -252,7 +304,7 @@ func performUpdate(inst installation, piAddress, channel, expectedTag, api, down
 	if err = activate(inst.current, imageName); err != nil {
 		return err
 	}
-	req, err := http.NewRequest(http.MethodPost, piAddress+"/api/update", f)
+	req, err := http.NewRequest(http.MethodPut, piAddress+"/api/update", f)
 	if err == nil {
 		req.ContentLength = piAsset.Size
 		req.Header.Set("Content-Type", "application/octet-stream")

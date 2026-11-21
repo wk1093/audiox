@@ -915,6 +915,10 @@
   // The demo has no connected desktop companion.
   on('POST', '/api/desktop/route', () => reply({ error: 'Desktop routing is unavailable in the demo.' }, 409));
   on('GET', '/api/desktop/route', () => reply({ error: 'Route result is unavailable.' }, 404));
+  on('POST', '/api/desktop/update', () => reply({ error: 'Desktop update is unavailable in the demo.' }, 409));
+  on('GET', '/api/desktop/update', ({ query }) => query.has('id')
+    ? reply({ error: 'Desktop update result is unavailable.' }, 404)
+    : reply({ error: 'Invalid request ID.' }, 400));
   on('GET', '/api/desktop/rules', () => reply({
     status: 'unavailable', routing_ok: null, rules: '# audiox desktop routes v1\n',
   }));

@@ -226,6 +226,32 @@ bool hasExecutable(const char *name) {
     return false;
 }
 
+bool restartAfterUpdate(Socket connection, const char *host, unsigned port) {
+    if (const char *unit = std::getenv("INVOCATION_ID"); unit && *unit) return true;
+    const char *data = std::getenv("XDG_DATA_HOME");
+    const char *home = std::getenv("HOME");
+    if ((!data || !*data) && (!home || !*home)) return false;
+    const std::string base = data && *data ? data : std::string(home) + "/.local/share";
+    if (base.empty() || base.front() != '/') return false;
+    const std::string launcher = base + "/audiox/audiox-desktop";
+    if (access(launcher.c_str(), X_OK) != 0) return false;
+    const std::string parent = std::to_string(getpid());
+    const std::string portText = std::to_string(port);
+    const pid_t child = fork();
+    if (child < 0) return false;
+    if (child == 0) {
+        closeSocket(connection);
+        execl("/bin/sh", "sh", "-c",
+              "pid=$1; shift; n=0; while kill -0 \"$pid\" 2>/dev/null; do "
+              "if [ \"$n\" -ge 30 ]; then echo 'AudioX: restart timed out.' >&2; exit 1; fi; "
+              "sleep 1; n=$((n + 1)); done; exec \"$@\"",
+              "audiox-restart", parent.c_str(), launcher.c_str(), "--host", host, "--port", portText.c_str(),
+              static_cast<char *>(nullptr));
+        _exit(127);
+    }
+    return true;
+}
+
 std::string pipewireSocketPath() {
     const char *runtime = std::getenv("PIPEWIRE_RUNTIME_DIR");
     if (!runtime || !*runtime) runtime = std::getenv("XDG_RUNTIME_DIR");
@@ -339,6 +365,12 @@ std::string hello(const std::string &media) {
         if (hasExecutable("pactl") && hasExecutable("pw-dump") &&
             hasExecutable("pw-loopback") && hasExecutable("pw-metadata")) capabilities += ",\"auto_route\"";
     }
+    const char *tray = std::getenv("AUDIOX_TRAY_PATH");
+    const char *image = std::getenv("APPIMAGE");
+    if (tray && *tray && image && *image && access(tray, X_OK) == 0) {
+        if (!capabilities.empty()) capabilities += ',';
+        capabilities += "\"desktop_update\"";
+    }
     if (!media.empty()) {
         if (!capabilities.empty()) capabilities += ',';
         capabilities += "\"mpris\"";
@@ -354,7 +386,11 @@ std::string hello(const std::string &media) {
     return result + "}";
 }
 
-void runConnection(Socket fd, bool &connected) {
+void runConnection(Socket fd, bool &connected, const char *host, unsigned port) {
+#ifndef __linux__
+    (void)host;
+    (void)port;
+#endif
     if (!upgrade(fd)) return;
     std::string media;
     bool mediaNegotiated = false;
@@ -366,6 +402,19 @@ void runConnection(Socket fd, bool &connected) {
     desktop::Routing routing(fd);
     desktop::AutoRouting automatic(fd);
     desktop::DefaultSinkControl defaultControl(fd);
+    struct UpdateChild {
+        pid_t pid{-1};
+        uint32_t id{};
+        bool awaitingAck{};
+        ~UpdateChild() {
+            if (pid > 0) {
+                kill(pid, SIGTERM);
+                while (waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {}
+            }
+            if (awaitingAck)
+                std::fprintf(stderr, "AudioX: update installed, but Pi acknowledgement was lost; restart the companion manually.\n");
+        }
+    } updateChild;
     auto reportDefaultCapability = [](const std::string &message) {
         if (message.find("\"default_sink\"") != std::string::npos) {
             std::fprintf(stderr, "AudioX: default sink control advertised; waiting for the Pi to enable tracking.\n");
@@ -425,6 +474,46 @@ void runConnection(Socket fd, bool &connected) {
                 }
 #ifdef __linux__
                 else {
+                    uint32_t acknowledgedId;
+                    if (desktop::parseUpdateAck(payload, acknowledgedId)) {
+                        if (!updateChild.awaitingAck || acknowledgedId != updateChild.id) return;
+                        if (!restartAfterUpdate(fd, host, port)) {
+                            std::fprintf(stderr, "AudioX: update installed, but restart failed; restart the companion manually.\n");
+                            updateChild.awaitingAck = false;
+                            continue;
+                        }
+                        updateChild.awaitingAck = false;
+                        stopping = true;
+                        return;
+                    }
+                    uint32_t updateId, updateOffset;
+                    std::string updateTag;
+                    bool updateDone;
+                    if (desktop::decodeChunk(payload, "update_release", updateId, updateOffset,
+                                             updateTag, updateDone)) {
+                        const char *tray = std::getenv("AUDIOX_TRAY_PATH");
+                        if (updateOffset || !updateDone || !desktop::validReleaseTag(updateTag) ||
+                            !tray || !*tray || !std::getenv("APPIMAGE") || updateChild.pid > 0 ||
+                            updateChild.awaitingAck) {
+                            if (!sendFrame(fd, 0x1, desktop::updateResult(updateId, false))) return;
+                            continue;
+                        }
+                        const pid_t child = fork();
+                        if (child == 0) {
+                            closeSocket(fd);
+                            execl(tray, tray, "--release-update", updateTag.c_str(),
+                                  static_cast<char *>(nullptr));
+                            _exit(127);
+                        }
+                        if (child < 0) {
+                            std::fprintf(stderr, "AudioX: cannot start desktop update: %s.\n", std::strerror(errno));
+                            if (!sendFrame(fd, 0x1, desktop::updateResult(updateId, false))) return;
+                        } else {
+                            updateChild.pid = child;
+                            updateChild.id = updateId;
+                        }
+                        continue;
+                    }
                     if (payload == desktop::defaultWatch()) {
                         watchingDefault = true;
                         std::fprintf(stderr, "AudioX: Pi enabled desktop default sink tracking.\n");
@@ -531,6 +620,17 @@ void runConnection(Socket fd, bool &connected) {
         }
         if (std::chrono::steady_clock::now() >= nextCheck) {
 #ifdef __linux__
+        if (updateChild.pid > 0) {
+            int status = 0;
+            const pid_t result = waitpid(updateChild.pid, &status, WNOHANG);
+            if (result == updateChild.pid || (result < 0 && errno != EINTR)) {
+                updateChild.pid = -1;
+                bool success = result > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+                if (!success) std::fprintf(stderr, "AudioX: desktop release update failed; check the companion logs.\n");
+                updateChild.awaitingAck = success;
+                if (!sendFrame(fd, 0x1, desktop::updateResult(updateChild.id, success))) return;
+            }
+        }
             const std::string nextMedia = mediaNegotiated && hasExecutable("playerctl") ? mediaStatus(fd) : "";
             if (nextMedia == "error" && media != "error")
                 std::fprintf(stderr, "AudioX: unable to query MPRIS playback status.\n");
@@ -644,7 +744,7 @@ int main(int argc, char **argv) {
         if (fd != invalidSocket) {
             const auto connectedAt = std::chrono::steady_clock::now();
             bool connected = false;
-            runConnection(fd, connected);
+            runConnection(fd, connected, host, port);
             if (connected) reported = false;
             closeSocket(fd);
             if (std::chrono::steady_clock::now() - connectedAt >= std::chrono::seconds(10)) delay = 1;

@@ -200,6 +200,27 @@
     return blob;
   }
 
+  async function updateDesktop(tag, request = apiFetch, delay = (ms) => new Promise(resolve => setTimeout(resolve, ms))) {
+    const response = await request('/api/desktop/update', {
+      method: 'POST', headers: { 'Content-Type': 'text/plain' },
+      body: `tag=${tag}`, signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) throw new Error('No compatible desktop companion is available.');
+    const { id } = await response.json();
+    if (!Number.isInteger(id) || id <= 0) throw new Error('Invalid desktop update response.');
+    for (let i = 0; i < 155; ++i) {
+      const result = await request(`/api/desktop/update?id=${id}`, {
+        cache: 'no-store', signal: AbortSignal.timeout(10000),
+      });
+      if (!result.ok) throw new Error('Desktop update status is unavailable.');
+      const data = await result.json();
+      if (data.status === 'succeeded') return;
+      if (data.status !== 'pending') throw new Error(`Desktop update ${data.status || 'failed'}.`);
+      await delay(1000);
+    }
+    throw new Error('Desktop update timed out; check the companion logs.');
+  }
+
   function init({ setStatus, ui, showUpdates, storage }) {
     const element = (id) => document.getElementById(id);
     if (storage === undefined) {
@@ -441,7 +462,7 @@
       controls(true);
       let success = false;
       try {
-        if (!await ui.confirm(`Install ${release.tag_name} for ${board}? This may replace the installed version (including downgrades). The device will reboot. Keep this page open until upload finishes.`, {
+        if (!await ui.confirm(`Install ${release.tag_name} for ${board} and update the connected Linux desktop companion if available? This may replace installed versions (including downgrades). The device will reboot. Keep this page open until upload finishes.`, {
           title: 'Install firmware?', label: 'Install and reboot',
         })) return;
         await ui.runTask('Installing firmware', async () => {
@@ -454,6 +475,13 @@
             progress.value = percent;
             message(`Downloading ${asset.name}: ${percent}%`);
           });
+          message('Updating the desktop companion...');
+          try {
+            await updateDesktop(release.tag_name);
+            setStatus('Desktop update installed. Check companion logs if it does not restart.', 'ok', 'desktop-update');
+          } catch (error) {
+            setStatus(`Desktop companion was not updated: ${error.message} The Pi update will continue.`, 'warn', 'desktop-update');
+          }
           await upload(blob, asset.name);
         }, { restart: true });
         success = true;
@@ -474,9 +502,10 @@
       controls(true);
       let success = false;
       try {
-        if (!await ui.confirm(`Install ${archive.name}? The device will reboot after the update is installed.`, {
+        if (!await ui.confirm(`Install ${archive.name}? Only the Pi will be updated; the desktop companion may need a separate update. The device will reboot after installation.`, {
           title: 'Install firmware?', label: 'Install and reboot',
         })) return;
+        setStatus('Manual firmware uploads do not update the desktop companion.', 'warn', 'desktop-update');
         await ui.runTask('Installing firmware', () => upload(archive, archive.name), { restart: true });
         success = true;
       } catch (error) {
@@ -493,7 +522,7 @@
 
   const exported = {
     deviceBoard, selectAsset, latestRelease, releaseVersion, checkForUpdate, cachedUpdateCheck,
-    noticeVisible, dismissNotice, mirrorArchive, downloadArchive, init,
+    noticeVisible, dismissNotice, mirrorArchive, downloadArchive, updateDesktop, init,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
   else root.AudioxUpdates = exported;

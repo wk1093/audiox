@@ -341,7 +341,17 @@ Older v1 archives lack the v2 board metadata and use `kernel8.img`; do not rely 
 5. Click **Download and Install Release**, review the confirmation (including possible downgrade), and continue.
 6. Wait through download, upload, validation, reboot, and reconnection; verify the installed version afterwards.
 
+For an online release, the Pi also asks a connected Linux AppImage companion
+with `desktop_update` capability to install the same release. The companion
+downloads and verifies its AppImage, selects it, and restarts before the Pi
+upload. If it is unavailable or fails, a warning is shown and the Pi update
+continues. If the subsequent Pi upload fails, the desktop may already have
+updated. Manual `.axu` uploads update only the Pi; update the desktop separately.
+Existing installations need this feature on both the Pi and the companion
+before Pi-initiated desktop updates can work.
+
 Only the **browser/computer needs internet**. It queries GitHub without a token, identifies the board from System info (or a supported older model string), and chooses `audiox-update-pi4.axu` or `audiox-update-pi5.axu`. Already-installed releases disable the online install button.
+The desktop companion also needs internet access to update itself.
 
 Nightly lookup resolves the rolling release to a versioned nightly and compares it with the latest stable release by GitHub publication date: whichever was published later is selected, so a `1.14.2` published after `1.15.0-beta` wins. SemVer precedence only breaks ties when a date is missing or identical (a final stable version beats a prerelease of the same version; build metadata is ignored). If the nightly is missing or is not newer, it selects stable instead, including the stable download mirror entry. The browser uses the project's CORS-enabled download mirror for archive bytes and requires its tag/path/size to match GitHub metadata. It checks download size and AXU magic, then the device checks archive entries. **The browser does not independently verify the SHA-256 sidecar.** For a manual SHA-256 check, use the local-file workflow above.
 

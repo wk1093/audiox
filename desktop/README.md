@@ -87,6 +87,11 @@ first launch opens a browser page where you can choose to enable it at login.
 The tray's **Login service** menu opens the same page. A running companion stays
 running when login startup is disabled. A customized existing unit is preserved.
 
+An online release update started in the Pi's WebUI also asks a connected Linux
+AppImage companion to install the same release. If the desktop update fails or
+the companion is unavailable, the Pi update continues with a warning. Manual
+firmware uploads do not update the companion.
+
 The tray uses StatusNotifier and the bundled AudioX logo. Right-click it and
 select **Update desktop and Pi** to open a local browser page. Select stable or
 nightly and confirm: the companion requires a connected Pi, downloads both

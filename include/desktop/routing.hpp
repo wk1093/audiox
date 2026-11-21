@@ -60,6 +60,37 @@ inline bool parseRouteResult(std::string_view input, uint32_t &id, bool &ok) {
     return true;
 }
 
+inline bool validReleaseTag(std::string_view tag) {
+    if (tag.size() < 2 || tag.size() > 100 || tag.front() != 'v') return false;
+    for (unsigned char c : tag)
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '+')) return false;
+    return true;
+}
+
+inline std::string updateResult(uint32_t id, bool ok) {
+    return "{\"type\":\"update_result\",\"id\":" + std::to_string(id) +
+        ",\"ok\":" + (ok ? "true}" : "false}");
+}
+
+inline bool parseUpdateResult(std::string_view input, uint32_t &id, bool &ok) {
+    if (!consume(input, "{\"type\":\"update_result\",\"id\":") ||
+        !number(input, id) || !id || !consume(input, ",\"ok\":")) return false;
+    if (consume(input, "true}")) ok = true;
+    else if (consume(input, "false}")) ok = false;
+    else return false;
+    return input.empty();
+}
+
+inline std::string updateAck(uint32_t id) {
+    return "{\"type\":\"update_ack\",\"id\":" + std::to_string(id) + "}";
+}
+
+inline bool parseUpdateAck(std::string_view input, uint32_t &id) {
+    return consume(input, "{\"type\":\"update_ack\",\"id\":") && number(input, id) && id &&
+           consume(input, "}") && input.empty();
+}
+
 struct InventoryCommand {
     uint32_t id{}, offset{};
 };

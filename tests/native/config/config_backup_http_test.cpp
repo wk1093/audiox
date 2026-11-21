@@ -255,7 +255,7 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
     DesktopDefaultAvailability defaultAvailability{};
     assert(!server.desktopDefault(defaultName, 0, nullptr, nullptr, &defaultAvailability) &&
            defaultAvailability == DesktopDefaultAvailability::Disconnected);
-    const std::string hello = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["pipewire","default_sink","route_stream","pipewire_nodes","auto_route"]})";
+    const std::string hello = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["pipewire","default_sink","route_stream","pipewire_nodes","auto_route","desktop_update"]})";
     assert(parseDesktopHello(reinterpret_cast<const uint8_t *>(hello.data()), hello.size()));
     const std::string mediaHello = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["mpris"],"media":"playing"})";
     assert(parseDesktopHello(reinterpret_cast<const uint8_t *>(mediaHello.data()), mediaHello.size()));
@@ -283,6 +283,18 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
         return response.find("\"type\":\"rules_chunk\"") != std::string::npos &&
                response.find("\"type\":\"default_watch\"") != std::string::npos;
     });
+    uint32_t updateId = 0;
+    assert(server.requestDesktopUpdate("v1.2.3+4", &updateId) == RET_OK);
+    assert(server.requestDesktopUpdate("v1.2.3", &updateId) == RET_WARN);
+    readUntil(desktop, [](const auto &response) {
+        return response.find("\"type\":\"update_release\"") != std::string::npos;
+    });
+    sendDesktopText(desktop, desktop::updateResult(updateId, true));
+    pumpUntil(server, [&]() { return server.desktopUpdateState(updateId) == DesktopRouteState::Succeeded; });
+    readUntil(desktop, [](const auto &response) {
+        return response.find("\"type\":\"update_ack\"") != std::string::npos;
+    });
+    assert(server.requestDesktopUpdate("../../invalid", &updateId) == RET_WARN);
     sendDesktopText(desktop, desktop::rulesAck(1, strlen(desktop::rulesHeader), true));
     std::string savedRules;
     pumpUntil(server, [&]() { return server.desktopRules(savedRules) == DesktopRulesState::Succeeded; });

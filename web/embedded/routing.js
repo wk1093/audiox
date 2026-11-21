@@ -329,7 +329,7 @@
     return `Channel ${channel + 1}`;
   }
 
-  // Simple mode shows 2-channel sides as one "stereo" socket. The backend only stores
+  // Simple mode groups even-channel sides into stereo sockets. The backend only stores
   // single-channel edges, so split/merge nodes are browser-only views of those edges.
   const STEREO_PAIR = [[0, 0], [1, 1]];
   const VIRTUAL_SLOTS = {
@@ -340,7 +340,10 @@
   };
 
   function thingSlots(count, stereo) {
-    if (stereo) return [{ label: 'Stereo', type: 'stereo', channels: [0, 1] }];
+    if (stereo) return Array.from({ length: count / 2 }, (_, pair) => ({
+      label: count === 2 ? 'Stereo' : `Stereo ${pair * 2 + 1}/${pair * 2 + 2}`,
+      type: 'stereo', channels: [pair * 2, pair * 2 + 1],
+    }));
     return Array.from({ length: count }, (_, ch) => ({ label: channelLabel(ch, count), type: 'mono', channels: [ch] }));
   }
 
@@ -348,8 +351,8 @@
     const byId = new Map(things.map((thing) => [thing.id, thing]));
     return {
       byId,
-      stereoOut: (id) => !advanced && byId.get(id)?.outputs === 2,
-      stereoIn: (id) => !advanced && byId.get(id)?.inputs === 2,
+      stereoOut: (id) => !advanced && byId.get(id)?.outputs > 0 && byId.get(id).outputs % 2 === 0,
+      stereoIn: (id) => !advanced && byId.get(id)?.inputs > 0 && byId.get(id).inputs % 2 === 0,
     };
   }
 
@@ -363,17 +366,19 @@
     const nodes = [];
     for (const raw of advanced ? [] : virtuals) {
       if (!VIRTUAL_SLOTS[raw?.kind] || !raw.id) continue;
-      const valid = raw.kind === 'split' ? stereoOut(raw.thing) : stereoIn(raw.thing);
-      const key = `${raw.kind}|${raw.thing}`;
-      // One split per stereo source and one merge per stereo destination.
+      const pair = raw.pair ?? 0;
+      const count = raw.kind === 'split' ? byId.get(raw.thing)?.outputs : byId.get(raw.thing)?.inputs;
+      const valid = (raw.kind === 'split' ? stereoOut(raw.thing) : stereoIn(raw.thing)) &&
+        Number.isInteger(pair) && pair >= 0 && pair * 2 < count;
+      const key = `${raw.kind}|${raw.thing}|${pair}`;
       const thing = valid && !bound.has(key) ? raw.thing : null;
       if (thing) bound.add(key);
       nodes.push({ ...raw, thing });
     }
-    const virtualFor = (kind, thing) => {
-      let node = nodes.find((v) => v.kind === kind && v.thing === thing);
+    const virtualFor = (kind, thing, pair) => {
+      let node = nodes.find((v) => v.kind === kind && v.thing === thing && (v.pair ?? 0) === pair);
       if (!node) {
-        node = { id: nextId(kind), kind, thing, auto: true };
+        node = { id: nextId(kind), kind, thing, auto: true, ...(pair ? { pair } : {}) };
         nodes.push(node);
       }
       return node;
@@ -388,17 +393,18 @@
     const used = new Set();
     for (const edge of valid) {
       if (used.has(edge) || !stereoOut(edge.src) || !stereoIn(edge.dst)) continue;
-      const pair = STEREO_PAIR.map(([s, d]) => has(edge.src, edge.dst, s, d));
+      const srcPair = Math.floor(edge.srcChannel / 2), dstPair = Math.floor(edge.dstChannel / 2);
+      const pair = STEREO_PAIR.map(([s, d]) => has(edge.src, edge.dst, srcPair * 2 + s, dstPair * 2 + d));
       if (pair.some((member) => !member || used.has(member))) continue;
       pair.forEach((member) => used.add(member));
-      wires.push({ key: `stereo|${edge.src}|${edge.dst}`, type: 'stereo', edges: pair,
-        src: { id: edge.src, slot: 0 }, dst: { id: edge.dst, slot: 0 } });
+      wires.push({ key: `stereo|${edge.src}|${srcPair}|${edge.dst}|${dstPair}`, type: 'stereo', edges: pair,
+        src: { id: edge.src, slot: srcPair }, dst: { id: edge.dst, slot: dstPair } });
     }
     for (const edge of valid) {
       if (used.has(edge)) continue;
-      const src = stereoOut(edge.src) ? { id: virtualFor('split', edge.src).id, slot: edge.srcChannel } :
+      const src = stereoOut(edge.src) ? { id: virtualFor('split', edge.src, Math.floor(edge.srcChannel / 2)).id, slot: edge.srcChannel % 2 } :
         { id: edge.src, slot: edge.srcChannel };
-      const dst = stereoIn(edge.dst) ? { id: virtualFor('merge', edge.dst).id, slot: edge.dstChannel } :
+      const dst = stereoIn(edge.dst) ? { id: virtualFor('merge', edge.dst, Math.floor(edge.dstChannel / 2)).id, slot: edge.dstChannel % 2 } :
         { id: edge.dst, slot: edge.dstChannel };
       wires.push({ key: `mono|${edge.src}|${edge.dst}|${edge.srcChannel}|${edge.dstChannel}`,
         type: 'mono', edges: [edge], src, dst });
@@ -407,11 +413,12 @@
     for (const node of nodes) {
       if (!node.thing) continue;
       const split = node.kind === 'split';
+      const pair = node.pair ?? 0;
       const members = wires.filter((wire) => (split ? wire.src.id : wire.dst.id) === node.id)
         .flatMap((wire) => wire.edges);
       wires.push({ key: `bind|${node.id}`, type: 'stereo', edges: members, binding: node.id,
-        src: split ? { id: node.thing, slot: 0 } : { id: node.id, slot: 0 },
-        dst: split ? { id: node.id, slot: 0 } : { id: node.thing, slot: 0 } });
+        src: split ? { id: node.thing, slot: pair } : { id: node.id, slot: 0 },
+        dst: split ? { id: node.id, slot: 0 } : { id: node.thing, slot: pair } });
     }
     for (const node of nodes) slots.set(node.id, VIRTUAL_SLOTS[node.kind]);
     return { slots, virtuals: nodes, wires };
@@ -426,19 +433,28 @@
     if (dstV?.kind === 'split' || srcV?.kind === 'merge') {
       const node = dstV || srcV;
       const thing = dstV ? src.id : dst.id;
+      const pair = dstV ? src.slot : dst.slot;
       if (!(dstV ? stereoOut(thing) : stereoIn(thing))) return { error: 'Split and merge nodes need a stereo socket.' };
+      const count = dstV ? byId.get(thing).outputs : byId.get(thing).inputs;
+      if (!Number.isInteger(pair) || pair < 0 || pair * 2 >= count) return { error: 'Unknown stereo socket.' };
       if (node.thing) return { error: 'Remove the existing stereo wire from this node first.' };
-      if (virtuals.some((other) => other.kind === node.kind && other.thing === thing))
+      if (virtuals.some((other) => other.kind === node.kind && other.thing === thing && (other.pair ?? 0) === pair))
         return { error: `That node already has a ${node.kind} node.` };
-      return { bind: { id: node.id, thing } };
+      return { bind: { id: node.id, thing, ...(pair ? { pair } : {}) } };
     }
     const channels = (end, view, stereo, kind) => {
       if (view) {
         if (!view.thing) return { error: `Connect a stereo wire to this ${kind} node first.` };
-        return { id: view.thing, list: [end.slot] };
+        if (!Number.isInteger(end.slot) || end.slot < 0 || end.slot > 1)
+          return { error: 'Unknown channel socket.' };
+        return { id: view.thing, list: [(view.pair ?? 0) * 2 + end.slot] };
       }
       if (!byId.has(end.id)) return { error: 'Unknown routing node.' };
-      return { id: end.id, list: stereo(end.id) ? [0, 1] : [end.slot] };
+      const count = kind === 'split' ? byId.get(end.id).outputs : byId.get(end.id).inputs;
+      const max = stereo(end.id) ? count / 2 : count;
+      if (!Number.isInteger(end.slot) || end.slot < 0 || end.slot >= max)
+        return { error: 'Unknown routing socket.' };
+      return { id: end.id, list: stereo(end.id) ? [end.slot * 2, end.slot * 2 + 1] : [end.slot] };
     };
     const from = channels(src, srcV, stereoOut, 'split');
     if (from.error) return from;

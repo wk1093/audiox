@@ -3,6 +3,7 @@
 #include "http/logs.hpp"
 #include "http/diagnostic_summary.hpp"
 #include "http/scenes.hpp"
+#include "desktop/routing.hpp"
 #include "hardware_telemetry.hpp"
 #include "system_history.hpp"
 #include "usage_telemetry.hpp"
@@ -4839,6 +4840,43 @@ static int handleSystemInfo(HttpServer *server, int cfd, const char *, const cha
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
 }
 
+static int handleDesktopRoute(HttpServer *server, int cfd, const char *method,
+                              const char *body, size_t bodyLength, const char *query) {
+    auto reply = [&](const char *status, const std::string &text) {
+        return server->sendResponseWithHeaders(cfd, status, "application/json", text.data(),
+                                               text.size(), nullptr, "Cache-Control: no-store\r\n");
+    };
+    if (!strcmp(method, "POST")) {
+        std::string_view input(body ? body : "", body ? bodyLength : 0);
+        uint32_t stream, sink, session, id;
+        if (!desktop::consume(input, "stream=") || !desktop::number(input, stream) ||
+            !desktop::consume(input, "&sink=") || !desktop::number(input, sink) ||
+            !desktop::consume(input, "&session=") || !desktop::number(input, session) ||
+            !session || !input.empty())
+            return reply("400 Bad Request", "{\"error\":\"Invalid stream or sink ID.\"}");
+        if (server->requestDesktopRoute(stream, sink, &id, session) != RET_OK)
+            return reply("409 Conflict", "{\"error\":\"Desktop changed, routing is unavailable, or another request is pending.\"}");
+        return reply("202 Accepted", "{\"id\":" + std::to_string(id) + "}");
+    }
+    if (!strcmp(method, "GET")) {
+        std::string_view input(query ? query : "");
+        uint32_t id;
+        if (!desktop::consume(input, "id=") || !desktop::number(input, id) || !id || !input.empty())
+            return reply("400 Bad Request", "{\"error\":\"Invalid request ID.\"}");
+        const char *status;
+        switch (server->desktopRouteState(id)) {
+        case DesktopRouteState::Pending: status = "pending"; break;
+        case DesktopRouteState::Succeeded: status = "succeeded"; break;
+        case DesktopRouteState::Failed: status = "failed"; break;
+        case DesktopRouteState::Disconnected: status = "disconnected"; break;
+        case DesktopRouteState::TimedOut: status = "timed_out"; break;
+        default: return reply("404 Not Found", "{\"error\":\"Route result is unavailable or was replaced.\"}");
+        }
+        return reply("200 OK", "{\"id\":" + std::to_string(id) + ",\"status\":\"" + status + "\"}");
+    }
+    return sendMethodNotAllowed(server, cfd);
+}
+
 } // namespace
 
 bool buildHttpEventJson(HttpServer *server, const char *topic,
@@ -6008,6 +6046,8 @@ int handleApiRequest(HttpServer *server,
 	if (!server || !server->canRespond(cfd) || !method || !path) {
 		return -1;
 	}
+	if (!strcmp(path, "/api/desktop/route"))
+		return handleDesktopRoute(server, cfd, method, body, body_len, query);
 	if (!strcmp(path, "/api/plugins") || !strncmp(path, "/api/plugins/", 13))
 	    return handlePlugins(server, cfd, method, path, body, body_len);
 

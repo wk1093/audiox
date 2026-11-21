@@ -912,6 +912,10 @@
     return reply({ ok: true });
   });
 
+  // The demo has no connected desktop companion.
+  on('POST', '/api/desktop/route', () => reply({ error: 'Desktop routing is unavailable in the demo.' }, 409));
+  on('GET', '/api/desktop/route', () => reply({ error: 'Route result is unavailable.' }, 404));
+
   // Bluetooth
   on('GET', '/api/bluetooth/devices', () => reply(bluetoothJson()));
   on('POST', '/api/bluetooth/scan', () => {

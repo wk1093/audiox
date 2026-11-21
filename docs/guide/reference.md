@@ -118,8 +118,9 @@ for example:
 
 Only one desktop is accepted. A changed hello replaces its current snapshot;
 disconnecting publishes `{"connected":false}`. A connected `desktop.status`
-snapshot has `connected: true` and a `hello` object. Capability strings describe
-detected host support, not implemented AudioX controls. The desktop endpoint
+snapshot has `connected: true`, a connection `session` number, and a `hello`
+object. Capability strings describe detected host support; not all capabilities
+have AudioX controls. The desktop endpoint
 rejects browser Origin/Fetch-Site headers but does not authenticate native peers;
 keep the USB network trusted and private.
 
@@ -129,6 +130,12 @@ advertise `mpris` and include an optional `media` field in their hello. Its
 values are `playing`, `paused`, `stopped`,
 `none`, or `error`; playing takes precedence when multiple players exist.
 Older companions omit the field. Playback status is read-only.
+
+`POST /api/desktop/route` accepts `stream=<id>&sink=<id>&session=<session>`
+and returns a route request ID. `GET /api/desktop/route?id=<id>` reports
+`pending`, `succeeded`, `failed`, `disconnected`, or `timed_out`; only the most
+recent result is retained. The session must match the current connected
+desktop, preventing a delayed request from routing a replacement host.
 
 For example, these **read-only** requests inspect the running device:
 

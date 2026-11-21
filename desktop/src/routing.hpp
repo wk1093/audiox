@@ -1,11 +1,13 @@
 #pragma once
 
 #include <chrono>
+#include <charconv>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <fcntl.h>
 #include <poll.h>
@@ -78,7 +80,14 @@ struct Stream {
     unsigned id;
     unsigned sink;
     unsigned client;
+    bool hasClient;
 };
+
+inline bool streamNumber(std::string_view text, unsigned &number) {
+    if (text.empty()) return false;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), number);
+    return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size();
+}
 
 inline bool streams(int connection, std::vector<Stream> &result) {
     std::string output;
@@ -87,13 +96,21 @@ inline bool streams(int connection, std::vector<Stream> &result) {
     size_t pos = 0;
     while (pos < output.size()) {
         const size_t end = output.find('\n', pos);
-        const std::string line = output.substr(pos, end == std::string::npos ? end : end - pos);
-        unsigned id, sink, client;
-        int consumed = 0;
-        if (std::sscanf(line.c_str(), "%u\t%u\t%u\t%n", &id, &sink, &client, &consumed) != 3 ||
-            !consumed) return false;
+        const std::string_view line(output.data() + pos,
+            end == std::string::npos ? output.size() - pos : end - pos);
+        const size_t first = line.find('\t');
+        const size_t second = first == std::string_view::npos ? first : line.find('\t', first + 1);
+        const size_t third = second == std::string_view::npos ? second : line.find('\t', second + 1);
+        if (first == std::string_view::npos || second == std::string_view::npos ||
+            third == std::string_view::npos) return false;
+        Stream stream{};
+        const auto client = line.substr(second + 1, third - second - 1);
+        stream.hasClient = client != "-";
+        if (!streamNumber(line.substr(0, first), stream.id) ||
+            !streamNumber(line.substr(first + 1, second - first - 1), stream.sink) ||
+            (stream.hasClient && !streamNumber(client, stream.client))) return false;
         if (result.size() == 256) return false;
-        result.push_back({id, sink, client});
+        result.push_back(stream);
         if (end == std::string::npos) break;
         pos = end + 1;
     }
@@ -119,6 +136,10 @@ public:
         const Stream *found = nullptr;
         for (const auto &stream : current) if (stream.id == streamId) found = &stream;
         if (!found) return false;
+        if (!found->hasClient) {
+            std::fprintf(stderr, "AudioX: cannot route stream %u without a client identity.\n", streamId);
+            return false;
+        }
         Change *change = nullptr;
         for (auto &candidate : changes)
             if (candidate.stream == streamId && candidate.client == found->client) change = &candidate;
@@ -148,7 +169,8 @@ public:
         }
         for (const auto &change : changes) {
             for (const auto &stream : current) {
-                if (stream.id != change.stream || stream.client != change.client || stream.sink != change.current)
+                if (!stream.hasClient || stream.id != change.stream || stream.client != change.client ||
+                    stream.sink != change.current)
                     continue;
                 std::string output;
                 if (!pactl({"move-sink-input", std::to_string(change.stream),

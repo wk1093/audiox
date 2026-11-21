@@ -546,7 +546,8 @@ test('simple routing view pairs left/right edges into one stereo wire', () => {
   assert.equal(view.virtuals.length, 0);
   assert.deepEqual(view.slots.get('fx').inputs, [{ label: 'Stereo', type: 'stereo', channels: [0, 1] }]);
   assert.deepEqual(view.slots.get('mono').inputs.map(s => s.type), ['mono']);
-  assert.deepEqual(view.slots.get('multi').outputs.map(s => s.type), ['mono', 'mono', 'mono', 'mono']);
+  assert.deepEqual(view.slots.get('multi').outputs.map(s => [s.label, s.channels]),
+    [['Stereo 1/2', [0, 1]], ['Stereo 3/4', [2, 3]]]);
 });
 
 test('non-pairwise stereo routes go through automatic split and merge nodes', () => {
@@ -563,12 +564,73 @@ test('non-pairwise stereo routes go through automatic split and merge nodes', ()
   assert.equal(view.slots.get('v:split:1').outputs.length, 2);
 });
 
-test('routes to mono and multichannel sockets stay per channel', () => {
+test('individual routes to mono and multichannel sockets use the correct stereo pair', () => {
   const view = viewOf([route('mic', 'mono', 1, 0), route('multi', 'multi', 2, 3)]);
   assert.deepEqual(view.wires.filter(w => !w.binding).map(w => [w.type, w.src, w.dst]), [
     ['mono', { id: 'v:split:1', slot: 1 }, { id: 'mono', slot: 0 }],
-    ['mono', { id: 'multi', slot: 2 }, { id: 'multi', slot: 3 }],
+    ['mono', { id: 'v:split:2', slot: 0 }, { id: 'v:merge:3', slot: 1 }],
   ]);
+  assert.deepEqual(view.wires.filter(w => w.binding).map(w => [w.src, w.dst]), [
+    [{ id: 'mic', slot: 0 }, { id: 'v:split:1', slot: 0 }],
+    [{ id: 'multi', slot: 1 }, { id: 'v:split:2', slot: 0 }],
+    [{ id: 'v:merge:3', slot: 0 }, { id: 'multi', slot: 1 }],
+  ]);
+});
+
+test('multichannel stereo wires map arbitrary pairs and retain partial channel routes', () => {
+  const view = viewOf([
+    route('multi', 'fx', 2, 0), route('multi', 'fx', 3, 1),
+    route('fx', 'multi', 0, 2), route('fx', 'multi', 1, 3),
+    route('multi', 'mono', 3, 0),
+  ]);
+  const stereo = view.wires.filter(w => w.type === 'stereo' && !w.binding);
+  assert.deepEqual(stereo.map(w => [w.src, w.dst]), [
+    [{ id: 'multi', slot: 1 }, { id: 'fx', slot: 0 }],
+    [{ id: 'fx', slot: 0 }, { id: 'multi', slot: 1 }],
+  ]);
+  const split = view.virtuals.find(v => v.kind === 'split');
+  assert.equal(split.pair, 1);
+  assert.deepEqual(routing.resolveRoutingConnection({ things: stereoThings, virtuals: view.virtuals },
+    { id: split.id, slot: 1 }, { id: 'mono', slot: 0 }).edges, [route('multi', 'mono', 3, 0)]);
+  assert.deepEqual(routing.resolveRoutingConnection({ things: stereoThings },
+    { id: 'multi', slot: 1 }, { id: 'multi', slot: 0 }).edges,
+    [route('multi', 'multi', 2, 0), route('multi', 'multi', 3, 1)]);
+});
+
+test('multiple pairs between the same nodes are independent and split bindings retain pair identity', () => {
+  const view = viewOf([
+    route('multi', 'multi', 0, 0), route('multi', 'multi', 1, 1),
+    route('multi', 'multi', 2, 2), route('multi', 'multi', 3, 3),
+    route('multi', 'mono', 0, 0), route('multi', 'mono', 2, 0),
+  ]);
+  const stereo = view.wires.filter(w => w.type === 'stereo' && !w.binding);
+  assert.equal(stereo.length, 2);
+  assert.notEqual(stereo[0].key, stereo[1].key);
+  const splits = view.virtuals.filter(v => v.kind === 'split');
+  assert.equal(splits.length, 2);
+  assert.deepEqual(splits.map(v => v.pair ?? 0), [0, 1]);
+  const unbound = { id: 'new', kind: 'split', thing: null };
+  assert.match(routing.resolveRoutingConnection({ things: stereoThings, virtuals: [...splits, unbound] },
+    { id: 'multi', slot: 1 }, { id: 'new', slot: 0 }).error, /already has a split/);
+  assert.deepEqual(routing.resolveRoutingConnection({ things: stereoThings, virtuals: [unbound] },
+    { id: 'multi', slot: 1 }, { id: 'new', slot: 0 }), { bind: { id: 'new', thing: 'multi', pair: 1 } });
+  assert.match(routing.resolveRoutingConnection({ things: stereoThings },
+    { id: 'multi', slot: 2 }, { id: 'multi', slot: 0 }).error, /Unknown routing socket/);
+});
+
+test('even channel counts through sixteen show stereo pairs; odd counts stay per-channel', () => {
+  const things = [1, 2, 3, 4, 6, 8, 16].map(count => ({ id: String(count), inputs: count, outputs: count }));
+  const view = routing.buildRoutingView({ things });
+  for (const count of [2, 4, 6, 8, 16]) {
+    const slots = view.slots.get(String(count)).outputs;
+    assert.equal(slots.length, count / 2);
+    assert.deepEqual(slots.at(-1).channels, [count - 2, count - 1]);
+    assert.ok(slots.every(slot => slot.type === 'stereo'));
+  }
+  assert.deepEqual(view.slots.get('3').outputs.map(slot => slot.type), ['mono', 'mono', 'mono']);
+  const last = routing.resolveRoutingConnection({ things },
+    { id: '16', slot: 7 }, { id: '4', slot: 1 });
+  assert.deepEqual(last.edges, [route('16', '4', 14, 2), route('16', '4', 15, 3)]);
 });
 
 test('advanced routing view keeps every channel separate and drops virtual nodes', () => {

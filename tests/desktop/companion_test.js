@@ -38,7 +38,11 @@ test('companion announces detected capabilities, responds to ping, and reconnect
 case "$1 $2 $3" in
   'list short sink-inputs')
     IFS= read -r sink < "$XDG_RUNTIME_DIR/sink"
+    IFS= read -r client < "$XDG_RUNTIME_DIR/client"
+    printf '12\\t1\\t%s\\tprotocol\\tformat\\n' "$client"
     printf '11\\t%s\\t22\\tprotocol\\tformat\\n' "$sink" ;;
+  'move-sink-input 12 '*)
+    printf 'unexpected move\\n' >> "$XDG_RUNTIME_DIR/moves" ;;
   'move-sink-input 11 '*)
     if [ "$3" = 99 ]; then echo 'sink unavailable' >&2; exit 1; fi
     printf '%s\\n' "$3" > "$XDG_RUNTIME_DIR/sink" ;;
@@ -46,6 +50,7 @@ case "$1 $2 $3" in
 esac
 `, { mode: 0o755 });
     fs.writeFileSync(path.join(dir, 'sink'), '1\n');
+    fs.writeFileSync(path.join(dir, 'client'), '-\n');
     fs.writeFileSync(path.join(dir, 'playerctl'), `#!/bin/sh
 IFS= read -r status < "$XDG_RUNTIME_DIR/media-status"
 case "$status" in
@@ -118,9 +123,9 @@ esac
   const firstHello = JSON.parse(first.payload);
   assert.deepEqual(firstHello.capabilities, windows ? ['default_sink'] : ['pipewire', 'default_sink', 'route_stream']);
   if (!windows) {
-    const route = async (id, sink, ok) => {
+    const route = async (id, sink, ok, stream = 11) => {
       const response = once(events, 'frame');
-      const payload = Buffer.from(`{"type":"route","id":${id},"stream":11,"sink":${sink}}`);
+      const payload = Buffer.from(`{"type":"route","id":${id},"stream":${stream},"sink":${sink}}`);
       first.socket.write(Buffer.concat([Buffer.from([0x81, payload.length]), payload]));
       assert.deepEqual(JSON.parse((await response)[0].payload), { type: 'route_result', id, ok });
     };
@@ -128,6 +133,12 @@ esac
     assert.equal(fs.readFileSync(path.join(dir, 'sink'), 'utf8'), '2\n');
     await route(2, 99, false);
     assert.equal(fs.readFileSync(path.join(dir, 'sink'), 'utf8'), '2\n');
+    await route(4, 2, false, 12);
+    assert.equal(fs.existsSync(path.join(dir, 'moves')), false);
+    fs.writeFileSync(path.join(dir, 'client'), '12x\n');
+    await route(5, 4, false);
+    assert.equal(fs.readFileSync(path.join(dir, 'sink'), 'utf8'), '2\n');
+    fs.writeFileSync(path.join(dir, 'client'), '-\n');
     fs.writeFileSync(path.join(dir, 'sink'), '3\n');
     await route(3, 4, true);
     const updated = once(events, 'frame');

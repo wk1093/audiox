@@ -243,7 +243,10 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
         return response.find("\"hostname\":\"workstation\"") != std::string::npos &&
             response.find("\"default_sink\"") != std::string::npos;
     });
-    assert(server.requestDesktopRoute(11, 2) == RET_OK);
+    uint32_t routeId = 0;
+    assert(server.requestDesktopRoute(11, 2, &routeId, 2) == RET_WARN);
+    assert(server.requestDesktopRoute(11, 2, &routeId, 1) == RET_OK);
+    assert(routeId == 1 && server.desktopRouteState(routeId) == DesktopRouteState::Pending);
     assert(server.requestDesktopRoute(12, 3) == RET_WARN);
     readUntil(desktop, [](const auto &response) {
         return response.find(R"({"type":"route","id":1,"stream":11,"sink":2})") != std::string::npos;
@@ -256,6 +259,16 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
         std::lock_guard<std::mutex> lock(server.transport->mutex);
         return !server.transport->routePending;
     });
+    assert(server.desktopRouteState(routeId) == DesktopRouteState::Failed);
+    assert(server.requestDesktopRoute(11, 3, &routeId, 1) == RET_OK);
+    readUntil(desktop, [](const auto &response) {
+        return response.find(R"({"type":"route","id":2,"stream":11,"sink":3})") != std::string::npos;
+    });
+    const std::string successResult = R"({"type":"route_result","id":2,"ok":true})";
+    std::string successFrame{char(0x81), char(0x80 | successResult.size()), 1, 2, 3, 4};
+    for (size_t i = 0; i < successResult.size(); ++i) successFrame += char(successResult[i] ^ successFrame[2 + i % 4]);
+    sendBytes(desktop, successFrame);
+    pumpUntil(server, [&]() { return server.desktopRouteState(routeId) == DesktopRouteState::Succeeded; });
     std::string mediaFrame{char(0x81), char(0x80 | mediaHello.size()), 1, 2, 3, 4};
     for (size_t i = 0; i < mediaHello.size(); ++i) mediaFrame += char(mediaHello[i] ^ mediaFrame[2 + i % 4]);
     sendBytes(desktop, mediaFrame);
@@ -274,15 +287,18 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
     readUntil(replacement, [](const auto &response) { return response.find("101 Switching Protocols") != std::string::npos; });
     sendBytes(replacement, helloFrame);
     readUntil(ws, [](const auto &response) { return response.find("\"hostname\":\"workstation\"") != std::string::npos; });
-    assert(server.requestDesktopRoute(11, 4) == RET_OK);
+    assert(server.requestDesktopRoute(11, 4, &routeId, 1) == RET_WARN);
+    assert(server.requestDesktopRoute(11, 4, &routeId, 2) == RET_OK);
+    assert(server.desktopRouteState(2) == DesktopRouteState::Unknown);
     readUntil(replacement, [](const auto &response) {
-        return response.find(R"({"type":"route","id":2,"stream":11,"sink":4})") != std::string::npos;
+        return response.find(R"({"type":"route","id":3,"stream":11,"sink":4})") != std::string::npos;
     });
     {
         std::lock_guard<std::mutex> lock(server.transport->mutex);
         server.transport->routeDeadline = 0;
     }
     readUntil(ws, [](const auto &response) { return response.find("\"connected\":false") != std::string::npos; });
+    assert(server.desktopRouteState(routeId) == DesktopRouteState::TimedOut);
     assert(server.requestDesktopRoute(11, 4) == RET_WARN);
     close(replacement);
     if (const char *binary = getenv("AUDIOX_DESKTOP_BINARY")) {

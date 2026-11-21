@@ -43,7 +43,7 @@ const state = {
   // Routes to Bluetooth devices that are not currently paired. They stay in
   // routing.txt untouched so the routing comes back when the device returns.
   dormantEdges: [],
-  // Simple routing mode collapses 2-channel sockets into stereo wires; advanced shows every channel.
+  // Simple routing mode groups even-channel sides into stereo pairs; advanced shows every channel.
   advancedRouting: readRoutingAdvanced(),
   // Browser-only split/merge nodes: { id, kind: 'split'|'merge', thing: bound thing ID or null }.
   virtuals: [],

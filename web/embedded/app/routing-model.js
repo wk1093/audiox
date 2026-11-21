@@ -277,7 +277,8 @@ function addEdgeFromConnection(srcNode, srcSlot, dstNode, dstSlot) {
     return false;
   }
   if (result.bind) {
-    state.virtuals = state.virtuals.map((v) => (v.id === result.bind.id ? { ...v, thing: result.bind.thing } : v));
+    state.virtuals = state.virtuals.map((v) => (v.id === result.bind.id ?
+      { ...v, thing: result.bind.thing, pair: result.bind.pair ?? 0 } : v));
     syncEdgesFromGraph();
     setStatus('stereo wire connected; now wire its Left/Right sockets', 'ok');
     return true;

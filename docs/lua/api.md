@@ -320,8 +320,8 @@ Failures and timeouts are reported in the device logs. On disconnect or
 termination the companion attempts to restore streams it moved, unless they
 have since been moved elsewhere. Restoration is best-effort, including when
 streams disappear or the audio server restarts. Automatic app matching,
-persisted routing rules, stereo-pair selection, and WebUI controls are not yet
-available.
+persisted routing rules, and stereo-pair selection are not yet available. The
+Desktop page also provides a manual stream-move control.
 
 ### Meter readings
 

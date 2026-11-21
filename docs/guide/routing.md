@@ -20,10 +20,10 @@ restored when AudioX restarts.
    **To Headphones (Bluetooth)**. Other audio devices use **From [device]**
    and **To [device]**. Names describe the signal's direction relative to AudioX.
 3. Drag from an output socket on the source node to an input socket on the
-   destination. Two-channel sockets appear as one **Stereo** socket, and a
-   stereo wire saves both the left and right routes (see
+   destination. Even-channel sides appear as stereo pairs, and a stereo wire
+   saves both channel routes (see
    [Stereo wires and Advanced mode](#stereo-wires-and-advanced-mode)).
-   Single-channel nodes use **Mono**; larger devices use **Channel 1**, etc.
+   Single-channel nodes use **Mono**; odd-channel sides use individual channels.
    Internal file channels remain zero-based.
 4. To remove a connection, click near its wire. Device nodes cannot be
    deleted. Remove effects from **Effects**; remove a routing helper or a
@@ -64,11 +64,11 @@ Soundboard page.
 
 ## Stereo wires and Advanced mode
 
-By default the graph combines a node's left and right channels into one
-**Stereo** socket. A thicker purple wire between two stereo sockets stands for
-the left-to-left and right-to-right pair of routes; thin blue wires carry a single
-channel. Sockets with one channel, or more than two, are always shown per
-channel.
+By default the graph groups even-channel sides into stereo sockets: for example,
+a four-channel side has **Stereo 1/2** and **Stereo 3/4**. A thicker purple
+wire between two stereo sockets connects their first and second channels;
+thin blue wires carry a single channel. One-channel and odd-channel sides are
+shown per channel.
 
 AudioX itself only stores single-channel routes, so any route that is not a
 matched left/right pair (for example, a mono microphone on channel 1 sent to both
@@ -80,8 +80,8 @@ input. AudioX adds these automatically when it loads such routes.
 To build a custom channel route yourself, right-click empty graph space and add
 **Split Channels** or **Merge Channels** from the **utility** category. Connect a stereo wire from the source
 to the split (or from the merge to the destination) first, then wire its
-**Left**/**Right** sockets. Each source can have one split and each destination
-one merge. Removing a split/merge node, or the stereo wire attached to it,
+**Left**/**Right** sockets. Each stereo source pair can have one split and each
+stereo destination pair one merge. Removing a split/merge node, or the stereo wire attached to it,
 removes every channel route that passes through it. Split and merge nodes are not
 saved; an unconnected one disappears when the graph reloads.
 

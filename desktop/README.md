@@ -25,8 +25,9 @@ platform support. These are host detections, **not** implemented AudioX actions.
 Detection does not guarantee that the host audio service will accept a command.
 
 On Linux, `route_stream` indicates that a PipeWire socket and `pactl` are
-available. `desktop.route(stream_id, sink_id)` queues a manual stream move;
-see the [Lua API](../docs/lua/api.md#desktop-stream-routing) for limitations.
+available. Use the Desktop page or `desktop.route(stream_id, sink_id)` to move
+a stream; see the [desktop guide](../docs/guide/desktop.md#testing-linux-stream-routing)
+and [Lua API](../docs/lua/api.md#desktop-stream-routing) for limitations.
 The companion attempts to restore its changes when it disconnects or stops.
 
 On Linux, `mpris` means `playerctl` is available on PATH. The companion queries

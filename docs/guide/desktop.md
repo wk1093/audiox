@@ -7,8 +7,8 @@ Only one companion can be connected at a time.
 
 This is an early version: automatic app routing, audio device controls, media
 controls, shortcuts, and the system tray are not implemented yet. On Linux,
-experimental manual stream routing is available via `desktop.route`; see the
-[Lua API](/lua/api#desktop-stream-routing). On Linux, `pipewire` indicates a
+experimental manual stream routing is available in the Desktop page and via
+`desktop.route`; see the [Lua API](/lua/api#desktop-stream-routing). On Linux, `pipewire` indicates a
 detected PipeWire socket, and `default_sink` additionally requires `wpctl` on
 the service's PATH. On Windows, `default_sink` indicates platform support.
 Detection does not guarantee that the host audio service accepts a command.
@@ -29,6 +29,51 @@ the companion sends another hello only when the results change.
 To try a different IPv4 address or port without saving settings, run the
 executable with `--host <IPv4-address> --port <port>`. The Pi's HTTP service
 normally listens only on its USB network address.
+
+## Testing Linux stream routing
+
+Start audio playback on the desktop, then run:
+
+```sh
+pactl list sink-inputs
+pactl list short sinks
+```
+
+Find the desired application in the sink-input listing and use the number
+after `Sink Input #` as the stream ID. In the Desktop page's **Move a Linux
+audio stream** section, enter that ID and the first column of the destination
+sink listing as the sink ID. Select **Move stream** and check the result.
+This changes live playback; choose a stream and destination you are prepared to
+move. IDs can change when applications or devices reconnect. If the section
+doesn't appear, check that the companion is connected, PipeWire is running,
+and `pactl` is on its PATH.
+
+The companion attempts to restore its moves on disconnect or termination,
+unless the stream has since been moved elsewhere. Restoration is best-effort,
+not guaranteed after a crash, audio server restart, or device removal.
+Manual routing rejects streams without a PulseAudio client identity because
+the companion cannot safely identify them for restoration.
+The page does not yet discover names or save automatic routing rules.
+
+For custom automation, scripts can use the same IDs with
+`desktop.route(stream_id, sink_id)`. For example, replace the numbers below
+with current IDs and enable device-management permission when saving:
+
+```lua
+hook("run", function()
+  desktop.route(11, 2)
+end)
+```
+
+The script queues the move asynchronously; check device logs for failures.
+For a read-only test of the media connection, run this script and inspect the
+device logs:
+
+```lua
+hook("run", function()
+  log("Desktop media: " .. desktop.media_status())
+end)
+```
 
 ## Linux user service
 

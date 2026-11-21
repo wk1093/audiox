@@ -115,11 +115,13 @@ struct HttpTransport {
     int rebootCommand{};
     uint64_t rebootAt{};
     bool desktopCanRoute{};
+    uint32_t desktopSession{};
     bool routePending{};
     bool routeSent{};
     uint32_t routeSequence{};
     desktop::RouteCommand route{};
     uint64_t routeDeadline{};
+    DesktopRouteState routeState{DesktopRouteState::Unknown};
 };
 
 #define HTTP_REQ_MAX 65536
@@ -421,15 +423,16 @@ static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *
 }
 
 static void publishDesktopStatus(HttpServer *server, const uint8_t *hello = nullptr, size_t length = 0) {
+    std::lock_guard<std::mutex> lock(server->transport->mutex);
     std::string message = "{\"type\":\"event\",\"topic\":\"desktop.status\",\"data\":{";
     if (hello) {
-        message += "\"connected\":true,\"hello\":";
+        message += "\"connected\":true,\"session\":" + std::to_string(server->transport->desktopSession) +
+            ",\"hello\":";
         message.append(reinterpret_cast<const char *>(hello), length);
     } else {
         message += "\"connected\":false";
     }
     message += "}}";
-    std::lock_guard<std::mutex> lock(server->transport->mutex);
     server->transport->events[desktopTopic] = std::make_shared<const std::string>(std::move(message));
 }
 
@@ -497,6 +500,7 @@ static bool receiveWebSocket(HttpWebSocketClient *client, uint64_t now, HttpServ
                     if (!transport.routePending || !transport.routeSent || transport.route.id != resultId)
                         return false;
                     if (!resultOk) printf("[HTTP] [WARN] Desktop route request %u failed\n", resultId);
+                    transport.routeState = resultOk ? DesktopRouteState::Succeeded : DesktopRouteState::Failed;
                     transport.routePending = transport.routeSent = false;
                     continue;
                 }
@@ -505,11 +509,14 @@ static bool receiveWebSocket(HttpWebSocketClient *client, uint64_t now, HttpServ
                 if (!parseDesktopHello(payload, frame.length, &media, &canRoute)) return false;
                 {
                     std::lock_guard<std::mutex> lock(desktopServer->transport->mutex);
+                    if (!client->desktopIdentified && ++desktopServer->transport->desktopSession == 0)
+                        ++desktopServer->transport->desktopSession;
                     desktopServer->transport->desktopCanRoute = canRoute;
                     if (!canRoute && desktopServer->transport->routePending &&
                         !desktopServer->transport->routeSent) {
                         printf("[HTTP] [WARN] Desktop route request cancelled: capability unavailable\n");
                         desktopServer->transport->routePending = false;
+                        desktopServer->transport->routeState = DesktopRouteState::Failed;
                     }
                 }
                 desktopServer->desktopMedia.store(media);
@@ -2192,6 +2199,7 @@ static void pollDesktopWebSocket(HttpServer *server, uint64_t now) {
         auto &transport = *server->transport;
         if (transport.routePending && now >= transport.routeDeadline) {
             printf("[HTTP] [WARN] Desktop route request timed out\n");
+            transport.routeState = DesktopRouteState::TimedOut;
             ok = false;
         } else if (transport.routePending && !transport.routeSent &&
                    client.outputSize == client.outputOffset && !client.closeAfterFlush) {
@@ -2213,6 +2221,9 @@ static void pollDesktopWebSocket(HttpServer *server, uint64_t now) {
             std::lock_guard<std::mutex> lock(server->transport->mutex);
             if (server->transport->routePending)
                 printf("[HTTP] [WARN] Desktop route request lost its connection\n");
+            if (server->transport->routePending &&
+                server->transport->routeState != DesktopRouteState::TimedOut)
+                server->transport->routeState = DesktopRouteState::Disconnected;
             server->transport->routePending = server->transport->routeSent = false;
             server->transport->desktopCanRoute = false;
         }
@@ -2529,16 +2540,25 @@ HttpServer::HttpServer(Audiox *context) : app(context) {
     loadHtmlBody(this, HTTP_DEFAULT_HTML_PATH);
 }
 
-int HttpServer::requestDesktopRoute(uint32_t stream, uint32_t sink) {
+int HttpServer::requestDesktopRoute(uint32_t stream, uint32_t sink, uint32_t *id, uint32_t session) {
     if (!transport) return RET_WARN;
     std::lock_guard<std::mutex> lock(transport->mutex);
-    if (!transport->desktopCanRoute || transport->routePending) return RET_WARN;
+    if (!transport->desktopCanRoute || transport->routePending ||
+        (session && session != transport->desktopSession)) return RET_WARN;
     if (++transport->routeSequence == 0) ++transport->routeSequence;
     transport->route = {transport->routeSequence, stream, sink};
     transport->routePending = true;
     transport->routeSent = false;
     transport->routeDeadline = httpMonotonicMs() + 10000;
+    transport->routeState = DesktopRouteState::Pending;
+    if (id) *id = transport->route.id;
     return RET_OK;
+}
+
+DesktopRouteState HttpServer::desktopRouteState(uint32_t id) const {
+    if (!transport || !id) return DesktopRouteState::Unknown;
+    std::lock_guard<std::mutex> lock(transport->mutex);
+    return transport->route.id == id ? transport->routeState : DesktopRouteState::Unknown;
 }
 
 HttpServer::~HttpServer() {

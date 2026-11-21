@@ -32,6 +32,8 @@ struct HttpWebSocketClient {
 struct HttpServer;
 struct HttpTransport;
 
+enum class DesktopRouteState { Unknown, Pending, Succeeded, Failed, Disconnected, TimedOut };
+
 bool buildHttpEventJson(HttpServer *server, const char *topic,
                         char *out, size_t capacity, size_t *length);
 
@@ -69,7 +71,9 @@ struct HttpServer {
     void poll();
     void rebootAfterResponse(int command);
     bool canRespond(int cfd) const;
-    int requestDesktopRoute(uint32_t stream, uint32_t sink);
+    int requestDesktopRoute(uint32_t stream, uint32_t sink, uint32_t *id = nullptr,
+                            uint32_t session = 0);
+    DesktopRouteState desktopRouteState(uint32_t id) const;
 
     int sendResponse(int cfd,
                      const char *status,

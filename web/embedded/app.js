@@ -238,6 +238,12 @@ AudioxDesktop.create({
   os: document.getElementById('desktop-os'),
   capabilities: document.getElementById('desktop-capabilities'),
   media: document.getElementById('desktop-media'),
+  routing: document.getElementById('desktop-routing'),
+  routeForm: document.getElementById('desktop-route-form'),
+  stream: document.getElementById('desktop-route-stream'),
+  sink: document.getElementById('desktop-route-sink'),
+  routeSubmit: document.getElementById('desktop-route-submit'),
+  routeStatus: document.getElementById('desktop-route-status'),
   onDisconnect: () => { if (state.activeTab === 'desktop') setActiveTab('routing'); },
 });
 

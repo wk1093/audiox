@@ -374,7 +374,11 @@ static int parseEffectStateLine(const char *value,
         strcmp(parts[1], "limiter") != 0 &&
         strcmp(parts[1], "eq") != 0 &&
         strcmp(parts[1], "multiband") != 0 &&
-        strcmp(parts[1], "noise_reduction") != 0 && !audiox::plugin::validTypeName(parts[1])) {
+        strcmp(parts[1], "noise_reduction") != 0 &&
+        strcmp(parts[1], "advanced_eq") != 0 &&
+        strcmp(parts[1], "bass_enhancer") != 0 &&
+        strcmp(parts[1], "crossfeed") != 0 &&
+        strcmp(parts[1], "maximizer") != 0 && !audiox::plugin::validTypeName(parts[1])) {
         return RET_ERR;
     }
 
@@ -1362,6 +1366,10 @@ void midiEffectDisplayName(const MidiMapData &map, const char *id, const char *t
                         !strcmp(type, "eq") ? "Parametric EQ" :
                         !strcmp(type, "multiband") ? "Multiband Compressor" :
                         !strcmp(type, "noise_reduction") ? "Noise Reduction" :
+                        !strcmp(type, "advanced_eq") ? "Advanced EQ" :
+                        !strcmp(type, "bass_enhancer") ? "Bass Enhancer" :
+                        !strcmp(type, "crossfeed") ? "Crossfeed" :
+                        !strcmp(type, "maximizer") ? "Maximizer" :
                         !strcmp(type, "reverb") ? "Reverb" : "Gain";
     snprintf(out, capacity, "%s %s", label, !strncmp(id, "fx_", 3) ? id + 3 : id);
 }

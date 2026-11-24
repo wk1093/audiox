@@ -34,7 +34,8 @@ Each point contains:
   latest short-interval sample, **not** the average over the whole 10 seconds.
 - Effect counts as `[configured, enabled]` pairs, in this fixed order:
   gain, distortion, pitch, reverb, gate, cut, compressor, limiter, EQ,
-  multiband compressor, noise reduction, third-party plugins combined.
+  multiband compressor, noise reduction, then one combined bucket for Advanced
+  EQ, Bass Enhancer, Crossfeed, Maximizer, and third-party plugins.
   Enabled does **not** mean routed, audible, or actually processed.
 
 No names, Bluetooth addresses, USB vendor/product/serial identities, stable

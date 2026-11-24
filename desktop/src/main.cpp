@@ -363,7 +363,8 @@ std::string hello(const std::string &media) {
             capabilities += ",\"default_sink\"";
         if (hasExecutable("pw-dump")) capabilities += ",\"pipewire_nodes\"";
         if (hasExecutable("pactl") && hasExecutable("pw-dump") &&
-            hasExecutable("pw-loopback") && hasExecutable("pw-metadata")) capabilities += ",\"auto_route\"";
+            hasExecutable("pw-loopback") && hasExecutable("pw-metadata"))
+            capabilities += ",\"auto_route\",\"forward\"";
     }
     const char *tray = std::getenv("AUDIOX_TRAY_PATH");
     const char *image = std::getenv("APPIMAGE");

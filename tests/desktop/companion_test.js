@@ -131,7 +131,11 @@ printf '%s\\n' "$*" >> "$XDG_RUNTIME_DIR/update-calls"
 exit 1
 `, { mode: 0o755 });
     fs.writeFileSync(path.join(dir, 'wpctl'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-    fs.writeFileSync(path.join(dir, 'pw-loopback'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(dir, 'pw-loopback'), `#!/bin/sh
+printf '%s\\n' "$*" >> "$XDG_RUNTIME_DIR/loopbacks"
+printf '%s\\n' "$$" > "$XDG_RUNTIME_DIR/loopback-pid"
+exec /bin/sleep 30
+`, { mode: 0o755 });
     fs.writeFileSync(path.join(dir, 'pw-metadata'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     fs.writeFileSync(path.join(dir, 'pactl'), `#!/bin/sh
 case "$1 $2 $3" in
@@ -140,7 +144,13 @@ case "$1 $2 $3" in
     printf '{"cookie":"test"}\\n' ;;
   '-f json list')
     [ -f "$XDG_RUNTIME_DIR/json-enabled" ] || exit 1
-    printf '[]\\n' ;;
+    if [ -f "$XDG_RUNTIME_DIR/forward-devices" ] && [ "$4" = sources ]; then
+      printf '%s\\n' '[{"index":40,"name":"usb.capture","channel_map":"front-left,front-right,rear-left,rear-right","properties":{"node.name":"usb.capture","media.class":"Audio/Source"}}]'
+    elif [ -f "$XDG_RUNTIME_DIR/forward-devices" ] && [ "$4" = sinks ]; then
+      printf '%s\\n' '[{"index":50,"name":"hdmi.sink","channel_map":"front-left,front-right","properties":{"node.name":"hdmi.sink","media.class":"Audio/Sink"}}]'
+    else
+      printf '[]\\n'
+    fi ;;
   'get-default-sink  ')
     if [ -s "$XDG_RUNTIME_DIR/default-before" ]; then
       IFS= read -r default_sink < "$XDG_RUNTIME_DIR/default-before"
@@ -258,7 +268,7 @@ esac
   assert.equal(first.masked, true);
   const firstHello = JSON.parse(first.payload);
   assert.deepEqual(firstHello.capabilities, windows ? [] :
-    ['pipewire', 'route_stream', 'default_sink', 'pipewire_nodes', 'auto_route', 'desktop_update']);
+    ['pipewire', 'route_stream', 'default_sink', 'pipewire_nodes', 'auto_route', 'forward', 'desktop_update']);
   if (!windows) {
     const sendText = (text) => {
       const payload = Buffer.from(text);
@@ -313,6 +323,22 @@ esac
     await sendRules(2, '# audiox desktop routes v1\n');
     const clearedRules = once(events, 'frame');
     assert.deepEqual(JSON.parse((await clearedRules)[0].payload), { type: 'auto_status', ok: true });
+    fs.writeFileSync(path.join(dir, 'forward-devices'), '');
+    const hex = (text) => Buffer.from(text).toString('hex');
+    await sendRules(4, `# audiox desktop routes v1\nf\te\te\t1\t${hex('usb.capture')}\t${hex('hdmi.sink')}\n`);
+    const waitFor = async (check) => {
+      for (let i = 0; i < 200 && !check(); i++) await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.ok(check());
+    };
+    const loopbacks = path.join(dir, 'loopbacks');
+    await waitFor(() => fs.existsSync(loopbacks) && fs.existsSync(path.join(dir, 'loopback-pid')));
+    const args = fs.readFileSync(loopbacks, 'utf8');
+    assert.match(args, /-n audiox_auto_f_\d+_1 -i \{ node\.name="input\.audiox_auto_f_[^"]+" target\.object="40" audio\.position=\[ RL RR \]/);
+    assert.match(args, /-o \{ node\.name="output\.audiox_auto_f_[^"]+" node\.description="AudioX forward" target\.object="50" audio\.position=\[ FL FR \]/);
+    const forwardPid = Number(fs.readFileSync(path.join(dir, 'loopback-pid'), 'utf8'));
+    await sendRules(5, '# audiox desktop routes v1\n');
+    await waitFor(() => { try { process.kill(forwardPid, 0); return false; } catch { return true; } });
+    fs.rmSync(path.join(dir, 'forward-devices'));
     const badRules = once(events, 'frame');
     sendText(JSON.stringify({ type: 'rules_chunk', id: 3, offset: 0,
       data: Buffer.from('unsupported').toString('hex'), done: true }));
@@ -366,7 +392,7 @@ esac
     const ready = Buffer.from('{"type":"ready","protocol":"audiox.desktop.v1","media_status":true}');
     first.socket.write(Buffer.concat([Buffer.from([0x81, ready.length]), ready]));
     const mediaHello = JSON.parse((await updated)[0].payload);
-    assert.deepEqual(mediaHello.capabilities, ['pipewire', 'route_stream', 'default_sink', 'pipewire_nodes', 'auto_route', 'desktop_update', 'mpris']);
+    assert.deepEqual(mediaHello.capabilities, ['pipewire', 'route_stream', 'default_sink', 'pipewire_nodes', 'auto_route', 'forward', 'desktop_update', 'mpris']);
     assert.equal(mediaHello.media, 'playing');
   }
 

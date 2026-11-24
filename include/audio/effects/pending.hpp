@@ -7,6 +7,9 @@
 #include "audio/effects/dynamics.hpp"
 #include "audio/effects/equalizer.hpp"
 #include "audio/effects/noise_reduction.hpp"
+#include "audio/effects/advanced_eq.hpp"
+#include "audio/effects/bass_enhancer.hpp"
+#include "audio/effects/stereo.hpp"
 #include "defs.hpp"
 #include <cmath>
 
@@ -41,6 +44,12 @@ inline bool builtinHasPendingAudio(uint8_t type, const void *memory, float thres
     case EFFECT_EQ: return equalizerHasPendingAudio(*static_cast<const EqualizerState *>(memory), threshold);
     case EFFECT_NOISE_REDUCTION:
         return noiseReductionHasPendingAudio(*static_cast<const NoiseReductionState *>(memory), threshold);
+    case EFFECT_ADVANCED_EQ:
+        return advancedEqHasPendingAudio(*static_cast<const AdvancedEqState *>(memory), threshold);
+    case EFFECT_BASS_ENHANCER:
+        return bassEnhancerHasPendingAudio(*static_cast<const BassEnhancerState *>(memory), threshold);
+    case EFFECT_CROSSFEED: return crossfeedHasPendingAudio(*static_cast<const CrossfeedState *>(memory), threshold);
+    case EFFECT_MAXIMIZER: return maximizerHasPendingAudio(*static_cast<const MaximizerState *>(memory), threshold);
     default: return false;
     }
 }
@@ -69,6 +78,12 @@ inline bool builtinNeedsSilentProcessing(const SlotParams &params, const void *m
             if (reduction > 1e-12) return true;
         return false;
     case EFFECT_EQ: return static_cast<const EqualizerState *>(memory)->transitioning;
+    case EFFECT_ADVANCED_EQ: return static_cast<const AdvancedEqState *>(memory)->transitioning;
+    case EFFECT_MAXIMIZER: {
+        // Keep running on silence until the gain has recovered, as the limiter does.
+        const auto &state = *static_cast<const MaximizerState *>(memory);
+        return state.initialized && (state.envelope < 1 - 1e-9 || state.gain < 1 - 1e-9);
+    }
     default: return false;
     }
 }

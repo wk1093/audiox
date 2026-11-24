@@ -7,6 +7,9 @@
 #include "audio/effects/dynamics.hpp"
 #include "audio/effects/equalizer.hpp"
 #include "audio/effects/noise_reduction.hpp"
+#include "audio/effects/advanced_eq.hpp"
+#include "audio/effects/bass_enhancer.hpp"
+#include "audio/effects/stereo.hpp"
 #include <cstring>
 #include "defs.hpp"
 
@@ -45,5 +48,16 @@ KERNEL(9) {
 KERNEL(10) {
     processNoiseReduction(in, out, frames, p[0], p[1], p[2], p[3], p[4], p[5],
                           static_cast<NoiseReductionState *>(state));
+}
+KERNEL(11) { processAdvancedEq(in, out, frames, p, static_cast<AdvancedEqState *>(state)); }
+KERNEL(12) { processBassEnhancer(in, out, frames, p, static_cast<BassEnhancerState *>(state)); }
+// Stereo-linked kernels take both channels through plan; without one the node is mono.
+KERNEL(13) {
+    processCrossfeed(plan ? *static_cast<const StereoIo *>(plan) : StereoIo{{in, in}, {out, out}},
+                     frames, p, static_cast<CrossfeedState *>(state));
+}
+KERNEL(14) {
+    processMaximizer(plan ? *static_cast<const StereoIo *>(plan) : StereoIo{{in, in}, {out, out}},
+                     frames, p, static_cast<MaximizerState *>(state));
 }
 #undef KERNEL

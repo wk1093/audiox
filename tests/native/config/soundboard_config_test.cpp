@@ -701,6 +701,8 @@ int main() {
                     result = handleEffectSet(&http, sockets[0], method, path, body.data(), body.size());
                 else if (!strcmp(path, "/api/effect/delete"))
                     result = handleEffectDelete(&http, sockets[0], method, path, body.data(), body.size());
+                else if (!strncmp(path, "/api/effect/apo?", 16))
+                    result = handleEffectApo(&http, sockets[0], method, body.data(), body.size(), path + 16);
                 else result = handleEffects(&http, sockets[0], method, path);
                 assert(result == 0);
                 assert(shutdown(sockets[0], SHUT_WR) == 0);
@@ -716,7 +718,8 @@ int main() {
             return response;
         };
         const auto savedBeforeBuiltinCount = config.readMidiMapFile().effectStateCount;
-        for (const char *type : {"pitch", "compressor", "limiter", "eq", "multiband", "noise_reduction"}) {
+        for (const char *type : {"pitch", "compressor", "limiter", "eq", "multiband", "noise_reduction",
+                                 "advanced_eq", "bass_enhancer", "crossfeed", "maximizer"}) {
             const auto created = pluginRequest("POST", "/api/effect/create", std::string("type=") + type);
             assert(created.find("200 OK") != std::string::npos);
             saved = config.readMidiMapFile();
@@ -739,13 +742,16 @@ int main() {
             assert(metadata.find(std::string("\"type\":\"") + type + "\"") != std::string::npos);
             const char *label = !strcmp(type, "pitch") ? "Pitch Shift" : !strcmp(type, "compressor") ? "Compressor" :
                 !strcmp(type, "limiter") ? "Limiter" : !strcmp(type, "eq") ? "Parametric EQ" :
-                !strcmp(type, "multiband") ? "Multiband Compressor" : "Noise Reduction";
+                !strcmp(type, "multiband") ? "Multiband Compressor" :
+                !strcmp(type, "advanced_eq") ? "Advanced EQ" : !strcmp(type, "bass_enhancer") ? "Bass Enhancer" :
+                !strcmp(type, "crossfeed") ? "Crossfeed" : !strcmp(type, "maximizer") ? "Maximizer" : "Noise Reduction";
             assert(metadata.find(std::string("\"name\":\"") + label + " " + effectId.substr(3) +
                                   "\"") != std::string::npos);
             for (uint8_t index = 0; index < spec->paramCount; ++index) {
                 const auto &param = spec->params[index];
                 const float value = param.minValue + (param.maxValue - param.minValue) * .25f;
-                assert(fabsf(restored.values[index] - (!strcmp(param.name, "quality") ? roundf(value) : value)) < 1e-4f);
+                assert(fabsf(restored.values[index] -
+                    (audiox::effects::isIntegerEffectParam(spec->type, index) ? roundf(value) : value)) < 1e-4f);
                 assert(metadata.find(std::string("\"name\":\"") + param.name + "\"") != std::string::npos);
                 assert(audio.setEffectParamNormalized(effectId.c_str(), param.name, 1) == RET_OK);
                 audiox::effects::SlotParams midiControlled{};
@@ -756,6 +762,37 @@ int main() {
             assert(config.readMidiMapFile().effectStateCount == savedBeforeBuiltinCount);
         }
         puts("New builtin HTTP creation, parameter metadata, full parameter persistence/reload and deletion tests passed");
+        {
+            const auto created = pluginRequest("POST", "/api/effect/create", "type=advanced_eq");
+            const size_t idAt = created.find("\"id\":\"") + 6;
+            const std::string effectId = created.substr(idAt, created.find('"', idAt) - idAt);
+            const std::string apoPath = "/api/effect/apo?id=" + effectId;
+            const auto imported = pluginRequest("POST", apoPath.c_str(),
+                "Preamp: -4.5 dB\nFilter 1: ON LSC Fc 105 Hz Gain 5 dB Q 0.7\n"
+                "Filter 2: ON PK Fc 3000 Hz Gain -2,5 dB Q 2\nDelay: 3 ms\n");
+            assert(imported.find("200 OK") != std::string::npos);
+            assert(imported.find("\"bands\":2") != std::string::npos);
+            assert(imported.find("Delay") != std::string::npos);
+            audio.loadEffectsFromConfig();
+            audiox::effects::SlotParams restored{};
+            assert(audio.getEffectParams(effectId.c_str(), &restored) == RET_OK);
+            assert(restored.values[0] == -4.5f && restored.values[1] == 2);
+            assert(restored.values[2] == audiox::effects::AEQ_LOW_SHELF && restored.values[3] == 105);
+            assert(restored.values[6] == audiox::effects::AEQ_PEAK && restored.values[8] == -2.5f);
+            const auto exported = pluginRequest("GET", apoPath.c_str(), "");
+            assert(exported.find("Preamp: -4.5 dB") != std::string::npos);
+            assert(exported.find("Filter 2: ON PK Fc 3000 Hz Gain -2.5 dB Q 2") != std::string::npos);
+            assert(pluginRequest("POST", apoPath.c_str(), "Device: all\n").find("422") != std::string::npos);
+            assert(pluginRequest("POST", "/api/effect/create", "type=gain").find("200 OK") != std::string::npos);
+            saved = config.readMidiMapFile();
+            const std::string gainPath = std::string("/api/effect/apo?id=") +
+                saved.effectStates[saved.effectStateCount - 1].effectId;
+            assert(pluginRequest("GET", gainPath.c_str(), "").find("409 Conflict") != std::string::npos);
+            assert(pluginRequest("POST", "/api/effect/delete", "id=" + gainPath.substr(19)).find("200 OK") !=
+                   std::string::npos);
+            assert(pluginRequest("POST", "/api/effect/delete", "id=" + effectId).find("200 OK") != std::string::npos);
+        }
+        puts("Advanced EQ Equalizer APO import/export endpoint tests passed");
         const auto emptyCatalog = pluginRequest("GET", "/api/plugins", "");
         if (emptyCatalog.find("\"plugins\":[]") == std::string::npos) fprintf(stderr, "%s\n", emptyCatalog.c_str());
         assert(emptyCatalog.find("\"plugins\":[]") != std::string::npos);
@@ -1846,7 +1883,8 @@ int main() {
         assert(strstr(midi.scripts.macroErrors[1], "connected controller"));
         const auto beforeBuiltinScripts = scriptedParams;
         unsigned builtinScriptIndex = 0;
-        for (const char *type : {"compressor", "limiter", "eq", "multiband", "noise_reduction"}) {
+        for (const char *type : {"compressor", "limiter", "eq", "multiband", "noise_reduction",
+                                 "advanced_eq", "bass_enhancer", "crossfeed", "maximizer"}) {
             const uint8_t effectType = audiox::effects::effectTypeFromString(type);
             const auto &param = audiox::effects::effectTypeSpecFor(effectType)->params[0];
             const float value = param.minValue + (param.maxValue - param.minValue) * .25f;
@@ -1890,7 +1928,7 @@ int main() {
         midi.nextProbeMs = 9000;
         const uint8_t automationNote[] = {0x95, 66, 80};
         assert(write(automationInput[1], automationNote, sizeof(automationNote)) == 3);
-        testNowMs = 8200;
+        testNowMs = 8250;
         midi.poll();
         assert(!midi.keyboardEnabled && midi.scripts.activeMacro == -1);
         assert(midi.scripts.macroStates[1].count == 1 && midi.scripts.macroStates[1].entries[0].integerValue == 1);

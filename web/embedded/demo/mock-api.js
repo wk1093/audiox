@@ -10,6 +10,7 @@
     gain: 'Gain', distortion: 'Distortion', pitch: 'Pitch Shift', reverb: 'Reverb', gate: 'Noise Gate',
     cut: 'Mute', compressor: 'Compressor', limiter: 'Limiter', eq: 'Parametric EQ',
     multiband: 'Multiband Compressor', noise_reduction: 'Noise Reduction',
+    advanced_eq: 'Advanced EQ', bass_enhancer: 'Bass Enhancer', crossfeed: 'Crossfeed', maximizer: 'Maximizer',
   };
 
   // ---------------------------------------------------------------- helpers
@@ -179,6 +180,10 @@
         case 'noise_reduction': return (linToDb(x) < p('noise_floor_db') + 12 ? x * dbToLin(-p('reduction_db')) : x) * p('output_gain');
         case 'eq': return x * p('output_gain') * dbToLin((p('low_gain_db') + p('mid_gain_db') + p('high_gain_db')) / 6);
         case 'limiter': return Math.min(x * p('input_gain'), dbToLin(p('ceiling_db')));
+        case 'advanced_eq': return x * dbToLin(p('preamp_db'));
+        case 'bass_enhancer': return x * (p('listen') ? 0.3 : 1 + 0.3 * dbToLin(p('amount_db'))) * p('output_gain');
+        case 'crossfeed': return x * p('output_gain');
+        case 'maximizer': return Math.min(x * dbToLin(p('ceiling_db') - p('threshold_db')), dbToLin(p('ceiling_db')));
         case 'compressor': case 'multiband': {
           const threshold = fx.type === 'compressor' ? p('threshold_db') : p('mid_threshold_db');
           const db = linToDb(x);

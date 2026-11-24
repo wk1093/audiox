@@ -360,6 +360,8 @@ struct AudioContext {
     int toggleEffectEnabled(const char *thingId);
     int persistEffectBypass(const char *effectId);
     int setEffectParam(const char *thingId, const char *paramName, float value);
+    // Replaces the first count values atomically when the effect has the expected type.
+    int setEffectValues(const char *thingId, uint8_t type, const float *values, uint8_t count);
     int setEffectParamNormalized(const char *thingId, const char *paramName, float normalized);
     int createEffect(const char *type, char *outId, size_t outIdSize);
     int deleteEffect(const char *thingId);

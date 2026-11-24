@@ -295,3 +295,53 @@ test('automatic rules select discovered apps, devices and stereo pairs', async (
   assert.deepEqual(autoPair.children.map((option) => option.textContent), ['Channels 1/2']);
   dispose();
 });
+
+test('forward rules pair a capture device with a playback device', async (t) => {
+  documentForTest(t);
+  let event, saved = '# audiox desktop routes v1\n';
+  const api = {
+    subscribe(topic, listener) { event = listener; },
+    async request(url, options) {
+      if (url.startsWith('/api/desktop/rules?')) saved = options.body;
+      return { ok: true, async json() {
+        if (url.startsWith('/api/desktop/rules')) return { status: 'succeeded', routing_ok: true, rules: saved };
+        if (!url.includes('?')) return { id: 1 };
+        return { id: 1, status: 'succeeded', nodes: [
+          { id: 5, 'media.class': 'Stream/Output/Audio', 'application.name': 'Music', 'node.name': 'music' },
+          { id: 6, 'media.class': 'Audio/Sink', 'node.name': 'hdmi.sink', 'audio.channels': 2 },
+          { id: 7, 'media.class': 'Audio/Source', 'node.name': 'usb.capture', 'audio.channels': 4 },
+          { id: 8, 'media.class': 'Audio/Source/Virtual', 'node.name': 'audiox_auto_1_1', 'audio.channels': 2 },
+        ] };
+      } };
+    },
+  };
+  const forwardOption = { hidden: true, disabled: true };
+  const autoDirection = element(), autoForm = element(), autoApp = element(), autoTarget = element();
+  const autoPair = element(), autoRules = element();
+  autoDirection.querySelector = (selector) => selector === 'option[value="f"]' ? forwardOption : null;
+  autoDirection.value = 'f';
+  const dispose = create({ api, tab: {}, host: {}, os: {}, capabilities: {}, media: {},
+    inventory: {}, inventoryRefresh: element(), inventoryStatus: element(), inventoryList: element(),
+    autoRouting: {}, autoForm, autoDirection, autoApp, autoTarget, autoPair,
+    autoAppPattern: element(), autoTargetPattern: element(), autoSubmit: element(), autoStatus: element(), autoRules,
+    onDisconnect() {} });
+  event({ connected: true, session: 3, hello: { hostname: 'pc', os: 'linux',
+    capabilities: ['pipewire_nodes', 'auto_route', 'forward'] } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(forwardOption.hidden, false);
+  assert.equal(autoApp.value, 'usb.capture');
+  assert.equal(autoApp.children.length, 1);
+  assert.equal(autoTarget.value, 'hdmi.sink');
+  assert.equal(autoPair.children.length, 2);
+  autoPair.value = '1';
+  autoForm.listeners.submit({ preventDefault() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(saved, /\nf\te\te\t1\t7573622e63617074757265\t68646d692e73696e6b\n$/);
+  assert.match(autoRules.children[0].children[0].textContent, /^Forward: usb\.capture -> hdmi\.sink, channels 3\/4/);
+  event({ connected: true, session: 3, hello: { hostname: 'pc', os: 'linux',
+    capabilities: ['pipewire_nodes', 'auto_route'] } });
+  assert.equal(forwardOption.hidden, true);
+  assert.equal(autoDirection.value, 'p');
+  assert.equal(autoApp.value, 'Music');
+  dispose();
+});

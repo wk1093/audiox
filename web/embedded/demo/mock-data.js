@@ -38,6 +38,16 @@
     noise_reduction: [['reduction_db', 'Reduction dB', 0, 30, 12], ['noise_floor_db', 'Noise Floor dB', -90, -20, -55],
       ['adaptation', 'Adaptation', 0, 1, 0.1], ['smoothing', 'Smoothing', 0, 1, 0.7], ['mix', 'Mix', 0, 1, 1],
       ['output_gain', 'Output Gain', 0, 4, 1]],
+    advanced_eq: [['preamp_db', 'Preamp dB', -36, 36, 0], ['bands', 'Bands', 0, 32, 10],
+      ...[31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000, ...Array(22).fill(1000)].flatMap((hz, i) => [
+        [`band${i + 1}_type`, `Band ${i + 1} Type`, 0, 8, 1], [`band${i + 1}_hz`, `Band ${i + 1} Frequency Hz`, 10, 22000, hz],
+        [`band${i + 1}_gain_db`, `Band ${i + 1} Gain dB`, -36, 36, 0], [`band${i + 1}_q`, `Band ${i + 1} Q`, 0.025, 40, 1.41]])],
+    bass_enhancer: [['amount_db', 'Amount dB', -20, 20, 0], ['drive', 'Harmonics', 0.1, 10, 8.5], ['blend', 'Blend', -10, 10, 0],
+      ['scope_hz', 'Scope Hz', 10, 250, 100], ['floor_hz', 'Floor Hz', 10, 120, 20], ['floor_active', 'Floor Active', 0, 1, 0],
+      ['listen', 'Listen', 0, 1, 0], ['output_gain', 'Output Gain', 0, 4, 1]],
+    crossfeed: [['fcut_hz', 'Cutoff Hz', 300, 2000, 700], ['feed_db', 'Feed dB', 1, 15, 4.5], ['output_gain', 'Output Gain', 0, 4, 1]],
+    maximizer: [['threshold_db', 'Threshold dB', -30, 0, 0], ['ceiling_db', 'Ceiling dB', -30, 0, -1],
+      ['release_ms', 'Release ms', 1, 1000, 25]],
   };
 
   const plugins = [{

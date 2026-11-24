@@ -29,7 +29,7 @@ BOOTLOADER_SRC := src/init/bootloader.cpp
 RUNTIME_MAIN_SRC := src/init/init.cpp
 WATCHDOG_SRC := src/init/watchdog.cpp
 AUDIO_WORKER_SRC := src/audio_worker/main.cpp
-DSP_BITCODE_SRCS := $(addprefix src/audio/effects/,gain.cpp distortion.cpp pitch.cpp reverb.cpp gate.cpp dynamics.cpp equalizer.cpp noise_reduction.cpp native_kernels.cpp native_graph.cpp)
+DSP_BITCODE_SRCS := $(addprefix src/audio/effects/,gain.cpp distortion.cpp pitch.cpp reverb.cpp gate.cpp dynamics.cpp equalizer.cpp noise_reduction.cpp advanced_eq.cpp bass_enhancer.cpp stereo.cpp native_kernels.cpp native_graph.cpp)
 DSP_STATELESS_SRCS := $(addprefix src/audio/effects/,gain.cpp distortion.cpp reverb.cpp gate.cpp native_kernels.cpp native_graph.cpp)
 RUNTIME_CPP_SRCS := $(filter-out $(BOOTLOADER_SRC) $(RUNTIME_MAIN_SRC) $(WATCHDOG_SRC) $(AUDIO_WORKER_SRC) $(DSP_STATELESS_SRCS),$(CPP_SRCS))
 RUNTIME_SRCS := $(RUNTIME_CPP_SRCS)
@@ -122,7 +122,7 @@ RUNTIME_LIBS += $(LUA_STATIC_LIB) -lm
 AUDIOX_VERSION_MAJOR ?= 2
 AUDIOX_VERSION_MINOR ?= 0
 AUDIOX_VERSION_PATCH ?= 0
-AUDIOX_VERSION_PRERELEASE ?= beta.9
+AUDIOX_VERSION_PRERELEASE ?= beta.10
 AUDIOX_VERSION_NIGHTLY ?= 0
 ifeq ($(filter 0 1,$(AUDIOX_VERSION_NIGHTLY)),)
 $(error AUDIOX_VERSION_NIGHTLY must be 0 or 1, got '$(AUDIOX_VERSION_NIGHTLY)')
@@ -600,7 +600,7 @@ $(RUNTIME_OBJ_DIR)/%.o: src/%.cpp
 
 $(RUNTIME_OBJ_DIR)/audio/effects/slot.o: Makefile
 $(RUNTIME_OBJ_DIR)/audio/effects/slot.o: RUNTIME_FLAGS += -ffp-contract=off
-$(addprefix $(RUNTIME_OBJ_DIR)/audio/effects/,dynamics.o equalizer.o noise_reduction.o): RUNTIME_FLAGS += -Wno-unused-function
+$(addprefix $(RUNTIME_OBJ_DIR)/audio/effects/,dynamics.o equalizer.o noise_reduction.o advanced_eq.o bass_enhancer.o stereo.o): RUNTIME_FLAGS += -Wno-unused-function
 
 # Runtime objects include ALSA, SBC, and Lua headers, so their build-only
 $(RUNTIME_OBJS) $(RUNTIME_MAIN_OBJ) $(AUDIO_WORKER_OBJ): | $(RUNTIME_DEPS) $(SBC_STATIC_LIB) $(SBC_HEADER) $(LUA_STATIC_LIB) $(LUA_HEADERS)

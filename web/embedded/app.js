@@ -84,7 +84,8 @@ if (effectsManager) {
 }
 
 const builtinEffectTypes = ['gain', 'distortion', 'pitch', 'reverb', 'gate', 'cut',
-  'compressor', 'limiter', 'eq', 'multiband', 'noise_reduction'];
+  'compressor', 'limiter', 'eq', 'multiband', 'noise_reduction',
+  'advanced_eq', 'bass_enhancer', 'crossfeed', 'maximizer'];
 const pluginTemplateIds = new Set();
 
 function pluginTemplateNodeType(id) {

@@ -12,10 +12,15 @@
 #include "audio/effects/dynamics.hpp"
 #include "audio/effects/equalizer.hpp"
 #include "audio/effects/noise_reduction.hpp"
+#include "audio/effects/advanced_eq.hpp"
+#include "audio/effects/bass_enhancer.hpp"
+#include "audio/effects/stereo.hpp"
+#include "audio/effects/slot.hpp"
 
 #define DECLARE(n) extern "C" void audiox_dsp_##n(const float *, float *, uint32_t, const float *, void *, const void *)
 DECLARE(0); DECLARE(1); DECLARE(2); DECLARE(3); DECLARE(4); DECLARE(5);
 DECLARE(6); DECLARE(7); DECLARE(8); DECLARE(9); DECLARE(10);
+DECLARE(11); DECLARE(12); DECLARE(13); DECLARE(14);
 #undef DECLARE
 
 using namespace audiox::graph;
@@ -140,6 +145,10 @@ static void testDsp(NativeGraph &graph, Schedule &schedule) {
             EqualizerState equalizer{};
             MultibandCompressorState multiband{};
             NoiseReductionState noise{};
+            AdvancedEqState advancedEq{};
+            BassEnhancerState bass{};
+            CrossfeedState crossfeed{};
+            MaximizerState maximizer{};
             void *get(unsigned type) {
                 switch (type) {
                 case 2:
@@ -158,6 +167,14 @@ static void testDsp(NativeGraph &graph, Schedule &schedule) {
                     return &multiband;
                 case 10:
                     return &noise;
+                case 11:
+                    return &advancedEq;
+                case 12:
+                    return &bass;
+                case 13:
+                    return &crossfeed;
+                case 14:
+                    return &maximizer;
                 default:
                     return nullptr;
                 }
@@ -165,8 +182,10 @@ static void testDsp(NativeGraph &graph, Schedule &schedule) {
         };
         const DspEntry reference[]{audiox_dsp_0, audiox_dsp_1, audiox_dsp_2, audiox_dsp_3,
                                    audiox_dsp_4, audiox_dsp_5, audiox_dsp_6, audiox_dsp_7,
-                                   audiox_dsp_8, audiox_dsp_9, audiox_dsp_10};
-        const float parameters[11][8]{{3},
+                                   audiox_dsp_8, audiox_dsp_9, audiox_dsp_10, audiox_dsp_11,
+                                   audiox_dsp_12, audiox_dsp_13, audiox_dsp_14};
+        static_assert(sizeof(reference) / sizeof(reference[0]) == kBuiltinDspCount);
+        const float parameters[kBuiltinDspCount][8]{{3},
                                       {1, 4, .35f, 1},
                                       {1, 5, 1, 1, .001f, 12000, 0},
                                       {1, .64f, .48f, .26f},
@@ -176,13 +195,31 @@ static void testDsp(NativeGraph &graph, Schedule &schedule) {
                                       {-1, 80, 3, 1},
                                       {150, 3, 1000, -2, 6000, 4, 1, 1},
                                       {200, 2500, -18, -18, -18, 4, 120, 0},
-                                      {12, -55, .1f, .7f, 1, 1}};
+                                      {12, -55, .1f, .7f, 1, 1},
+                                      {},
+                                      {6, 8.5f, 2, 100, 30, 1, 0, 1},
+                                      {700, 4.5f, 1},
+                                      {-12, -1, 25}};
         PitchPlan plan;
         for (unsigned type = 0; type < kBuiltinDspCount; ++type) {
             auto original = std::make_unique<States>();
             auto compiled = std::make_unique<States>();
-            float params[8];
+            float params[EFFECT_PARAM_MAX]{};
             std::copy_n(parameters[type], 8, params);
+            if (type == EFFECT_ADVANCED_EQ) {
+                for (unsigned band = 0; band < kAdvancedEqMaxBands; ++band) {
+                    float *values = params + kAdvancedEqFirstBandParam + band * kAdvancedEqParamsPerBand;
+                    values[0] = AEQ_PEAK;
+                    values[1] = 60.0f * float(band + 1);
+                    values[3] = 1.41f;
+                }
+                params[0] = -3;
+                params[1] = 2;
+                params[4] = 6;      // band 1: +6 dB low peak
+                params[6] = AEQ_HIGH_SHELF;
+                params[8] = -4;
+            }
+            const bool stereo = isStereoLinkedType(uint8_t(type));
             for (unsigned block = 0; block < 160; ++block) {
                 if (block == 80) {
                     ++schedule.generation;
@@ -191,16 +228,24 @@ static void testDsp(NativeGraph &graph, Schedule &schedule) {
                 }
                 if (block == 40 && type == 2)
                     params[1] = -3;
-                float input[128], expected[128], actual[128];
-                for (unsigned frame = 0; frame < 128; ++frame)
+                if (block == 40 && type == EFFECT_ADVANCED_EQ)
+                    params[1] = 3;  // live band-count change crossfades
+                float input[128], right[128], expected[256], actual[256];
+                for (unsigned frame = 0; frame < 128; ++frame) {
                     input[frame] = block < 100 ? .35f * std::sin((block * 128 + frame) * .05f) : 0;
+                    right[frame] = block < 100 ? .5f * std::sin((block * 128 + frame) * .013f) : 0;
+                }
                 if (block == 0)
                     input[0] = 2;
-                reference[type](input, expected, 128, params, original->get(type), &plan);
+                StereoIo referenceIo{{input, right}, {expected, expected + 128}};
+                StereoIo compiledIo{{input, right}, {actual, actual + 128}};
+                const void *referencePlan = stereo ? static_cast<const void *>(&referenceIo) : &plan;
+                const void *compiledPlan = stereo ? static_cast<const void *>(&compiledIo) : &plan;
+                reference[type](input, expected, 128, params, original->get(type), referencePlan);
                 const auto *table = graph.dsp(schedule.generation);
                 assert(table);
-                table->entries[type](input, actual, 128, params, compiled->get(type), &plan);
-                for (unsigned frame = 0; frame < 128; ++frame) {
+                table->entries[type](input, actual, 128, params, compiled->get(type), compiledPlan);
+                for (unsigned frame = 0; frame < (stereo ? 256U : 128U); ++frame) {
                     const float tolerance = 1.0e-4f * (1 + std::fabs(expected[frame]));
                     if (!(std::fabs(actual[frame] - expected[frame]) <= tolerance)) {
                         std::fprintf(stderr,
@@ -211,7 +256,7 @@ static void testDsp(NativeGraph &graph, Schedule &schedule) {
                 }
             }
         }
-        puts("All 11 runtime-compiled DSP kernels match reference audio through live pitch changes, tails "
+        puts("All 15 runtime-compiled DSP kernels match reference audio through live pitch changes, tails "
              "and recompilation");
 }
 int main(int argc, char **argv) {

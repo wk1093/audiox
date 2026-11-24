@@ -40,6 +40,10 @@ On Linux, `pipewire_nodes` indicates that `pw-dump` is available and the Pi can
 request a snapshot of PipeWire nodes. The Desktop page displays the discovered
 node and application names. PipeWire node IDs are not PulseAudio stream IDs.
 `auto_route` requires `pactl`, `pw-dump`, `pw-loopback`, and `pw-metadata`.
+With the same tools, `forward` means the companion can run Pi-stored
+forward rules. Each rule keeps a `pw-loopback` from one stereo pair of a capture
+device to a playback device; see the
+[desktop guide](../docs/guide/desktop.md#forwarding-a-device-to-desktop-speakers).
 
 On Linux, `mpris` means `playerctl` is available on PATH. The companion queries
 all MPRIS players every five seconds; the WebUI shows Playing if any player is
@@ -133,6 +137,7 @@ Once connected, the Pi's web UI has a page for configuring desktop behavior.
 - Mananging pipewire routes from lua scripts
 - Changing system default device from lua scripts
 - separate automatic app routing (using fake sinks). Allows setups like routing spotfiy seperately from other apps (by increasing the number of USB gadget audio input channels from 2 to 4, and using 3/4 for spotify).
+- Forwarding a stereo pair from a capture device (such as AudioX channels 3/4) to a desktop playback device such as HDMI speakers.
 
 ## Windows Features
 - Changing system default device from lua scripts

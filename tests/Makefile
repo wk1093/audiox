@@ -129,6 +129,10 @@ AUDIO_EFFECT_SRCS = \
 	src/audio/effects/dynamics.cpp \
 	src/audio/effects/equalizer.cpp \
 	src/audio/effects/noise_reduction.cpp \
+	src/audio/effects/advanced_eq.cpp \
+	src/audio/effects/bass_enhancer.cpp \
+	src/audio/effects/stereo.cpp \
+	src/audio/effects/apo.cpp \
 	src/audio/effects/pitch.cpp \
 	src/audio/effects/reverb.cpp
 
@@ -136,10 +140,17 @@ HOST_CXXFLAGS += -DAUDIOX_GRAPH_COMPILER_PATH='"$(HOST_GRAPH_COMPILER)"'
 HOST_CXXFLAGS += -DAUDIOX_ENABLE_STRESS_TEST=$(AUDIOX_ENABLE_STRESS_TEST)
 
 .PHONY: test-builtin-effects
-test-builtin-effects: $(OUT_DIR)/host/audiox-dynamics-test $(OUT_DIR)/host/audiox-eq-noise-test $(OUT_DIR)/host/audiox-pitch-test
+test-builtin-effects: $(OUT_DIR)/host/audiox-dynamics-test $(OUT_DIR)/host/audiox-eq-noise-test $(OUT_DIR)/host/audiox-pitch-test $(OUT_DIR)/host/audiox-advanced-effects-test
 	@"$(OUT_DIR)/host/audiox-dynamics-test"
 	@"$(OUT_DIR)/host/audiox-eq-noise-test"
 	@"$(OUT_DIR)/host/audiox-pitch-test"
+	@"$(OUT_DIR)/host/audiox-advanced-effects-test"
+
+ADVANCED_EFFECTS_TEST_SRCS = src/audio/effects/advanced_eq.cpp src/audio/effects/apo.cpp \
+	src/audio/effects/bass_enhancer.cpp src/audio/effects/stereo.cpp
+$(OUT_DIR)/host/audiox-advanced-effects-test: tests/native/audio/audio_advanced_effects_test.cpp $(ADVANCED_EFFECTS_TEST_SRCS) include/audio/effects/advanced_eq.hpp include/audio/effects/apo.hpp include/audio/effects/bass_enhancer.hpp include/audio/effects/stereo.hpp include/defs.hpp
+	@mkdir -p "$(dir $@)"
+	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/native/audio/audio_advanced_effects_test.cpp $(ADVANCED_EFFECTS_TEST_SRCS)
 
 $(OUT_DIR)/host/audiox-dynamics-test: tests/native/audio/audio_dynamics_test.cpp src/audio/effects/dynamics.cpp include/audio/effects/dynamics.hpp include/defs.hpp
 	@mkdir -p "$(dir $@)"
@@ -247,7 +258,7 @@ $(OUT_DIR)/host/audiox-bluetooth-a2dp-test: tests/native/bluetooth/bluetooth_a2d
 test-script-docs: $(OUT_DIR)/host/audiox-script-docs-test
 	@"$<"
 
-$(OUT_DIR)/host/audiox-script-docs-test: tests/native/scripting/script_docs_test.cpp tests/native/scripting/bluetooth_default_test.lua docs/public/scripts/bluetooth-default-sink.lua docs/public/scripts/desktop-default-toggle.lua src/scripting/script.cpp src/scripting/storage.cpp src/scripting/utilities.cpp src/midi/usb.cpp src/scripting/keyboard.cpp src/config/basic.cpp src/http/logs.cpp src/bluetooth/hci.cpp \
+$(OUT_DIR)/host/audiox-script-docs-test: tests/native/scripting/script_docs_test.cpp tests/native/scripting/bluetooth_default_test.lua docs/public/scripts/bluetooth-default-sink.lua docs/public/scripts/desktop-default-toggle.lua docs/public/scripts/output-toggle.lua docs/public/scripts/effect-group-toggle.lua src/scripting/script.cpp src/scripting/storage.cpp src/scripting/utilities.cpp src/midi/usb.cpp src/scripting/keyboard.cpp src/config/basic.cpp src/http/logs.cpp src/bluetooth/hci.cpp \
 		$(wildcard include/midi/*.hpp include/scripting/*.hpp include/bluetooth/*.hpp include/http/*.hpp include/desktop/*.hpp) include/config/context.hpp include/defs.hpp $(HOST_LUA_STATIC_LIB) $(HOST_LUA_HEADERS)
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -fno-exceptions -fno-rtti -Iinclude -I$(HOST_LUA_INCLUDE_DIR) \

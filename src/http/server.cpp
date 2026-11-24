@@ -119,6 +119,7 @@ struct HttpTransport {
     bool desktopCanRoute{};
     bool desktopCanDiscover{};
     bool desktopCanAutoRoute{};
+    bool desktopCanForward{};
     bool desktopCanDefault{};
     bool desktopCanUpdate{};
     bool desktopConnected{};
@@ -149,6 +150,7 @@ struct HttpTransport {
     std::string inventory;
     DesktopInventoryState inventoryState{DesktopInventoryState::Unknown};
     std::string rules;
+    std::string rulesWire; // `rules` as sent to the connected desktop
     bool rulesValid{};
     bool rulesPending{}, rulesSent{};
     uint32_t rulesId{};
@@ -402,7 +404,7 @@ static bool desktopToken(const char *text, size_t length, size_t limit) {
 static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *media = nullptr,
                               bool *canRoute = nullptr, bool *canDiscover = nullptr,
                               bool *canAutoRoute = nullptr, bool *canDefault = nullptr,
-                              bool *canUpdate = nullptr) {
+                              bool *canUpdate = nullptr, bool *canForward = nullptr) {
     if (!data || !length || length > 1024) return false;
     SubscriptionParser parser{reinterpret_cast<const char *>(data),
                               reinterpret_cast<const char *>(data) + length};
@@ -415,6 +417,7 @@ static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *
     bool parsedAutoRoute = false;
     bool parsedDefault = false;
     bool parsedUpdate = false;
+    bool parsedForward = false;
     for (unsigned i = 0; i < 5; ++i) {
         const char *key, *value;
         size_t keyLength, valueLength;
@@ -442,6 +445,7 @@ static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *
                 if (valueLength == 10 && !memcmp(value, "auto_route", 10)) parsedAutoRoute = true;
                 if (valueLength == 12 && !memcmp(value, "default_sink", 12)) parsedDefault = true;
                 if (valueLength == 14 && !memcmp(value, "desktop_update", 14)) parsedUpdate = true;
+                if (valueLength == 7 && !memcmp(value, "forward", 7)) parsedForward = true;
             }
         } else {
             if (!parser.string(&value, &valueLength)) return false;
@@ -467,6 +471,7 @@ static bool parseDesktopHello(const uint8_t *data, size_t length, DesktopMedia *
     if (canAutoRoute) *canAutoRoute = parsedAutoRoute;
     if (canDefault) *canDefault = parsedDefault;
     if (canUpdate) *canUpdate = parsedUpdate;
+    if (canForward) *canForward = parsedForward;
     return true;
 }
 
@@ -643,7 +648,7 @@ static bool receiveWebSocket(HttpWebSocketClient *client, uint64_t now, HttpServ
                         transport.rulesState = DesktopRulesState::Failed;
                     } else {
                         transport.rulesOffset = ackOffset;
-                        if (transport.rulesOffset == transport.rules.size()) {
+                        if (transport.rulesOffset == transport.rulesWire.size()) {
                             transport.rulesPending = false;
                             transport.rulesState = DesktopRulesState::Succeeded;
                         }
@@ -686,8 +691,9 @@ static bool receiveWebSocket(HttpWebSocketClient *client, uint64_t now, HttpServ
                     continue;
                 }
                 DesktopMedia media;
-                bool canRoute, canDiscover, canAutoRoute, canDefault, canUpdate;
-                if (!parseDesktopHello(payload, frame.length, &media, &canRoute, &canDiscover, &canAutoRoute, &canDefault, &canUpdate)) return false;
+                bool canRoute, canDiscover, canAutoRoute, canDefault, canUpdate, canForward;
+                if (!parseDesktopHello(payload, frame.length, &media, &canRoute, &canDiscover, &canAutoRoute,
+                                       &canDefault, &canUpdate, &canForward)) return false;
                 {
                     std::lock_guard<std::mutex> lock(desktopServer->transport->mutex);
                     if (!client->desktopIdentified && ++desktopServer->transport->desktopSession == 0)
@@ -711,8 +717,10 @@ static bool receiveWebSocket(HttpWebSocketClient *client, uint64_t now, HttpServ
                         transport.defaultPending = transport.defaultSent = false;
                     }
                     transport.desktopCanDefault = canDefault;
-                    if (canAutoRoute && !desktopServer->transport->desktopCanAutoRoute &&
-                        desktopServer->transport->rulesValid) {
+                    if (canAutoRoute && desktopServer->transport->rulesValid &&
+                        (!desktopServer->transport->desktopCanAutoRoute ||
+                         canForward != desktopServer->transport->desktopCanForward)) {
+                        transport.rulesWire = desktop::rulesForDesktop(transport.rules, canForward);
                         if (++desktopServer->transport->rulesId == 0) ++desktopServer->transport->rulesId;
                         desktopServer->transport->rulesOffset = 0;
                         desktopServer->transport->rulesPending = true;
@@ -724,6 +732,7 @@ static bool receiveWebSocket(HttpWebSocketClient *client, uint64_t now, HttpServ
                         desktopServer->transport->rulesState = DesktopRulesState::Unavailable;
                     }
                     desktopServer->transport->desktopCanAutoRoute = canAutoRoute;
+                    transport.desktopCanForward = canForward;
                     if (!canRoute && desktopServer->transport->routePending &&
                         !desktopServer->transport->routeSent) {
                         printf("[HTTP] [WARN] Desktop route request cancelled: capability unavailable\n");
@@ -2492,11 +2501,11 @@ static void pollDesktopWebSocket(HttpServer *server, uint64_t now) {
             ok = false;
         } else if (ok && transport.rulesPending && !transport.rulesSent &&
                    client.outputSize == client.outputOffset && !client.closeAfterFlush) {
-            const size_t count = std::min<size_t>(400, transport.rules.size() - transport.rulesOffset);
-            const bool done = transport.rulesOffset + count == transport.rules.size();
+            const size_t count = std::min<size_t>(400, transport.rulesWire.size() - transport.rulesOffset);
+            const bool done = transport.rulesOffset + count == transport.rulesWire.size();
             const std::string command = desktop::encodeChunk("rules_chunk", transport.rulesId,
                 static_cast<uint32_t>(transport.rulesOffset),
-                std::string_view(transport.rules).substr(transport.rulesOffset, count), done);
+                std::string_view(transport.rulesWire).substr(transport.rulesOffset, count), done);
             ok = queueWebSocketFrame(&client, 0x1, command.data(), command.size());
             if (ok) {
                 transport.rulesExpected = transport.rulesOffset + count;
@@ -2548,6 +2557,7 @@ static void pollDesktopWebSocket(HttpServer *server, uint64_t now) {
             server->transport->desktopCanDiscover = false;
             server->transport->inventory.clear();
             server->transport->desktopCanAutoRoute = false;
+            server->transport->desktopCanForward = false;
             server->transport->rulesPending = server->transport->rulesSent = false;
             server->transport->rulesState = DesktopRulesState::Unavailable;
             server->transport->autoStatus = -1;
@@ -3009,6 +3019,7 @@ int HttpServer::updateDesktopRules(uint32_t session, const std::string &text) {
         transport->rulesPending) return RET_WARN;
     if (!transport->rulesValid || !desktop::saveRules(text)) return RET_ERR;
     transport->rules = text;
+    transport->rulesWire = desktop::rulesForDesktop(text, transport->desktopCanForward);
     if (++transport->rulesId == 0) ++transport->rulesId;
     transport->rulesOffset = 0;
     transport->rulesPending = true;

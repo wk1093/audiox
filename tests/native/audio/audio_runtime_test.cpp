@@ -713,10 +713,27 @@ static void testDirectProcessing() {
     }
     puts("All five new builtins execute through graph routes with symmetric independent channels and clean bypass/reset");
 
+    // Crossfeed is stereo-linked: anti-phase input (+/-0.25) is mostly cancelled by the
+    // cross-channel feed, while independent per-channel processing would pass ~0.25 through.
+    effect = {};
+    effect.type = audiox::effects::EFFECT_CROSSFEED;
+    effect.enabled = 1;
+    audiox::effects::setSlotDefaultsForType(&effect, effect.type);
+    audiox::effects::resetSlotAudio("direct_effect", 0);
+    for (unsigned block = 0; block < 40; ++block) render();
+    for (unsigned frame = 0; frame < BUFFER_FRAMES; ++frame) {
+        const float left = runtime->inputs[3][0][frame];
+        const float right = runtime->inputs[3][1][frame];
+        assert(left > 0.02f && left < 0.12f);
+        assert(fabsf(left + right) < 1e-5f);
+    }
+    audiox::effects::resetSlotAudio("direct_effect", 0);
+    puts("Stereo-linked crossfeed processes the routed channel pair together");
+
     float dirty[BUFFER_FRAMES]{}, clean[BUFFER_FRAMES]{};
     dirty[0] = std::numeric_limits<float>::quiet_NaN();
     dirty[1] = std::numeric_limits<float>::infinity();
-    for (uint8_t type = 0; type <= audiox::effects::EFFECT_NOISE_REDUCTION; ++type) {
+    for (uint8_t type = 0; type <= audiox::effects::EFFECT_BUILTIN_LAST; ++type) {
         effect = {};
         effect.type = type;
         effect.enabled = 1;

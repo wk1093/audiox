@@ -1,4 +1,5 @@
 #include "scripting/script.hpp"
+#include "scripting/storage.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -7,6 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <utility>
 
 extern "C" {
 #include <lua.h>
@@ -58,7 +60,7 @@ int main() {
                             event.pressed = i != 1;
                             if (i == 1) std::snprintf(event.sound, sizeof(event.sound), "intro.wav");
                             if (!scriptEvaluate(source.c_str(), event, state, plan, error, sizeof(error),
-                                                    nullptr, false, true, mask)) {
+                                                    nullptr, false, true, mask, 1)) {
                                 std::cerr << file.path() << ':' << start << ": " << error << '\n';
                                 return 1;
                             }
@@ -217,6 +219,90 @@ int main() {
         requested = evaluate("sink.audiox", 1, false);
         assert(requested && !std::strcmp(requested, "sink.headphones"));
         assert(!evaluate("sink.audiox", 2, false));
+    }
+    {
+        std::ifstream input("docs/public/scripts/output-toggle.lua");
+        assert(input);
+        const std::string source((std::istreambuf_iterator<char>(input)), {});
+        char error[256]{};
+        uint32_t mask = 0;
+        ScriptUi controls{};
+        assert(scriptValidate(source.c_str(), error, sizeof(error)));
+        assert(scriptInspectHooks(source.c_str(), mask, error, sizeof(error)));
+        assert(scriptInspectUi(source.c_str(), controls, error, sizeof(error)));
+        ScriptState state{};
+        ScriptPlan plan{};
+        const auto press = [&](ScriptEventKind kind, uint8_t velocity, bool pressed) {
+            ScriptEvent event{};
+            event.kind = kind;
+            event.velocity = velocity;
+            event.pressed = pressed;
+            if (!scriptEvaluate(source.c_str(), event, state, plan, error, sizeof(error), nullptr, false, true, mask, 1)) {
+                std::cerr << "Output toggle script: " << error << '\n';
+                assert(false);
+            }
+            int headphones = -1, speakers = -1;
+            for (unsigned i = 0; i < plan.count; ++i) {
+                if (plan.actions[i].kind != ScriptKind::EffectEnable) continue;
+                if (!std::strcmp(plan.actions[i].target, "fx_1")) headphones = int(plan.actions[i].value);
+                if (!std::strcmp(plan.actions[i].target, "fx_2")) speakers = int(plan.actions[i].value);
+            }
+            return std::pair{headphones, speakers};
+        };
+        assert((press(ScriptEventKind::Boot, 0, true) == std::pair{0, 1}));
+        assert((press(ScriptEventKind::NoteOn, 100, true) == std::pair{1, 0}));
+        assert((press(ScriptEventKind::NoteOff, 0, false) == std::pair{-1, -1}));
+        assert((press(ScriptEventKind::ControlChange, 0, false) == std::pair{-1, -1}));
+        assert((press(ScriptEventKind::ControlChange, 127, false) == std::pair{0, 1}));
+        assert((press(ScriptEventKind::Boot, 0, true) == std::pair{0, 1}));
+    }
+    {
+        std::ifstream input("docs/public/scripts/effect-group-toggle.lua");
+        assert(input);
+        const std::string source((std::istreambuf_iterator<char>(input)), {});
+        char error[256]{};
+        uint32_t mask = 0;
+        ScriptUi controls{};
+        assert(scriptValidate(source.c_str(), error, sizeof(error)));
+        assert(scriptInspectHooks(source.c_str(), mask, error, sizeof(error)));
+        assert(scriptInspectUi(source.c_str(), controls, error, sizeof(error)));
+        ScriptStorage storage(2);
+        ScriptState state{};
+        ScriptPlan plan{};
+        // Returns the shared enabled state (-1 if untouched) and the pad velocity (-1 if not sent).
+        const auto send = [&](ScriptEventKind kind, bool pressed) {
+            ScriptEvent event{};
+            event.kind = kind;
+            event.pressed = pressed;
+            event.velocity = pressed ? 100 : 0;
+            if (!scriptEvaluate(source.c_str(), event, state, plan, error, sizeof(error), nullptr, false, true, mask, 2)) {
+                std::cerr << "Effect group toggle script: " << error << '\n';
+                assert(false);
+            }
+            int enabled = -1, light = -1;
+            unsigned effectCount = 0;
+            for (unsigned i = 0; i < plan.count; ++i) {
+                const auto &action = plan.actions[i];
+                if (action.kind == ScriptKind::EffectEnable) {
+                    assert(enabled == -1 || enabled == int(action.value));
+                    enabled = int(action.value);
+                    ++effectCount;
+                } else if (action.kind == ScriptKind::Midi) {
+                    assert(action.midiSize == 3 && action.midiBytes[0] == 0x90 && action.midiBytes[1] == 71);
+                    light = action.midiBytes[2];
+                } else if (action.kind == ScriptKind::ScriptConfigSet) {
+                    assert(storage.setSetting(action.setting) == RET_OK);
+                }
+            }
+            assert(effectCount == 0 || effectCount == 4);
+            return std::pair{enabled, light};
+        };
+        assert((send(ScriptEventKind::DeviceConnect, true) == std::pair{1, 1}));
+        assert((send(ScriptEventKind::NoteOn, true) == std::pair{0, 0}));
+        assert((send(ScriptEventKind::NoteOff, false) == std::pair{-1, -1}));
+        assert((send(ScriptEventKind::DeviceConnect, true) == std::pair{0, 0}));
+        assert((send(ScriptEventKind::Run, true) == std::pair{1, 1}));
+        std::filesystem::remove_all("tests/.script-docs-test-storage");
     }
     std::cout << "Validated " << blocks << " Lua documentation examples and evaluated "
               << callbackExamples << " callback examples across Run/sound/Run events\n";

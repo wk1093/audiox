@@ -13,7 +13,8 @@ constexpr size_t kBatchSize = 100;
 constexpr size_t kUploadSize = 1000;
 constexpr size_t kCapacity = 8640;
 constexpr uint64_t kIntervalMs = 10000;
-constexpr size_t kEffectTypes = 12; // Eleven built-ins, then all third-party plugins.
+// Eleven original built-ins, then one bucket for later built-ins and third-party plugins.
+constexpr size_t kEffectTypes = 12;
 
 enum Metric : size_t {
     UsbAudio, GadgetAudio, OtherAudio, BluetoothAudio, MidiConnected,

@@ -1796,6 +1796,28 @@ static void processNode(AudioContext *ctx, RuntimeGraph *rt, uint16_t nodeIndex)
             }
             return;
         }
+        if (channels >= 2 && audiox::effects::isStereoLinkedType(params.type)) {
+            constexpr uint16_t bits = 3;
+            if (channelIsSilent(rt, nodeIndex, 0) && channelIsSilent(rt, nodeIndex, 1) &&
+                ((rt->silentEffectChannels[nodeIndex] & bits) == bits ||
+                 !audiox::effects::slotNeedsSilentProcessing(thing.id, 0, params))) {
+                rt->outputs[nodeIndex][0] = rt->outputs[nodeIndex][1] = rt->silence;
+                rt->silentEffectChannels[nodeIndex] |= bits;
+            } else {
+                rt->silentEffectChannels[nodeIndex] &= ~bits;
+                const float *const in[2] = {rt->inputs[nodeIndex][0], rt->inputs[nodeIndex][1]};
+                float *const out[2] = {rt->outputStorage[nodeIndex][0], rt->outputStorage[nodeIndex][1]};
+                rt->outputs[nodeIndex][0] = out[0];
+                rt->outputs[nodeIndex][1] = out[1];
+                audiox::effects::processStereoSlot(thing.id, params, in, out, BUFFER_FRAMES);
+                rt->effectChannelsProcessed += 2;
+            }
+            for (uint8_t channel = 2; channel < channels; ++channel)
+                rt->outputs[nodeIndex][channel] = rt->inputs[nodeIndex][channel];
+            for (uint8_t channel = channels; channel < outputChannels; ++channel)
+                rt->outputs[nodeIndex][channel] = rt->silence;
+            return;
+        }
         for (uint8_t channel = 0; channel < channels; ++channel) {
             const uint16_t bit = 1U << channel;
             if (channelIsSilent(rt, nodeIndex, channel) &&

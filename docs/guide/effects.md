@@ -126,6 +126,25 @@ increments; the backend accepts the listed ranges.
 | | Smoothing | 0–1 | 0.7 |
 | | Mix | 0–1 | 1 |
 | | Output Gain | 0–4 | 1 |
+| **Advanced EQ** | Preamp | −36–36 dB | 0 |
+| | Bands | 0–32, whole numbers | 10 |
+| | Band *N* Type | Off / Peak / Low Shelf / High Shelf / Low Pass / High Pass / Band Pass / Notch / All Pass | Peak |
+| | Band *N* Frequency | 10–22,000 Hz | 31.5, 63, 125 … 16,000 Hz (bands 1–10); 1,000 Hz |
+| | Band *N* Gain | −36–36 dB | 0 |
+| | Band *N* Q | 0.025–40 | 1.41 |
+| **Bass Enhancer** | Amount | −20–20 dB | 0 |
+| | Harmonics | 0.1–10 | 8.5 |
+| | Blend | −10–10 | 0 |
+| | Scope | 10–250 Hz | 100 |
+| | Floor / Floor Active | 10–120 Hz / Off–On | 20 Hz / Off |
+| | Listen | Off–On | Off |
+| | Output Gain | 0–4 | 1 |
+| **Crossfeed** | Cutoff | 300–2,000 Hz | 700 |
+| | Feed | 1–15 dB | 4.5 |
+| | Output Gain | 0–4 | 1 |
+| **Maximizer** | Threshold | −30–0 dB | 0 |
+| | Ceiling | −30–0 dBFS | −1 |
+| | Release | 1–1,000 ms | 25 |
 
 Cut's **Channels** setting changes how many input and output sockets the node
 has. If the count changes, reconnect routes that refer to channels that no
@@ -145,6 +164,23 @@ longer exist. A newly created Cut is in its passing (not muted) state.
 - Dynamics detectors are independent per channel, not stereo-linked. Compression,
   makeup and EQ boosts can overload the next node or final output; reduce gain
   or add a final limiter. These three effects add no explicit block delay.
+- **Advanced EQ** runs up to 32 RBJ biquad bands in series after the preamp.
+  Only the first **Bands** bands are processed and shown; hidden bands keep
+  their values, so lowering and raising the count restores them. Peak/shelf
+  bands at 0 dB and Off bands cost no CPU. It adds no delay.
+- **Bass Enhancer** follows Calf's design: the signal below **Scope** is
+  saturated to generate harmonics, optionally high-passed at **Floor**, and
+  **Amount** of it is added back to the dry signal. **Harmonics** is drive and
+  **Blend** shifts the balance between odd and even harmonics.
+  **Listen** outputs only the generated harmonics.
+- **Crossfeed** is a bs2b-style (Bauer) headphone crossfeed: each channel gets a
+  low-passed copy of the other channel at **Feed** dB below it.
+- **Maximizer** raises the level by −**Threshold** dB and limits peaks to
+  **Ceiling** with a linked 2 ms lookahead (96 frames at 48 kHz); output never
+  exceeds the ceiling. Like the Limiter it is sample-peak, not true-peak.
+- **Crossfeed** and **Maximizer** are stereo-linked: they process input
+  channels 1 and 2 of their node as a pair. Channels beyond 2 pass through
+  unchanged; on a mono node they process the single channel as L = R.
 - **Noise Reduction** suppresses estimated stationary background noise, such as
   hiss or fans. It is not acoustic echo cancellation or an ML voice separator.
   Set the starting floor below quiet speech; excessive reduction can introduce
@@ -179,6 +215,24 @@ see [Runtime optimizations](./routing.md#runtime-optimizations).
 Re-enabling or changing type
 does not replay old tails.
 
+### Equalizer APO import and export
+
+An **Advanced EQ** panel has **Import APO** and **Export** buttons. Import
+accepts Equalizer APO or AutoEQ `ParametricEQ.txt` files up to 48 KB and
+replaces the preamp and all bands; export downloads the current active bands as
+APO text. The same operations are available through
+`GET`/`POST /api/effect/apo?id=fx_N` (the POST body is the raw file text).
+
+- Supported filter types are `PK`/`PEQ`/`Modal`, `LS`/`LSC`, `HS`/`HSC`,
+  `LP`/`LPQ`, `HP`/`HPQ`, `BP`, `NO` and `AP`, with `Fc`, `Gain`, `Q` or `BW`.
+  `OFF` filters import as Off bands. `BW` is converted to an approximate Q.
+- Only the first 32 filters are used. Values outside the ranges above are clamped.
+- All channels share one EQ: `Channel:` sections other than all/L are skipped.
+- `Delay`, `Convolution`, `Include`, `Copy`, `GraphicEQ` and other commands
+  are ignored. The import response lists such warnings.
+- Imports into a non-Advanced EQ effect are rejected, and so are files without
+  a usable `Preamp` or `Filter` line.
+
 ## Audio idle sleep
 
 After **5 seconds** without signal above **-60 dBFS** (peak amplitude `0.001`)
@@ -194,7 +248,7 @@ and outputs at or below the noise floor count as quiet, so analog background
 noise need not prevent sleep. This intentionally suppresses very quiet real
 audio while asleep; input must exceed the floor to wake processing.
 
-Reverb, pitch, EQ, multiband, limiter and noise-reduction audio memory must settle before an audible path can sleep;
+Reverb, pitch, EQ, multiband, limiter, bass-enhancer, crossfeed, maximizer and noise-reduction audio memory must settle before an audible path can sleep;
 residuals at or below the same `0.001` noise floor are treated as silent.
 Muted/disconnected tails are cleared on sleep entry rather than frozen and
 replayed later. New signal on

@@ -13,6 +13,9 @@
 #include "audio/effects/dynamics.hpp"
 #include "audio/effects/equalizer.hpp"
 #include "audio/effects/noise_reduction.hpp"
+#include "audio/effects/advanced_eq.hpp"
+#include "audio/effects/bass_enhancer.hpp"
+#include "audio/effects/stereo.hpp"
 #include "audio/plugin_registry.hpp"
 #include "audio/plugin_host.hpp"
 
@@ -113,6 +116,48 @@ constexpr EffectParamSpec kNoiseParams[] = {
     {"output_gain", "Output Gain", 0, 4, 1},
 };
 
+#define AEQ_BAND(n, hz) \
+    {"band" #n "_type", "Band " #n " Type", 0, AEQ_FILTER_LAST, AEQ_PEAK}, \
+    {"band" #n "_hz", "Band " #n " Frequency Hz", 10, 22000, hz}, \
+    {"band" #n "_gain_db", "Band " #n " Gain dB", -36, 36, 0}, \
+    {"band" #n "_q", "Band " #n " Q", .025f, 40, 1.41f}
+// The first ten defaults are the ISO octave centres used by ten-band graphic EQs.
+constexpr EffectParamSpec kAdvancedEqParams[] = {
+    {"preamp_db", "Preamp dB", -36, 36, 0},
+    {"bands", "Bands", 0, kAdvancedEqMaxBands, 10},
+    AEQ_BAND(1, 31.5f), AEQ_BAND(2, 63), AEQ_BAND(3, 125), AEQ_BAND(4, 250),
+    AEQ_BAND(5, 500), AEQ_BAND(6, 1000), AEQ_BAND(7, 2000), AEQ_BAND(8, 4000),
+    AEQ_BAND(9, 8000), AEQ_BAND(10, 16000), AEQ_BAND(11, 1000), AEQ_BAND(12, 1000),
+    AEQ_BAND(13, 1000), AEQ_BAND(14, 1000), AEQ_BAND(15, 1000), AEQ_BAND(16, 1000),
+    AEQ_BAND(17, 1000), AEQ_BAND(18, 1000), AEQ_BAND(19, 1000), AEQ_BAND(20, 1000),
+    AEQ_BAND(21, 1000), AEQ_BAND(22, 1000), AEQ_BAND(23, 1000), AEQ_BAND(24, 1000),
+    AEQ_BAND(25, 1000), AEQ_BAND(26, 1000), AEQ_BAND(27, 1000), AEQ_BAND(28, 1000),
+    AEQ_BAND(29, 1000), AEQ_BAND(30, 1000), AEQ_BAND(31, 1000), AEQ_BAND(32, 1000),
+};
+#undef AEQ_BAND
+static_assert(sizeof(kAdvancedEqParams) / sizeof(kAdvancedEqParams[0]) == kAdvancedEqParamCount);
+static_assert(kAdvancedEqParamCount <= EFFECT_PARAM_MAX);
+constexpr EffectParamSpec kBassEnhancerParams[] = {
+    {"amount_db", "Amount dB", -20, 20, 0},
+    {"drive", "Harmonics", .1f, 10, 8.5f},
+    {"blend", "Blend", -10, 10, 0},
+    {"scope_hz", "Scope Hz", 10, 250, 100},
+    {"floor_hz", "Floor Hz", 10, 120, 20},
+    {"floor_active", "Floor Active", 0, 1, 0},
+    {"listen", "Listen", 0, 1, 0},
+    {"output_gain", "Output Gain", 0, 4, 1},
+};
+constexpr EffectParamSpec kCrossfeedParams[] = {
+    {"fcut_hz", "Cutoff Hz", 300, 2000, 700},
+    {"feed_db", "Feed dB", 1, 15, 4.5f},
+    {"output_gain", "Output Gain", 0, 4, 1},
+};
+constexpr EffectParamSpec kMaximizerParams[] = {
+    {"threshold_db", "Threshold dB", -30, 0, 0},
+    {"ceiling_db", "Ceiling dB", -30, 0, -1},
+    {"release_ms", "Release ms", 1, 1000, 25},
+};
+
 constexpr EffectTypeSpec kTypeSpecs[] = {
     {EFFECT_GAIN, kGainParams, kGainParamCount},
     {EFFECT_DISTORTION, kDistortionParams, kDistortionParamCount},
@@ -125,6 +170,10 @@ constexpr EffectTypeSpec kTypeSpecs[] = {
     {EFFECT_EQ, kEqParams, 8},
     {EFFECT_MULTIBAND, kMultibandParams, 8},
     {EFFECT_NOISE_REDUCTION, kNoiseParams, 6},
+    {EFFECT_ADVANCED_EQ, kAdvancedEqParams, kAdvancedEqParamCount},
+    {EFFECT_BASS_ENHANCER, kBassEnhancerParams, 8},
+    {EFFECT_CROSSFEED, kCrossfeedParams, 3},
+    {EFFECT_MAXIMIZER, kMaximizerParams, 3},
 };
 
 inline float clampValue(float value, float minValue, float maxValue) {
@@ -195,6 +244,10 @@ StateBank<LimiterState> limiterStates;
 StateBank<MultibandCompressorState> multibandStates;
 StateBank<EqualizerState> equalizerStates;
 StateBank<NoiseReductionState> noiseStates;
+StateBank<AdvancedEqState> advancedEqStates;
+StateBank<BassEnhancerState> bassEnhancerStates;
+StateBank<CrossfeedState> crossfeedStates;
+StateBank<MaximizerState> maximizerStates;
 struct ActiveSlot {
     uint8_t type{};
     bool enabled{};
@@ -244,6 +297,14 @@ uint8_t effectTypeFromString(const char *text) {
         return EFFECT_MULTIBAND;
     if (!strcmp(text, "noise_reduction"))
         return EFFECT_NOISE_REDUCTION;
+    if (!strcmp(text, "advanced_eq"))
+        return EFFECT_ADVANCED_EQ;
+    if (!strcmp(text, "bass_enhancer"))
+        return EFFECT_BASS_ENHANCER;
+    if (!strcmp(text, "crossfeed"))
+        return EFFECT_CROSSFEED;
+    if (!strcmp(text, "maximizer"))
+        return EFFECT_MAXIMIZER;
     return EFFECT_GAIN;
 }
 
@@ -271,12 +332,35 @@ const char *effectTypeToString(uint8_t type) {
         return "multiband";
     case EFFECT_NOISE_REDUCTION:
         return "noise_reduction";
+    case EFFECT_ADVANCED_EQ:
+        return "advanced_eq";
+    case EFFECT_BASS_ENHANCER:
+        return "bass_enhancer";
+    case EFFECT_CROSSFEED:
+        return "crossfeed";
+    case EFFECT_MAXIMIZER:
+        return "maximizer";
     case EFFECT_GAIN:
     default:
         return "gain";
     }
 }
-bool isBuiltinEffectType(uint8_t type) { return type <= EFFECT_NOISE_REDUCTION; }
+bool isBuiltinEffectType(uint8_t type) { return type <= EFFECT_BUILTIN_LAST; }
+
+bool isIntegerEffectParam(uint8_t type, uint8_t index) {
+    switch (type) {
+    case EFFECT_CUT: return index == 0;
+    case EFFECT_PITCH: return index == 6;
+    case EFFECT_ADVANCED_EQ:
+        return index == 1 || (index >= kAdvancedEqFirstBandParam &&
+                              (index - kAdvancedEqFirstBandParam) % kAdvancedEqParamsPerBand == 0);
+    case EFFECT_BASS_ENHANCER: return index == 5 || index == 6;
+    default: {
+        const auto *metadata = audiox::plugin::metadataFor(type);
+        return metadata && index < metadata->paramCount && strcmp(metadata->params[index].type, "float");
+    }
+    }
+}
 
 const EffectTypeSpec *effectTypeSpecFor(uint8_t type) {
     if (audiox::plugin::isPluginType(type))
@@ -319,12 +403,7 @@ int setSlotParamValue(SlotParams *params, const char *paramName, float value) {
     }
 
     params->values[index] = clampValue(value, spec->minValue, spec->maxValue);
-    if ((params->type == EFFECT_CUT && index == 0) ||
-        (params->type == EFFECT_PITCH && index == 6) ||
-        (audiox::plugin::metadataFor(params->type) &&
-         strcmp(audiox::plugin::metadataFor(params->type)->params[index].type, "float"))) {
-        params->values[index] = roundf(params->values[index]);
-    }
+    if (isIntegerEffectParam(params->type, index)) params->values[index] = roundf(params->values[index]);
     return RET_OK;
 }
 
@@ -356,9 +435,7 @@ int getSlotParamValue(const SlotParams &params, const char *paramName, float *ou
     }
 
     const float value = clampValue(params.values[index], spec->minValue, spec->maxValue);
-    const auto* metadata = audiox::plugin::metadataFor(params.type);
-    *outValue = (params.type == EFFECT_PITCH && index == 6) ||
-               (metadata && strcmp(metadata->params[index].type, "float")) ? roundf(value) : value;
+    *outValue = isIntegerEffectParam(params.type, index) && params.type != EFFECT_CUT ? roundf(value) : value;
     return RET_OK;
 }
 
@@ -395,16 +472,8 @@ void clampSlotParams(SlotParams *params) {
                 ? clampValue(params->values[i], spec->params[i].minValue, spec->params[i].maxValue)
                 : spec->params[i].defaultValue;
     }
-    if (params->type == EFFECT_CUT) {
-        params->values[0] = roundf(params->values[0]);
-    }
-    if (params->type == EFFECT_PITCH) params->values[6] = roundf(params->values[6]);
-    const auto* metadata = audiox::plugin::metadataFor(params->type);
-    if (metadata) {
-        for (uint8_t i = 0; i < limit; ++i)
-            if (strcmp(metadata->params[i].type, "float"))
-                params->values[i] = roundf(params->values[i]);
-    }
+    for (uint8_t i = 0; i < limit; ++i)
+        if (isIntegerEffectParam(params->type, i)) params->values[i] = roundf(params->values[i]);
     for (uint8_t i = limit; i < EFFECT_PARAM_MAX; ++i) {
         params->values[i] = 0.0f;
     }
@@ -438,6 +507,10 @@ void resetSlotAudio(const char *effectId, uint8_t channel) {
     resetMultibandCompressor(multibandStates.find(effectId, channel, false));
     resetEqualizer(equalizerStates.find(effectId, channel, false));
     resetNoiseReduction(noiseStates.find(effectId, channel, false));
+    resetAdvancedEq(advancedEqStates.find(effectId, channel, false));
+    resetBassEnhancer(bassEnhancerStates.find(effectId, channel, false));
+    resetCrossfeed(crossfeedStates.find(effectId, channel, false));
+    resetMaximizer(maximizerStates.find(effectId, channel, false));
 }
 
 void prepareSlotAudio(const char *effectId, uint8_t channel, const SlotParams &params) {
@@ -461,6 +534,11 @@ void *compiledStateFor(const char *effectId, uint8_t channel, uint8_t type, bool
     case EFFECT_REVERB: return getReverbStateFor(effectId, channel, create);
     case EFFECT_GATE: return getGateStateFor(effectId, channel, create);
     case EFFECT_PITCH: return pitchStateFor(effectId, channel, create);
+    case EFFECT_ADVANCED_EQ: return advancedEqStates.find(effectId, channel, create);
+    case EFFECT_BASS_ENHANCER: return bassEnhancerStates.find(effectId, channel, create);
+    // Stereo-linked state always lives on channel 0.
+    case EFFECT_CROSSFEED: return crossfeedStates.find(effectId, 0, create);
+    case EFFECT_MAXIMIZER: return maximizerStates.find(effectId, 0, create);
     default: return nullptr;
     }
 }
@@ -498,6 +576,21 @@ void processSlot(const char *effectId, uint8_t channel, const SlotParams &params
     compiledDsp->entries[clamped.type](in, out, frames, clamped.values, state, plan);
 #else
     switch (clamped.type) {
+    case EFFECT_ADVANCED_EQ:
+        processAdvancedEq(in, out, frames, clamped.values, advancedEqStates.find(effectId, channel));
+        return;
+    case EFFECT_BASS_ENHANCER:
+        processBassEnhancer(in, out, frames, clamped.values,
+                            bassEnhancerStates.find(effectId, channel));
+        return;
+    case EFFECT_CROSSFEED:
+        processCrossfeed(StereoIo{{in, in}, {out, out}}, frames, clamped.values,
+                         crossfeedStates.find(effectId, 0));
+        return;
+    case EFFECT_MAXIMIZER:
+        processMaximizer(StereoIo{{in, in}, {out, out}}, frames, clamped.values,
+                         maximizerStates.find(effectId, 0));
+        return;
     case EFFECT_EQ:
         processEqualizer(in, out, frames, clamped.values[0], clamped.values[1], clamped.values[2],
                          clamped.values[3], clamped.values[4], clamped.values[5], clamped.values[6],
@@ -548,6 +641,35 @@ void processSlot(const char *effectId, uint8_t channel, const SlotParams &params
         processGain(in, out, frames, clamped.values[0]);
         return;
     }
+#endif
+}
+
+void processStereoSlot(const char *effectId, const SlotParams &params, const float *const in[2],
+                       float *const out[2], uint32_t frames) {
+    if (!in || !out || !in[0] || !in[1] || !out[0] || !out[1]) return;
+    prepareSlotAudio(effectId, 0, params);
+    prepareSlotAudio(effectId, 1, params);
+    if (!params.enabled || !isStereoLinkedType(params.type)) {
+        for (unsigned c = 0; c < 2; ++c)
+            if (in[c] != out[c]) memcpy(out[c], in[c], sizeof(float) * frames);
+        return;
+    }
+    SlotParams clamped = params;
+    clampSlotParams(&clamped);
+    const StereoIo io{{in[0], in[1]}, {out[0], out[1]}};
+#ifdef AUDIOX_DSP_RUNTIME_ONLY
+    if (!compiledDsp || !compiledDsp->entries[clamped.type]) {
+        memset(out[0], 0, sizeof(float) * frames);
+        memset(out[1], 0, sizeof(float) * frames);
+        return;
+    }
+    compiledDsp->entries[clamped.type](in[0], out[0], frames, clamped.values,
+                                       compiledStateFor(effectId, 0, clamped.type), &io);
+#else
+    if (clamped.type == EFFECT_CROSSFEED)
+        processCrossfeed(io, frames, clamped.values, crossfeedStates.find(effectId, 0));
+    else
+        processMaximizer(io, frames, clamped.values, maximizerStates.find(effectId, 0));
 #endif
 }
 

@@ -227,7 +227,8 @@ bool compile(const CompileRequest &request, const char *directory) {
     LLVMContextRef context = LLVMContextCreate();
     LLVMModuleRef module = LLVMModuleCreateWithNameInContext("audiox_graph", context);
     const char *sources[]{"gain", "distortion", "pitch", "reverb", "gate", "dynamics",
-                          "equalizer", "noise_reduction", "native_kernels", "native_graph"};
+                          "equalizer", "noise_reduction", "advanced_eq", "bass_enhancer", "stereo",
+                          "native_kernels", "native_graph"};
     bool ok = true;
     for (const char *source : sources) {
         const std::string path = std::string(directory) + "/" + source + ".bc";

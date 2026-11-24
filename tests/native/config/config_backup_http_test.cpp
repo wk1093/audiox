@@ -154,6 +154,16 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
         desktop::virtualChannelsOff + desktop::ruleLine(matchRule);
     assert(desktop::parseRules(disabledRules, parsedRules) && parsedRules.size() == 1);
     assert(!desktop::virtualChannelsEnabled(disabledRules));
+    desktop::Rule forwardRule;
+    forwardRule.forward = true;
+    forwardRule.app = "usb.capture";
+    forwardRule.target = "hdmi.sink";
+    forwardRule.pair = 2;
+    const std::string forwardRules = desktop::rulesText({matchRule, forwardRule});
+    assert(desktop::parseRules(forwardRules, parsedRules) && parsedRules.size() == 2);
+    assert(parsedRules[1].forward && parsedRules[1].pair == 2 && parsedRules[1].target == "hdmi.sink");
+    assert(desktop::rulesForDesktop(forwardRules, true) == forwardRules);
+    assert(desktop::rulesForDesktop(forwardRules, false) == desktop::rulesText({matchRule}));
     matchRule.app = "[";
     assert(!desktop::parseRules(desktop::rulesText({matchRule}), parsedRules));
     assert(!desktop::parseRules("# audiox desktop routes v2\n", parsedRules));
@@ -257,6 +267,12 @@ void testTransport(const char *upgrade, const std::string &badArchive) {
            defaultAvailability == DesktopDefaultAvailability::Disconnected);
     const std::string hello = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["pipewire","default_sink","route_stream","pipewire_nodes","auto_route","desktop_update"]})";
     assert(parseDesktopHello(reinterpret_cast<const uint8_t *>(hello.data()), hello.size()));
+    bool canForward = false;
+    const std::string forwardHello = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["auto_route","forward"]})";
+    assert(parseDesktopHello(reinterpret_cast<const uint8_t *>(forwardHello.data()), forwardHello.size(), nullptr,
+                             nullptr, nullptr, nullptr, nullptr, nullptr, &canForward) && canForward);
+    assert(parseDesktopHello(reinterpret_cast<const uint8_t *>(hello.data()), hello.size(), nullptr,
+                             nullptr, nullptr, nullptr, nullptr, nullptr, &canForward) && !canForward);
     const std::string mediaHello = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["mpris"],"media":"playing"})";
     assert(parseDesktopHello(reinterpret_cast<const uint8_t *>(mediaHello.data()), mediaHello.size()));
     const std::string badMedia = R"({"type":"hello","hostname":"workstation","os":"linux","capabilities":["mpris"],"media":"unknown"})";

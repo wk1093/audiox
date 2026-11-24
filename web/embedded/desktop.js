@@ -55,7 +55,8 @@
     }
 
     function refreshPairs() {
-      const node = nodes.find((item) => item['node.name'] === autoTarget.value);
+      const channelNode = autoDirection.value === 'f' ? autoApp.value : autoTarget.value;
+      const node = nodes.find((item) => item['node.name'] === channelNode);
       let channels = node?.['audio.channels'];
       if (!Number.isInteger(channels) && typeof node?.['audio.position'] === 'string') {
         const positions = node['audio.position'].replace(/[\[\]]/g, '').split(/[,\s]+/).filter(Boolean);
@@ -82,22 +83,28 @@
         if (defaultSubmit) defaultSubmit.disabled = defaultBusy || !defaultSink.value;
       }
       if (!autoForm) return;
+      const forward = autoDirection.value === 'f';
       const capture = autoDirection.value === 'c';
       const appClass = capture ? 'Stream/Input/Audio' : 'Stream/Output/Audio';
       const deviceClass = capture ? 'Audio/Source' : 'Audio/Sink';
+      const isDevice = (node, type) => (node['media.class'] === type || node['media.class']?.startsWith(`${type}/`)) &&
+        node['node.name'] && !node['node.name'].startsWith('audiox_auto_');
       const apps = new Map(), targets = new Map();
       for (const node of nodes) {
-        if (node['media.class'] === appClass) {
+        if (forward) {
+          if (isDevice(node, 'Audio/Source'))
+            apps.set(node['node.name'], { value: node['node.name'],
+              label: node['node.description'] || node['node.name'] });
+        } else if (node['media.class'] === appClass) {
           const name = node['application.name'] || node['node.name'];
           if (name) apps.set(name, { value: name, label: name });
-        } else if ((node['media.class'] === deviceClass ||
-                    node['media.class']?.startsWith(`${deviceClass}/`)) && node['node.name'] &&
-                   !node['node.name'].startsWith('audiox_auto_')) {
+        }
+        if (isDevice(node, forward ? 'Audio/Sink' : deviceClass)) {
           targets.set(node['node.name'], { value: node['node.name'],
             label: node['node.description'] || node['node.name'] });
         }
       }
-      setOptions(autoApp, [...apps.values()], 'No active applications');
+      setOptions(autoApp, [...apps.values()], forward ? 'No capture devices' : 'No active applications');
       setOptions(autoTarget, [...targets.values()], 'No destinations');
       refreshPairs();
     }
@@ -122,7 +129,7 @@
       };
       return lines.map((line) => {
         const [direction, appMode, targetMode, pair, app, target, ...extra] = line.split('\t');
-        if (extra.length || !['p', 'c'].includes(direction) || !['e', 'r'].includes(appMode) ||
+        if (extra.length || !['p', 'c', 'f'].includes(direction) || !['e', 'r'].includes(appMode) ||
             !['e', 'r'].includes(targetMode) || !/^(?:[0-9]|1[0-5])$/.test(pair))
           throw new Error('Invalid saved routing rule.');
         return { direction, appRegex: appMode === 'r', targetRegex: targetMode === 'r',
@@ -134,7 +141,8 @@
       const entries = rules.map((rule, index) => {
         const item = root.document.createElement('li');
         const text = root.document.createElement('span');
-        text.textContent = `${rule.direction === 'c' ? 'Capture' : 'Playback'}: ${rule.app}` +
+        const kind = { c: 'Capture', f: 'Forward', p: 'Playback' }[rule.direction];
+        text.textContent = `${kind}: ${rule.app}` +
           `${rule.appRegex ? ' (pattern)' : ''} -> ${rule.target}${rule.targetRegex ? ' (pattern)' : ''}` +
           `, channels ${rule.pair * 2 + 1}/${rule.pair * 2 + 2} `;
         const remove = root.document.createElement('button');
@@ -240,6 +248,7 @@
     });
     autoDirection?.addEventListener('change', refreshChoices);
     autoTarget?.addEventListener('change', refreshPairs);
+    autoApp?.addEventListener('change', refreshPairs);
     async function refreshInventory() {
       if (!inventorySession) return;
       const current = ++inventoryGeneration;
@@ -461,6 +470,13 @@
         autoPair && autoAppPattern && autoTargetPattern && autoSubmit && autoStatus && autoRules &&
         hello.capabilities.includes('auto_route');
       if (autoRouting) autoRouting.hidden = !canAuto;
+      const forwardOption = autoDirection?.querySelector?.('option[value="f"]');
+      const canForward = canAuto && hello.capabilities.includes('forward');
+      if (forwardOption) forwardOption.hidden = forwardOption.disabled = !canForward;
+      if (!canForward && autoDirection?.value === 'f') {
+        autoDirection.value = 'p';
+        if (canAuto) refreshChoices();
+      }
       if (autoSession !== (canAuto ? data.session : 0)) {
         autoGeneration++;
         root.clearTimeout(autoTimer);

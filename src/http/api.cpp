@@ -12,6 +12,7 @@
 #include "audio/health.hpp"
 #include "audio/stress_test.hpp"
 #include "audio/effects/slot.hpp"
+#include "audio/effects/apo.hpp"
 #include "bluetooth/context.hpp"
 #include "config/context.hpp"
 #include "config/storage.hpp"
@@ -3029,7 +3030,7 @@ static int handleEffectSet(HttpServer *server,
 		}
 	}
 
-	char out[1024];
+	char out[8192];
 	size_t off = 0;
 	int n = snprintf(out,
 					 sizeof(out),
@@ -3070,6 +3071,73 @@ static int handleEffectSet(HttpServer *server,
 		off += (size_t)n;
 	}
 	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, off);
+}
+
+static int handleEffectApo(HttpServer *server, int cfd, const char *method, const char *body,
+						   size_t body_len, const char *query) {
+	if (!server || !server->app || !method || !server->app->audio || !server->app->config) {
+		return -1;
+	}
+	const bool get = !strcmp(method, "GET");
+	if (!get && strcmp(method, "POST") && strcmp(method, "PUT")) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+	char idBuf[64] = {};
+	if (!query || strncmp(query, "id=", 3) || strlen(query + 3) >= sizeof(idBuf) ||
+		!effect_id_valid(query + 3)) {
+		static const char bad[] = "invalid effect id\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+	snprintf(idBuf, sizeof(idBuf), "%s", query + 3);
+	audiox::effects::SlotParams params = {};
+	if (server->app->audio->getEffectParams(idBuf, &params) != RET_OK) {
+		static const char nf[] = "effect not found\n";
+		return server->sendResponse(cfd, "404 Not Found", "text/plain; charset=utf-8", nf, sizeof(nf) - 1);
+	}
+	if (params.type != audiox::effects::EFFECT_ADVANCED_EQ) {
+		static const char bad[] = "Equalizer APO import and export need an Advanced EQ effect\n";
+		return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+	if (get) {
+		const std::string text = audiox::effects::exportApo(params.values);
+		return server->sendResponse(cfd, "200 OK", "text/plain; charset=utf-8", text.data(), text.size());
+	}
+
+	audiox::effects::ApoImport import;
+	const bool parsed = body && body_len && audiox::effects::parseApo(body, body_len, &import);
+	std::string warnings = "[";
+	for (size_t i = 0; i < import.warnings.size(); ++i)
+		warnings += (i ? ",\"" : "\"") + audiox::json::escape(import.warnings[i].c_str()) + "\"";
+	warnings += "]";
+	if (!parsed) {
+		const std::string reply = "{\"ok\":false,\"error\":\"No Preamp or Filter lines were found\",\"warnings\":" +
+			warnings + "}\n";
+		return server->sendResponse(cfd, "422 Unprocessable Entity", "application/json; charset=utf-8",
+			reply.data(), reply.size());
+	}
+	float values[audiox::effects::EFFECT_PARAM_MAX];
+	memcpy(values, params.values, sizeof(values));
+	audiox::effects::applyApo(import, values);
+	if (server->app->audio->setEffectValues(idBuf, audiox::effects::EFFECT_ADVANCED_EQ, values,
+			audiox::effects::kAdvancedEqParamCount) != RET_OK ||
+		server->app->audio->getEffectParams(idBuf, &params) != RET_OK) {
+		static const char err[] = "effect changed during import; try again\n";
+		return server->sendResponse(cfd, "409 Conflict", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	MidiMapData map = server->app->config->readMidiMapFile();
+	upsertEffectStateFromRuntime(&map, idBuf, params);
+	if (server->app->config->writeMidiMapFile(&map) != RET_OK) {
+		static const char err[] = "failed to write midi_map\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	if (server->app->midi) {
+		server->app->midi->cachedMidiMap = map;
+	}
+	char head[192];
+	snprintf(head, sizeof(head), "{\"ok\":true,\"id\":\"%s\",\"bands\":%u,\"preamp_db\":%.9g,\"skipped\":%u,\"warnings\":",
+		idBuf, import.bandCount, (double)import.preampDb, import.skipped);
+	const std::string reply = std::string(head) + warnings + "}\n";
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", reply.data(), reply.size());
 }
 
 static int handleEffectCreate(HttpServer *server,
@@ -6609,6 +6677,9 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_EFFECT_SET_PATH) == 0) {
 		return handleEffectSet(server, cfd, method, path, body, body_len);
+	}
+	if (strcmp(path, HTTP_API_PREFIX "effect/apo") == 0) {
+		return handleEffectApo(server, cfd, method, body, body_len, query);
 	}
 	if (strcmp(path, HTTP_API_PREFIX "effect/name") == 0) {
 		return handleEffectName(server, cfd, method, body, body_len);

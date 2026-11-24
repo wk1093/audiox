@@ -920,6 +920,11 @@ a { color: var(--accent); text-underline-offset: 3px; }
   padding-top: 10px;
 }
 
+.fx-band-heading {
+  margin: 14px 0 0;
+  font-size: 13px;
+}
+
 .fx-param-heading {
   display: flex;
   align-items: center;

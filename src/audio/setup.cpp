@@ -949,6 +949,21 @@ int AudioContext::setEffectParam(const char *thingId, const char *paramName, flo
     return rc;
 }
 
+int AudioContext::setEffectValues(const char *thingId, uint8_t type, const float *values, uint8_t count) {
+    if (!thingId || !thingId[0] || !values || count > audiox::effects::EFFECT_PARAM_MAX) {
+        return RET_ERR;
+    }
+    std::lock_guard<std::mutex> lock(effectsMutex);
+    auto it = effectStates.find(thingId);
+    if (it == effectStates.end() || it->second.type != type) {
+        return RET_ERR;
+    }
+    std::copy_n(values, count, it->second.values);
+    audiox::effects::clampSlotParams(&it->second);
+    effectStatesSeq.fetch_add(1U, std::memory_order_release);
+    return RET_OK;
+}
+
 int AudioContext::setEffectParamNormalized(const char *thingId, const char *paramName, float normalized) {
     if (!thingId || !thingId[0] || !paramName || !paramName[0]) {
         return RET_ERR;

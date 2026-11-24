@@ -122,7 +122,8 @@ test('advanced effect templates remain registered when the Cut template already 
     registerNodeType: (key, node) => { registered[key] = node; } } } });
   vm.runInContext(source.slice(source.indexOf('  const advancedEffects ='),
     source.indexOf('  state.graphCanvas.background_image =')), context);
-  for (const type of ['compressor', 'limiter', 'eq', 'multiband', 'noise_reduction']) {
+  for (const type of ['compressor', 'limiter', 'eq', 'multiband', 'noise_reduction',
+    'advanced_eq', 'bass_enhancer', 'crossfeed', 'maximizer']) {
     const Node = registered[`effects/${type}`];
     assert.equal(typeof Node, 'function');
     const node = Object.create(Node.prototype);

@@ -11,7 +11,7 @@ static_assert(std::atomic<uint32_t>::is_always_lock_free);
 static_assert(std::atomic<bool>::is_always_lock_free);
 
 constexpr uint32_t kMagic = 0x41585731;
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;
 
 template <typename T> struct Mailbox {
     static_assert(std::is_trivially_copyable_v<T>);

@@ -141,14 +141,14 @@
           when the app reconnects. The companion attempts to restore streams when a rule is removed or
           the desktop disconnects. The first matching rule takes priority.</p>
         <form id="desktop-auto-form">
-          <label>Direction <select id="desktop-auto-direction"><option value="p">Playback</option><option value="c">Capture</option></select></label>
-          <label>Application <select id="desktop-auto-app" required></select></label>
+          <label>Direction <select id="desktop-auto-direction"><option value="p">Playback</option><option value="c">Capture</option><option value="f" hidden disabled>Forward device</option></select></label>
+          <label>Application or source <select id="desktop-auto-app" required></select></label>
           <label>Destination <select id="desktop-auto-target" required></select></label>
           <label>Stereo pair <select id="desktop-auto-pair" required></select></label>
           <details>
             <summary>Advanced name patterns</summary>
             <p class="small">Optional POSIX extended regular expressions match substrings. Leave blank to use the selected exact name.</p>
-            <label>Application pattern <input id="desktop-auto-app-pattern" type="text"></label>
+            <label>Application or source pattern <input id="desktop-auto-app-pattern" type="text"></label>
             <label>Destination pattern <input id="desktop-auto-target-pattern" type="text"></label>
           </details>
           <button id="desktop-auto-submit" type="submit">Add rule</button>

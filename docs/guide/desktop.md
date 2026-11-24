@@ -92,6 +92,32 @@ without overwriting a stream that was moved elsewhere. Restoration is best-effor
 and cannot be guaranteed after a crash, audio-server restart, or device removal.
 Manual Lua moves cannot override streams currently managed by an automatic rule.
 
+## Forwarding a device to desktop speakers
+
+A **Forward device** rule plays one stereo pair of a desktop capture device
+on a desktop playback device. Use it for speakers that are connected to the
+desktop instead of the Pi, such as HDMI speakers. While the companion is
+connected, it keeps a PipeWire loopback (`AudioX forward`) running from the
+selected pair to the selected device. It restarts the loopback if it exits.
+The option appears only when the companion reports the `forward` capability,
+which requires an updated companion and the same tools as automatic routing.
+Older companions ignore forward rules.
+
+To toggle a MIDI button between headphones on the Pi and desktop speakers:
+
+1. Enable a four-channel USB gadget so the desktop sees AudioX capture
+   channels 3/4.
+2. On **Routing**, send your source through a **Cut** to the headphones output,
+   and through a second **Cut** to USB-to-host channels 3/4.
+3. On **Desktop**, choose **Forward device**, the AudioX capture device,
+   **Channels 3/4**, and the speakers, then select **Add rule**.
+4. Download <a :href="withBase('/scripts/output-toggle.lua')">output-toggle.lua</a>,
+   add it as a script, set the two Cut effect IDs, and bind it to a MIDI note
+   or CC button.
+
+Each press mutes one Cut and unmutes the other. The forward loopback stays
+on, so the speakers receive silence while the headphones are selected.
+
 ## Lua stream routing
 
 For custom automation, scripts can use the same IDs with

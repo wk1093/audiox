@@ -4,7 +4,7 @@
 
 namespace audiox::effects {
 
-constexpr unsigned kBuiltinDspCount = 11;
+constexpr unsigned kBuiltinDspCount = 15;
 // Generated entries process the engine's fixed block size; parameters and
 // caller-owned state remain live across code replacement.
 using DspEntry = void (*)(const float *, float *, uint32_t, const float *, void *, const void *);

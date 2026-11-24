@@ -231,6 +231,7 @@ The above last two features are mainly to improve my setup, but could probably b
 - [x] Fix Bluetooth reconnect loops, stale audio during handoffs, and overlapping start/suspend requests; report paused Bluetooth output accurately.
 - [x] Split the embedded WebUI into feature files and minify it; update USB gadget-volume tests for resampling and verify 16-bit/32-bit playback.
 - [x] Fix display hotplug handling and switch from fkms to kms.
+- [x] Add built-ins: Advanced EQ (up to 32 bands, Equalizer APO import/export), Calf-style Bass Enhancer, bs2b Crossfeed, and a stereo-linked Maximizer.
 
 
 ## Pre-2.0 validation

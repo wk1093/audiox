@@ -153,6 +153,7 @@ function ensureRoutingGraph() {
   const advancedEffects = {
     compressor: 'Compressor', limiter: 'Limiter', eq: 'Parametric EQ',
     multiband: 'Multiband Compressor', noise_reduction: 'Noise Reduction',
+    advanced_eq: 'Advanced EQ', bass_enhancer: 'Bass Enhancer', crossfeed: 'Crossfeed', maximizer: 'Maximizer',
   };
   for (const [type, label] of Object.entries(advancedEffects)) {
     if (window.LiteGraph.registered_node_types[`effects/${type}`]) continue;

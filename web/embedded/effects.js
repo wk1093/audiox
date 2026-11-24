@@ -144,7 +144,20 @@
     reverb: 'Reverb', gate: 'Noise Gate', cut: 'Mute',
     compressor: 'Compressor', limiter: 'Limiter', eq: 'Parametric EQ',
     multiband: 'Multiband Compressor', noise_reduction: 'Noise Reduction',
+    advanced_eq: 'Advanced EQ', bass_enhancer: 'Bass Enhancer', crossfeed: 'Crossfeed', maximizer: 'Maximizer',
   };
+  const advancedEqFilters = ['Off', 'Peak', 'Low Shelf', 'High Shelf', 'Low Pass', 'High Pass', 'Band Pass', 'Notch', 'All Pass'];
+
+  // Advanced EQ stores all 32 bands; only the first `bands` are processed or shown.
+  function visibleParamList(fx) {
+    const rows = dynamicParamList(fx);
+    if (fx?.type !== 'advanced_eq') return rows;
+    const count = Math.round(toNumber(fx.params?.bands, 0));
+    return rows.filter(row => {
+      const band = row.name.match(/^band(\d+)_/);
+      return !band || Number(band[1]) <= count;
+    });
+  }
 
   const pluginStatusText = {
     starting: 'Plugin loading in the audio worker.',
@@ -198,8 +211,54 @@
       noise_floor_db: ['Noise floor', 'dBFS', 'Starting noise estimate. Set below the quietest speech you want to preserve.'],
       adaptation: ['Adaptation', '', 'How quickly the estimated noise floor tracks quiet background noise. 0 freezes the estimate.'],
       smoothing: ['Smoothing', '', 'Smooths spectral suppression across time to reduce musical noise.'],
+      preamp_db: ['Preamp', 'dB', 'Gain applied before the bands. Lower it when boosting bands to avoid clipping.'],
+      bands: ['Bands', '', 'Number of active bands, up to 32. Hidden bands keep their settings.'],
+      amount_db: ['Amount', 'dB', 'Level of the generated bass harmonics added to the original signal.'],
+      blend: ['Blend', '', 'Balance between even (positive) and odd (negative) harmonics.'],
+      scope_hz: ['Scope', 'Hz', 'Only bass below this frequency is used to generate harmonics.'],
+      floor_hz: ['Floor', 'Hz', 'Bass below this frequency is ignored when Floor is on, avoiding rumble.'],
+      floor_active: ['Floor', '', 'Turns on the floor high-pass filter for the harmonics.'],
+      listen: ['Listen', '', 'Outputs only the generated harmonics so you can tune them.'],
+      fcut_hz: ['Cutoff', 'Hz', 'Frequency below which sound bleeds into the opposite channel.'],
+      feed_db: ['Feed', 'dB', 'Crossfeed level. Higher values narrow the stereo image more.'],
     }[name];
-    const dynamics = type === 'compressor' || type === 'limiter' || type === 'multiband';
+    const dynamics = type === 'compressor' || type === 'limiter' || type === 'multiband' || type === 'maximizer';
+    if (type === 'maximizer' && name === 'threshold_db') {
+      return { label: 'Threshold', unit: 'dB', step: 0.1, precision: 1,
+        description: 'Input is boosted by the distance between this threshold and the ceiling, then peaks are limited.' };
+    }
+    if (type === 'maximizer' && name === 'ceiling_db') {
+      return { label: 'Ceiling', unit: 'dBFS', step: 0.1, precision: 1,
+        description: 'Maximum output sample peak after 2 ms lookahead limiting; not a true-peak limiter.' };
+    }
+    if (type === 'bass_enhancer' && name === 'drive') {
+      return { label: 'Harmonics', unit: '', step: 0.01, precision: 2,
+        description: 'Saturation driving the harmonic generator. Higher values add more harmonics.' };
+    }
+    if (type === 'bass_enhancer' && (name === 'floor_active' || name === 'listen')) {
+      return { label: help[0], unit: '', description: help[2], options: ['Off', 'On'], step: 1, precision: 0 };
+    }
+    const aeq = type === 'advanced_eq' && name.match(/^band(\d+)_(type|hz|gain_db|q)$/);
+    if (aeq) {
+      const [, n, field] = aeq;
+      return {
+        type: field === 'type' ? 'integer' : 'float',
+        label: `Band ${n} ${{ type: 'type', hz: 'frequency', gain_db: 'gain', q: 'Q' }[field]}`,
+        unit: field === 'hz' ? 'Hz' : field === 'gain_db' ? 'dB' : '',
+        description: {
+          type: 'Filter shape. Gain applies to Peak and shelf filters; Q sets width or resonance.',
+          hz: 'Center or corner frequency.',
+          gain_db: 'Boost or cut for Peak and shelf filters.',
+          q: 'Bandwidth. Higher Q is narrower; for shelves it sets the slope.',
+        }[field],
+        ...(field === 'type' ? { options: advancedEqFilters } : {}),
+        step: field === 'type' ? 1 : field === 'q' ? 0.01 : 0.1,
+        precision: field === 'type' ? 0 : field === 'q' ? 2 : 1,
+      };
+    }
+    if (type === 'advanced_eq' && name === 'bands') {
+      return { label: help[0], unit: '', description: help[2], type: 'integer', step: 1, precision: 0 };
+    }
     if (dynamics && name === 'threshold_db') help[2] = 'Signals above this dBFS level are compressed.';
     if (dynamics && name === 'attack_ms') help[2] = 'How quickly gain reduction responds to a rising signal.';
     if (dynamics && name === 'release_ms') help[2] = 'How gradually gain recovers after a peak.';
@@ -588,6 +647,88 @@
       }
     }
 
+    appendApoControls(parent, fx) {
+      const row = document.createElement('div');
+      row.className = 'fx-map-row';
+      const meta = document.createElement('div');
+      meta.className = 'fx-map-meta';
+      meta.textContent = 'Equalizer APO / EasyEffects preset';
+      const file = document.createElement('input');
+      file.type = 'file';
+      file.accept = '.txt,text/plain';
+      file.hidden = true;
+      const importBtn = document.createElement('button');
+      importBtn.textContent = 'Import APO';
+      importBtn.setAttribute('aria-label', `Import Equalizer APO file into ${effectName(fx)}`);
+      importBtn.title = 'Replaces the preamp and bands with the Preamp and Filter lines from an Equalizer APO text file.';
+      importBtn.addEventListener('click', () => file.click());
+      file.addEventListener('change', async () => {
+        const chosen = file.files?.[0];
+        file.value = '';
+        if (!chosen) return;
+        if (chosen.size > 49152) {
+          this.setPanelStatus('That file is too large for an Equalizer APO preset (48 KB maximum).', 'warn');
+          return;
+        }
+        if (!await window.AudioxUI.confirm(`Replace the bands of ${effectName(fx)} with ${chosen.name}?`, {
+          title: 'Import Equalizer APO file?', label: 'Import',
+        })) return;
+        try {
+          importBtn.disabled = true;
+          const result = await this.importApo(fx.id, await chosen.text());
+          const notes = (result.warnings || []).join(' ');
+          this.setPanelStatus(`Imported ${result.bands} band${result.bands === 1 ? '' : 's'} into ${this.displayName(fx.id)}.` +
+            (notes ? ` ${notes}` : ''), notes ? 'warn' : 'ok');
+        } catch (error) {
+          this.setPanelStatus(String(error?.message || error), 'warn');
+        } finally {
+          importBtn.disabled = false;
+        }
+      });
+      const exportBtn = document.createElement('button');
+      exportBtn.className = 'flat';
+      exportBtn.textContent = 'Export';
+      exportBtn.setAttribute('aria-label', `Export ${effectName(fx)} as an Equalizer APO file`);
+      exportBtn.addEventListener('click', async () => {
+        try {
+          const res = await apiFetch(`/api/effect/apo?id=${encodeURIComponent(fx.id)}`, { method: 'GET' });
+          if (!res.ok) throw new Error((await res.text()).trim() || `Export failed (${res.status}).`);
+          const link = document.createElement('a');
+          link.href = URL.createObjectURL(new Blob([await res.text()], { type: 'text/plain' }));
+          link.download = `${effectName(fx).replace(/[^A-Za-z0-9_-]+/g, '_')}.txt`;
+          link.click();
+          setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+        } catch (error) {
+          this.setPanelStatus(String(error?.message || error), 'warn');
+        }
+      });
+      row.append(meta, importBtn, exportBtn, file);
+      parent.appendChild(row);
+    }
+
+    async importApo(effectId, text) {
+      this.loadEpoch++;
+      this.mutationInFlight++;
+      try {
+        const res = await apiFetch(`/api/effect/apo?id=${encodeURIComponent(effectId)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+          body: text,
+        });
+        const raw = await res.text();
+        let data = null;
+        try { data = JSON.parse(raw); } catch { /* plain-text error */ }
+        if (!res.ok || !data?.ok) {
+          const warnings = Array.isArray(data?.warnings) ? ` ${data.warnings.join(' ')}` : '';
+          throw new Error(`${data?.error || raw.trim() || `Import failed (${res.status}).`}${warnings}`);
+        }
+        await this.loadEffects();
+        return data;
+      } finally {
+        this.mutationInFlight--;
+      }
+    }
+
     rememberSection(section, key) {
       section.open = this.openSections.has(key);
       section.addEventListener('toggle', () => {
@@ -623,7 +764,7 @@
         const isCut = fx.type === 'cut';
         const cc = midi.cc || {};
         const light = midi.light || {};
-        const paramList = dynamicParamList(fx);
+        const paramList = visibleParamList(fx);
         const enabled = toEnabled(fx.enabled);
 
         const card = document.createElement('section');
@@ -690,6 +831,7 @@
         enabledRow.appendChild(enabledMeta);
         enabledRow.appendChild(enabledBtn);
         card.appendChild(enabledRow);
+        if (fx.type === 'advanced_eq') this.appendApoControls(card, fx);
 
         const mapping = document.createElement('details');
         mapping.className = 'fx-midi-details';
@@ -698,6 +840,13 @@
         summary.textContent = 'MIDI controls and pad lighting';
         mapping.appendChild(summary);
         for (const row of paramList) {
+          const bandStart = row.name.match(/^band(\d+)_type$/);
+          if (fx.type === 'advanced_eq' && bandStart) {
+            const heading = document.createElement('h4');
+            heading.className = 'fx-band-heading';
+            heading.textContent = `Band ${bandStart[1]}`;
+            card.appendChild(heading);
+          }
           this.appendParameterControl(card, row, fx);
           const line = document.createElement('div');
           line.className = 'fx-map-row';
@@ -1047,6 +1196,7 @@
         // Keep the open panel (and any custom UI frame) instead of re-rendering for our own save.
         if (rendered) this.effectsSignature = this.buildEffectsSignature();
         this.syncParamView(effectId, param, saved);
+        if (fx?.type === 'advanced_eq' && param === 'bands') this.renderPanel();
         this.refreshAllNodes();
         this.postParameters(effectId);
       } finally {
@@ -1346,7 +1496,10 @@
       const enabled = toEnabled(fx?.enabled);
       const params = fx?.params || {};
       const midi = fx?.midi || {};
-      const paramList = dynamicParamList(fx);
+      // 130 Advanced EQ sliders do not fit on a routing node; bands are edited on the Effects page.
+      const paramList = type === 'advanced_eq'
+        ? dynamicParamList(fx).filter(row => row.name === 'preamp_db' || row.name === 'bands')
+        : dynamicParamList(fx);
 
       node.widgets = [];
       node.size = [340, hasFx ? Math.max(210, 150 + (paramList.length * 36)) : 130];
@@ -1398,7 +1551,7 @@
   }
 
   window.AudioxEffects = {
-    effectName, dynamicParamList, normalizePluginId, pluginAssetUrl,
+    effectName, dynamicParamList, visibleParamList, normalizePluginId, pluginAssetUrl,
     createManager(setStatus, onLayoutChange) {
       return new EffectsManager(setStatus, onLayoutChange);
     },

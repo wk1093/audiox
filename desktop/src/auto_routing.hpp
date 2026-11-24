@@ -147,44 +147,159 @@ class AutoRouting {
             std::to_string(hash) + "_" + std::to_string(pair + 1);
     }
 
-    static void stopVirtual(VirtualChannel &channel) {
-        if (channel.pid <= 0) return;
-        if (kill(channel.pid, SIGTERM) < 0 && errno != ESRCH)
-            std::fprintf(stderr, "AudioX: could not stop virtual channel: %s\n", std::strerror(errno));
+    struct Forward {
+        pid_t pid;
+        unsigned source, sink, pair;
+        std::string name;
+    };
+    std::vector<Forward> forwards;
+    unsigned forwardSequence{};
+
+    static std::string position(const std::string &value) {
+        if (value == "front-left") return "FL";
+        if (value == "front-right") return "FR";
+        if (value == "rear-left") return "RL";
+        if (value == "rear-right") return "RR";
+        if (value == "side-left") return "SL";
+        if (value == "side-right") return "SR";
+        if (value == "front-center") return "FC";
+        if (value == "lfe") return "LFE";
+        if (value == "rear-center") return "RC";
+        if (value == "front-left-of-center") return "FLC";
+        if (value == "front-right-of-center") return "FRC";
+        if (value.compare(0, 3, "aux") == 0) return "AUX" + value.substr(3);
+        return std::string();
+    }
+
+    static void stopLoopback(pid_t &pid, const char *kind) {
+        if (pid <= 0) return;
+        if (kill(pid, SIGTERM) < 0 && errno != ESRCH)
+            std::fprintf(stderr, "AudioX: could not stop %s: %s\n", kind, std::strerror(errno));
         bool exited = false;
         for (unsigned i = 0; i < 50; ++i) {
-            const pid_t result = waitpid(channel.pid, nullptr, WNOHANG);
-            if (result == channel.pid || (result < 0 && errno == ECHILD)) { exited = true; break; }
+            const pid_t result = waitpid(pid, nullptr, WNOHANG);
+            if (result == pid || (result < 0 && errno == ECHILD)) { exited = true; break; }
             if (result < 0 && errno != EINTR) break;
             usleep(10000);
         }
         if (!exited) {
-            if (kill(channel.pid, SIGKILL) < 0 && errno != ESRCH)
-                std::fprintf(stderr, "AudioX: could not terminate virtual channel: %s\n", std::strerror(errno));
-            while (waitpid(channel.pid, nullptr, 0) < 0 && errno == EINTR) {}
+            if (kill(pid, SIGKILL) < 0 && errno != ESRCH)
+                std::fprintf(stderr, "AudioX: could not terminate %s: %s\n", kind, std::strerror(errno));
+            while (waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {}
         }
-        channel.pid = 0;
+        pid = 0;
+    }
+
+    static void stopVirtual(VirtualChannel &channel) { stopLoopback(channel.pid, "virtual channel"); }
+
+    pid_t spawnLoopback(const std::string &name, const std::string &capture, const std::string &playback) {
+        const pid_t parent = getpid();
+        const pid_t pid = fork();
+        if (pid < 0) {
+            std::fprintf(stderr, "AudioX: could not start loopback: %s\n", std::strerror(errno));
+            return -1;
+        }
+        if (!pid) {
+            if (prctl(PR_SET_PDEATHSIG, SIGTERM) < 0 || getppid() != parent) _exit(127);
+            close(connection);
+            execlp("pw-loopback", "pw-loopback", "-n", name.c_str(),
+                   "-i", capture.c_str(), "-o", playback.c_str(), nullptr);
+            _exit(127);
+        }
+        return pid;
+    }
+
+    static const PulseDevice *forwardDevice(const std::string &pattern, bool regex,
+                                            const std::vector<PulseDevice> &devices) {
+        const PulseDevice *found = nullptr;
+        for (const auto &device : devices) {
+            if (device.name.compare(0, 12, "audiox_auto_") == 0) continue;
+            if (!ruleMatches(pattern, regex, device.name) &&
+                (device.node.empty() || !ruleMatches(pattern, regex, device.node))) continue;
+            if (found) return nullptr;
+            found = &device;
+        }
+        return found;
+    }
+
+    // Keeps one pw-loopback per resolvable forward rule; stale or exited loopbacks are replaced.
+    bool reconcileForwards(const std::vector<PulseDevice> &sinks, const std::vector<PulseDevice> &sources) {
+        struct Wanted { unsigned source, sink, pair; const PulseDevice *device; };
+        std::vector<Wanted> wanted;
+        bool ok = true;
+        for (const auto &rule : rules) {
+            if (!rule.forward) continue;
+            const PulseDevice *source = forwardDevice(rule.app, rule.appRegex, sources);
+            const PulseDevice *sink = forwardDevice(rule.target, rule.targetRegex, sinks);
+            std::string map;
+            if (!source || !sink) {
+                std::fprintf(stderr, "AudioX: forward source or destination unavailable or ambiguous.\n");
+                ok = false;
+            } else if (!pairMap(source->channelMap, rule.pair, map)) {
+                std::fprintf(stderr, "AudioX: forward source %s has no stereo pair %u.\n",
+                             source->name.c_str(), rule.pair + 1);
+                ok = false;
+            } else {
+                wanted.push_back({source->id, sink->id, rule.pair, source});
+            }
+        }
+        for (size_t i = 0; i < forwards.size();) {
+            auto &forward = forwards[i];
+            const pid_t result = waitpid(forward.pid, nullptr, WNOHANG);
+            const bool exited = result == forward.pid || (result < 0 && errno == ECHILD);
+            if (exited) {
+                std::fprintf(stderr, "AudioX: forward %s stopped unexpectedly.\n", forward.name.c_str());
+                forward.pid = 0;
+                ok = false;
+            }
+            bool keep = false;
+            for (const auto &item : wanted)
+                if (item.source == forward.source && item.sink == forward.sink && item.pair == forward.pair)
+                    keep = true;
+            if (!exited && keep) { ++i; continue; }
+            stopLoopback(forward.pid, "forward");
+            forwards.erase(forwards.begin() + i);
+        }
+        for (const auto &item : wanted) {
+            bool running = false;
+            for (const auto &forward : forwards)
+                if (item.source == forward.source && item.sink == forward.sink && item.pair == forward.pair)
+                    running = true;
+            if (running) continue;
+            std::string map;
+            (void)pairMap(item.device->channelMap, item.pair, map);
+            const auto comma = map.find(',');
+            const std::string left = position(map.substr(0, comma));
+            const std::string right = position(map.substr(comma + 1));
+            if (left.empty() || right.empty()) {
+                std::fprintf(stderr, "AudioX: unsupported forward channel map %s.\n", map.c_str());
+                ok = false;
+                continue;
+            }
+            const std::string name = "audiox_auto_f_" + std::to_string(getpid()) + "_" +
+                std::to_string(++forwardSequence);
+            const std::string captureProps = "{ node.name=\"input." + name + "\" target.object=\"" +
+                std::to_string(item.source) + "\" audio.position=[ " + left + " " + right +
+                " ] stream.dont-remix=true node.dont-move=true }";
+            const std::string playbackProps = "{ node.name=\"output." + name +
+                "\" node.description=\"AudioX forward\" target.object=\"" + std::to_string(item.sink) +
+                "\" audio.position=[ FL FR ] node.dont-move=true }";
+            const pid_t pid = spawnLoopback(name, captureProps, playbackProps);
+            if (pid < 0) { ok = false; continue; }
+            forwards.push_back({pid, item.source, item.sink, item.pair, name});
+        }
+        return ok;
+    }
+
+    void stopForwards() {
+        for (auto &forward : forwards) stopLoopback(forward.pid, "forward");
+        forwards.clear();
     }
 
     bool createVirtual(const PulseDevice &device, bool capture, unsigned pair) {
         std::string map;
         if (!pairMap(device.channelMap, pair, map)) return false;
         const auto comma = map.find(',');
-        const auto position = [](std::string value) {
-            if (value == "front-left") return std::string("FL");
-            if (value == "front-right") return std::string("FR");
-            if (value == "rear-left") return std::string("RL");
-            if (value == "rear-right") return std::string("RR");
-            if (value == "side-left") return std::string("SL");
-            if (value == "side-right") return std::string("SR");
-            if (value == "front-center") return std::string("FC");
-            if (value == "lfe") return std::string("LFE");
-            if (value == "rear-center") return std::string("RC");
-            if (value == "front-left-of-center") return std::string("FLC");
-            if (value == "front-right-of-center") return std::string("FRC");
-            if (value.compare(0, 3, "aux") == 0) return "AUX" + value.substr(3);
-            return std::string();
-        };
         const std::string left = position(map.substr(0, comma));
         const std::string right = position(map.substr(comma + 1));
         if (left.empty() || right.empty()) {
@@ -200,20 +315,9 @@ class AutoRouting {
         const std::string physicalProps = "{ node.name=\"" + std::string(capture ? "input." : "output.") +
             name + "\" target.object=\"" + std::to_string(device.id) + "\" audio.position=[ " +
             left + " " + right + " ] stream.dont-remix=true node.dont-move=true node.passive=true }";
-        const pid_t parent = getpid();
-        const pid_t pid = fork();
-        if (pid < 0) {
-            std::fprintf(stderr, "AudioX: could not start virtual channel: %s\n", std::strerror(errno));
-            return false;
-        }
-        if (!pid) {
-            if (prctl(PR_SET_PDEATHSIG, SIGTERM) < 0 || getppid() != parent) _exit(127);
-            close(connection);
-            execlp("pw-loopback", "pw-loopback", "-n", name.c_str(),
-                   "-i", capture ? physicalProps.c_str() : virtualProps.c_str(),
-                   "-o", capture ? virtualProps.c_str() : physicalProps.c_str(), nullptr);
-            _exit(127);
-        }
+        const pid_t pid = spawnLoopback(name, capture ? physicalProps : virtualProps,
+                                        capture ? virtualProps : physicalProps);
+        if (pid < 0) return false;
         virtualChannels.push_back({pid, capture, device.id, pair, name});
         return true;
     }
@@ -267,6 +371,7 @@ class AutoRouting {
         bool needsPolicy = false;
         if (virtualEnabled) for (auto it = rules.rbegin(); it != rules.rend(); ++it) {
             const auto &rule = *it;
+            if (rule.forward) continue;
             const PulseDevice *device = target(rule, rule.capture ? sources : sinks);
             const bool useVirtual = device && device->vendor == "0x6666" && device->product == "0x0ad0" &&
                 (!rule.capture || device->mediaClass == "Audio/Source");
@@ -333,7 +438,7 @@ class AutoRouting {
 
     static const Rule *match(const std::vector<Rule> &rules, bool capture, const PulseStream &stream) {
         for (const auto &rule : rules) {
-            if (rule.capture != capture) continue;
+            if (rule.forward || rule.capture != capture) continue;
             if ((!stream.app.empty() && ruleMatches(rule.app, rule.appRegex, stream.app)) ||
                 (!stream.node.empty() && ruleMatches(rule.app, rule.appRegex, stream.node))) return &rule;
         }
@@ -490,7 +595,8 @@ public:
     }
 
     bool tick(const Routing *manual = nullptr) {
-        if (rules.empty() && changes.empty() && !virtualEnabled && virtualChannels.empty()) return true;
+        if (rules.empty() && changes.empty() && !virtualEnabled && virtualChannels.empty() &&
+            forwards.empty()) return true;
         std::string currentCookie;
         if (!pulseCookie(connection, currentCookie)) {
             std::fprintf(stderr, "AudioX: could not inspect audio server for automatic routing.\n");
@@ -501,6 +607,7 @@ public:
             changes.clear();
             for (auto &channel : virtualChannels) stopVirtual(channel);
             virtualChannels.clear();
+            stopForwards();
             publishedPolicy.clear();
         }
         cookie = currentCookie;
@@ -512,6 +619,7 @@ public:
             return false;
         }
         if (!reconcileVirtual(sinks, sources)) return false;
+        const bool forwardsOk = reconcileForwards(sinks, sources);
         bool movedExisting = false;
         for (bool isCapture : {false, true}) {
             const auto &streams = isCapture ? capture : playback;
@@ -550,7 +658,7 @@ public:
                 device->id != change.target || rule->pair != change.pair) {
                 const bool removed = remove(change, streams);
                 if (removed) changes.erase(changes.begin() + i);
-                return removed;
+                return removed && forwardsOk;
             }
         }
         struct Candidate {
@@ -583,13 +691,14 @@ public:
                 if (device) candidates.push_back({isCapture, &stream, device, rule, &devices});
             }
         }
-        if (candidates.empty()) return !missing;
+        if (candidates.empty()) return !missing && forwardsOk;
         if (changes.size() >= 32) {
             std::fprintf(stderr, "AudioX: automatic route limit reached.\n");
             return false;
         }
         const auto &selected = candidates[candidateCursor++ % candidates.size()];
-        return create(selected.capture, *selected.stream, *selected.device, *selected.rule, *selected.devices) && !missing;
+        return create(selected.capture, *selected.stream, *selected.device, *selected.rule, *selected.devices) &&
+            !missing && forwardsOk;
     }
 
     void restore() {
@@ -600,6 +709,7 @@ public:
                 std::fprintf(stderr, "AudioX: could not clear routing policy: %s\n", output.c_str());
             publishedPolicy.clear();
         }
+        stopForwards();
         if (changes.empty()) {
             for (auto &channel : virtualChannels) stopVirtual(channel);
             virtualChannels.clear();

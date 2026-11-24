@@ -19,8 +19,11 @@ inline bool virtualChannelsEnabled(std::string_view input) {
     return input.substr(header.size(), std::string_view(virtualChannelsOff).size()) != virtualChannelsOff;
 }
 
+// Playback ("p") and capture ("c") rules move application streams. Forward ("f") rules
+// keep a loopback from stereo pair `pair` of the source device `app` to the sink `target`.
 struct Rule {
     bool capture{};
+    bool forward{};
     bool appRegex{};
     bool targetRegex{};
     unsigned pair{};
@@ -71,7 +74,7 @@ inline bool validRule(const Rule &rule) {
 }
 
 inline std::string ruleLine(const Rule &rule) {
-    return std::string(rule.capture ? "c\t" : "p\t") +
+    return std::string(rule.forward ? "f\t" : rule.capture ? "c\t" : "p\t") +
         (rule.appRegex ? "r\t" : "e\t") + (rule.targetRegex ? "r\t" : "e\t") +
         std::to_string(rule.pair) + "\t" + hexEncode(rule.app) + "\t" + hexEncode(rule.target) + "\n";
 }
@@ -104,6 +107,7 @@ inline bool parseRules(std::string_view input, std::vector<Rule> &rules) {
         fields[5] = line;
         Rule rule;
         if (fields[0] == "c") rule.capture = true;
+        else if (fields[0] == "f") rule.forward = true;
         else if (fields[0] != "p") return false;
         if (fields[1] == "r") rule.appRegex = true;
         else if (fields[1] != "e") return false;
@@ -117,6 +121,26 @@ inline bool parseRules(std::string_view input, std::vector<Rule> &rules) {
     }
     rules.swap(parsed);
     return true;
+}
+
+inline bool hasForwardRules(const std::vector<Rule> &rules) {
+    for (const auto &rule : rules) if (rule.forward) return true;
+    return false;
+}
+
+// Companions without the "forward" capability reject unknown rule kinds, so they receive
+// the stored rules without forward lines.
+inline std::string rulesForDesktop(const std::string &text, bool forward) {
+    if (forward) return text;
+    std::string output;
+    size_t start = 0;
+    while (start < text.size()) {
+        size_t end = text.find('\n', start);
+        end = end == std::string::npos ? text.size() : end + 1;
+        if (text.compare(start, 2, "f\t") != 0) output.append(text, start, end - start);
+        start = end;
+    }
+    return output;
 }
 
 inline bool ruleMatches(const std::string &pattern, bool regex, const std::string &value) {

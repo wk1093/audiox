@@ -125,6 +125,30 @@ test('advanced builtins have names, dynamic sliders and type-specific help, not 
     assert.equal(find(f.panel, el => el.textContent === 'Open custom UI'), undefined);
   }
 });
+test('advanced EQ shows only active bands with filter dropdowns and APO import/export', async () => {
+  const f = fixture();
+  assert.equal(f.api.effectName({ id: 'fx_3', type: 'advanced_eq' }), 'Advanced EQ 3');
+  const param_meta = [{ name: 'preamp_db', label: 'Preamp', min: -30, max: 30, default: 0 },
+    { name: 'bands', label: 'Bands', min: 1, max: 32, default: 2 }];
+  const params = { preamp_db: 0, bands: 2 };
+  for (let band = 1; band <= 3; ++band) {
+    for (const [field, max] of [['type', 8], ['hz', 20000], ['gain_db', 30], ['q', 20]]) {
+      param_meta.push({ name: `band${band}_${field}`, label: `Band ${band} ${field}`, min: 0, max, default: 1 });
+      params[`band${band}_${field}`] = 1;
+    }
+  }
+  const fx = { ...gain, id: 'fx_3', type: 'advanced_eq', name: 'Advanced EQ 3', params, param_meta };
+  assert.equal(f.api.visibleParamList(fx).filter(row => row.name.startsWith('band3')).length, 0);
+  assert.ok(f.api.visibleParamList(fx).some(row => row.name === 'band2_q'));
+  f.setEffects([fx]);
+  await f.manager.loadEffects();
+  assert.ok(find(f.panel, el => el.textContent === 'Band 2'));
+  assert.equal(find(f.panel, el => el.textContent === 'Band 3'), undefined);
+  const select = find(f.panel, el => el.tagName === 'SELECT' && el.children.some(o => o.textContent === 'Low Shelf'));
+  assert.ok(select);
+  assert.ok(find(f.panel, el => el.textContent === 'Import APO'));
+  assert.ok(find(f.panel, el => el.textContent === 'Export'));
+});
 test('effects use saved or readable names, never internal IDs in their graph titles', async () => {
   const f = fixture();
   assert.equal(f.api.effectName({ id: 'fx_3', type: 'gate' }), 'Noise Gate 3');

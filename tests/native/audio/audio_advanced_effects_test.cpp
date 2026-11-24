@@ -1,6 +1,7 @@
 #include "audio/effects/advanced_eq.hpp"
 #include "audio/effects/apo.hpp"
 #include "audio/effects/bass_enhancer.hpp"
+#include "audio/effects/state_bank.hpp"
 #include "audio/effects/stereo.hpp"
 #include "defs.hpp"
 
@@ -168,6 +169,27 @@ void testBassEnhancer() {
     assert(amplitudeAt(highOut, SAMPLE_RATE / 20, 5000) < 0.003);
 }
 
+void testBassEnhancerStateBank() {
+    auto bank = std::make_unique<StateBank<BassEnhancerState>>();
+    auto *first = bank->find("first", 0);
+    auto *second = bank->find("second", 0);
+    second->initialized = true;
+    second->preLow[0].b0 = 5;
+    second->preLow[0].z1 = 7;
+    for (unsigned i = 0; i < 126; ++i) {
+        const std::string id = "other" + std::to_string(i);
+        assert(bank->find(id.c_str(), 0));
+    }
+    assert(bank->find("first", 0) == first);
+    assert(bank->find("missing", 0, false) == nullptr);
+    auto *replacement = bank->find("replacement", 0);
+    assert(replacement == second);
+    assert(!replacement->initialized);
+    assert(replacement->preLow[0].b0 == 1);
+    assert(replacement->preLow[0].z1 == 0);
+    assert(bank->find("second", 0, false) == nullptr);
+}
+
 void testCrossfeed() {
     const float p[] = {700, 4.5f, 1};
     const auto left = tone(SAMPLE_RATE / 2, 200, 0.3f);
@@ -222,6 +244,7 @@ int main() {
     testAdvancedEq();
     testApo();
     testBassEnhancer();
+    testBassEnhancerStateBank();
     testCrossfeed();
     testMaximizer();
     std::puts("advanced EQ, APO, bass enhancer, crossfeed and maximizer tests passed");

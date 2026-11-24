@@ -37,7 +37,7 @@ template <typename State> class StateBank {
         }
         if (!create)
             return nullptr;
-        oldest->state = {};
+        oldest->state = State{};
         snprintf(oldest->id, sizeof(oldest->id), "%s", name);
         oldest->channel = channel;
         oldest->hash = hash;

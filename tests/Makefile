@@ -148,7 +148,7 @@ test-builtin-effects: $(OUT_DIR)/host/audiox-dynamics-test $(OUT_DIR)/host/audio
 
 ADVANCED_EFFECTS_TEST_SRCS = src/audio/effects/advanced_eq.cpp src/audio/effects/apo.cpp \
 	src/audio/effects/bass_enhancer.cpp src/audio/effects/stereo.cpp
-$(OUT_DIR)/host/audiox-advanced-effects-test: tests/native/audio/audio_advanced_effects_test.cpp $(ADVANCED_EFFECTS_TEST_SRCS) include/audio/effects/advanced_eq.hpp include/audio/effects/apo.hpp include/audio/effects/bass_enhancer.hpp include/audio/effects/stereo.hpp include/defs.hpp
+$(OUT_DIR)/host/audiox-advanced-effects-test: tests/native/audio/audio_advanced_effects_test.cpp $(ADVANCED_EFFECTS_TEST_SRCS) include/audio/effects/advanced_eq.hpp include/audio/effects/apo.hpp include/audio/effects/bass_enhancer.hpp include/audio/effects/state_bank.hpp include/audio/effects/stereo.hpp include/defs.hpp
 	@mkdir -p "$(dir $@)"
 	$(HOSTCXX) $(HOST_CXXFLAGS) -Iinclude -o "$@" tests/native/audio/audio_advanced_effects_test.cpp $(ADVANCED_EFFECTS_TEST_SRCS)
 

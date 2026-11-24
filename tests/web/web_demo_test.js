@@ -48,8 +48,8 @@ test('demo build swaps api.js for the simulated device and relativizes asset URL
   assert.ok(html.indexOf('./demo/mock-api.js') < html.indexOf('./app.js'));
   assert.doesNotMatch(html, /\s(?:src|href)="\/(?!\/)/);
   assert.match(html, /<title>AudioX Live Demo<\/title>/);
-  assert.equal(demoCss("a{background:url('/logo.svg')} b{src:url(//cdn/x)}"),
-    "a{background:url('./logo.svg')} b{src:url(//cdn/x)}");
+  assert.equal(demoCss("a{background:url('/logo_nobg.svg')} b{src:url(//cdn/x)}"),
+    "a{background:url('./logo_nobg.svg')} b{src:url(//cdn/x)}");
 });
 
 test('demo gateway answers every API path the UI requests', async () => {

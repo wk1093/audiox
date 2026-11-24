@@ -66,12 +66,12 @@ test('device and demo builds bundle and minify all text resources without changi
 
     for (const [name, maximumRatio] of [
       ['app.js', 0.6], ['styles.css', 0.85], ['index.html', 0.9],
-      ['logo.svg', 0.65], ['logo_small.svg', 0.65],
+      ['logo_nobg.svg', 0.65], ['logo_small.svg', 0.65],
     ]) {
       assert.ok(fs.statSync(path.join(prod, name)).size < fs.statSync(path.join(debug, name)).size * maximumRatio,
         `${target}: ${name} must be substantially smaller in production`);
     }
-    for (const name of ['logo.png', 'logo_small.png', 'vendor/litegraph-LICENSE.txt',
+    for (const name of ['logo_nobg.png', 'logo_small.png', 'vendor/litegraph-LICENSE.txt',
       'vendor/space-grotesk-LICENSE.txt', ...[400, 500, 600, 700].map(weight => `vendor/space-grotesk-${weight}.woff2`)]) {
       assert.deepEqual(fs.readFileSync(path.join(prod, name)), fs.readFileSync(path.join(debug, name)));
     }

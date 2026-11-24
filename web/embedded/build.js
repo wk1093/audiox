@@ -13,7 +13,7 @@ const { stageVendor } = require('./stage-assets.js');
 const sourceDir = __dirname;
 const repoDir = path.resolve(sourceDir, '../..');
 const demoScripts = ['demo/mock-data.js', 'demo/mock-api.js'];
-const branding = ['logo.svg', 'logo.png', 'logo_small.svg', 'logo_small.png'];
+const branding = ['logo_nobg.svg', 'logo_nobg.png', 'logo_small.svg', 'logo_small.png'];
 const targets = new Set(['device', 'demo']);
 
 function parseArgs(argv) {

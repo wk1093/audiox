@@ -309,7 +309,8 @@ for file in index.html downloads.css downloads.js; do
 done
 cmp "$ROOT/web/embedded/styles.css" "$WORK/pages/styles.css"
 cmp "$ROOT/web/embedded/releases.js" "$WORK/pages/releases.js"
-cmp "$ROOT/assets/branding/logo.svg" "$WORK/pages/logo.svg"
+cmp "$ROOT/assets/branding/logo_nobg.svg" "$WORK/pages/logo_nobg.svg"
+cmp "$ROOT/assets/branding/logo_nobg.png" "$WORK/pages/logo_nobg.png"
 cmp "$ROOT/assets/branding/logo_small.png" "$WORK/pages/logo_small.png"
 [[ -f "$WORK/pages/.nojekyll" ]]
 echo "PASS: download site includes styles, logos, matching board images, AXUs and checksums"

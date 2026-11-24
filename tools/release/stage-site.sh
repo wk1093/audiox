@@ -15,7 +15,8 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
 mkdir -p "$OUTPUT"
 cp "$ROOT/web/public/index.html" "$ROOT/web/public/downloads.js" "$ROOT/web/public/downloads.css" \
-    "$ROOT/web/embedded/styles.css" "$ROOT/web/embedded/releases.js" "$ROOT/assets/branding/logo.svg" \
+    "$ROOT/web/embedded/styles.css" "$ROOT/web/embedded/releases.js" "$ROOT/assets/branding/logo_nobg.svg" \
+    "$ROOT/assets/branding/logo_nobg.png" \
     "$ROOT/assets/branding/logo_small.png" "$OUTPUT/"
 touch "$OUTPUT/.nojekyll"
 [[ "$STATIC_ONLY" == 1 ]] && exit 0

@@ -876,7 +876,12 @@ static void testGraphFastPaths() {
         std::fill_n(runtime->inputStorage[node][0], BUFFER_FRAMES, 123.f);
         std::fill_n(runtime->outputStorage[node][0], BUFFER_FRAMES, 456.f);
     }
+    context->spectrumNode.store(0);
     processGraphBlock(context.get(), runtime.get(), capture.get(), 100);
+    assert(context->spectrumCaptureNode.load() == 0);
+    assert(context->spectrumWrite.load() == BUFFER_FRAMES);
+    assert(context->spectrumRing[0].load() > .2f);
+    context->spectrumNode.store(-1);
     assert(runtime->effectChannelsProcessed == 1);
     assert(!runtime->sleeping);
     for (uint16_t node = 1; node <= 6; ++node) {
@@ -893,6 +898,7 @@ static void testGraphFastPaths() {
     for (unsigned block = 0; block < 20; ++block)
         processGraphBlock(context.get(), runtime.get(), capture.get(), 101 + block);
     assert(runtime->effectChannelsProcessed == before + 20);
+    assert(context->spectrumCaptureNode.load() == -1);
 
     // Unmuted Cut aliases the source; bypass chains preserve identity and node gains.
     mute.enabled = 0;

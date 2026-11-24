@@ -211,6 +211,7 @@
             <span class="small" id="vol-cc-status">Use Assign CC to map a hardware control.</span>
           </div>
           <label class="vol-effect-filter"><input id="vol-show-effects" type="checkbox"> Show effect channels</label>
+          <button id="btn-vol-spectrum" class="flat" type="button" aria-haspopup="dialog" aria-controls="spectrum-dialog">Spectrum</button>
           <button id="btn-vol-refresh" class="flat">Refresh</button>
         </div>
         <p id="vol-effect-summary" class="small" role="status"></p>
@@ -767,6 +768,25 @@ end)
       <button id="btn-pi5-fan-save" class="primary" type="button">Save fan curve</button>
     </div>
   </dialog>
+  <dialog id="spectrum-dialog" class="fan-dialog spectrum-dialog" aria-labelledby="spectrum-title" aria-describedby="spectrum-description">
+    <div class="fan-dialog-header">
+      <div>
+        <div class="dialog-heading">Mixer</div>
+        <h2 id="spectrum-title">Spectrum analyzer</h2>
+      </div>
+      <button id="btn-spectrum-close" class="flat" type="button" aria-label="Close spectrum analyzer">Close</button>
+    </div>
+    <p id="spectrum-description" class="fan-dialog-description">Live frequency content of one mixer channel, measured after its effects and before its fader.</p>
+    <div class="spectrum-controls">
+      <label for="spectrum-node">Channel</label>
+      <select id="spectrum-node"></select>
+      <label class="spectrum-option"><input id="spectrum-peaks" type="checkbox" checked> Peak hold</label>
+    </div>
+    <div class="spectrum-graph-card">
+      <canvas id="spectrum-canvas" class="spectrum-canvas" role="img" aria-label="Live frequency spectrum"></canvas>
+    </div>
+    <p id="spectrum-status" class="small" role="status" aria-live="polite"></p>
+  </dialog>
   <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
     <div class="dialog-heading">Confirm action</div>
     <h2 id="confirm-title">Confirm action</h2>
@@ -824,6 +844,7 @@ end)
   <script src="/app/soundboard.js"></script>
   <script src="/app/midi.js"></script>
   <script src="/app/volume.js"></script>
+  <script src="/app/spectrum.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -116,6 +116,7 @@
 #define HTTP_AUDIO_VOLUME_SET_PATH HTTP_API_PREFIX "audio/volume/set"
 #define HTTP_AUDIO_DEVICES_PATH HTTP_API_PREFIX "audio/devices"
 #define HTTP_AUDIO_METERS_PATH HTTP_API_PREFIX "audio/meters"
+#define HTTP_AUDIO_SPECTRUM_PATH HTTP_API_PREFIX "audio/spectrum"
 #define HTTP_AUDIO_RESCAN_PATH HTTP_API_PREFIX "audio/rescan"
 #define HTTP_FS_ROOT ROOT_MOUNT_POINT "/"
 #define HTTP_BOOT_CONFIG_FILE "/boot/config.txt"
@@ -1868,6 +1869,39 @@ static int handleAudioMeters(HttpServer *server, int cfd, const char *method) {
 	}
 	char out[HTTP_BODY_MAX];
 	if (server->app->audio->buildMetersJson(out, sizeof(out)) != RET_OK) {
+		static const char err[] = "encode failed\n";
+		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	return server->sendResponse(cfd, "200 OK", "application/json; charset=utf-8", out, strlen(out));
+}
+
+static int handleAudioSpectrum(HttpServer *server, int cfd, const char *method, const char *query) {
+	if (!server || !server->app || !method) {
+		return -1;
+	}
+	if (strcmp(method, "GET") != 0) {
+		return sendMethodNotAllowed(server, cfd);
+	}
+	if (!server->app->audio) {
+		static const char err[] = "audio unavailable\n";
+		return server->sendResponse(cfd, "503 Service Unavailable", "text/plain; charset=utf-8", err, sizeof(err) - 1);
+	}
+	char id[64] = {};
+	bool valid = query && !strncmp(query, "id=", 3) && query[3] && strlen(query + 3) < sizeof(id);
+	for (const char *c = valid ? query + 3 : ""; *c && valid; ++c)
+		valid = isalnum((unsigned char)*c) || strchr("_-.:", *c);
+	if (!valid) {
+		static const char bad[] = "invalid id\n";
+		return server->sendResponse(cfd, "400 Bad Request", "text/plain; charset=utf-8", bad, sizeof(bad) - 1);
+	}
+	snprintf(id, sizeof(id), "%s", query + 3);
+	char out[4096];
+	const int rc = server->app->audio->buildSpectrumJson(id, out, sizeof(out));
+	if (rc == RET_WARN) {
+		static const char nf[] = "node not found\n";
+		return server->sendResponse(cfd, "404 Not Found", "text/plain; charset=utf-8", nf, sizeof(nf) - 1);
+	}
+	if (rc != RET_OK) {
 		static const char err[] = "encode failed\n";
 		return server->sendResponse(cfd, "500 Internal Server Error", "text/plain; charset=utf-8", err, sizeof(err) - 1);
 	}
@@ -6600,6 +6634,10 @@ int handleApiRequest(HttpServer *server,
 
 	if (strcmp(path, HTTP_AUDIO_METERS_PATH) == 0) {
 		return handleAudioMeters(server, cfd, method);
+	}
+
+	if (strcmp(path, HTTP_AUDIO_SPECTRUM_PATH) == 0) {
+		return handleAudioSpectrum(server, cfd, method, query);
 	}
 
 	if (strcmp(path, HTTP_AUDIO_RESCAN_PATH) == 0) {

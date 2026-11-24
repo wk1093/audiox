@@ -1416,6 +1416,19 @@ details > summary:focus-visible {
 .fan-dialog-actions button:disabled { opacity: 0.48; cursor: not-allowed; }
 .fan-controls .small { line-height: 1.55; }
 
+.spectrum-dialog { height: auto; }
+.spectrum-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+.spectrum-controls select { min-width: 0; flex: 0 1 360px; }
+.spectrum-option { display: flex; align-items: center; gap: 8px; }
+.spectrum-graph-card {
+  border: 1px solid rgba(112, 160, 185, 0.2);
+  border-radius: 14px;
+  padding: 10px;
+  background: linear-gradient(155deg, rgba(7, 22, 32, 0.94), rgba(12, 35, 48, 0.9));
+}
+.spectrum-canvas { display: block; width: 100%; height: min(460px, 55dvh); }
+#spectrum-status { min-height: 1.4em; margin: 10px 0 0; }
+
 .update-progress {
   width: 100%;
 }
@@ -1923,6 +1936,8 @@ details > summary:focus-visible {
   }
   .fan-dialog-body { grid-template-columns: 1fr; gap: 14px; }
   .fan-graph-card { padding: 7px; }
+  .spectrum-graph-card { padding: 6px; }
+  .spectrum-canvas { height: min(320px, 50dvh); }
   .fan-dialog-description { margin-bottom: 14px; }
 
   .node {

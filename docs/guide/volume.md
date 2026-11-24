@@ -81,6 +81,25 @@ The snapshot API is `GET /api/audio/meters`, returning
 `{"meters":[{"id":"bt_A4C6F0A57AA7_in","levels":[0.5,0.25]}]}`.
 Levels are linear per-channel peaks clamped to 0–1, not dB values.
 
+## Spectrum analyzer
+
+Select **Spectrum** in the Mixer header to open a live frequency view of one
+channel. Choose the node from the **Channel** list; the browser remembers the
+last choice. The view uses the same signal as the meters, so source and
+processing nodes show their output before outgoing-route gain, and destination
+nodes show incoming signal. Multichannel nodes are mixed to mono first.
+
+The analyzer runs only while the popup is open, using a 4096-point Hann-windowed
+FFT shown as 96 log-spaced bands from 20 Hz to 20 kHz. Bars use a -90 to 0
+dBFS scale, where a full-scale sine reads about 0 dB. **Peak hold** marks each
+band's recent maximum for one second. It is a visual aid, not a calibrated
+measurement tool.
+
+The API is `GET /api/audio/spectrum?id=<node id>`, returning
+`{"active":true,"min_hz":20,"max_hz":20000,"bands":[-62.5,…]}`. Each request
+keeps capture enabled for two seconds. `active` stays `false` until the audio
+worker has analyzed the requested node.
+
 ## Assign a MIDI knob or fader
 
 1. Connect the MIDI controller and open the node's **Assign CC** control.

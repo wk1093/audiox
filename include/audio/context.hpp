@@ -259,6 +259,20 @@ struct AudioContext {
     mutable std::mutex routingGraphMutex;
     std::atomic<float> nodeChannelLevels[AUDIO_GRAPH_MAX_THINGS][16];
 
+    // Spectrum analyzer. Main: the requested graph index (-1 = off) until the deadline,
+    // and the latest bands from the worker. Worker: the processing thread copies the
+    // mono mix of spectrumNode into spectrumRing.
+    static constexpr uint32_t kSpectrumRing = 4096, kSpectrumBands = 96;
+    std::atomic<int32_t> spectrumNode{-1};
+    std::atomic<uint64_t> spectrumUntilMs{0};
+    std::atomic<int32_t> spectrumCaptureNode{-1};
+    std::atomic<uint32_t> spectrumWrite{0};
+    std::atomic<float> spectrumRing[kSpectrumRing]{};
+    std::atomic<int32_t> spectrumBandsNode{-1};
+    std::atomic<float> spectrumBands[kSpectrumBands]{};
+    // RET_WARN when thingId is not in the published graph.
+    int buildSpectrumJson(const char *thingId, char *out, size_t outSize);
+
     // One slot per Bluetooth link; a slot's peer selects which bt_<MAC> node it feeds.
     BluetoothInputStream localBluetoothInputs[AUDIO_BT_MAX_LINKS];
     BluetoothOutputStream localBluetoothOutputs[AUDIO_BT_MAX_LINKS];

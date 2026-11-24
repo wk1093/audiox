@@ -663,6 +663,25 @@
 
   // Volume & meters
   on('GET', '/api/audio/meters', () => reply({ meters: meters() }));
+  on('GET', '/api/audio/spectrum', ({ query }) => {
+    const meter = meters().find((m) => m.id === query.get('id'));
+    if (!meter) return fail('node not found', 404);
+    const level = meter.levels.length ? Math.max(...meter.levels) : 0;
+    const active = level > 0.0001;
+    const t = performance.now() / 1000;
+    const base = active ? 20 * Math.log10(level) : -120;
+    // Synthetic music: a pink-ish slope with a moving kick, vocal and hi-hat bump.
+    const bands = Array.from({ length: 96 }, (_, band) => {
+      const hz = 20 * 1000 ** (band / 96);
+      const octave = Math.log2(hz / 1000);
+      const kick = 14 * Math.exp(-(((Math.log2(hz / 60)) / 0.6) ** 2)) * (0.5 + 0.5 * Math.cos(t * 2 * Math.PI * 2));
+      const vocal = 8 * Math.exp(-(((Math.log2(hz / (400 + 250 * Math.sin(t * 0.7)))) / 0.8) ** 2));
+      const hat = 6 * Math.exp(-(((Math.log2(hz / 9000)) / 0.5) ** 2)) * (Math.sin(t * 2 * Math.PI * 4) > 0.6 ? 1 : 0.2);
+      const db = base - 18 - 2 * octave - (hz > 12000 ? 2 * Math.log2(hz / 12000) * 6 : 0) + kick + vocal + hat + 3 * Math.random();
+      return active ? Number(clamp(db, -120, 0).toFixed(1)) : -120;
+    });
+    return reply({ active, min_hz: 20, max_hz: 20000, bands });
+  });
   on('GET', '/api/audio/volumes', () => reply({ volumes: things().map((t) => ({ id: t.id, name: t.name, gain: Number((S.gains[t.id] ?? 1).toFixed(4)) })) }));
   on('POST', '/api/audio/volume/set', ({ body }) => {
     const f = form(body);

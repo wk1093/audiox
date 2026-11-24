@@ -1686,6 +1686,33 @@ static void updateChannelLevels(AudioContext *ctx, RuntimeGraph *rt) {
     }
 }
 
+static void captureSpectrum(AudioContext *ctx, RuntimeGraph *rt) {
+    const int32_t node = ctx->spectrumNode.load(std::memory_order_relaxed);
+    if (node < 0 || node >= rt->snapshot.thingCount) {
+        if (ctx->spectrumCaptureNode.load(std::memory_order_relaxed) != -1)
+            ctx->spectrumCaptureNode.store(-1, std::memory_order_release);
+        return;
+    }
+    uint32_t write = ctx->spectrumWrite.load(std::memory_order_relaxed);
+    if (ctx->spectrumCaptureNode.load(std::memory_order_relaxed) != node) {
+        write = 0;
+        ctx->spectrumWrite.store(0, std::memory_order_relaxed);
+        ctx->spectrumCaptureNode.store(node, std::memory_order_release);
+    }
+    const auto &thing = rt->snapshot.things[node];
+    const bool useOutputs = thing.outputs > 0;
+    const uint8_t channels = std::min<uint8_t>(useOutputs ? thing.outputs : thing.inputs, kMaxChannelsPerThing);
+    if (!channels) return;
+    const float scale = 1.0f / channels;
+    for (uint32_t frame = 0; frame < BUFFER_FRAMES; ++frame) {
+        float sum = 0;
+        for (uint8_t ch = 0; ch < channels; ++ch)
+            sum += useOutputs ? rt->outputs[node][ch][frame] : rt->inputs[node][ch][frame];
+        ctx->spectrumRing[(write + frame) % AudioContext::kSpectrumRing].store(sum * scale, std::memory_order_relaxed);
+    }
+    ctx->spectrumWrite.store(write + BUFFER_FRAMES, std::memory_order_release);
+}
+
 static bool nodeBlocksInput(const RuntimeGraph *rt, uint16_t node) {
     const auto &params = rt->effectParamsCache[node];
     return rt->nodeKind[node] == NODE_EFFECT && params.enabled &&
@@ -2581,6 +2608,7 @@ static void processGraphBlock(AudioContext *ctx, RuntimeGraph *rt, AlsaCaptureBa
 
     rt->blocksProcessed++;
     updateChannelLevels(ctx, rt);
+    captureSpectrum(ctx, rt);
 
     publishPlayingSfxSet(ctx, rt);
 

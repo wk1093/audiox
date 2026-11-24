@@ -128,6 +128,12 @@ test('demo device state is consistent across routing, effects and meters', async
   assert.ok(meters.every((meter) => meter.levels.every((level) => level >= 0 && level <= 1)));
   assert.ok(meters.find((meter) => meter.id === 'usb_gadget_out').levels.some((level) => level > 0));
 
+  const spectrum = await json('/api/audio/spectrum?id=usb_gadget_out');
+  assert.equal(spectrum.active, true);
+  assert.equal(spectrum.bands.length, 96);
+  assert.ok(spectrum.bands.every((db) => db >= -120 && db <= 0));
+  assert.equal((await context.apiFetch('/api/audio/spectrum?id=missing')).status, 404);
+
   const info = await json('/api/system/info');
   const { storage } = info;
   assert.equal(storage.used_bytes + storage.free_bytes + storage.reserved_bytes, storage.total_bytes);

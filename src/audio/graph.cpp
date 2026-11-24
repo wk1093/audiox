@@ -1,5 +1,7 @@
 #include "audio/context.hpp"
 #include "audio/routing_compile.hpp"
+#include "audio/health.hpp"
+#include "audio/spectrum.hpp"
 #include "json.hpp"
 
 #include "bluetooth/context.hpp"
@@ -823,6 +825,40 @@ int AudioContext::buildMetersJson(char *out, size_t outSize) const {
     if (json.size() >= outSize) {
         return RET_ERR;
     }
+    memcpy(out, json.c_str(), json.size() + 1);
+    return RET_OK;
+}
+int AudioContext::buildSpectrumJson(const char *thingId, char *out, size_t outSize) {
+    if (!thingId || !out || outSize == 0) return RET_ERR;
+    int32_t index = -1;
+    {
+        std::lock_guard<std::mutex> lock(routingGraphMutex);
+        for (uint16_t i = 0; i < routingGraphPublished.thingCount; ++i) {
+            if (!strcmp(routingGraphPublished.things[i].id, thingId)) {
+                index = i;
+                break;
+            }
+        }
+    }
+    if (index < 0) return RET_WARN;
+    spectrumNode.store(index, std::memory_order_release);
+    spectrumUntilMs.store(audiox::healthMonotonicMs() + 2000, std::memory_order_release);
+    const bool active = spectrumBandsNode.load(std::memory_order_acquire) == index;
+    std::string json = "{\"active\":";
+    json += active ? "true" : "false";
+    char value[64];
+    snprintf(value, sizeof(value), ",\"min_hz\":%.0f,\"max_hz\":%.0f,\"bands\":[",
+             (double)audiox::spectrum::kMinHz, (double)audiox::spectrum::maxHz((float)SAMPLE_RATE));
+    json += value;
+    for (uint32_t band = 0; band < kSpectrumBands; ++band) {
+        const float db = active ? spectrumBands[band].load(std::memory_order_relaxed) : audiox::spectrum::kFloorDb;
+        snprintf(value, sizeof(value), "%s%.1f", band ? "," : "",
+                 (double)(std::isfinite(db) ? std::max(audiox::spectrum::kFloorDb, std::min(db, 20.0f)) :
+                                              audiox::spectrum::kFloorDb));
+        json += value;
+    }
+    json += "]}\n";
+    if (json.size() >= outSize) return RET_ERR;
     memcpy(out, json.c_str(), json.size() + 1);
     return RET_OK;
 }

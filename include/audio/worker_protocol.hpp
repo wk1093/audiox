@@ -11,7 +11,7 @@ static_assert(std::atomic<uint32_t>::is_always_lock_free);
 static_assert(std::atomic<bool>::is_always_lock_free);
 
 constexpr uint32_t kMagic = 0x41585731;
-constexpr uint32_t kVersion = 2;
+constexpr uint32_t kVersion = 3;
 
 template <typename T> struct Mailbox {
     static_assert(std::is_trivially_copyable_v<T>);
@@ -52,6 +52,7 @@ struct Control {
     uint64_t sceneEpoch{};
     uint32_t releaseGeneration{};
     uint64_t stressExpiryNs{}, stressWorkNs{};
+    int32_t spectrumNode{-1};
 };
 
 struct Telemetry {
@@ -72,6 +73,8 @@ struct Telemetry {
     uint64_t processedSceneEpoch{}, releasedSceneEpoch{};
     uint32_t playingCount{};
     char playing[AUDIO_SFX_SLOT_COUNT][MIDI_SFX_PATH_MAX]{};
+    int32_t spectrumNode{-1};
+    float spectrum[AudioContext::kSpectrumBands]{};
 };
 
 struct Sound {

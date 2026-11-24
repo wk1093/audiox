@@ -2,6 +2,7 @@
 #include "audio/health.hpp"
 #include "audio/stress_test.hpp"
 #include "audio/plugin_registry.hpp"
+#include "audio/spectrum.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -95,6 +96,9 @@ struct AudioWorkerSupervisor::State {
         control.pluginsDisabled = recovery.pluginsDisabled;
         control.stressExpiryNs = audiox::audioStressTest.audioExpiryNs();
         control.stressWorkNs = audiox::audioStressTest.audioWorkNs();
+        control.spectrumNode = audiox::healthMonotonicMs() <
+                context.spectrumUntilMs.load(std::memory_order_acquire) ?
+            context.spectrumNode.load(std::memory_order_acquire) : -1;
         if (audiox::audioStressTest.mode() == audiox::AudioStressTest::AudioThread &&
             !audiox::audioStressTest.remainingMs()) audiox::audioStressTest.stop();
         shared->control.publish(control);
@@ -189,6 +193,10 @@ struct AudioWorkerSupervisor::State {
                 data.activeStreams, data.largestPeriod, data.largestBuffer, data.bufferChange,
                 data.bufferIncrease, data.downshiftDelay, data.downshiftFailures);
             context.pluginObservedSeq.store(data.pluginSequence, std::memory_order_release);
+            for (unsigned band = 0; band < AudioContext::kSpectrumBands; ++band)
+                context.spectrumBands[band].store(std::isfinite(data.spectrum[band]) ? data.spectrum[band] :
+                    audiox::spectrum::kFloorDb, std::memory_order_relaxed);
+            context.spectrumBandsNode.store(data.spectrumNode, std::memory_order_release);
             const auto sceneEpoch = context.sceneMuteEpoch.load(std::memory_order_acquire);
             if (data.processedSceneEpoch == sceneEpoch)
                 context.sceneSilent.store(data.silent, std::memory_order_release);
@@ -565,6 +573,7 @@ bool applyControl(AudioContext &ctx, const Control &control,
     ctx.sceneReleaseGeneration.store(control.releaseGeneration, std::memory_order_release);
     ctx.sceneMuteEpoch.store(control.sceneEpoch, std::memory_order_release);
     audiox::audioStressTest.mirrorAudioControl(control.stressExpiryNs, control.stressWorkNs);
+    ctx.spectrumNode.store(control.spectrumNode, std::memory_order_relaxed);
     if (ctx.routingGraphPublished.generation != control.graph.generation) {
         ctx.routingGraphPublished = control.graph;
         ctx.routingGraphMailbox.publish(control.graph);
@@ -600,8 +609,37 @@ void receiveSounds(AudioContext &ctx, Shared &shared, uint64_t revisions[AUDIO_S
     if (shared.stopHeld.exchange(0, std::memory_order_acq_rel)) ctx.stopHeldSfx();
 }
 
-void publishTelemetry(AudioContext &ctx, Shared &shared) {
+struct SpectrumState {
+    uint64_t lastMs = 0;
+    int32_t node = -1;
+    float bands[AudioContext::kSpectrumBands]{};
+    float samples[audiox::spectrum::kFftSize]{};
+};
+
+void updateSpectrum(AudioContext &ctx, SpectrumState &state) {
+    static_assert(AudioContext::kSpectrumRing == audiox::spectrum::kFftSize);
+    static_assert(AudioContext::kSpectrumBands == audiox::spectrum::kBands);
+    const int32_t requested = ctx.spectrumNode.load(std::memory_order_relaxed);
+    if (requested < 0) {
+        state.node = -1;
+        return;
+    }
+    const uint64_t now = audiox::healthMonotonicMs();
+    if (now - state.lastMs < 33) return;
+    if (ctx.spectrumCaptureNode.load(std::memory_order_acquire) != requested) return;
+    const uint32_t write = ctx.spectrumWrite.load(std::memory_order_acquire);
+    if (write < audiox::spectrum::kFftSize) return;
+    state.lastMs = now;
+    for (uint32_t i = 0; i < audiox::spectrum::kFftSize; ++i)
+        state.samples[i] = ctx.spectrumRing[(write + i) % AudioContext::kSpectrumRing].load(std::memory_order_relaxed);
+    audiox::spectrum::computeBands(state.samples, static_cast<float>(SAMPLE_RATE), state.bands);
+    state.node = requested;
+}
+
+void publishTelemetry(AudioContext &ctx, Shared &shared, const SpectrumState &spectrum) {
     Telemetry data;
+    data.spectrumNode = spectrum.node;
+    std::copy_n(spectrum.bands, AudioContext::kSpectrumBands, data.spectrum);
     for (const auto &entry : ctx.pluginRuntimeStates) {
         if (data.pluginCount >= AUDIO_GRAPH_MAX_THINGS) break;
         auto &plugin = data.plugins[data.pluginCount++];
@@ -699,12 +737,14 @@ int run(int fd, int parentPid) {
             } else {
                 shared.ready.store(true, std::memory_order_release);
                 uint64_t revisions[AUDIO_SFX_SLOT_COUNT]{};
+                SpectrumState spectrum;
                 while (!shared.stop.load(std::memory_order_acquire) && getppid() == parentPid) {
                     shared.controlHeartbeat.store(audiox::healthMonotonicMs(), std::memory_order_release);
                     if (shared.control.consume(control)) applyControl(ctx, control, pluginRevisions);
                     receiveSounds(ctx, shared, revisions);
                     ctx.pollPlugins();
-                    publishTelemetry(ctx, shared);
+                    updateSpectrum(ctx, spectrum);
+                    publishTelemetry(ctx, shared, spectrum);
                     usleep(5000);
                 }
                 ctx.processingThreadRun.store(0, std::memory_order_release);

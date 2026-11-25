@@ -1,5 +1,8 @@
 # AudioX Companion App
 
+**Platform support:** Linux only for 2.0. Windows and macOS support is deferred
+until after 2.0; see the [roadmap](../docs/TODO.md#future).
+
 **Status:** The background companion connects and reports detected host
 capabilities and Linux media playback status. Linux supports Pi-managed
 automatic app routing, stereo-pair selection, and a system tray. Audio device
@@ -57,23 +60,16 @@ use it only on a trusted connection and do not expose it to the internet.
 
 ## Building
 
-From the repository root, use the native toolchain for the target platform:
+From the repository root, build the Linux companion:
 
 - Linux: `make desktop-linux APPIMAGETOOL=/path/to/appimagetool` produces
   `out/desktop/audiox-companion-linux-x86_64.AppImage` on x86-64.
   A C++ compiler with static libraries, Go 1.22 or newer, and appimagetool are required to build.
   The executable and AppImage runtime are statically linked; running normally
   needs a working FUSE mount. Without FUSE, pass `--appimage-extract-and-run`.
-- Windows x86-64: install MSYS2 with `make` and `mingw-w64-x86_64-gcc`,
-  open a MINGW64 shell, and run `make desktop-windows CXX=g++`. The output is
-  `out/desktop/audiox-companion-windows-x86_64.exe`; an installer is TODO.
-- macOS: `make desktop-macos` produces an unsigned
-  `out/desktop/audiox-companion-macos-<architecture>.tar.gz` containing the
-  executable. Apple's command-line developer tools are required.
 
 `make desktop-clean` removes these outputs. Builds are native, not cross-compiled.
-CI publishes Linux x86-64, Windows x86-64, and macOS Apple Silicon builds with
-stable and nightly releases. The macOS build has not yet been tested by the project.
+CI publishes Linux x86-64 desktop builds with stable and nightly releases.
 
 For local Linux testing, `make desktop-update` builds the current AppImage,
 installs it for the current user, and restarts (or starts) the systemd user
@@ -139,7 +135,7 @@ Once connected, the Pi's web UI has a page for configuring desktop behavior.
 - separate automatic app routing (using fake sinks). Allows setups like routing spotfiy seperately from other apps (by increasing the number of USB gadget audio input channels from 2 to 4, and using 3/4 for spotify).
 - Forwarding a stereo pair from a capture device (such as AudioX channels 3/4) to a desktop playback device such as HDMI speakers.
 
-## Windows Features
+## Post-2.0 Windows Features
 - Changing system default device from lua scripts
 - Separate automatic app routing (THIS WILL BE WAY LATER). This will require me to implement a custom windows driver, since a single audio device cannot be routed separately with 4 channels acting as 2 stereo pairs. I will need to create virtual audio devices to achieve this functionality.
 

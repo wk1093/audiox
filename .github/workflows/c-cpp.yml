@@ -124,10 +124,6 @@ jobs:
         include:
           - platform: linux
             runner: ubuntu-24.04
-          - platform: windows
-            runner: windows-latest
-          - platform: macos
-            runner: macos-15
     steps:
       - uses: actions/checkout@v4
         with:

@@ -283,6 +283,8 @@ The above last two features are mainly to improve my setup, but could probably b
 
 
 ## Future
+- [ ] Post-2.0: Add Windows desktop companion support, including independent stereo virtual audio endpoints, native installation/signing, and hardware validation.
+- [ ] Post-2.0: Add macOS desktop companion support, native audio integration, packaging, and hardware validation.
 - [ ] Post-2.0: Support Bluetooth phone calls, routing call audio and microphone through AudioX and providing answer/end controls on the phone, WebUI, and Lua.
 - [ ] Post-2.0: Support a dedicated USB keyboard connected directly to the Pi as a controller for every MIDI-mappable action, including soundboard playback, effects, scenes, and scripts.
   - [ ] Translate keyboard input into the shared controller-event/mapping system so keyboard and MIDI bindings use the same mapping controls, without duplicate map buttons or parallel action implementations.

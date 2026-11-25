@@ -23,6 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
       pages: write
       id-token: write
     concurrency:
@@ -78,6 +79,7 @@ jobs:
 
       - name: Deploy update mirror
         id: deployment
-        uses: actions/deploy-pages@v4
+        # Keep REST artifact discovery; the moving v4 tag uses the Results service.
+        uses: actions/deploy-pages@f33f41b675f0ab2dc5a6863c9a170fe83af3571e # v4.0.0
         with:
           artifact_name: github-pages-${{ github.run_id }}-${{ github.run_attempt }}

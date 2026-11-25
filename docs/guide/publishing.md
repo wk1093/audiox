@@ -115,12 +115,20 @@ directory is `out/update-pages/`; the workflow reports its total size and
 largest files before upload. The artifact includes the stable and nightly
 update archives used by browser-based installation.
 
-Check which step fails: uploading the artifact and deploying Pages are separate
-operations. A successful upload followed by empty deployment statuses until
-timeout does not establish a size problem. Check
-[GitHub Status](https://www.githubstatus.com/) and repository Pages settings;
-if a fresh workflow run still stalls, include the run URL in a GitHub Support
-request. Increasing the polling timeout does not fix a stuck deployment.
+Check which step fails: uploading the artifact, finding its metadata, and
+deploying Pages are separate operations. A successful upload followed by
+"No artifacts named" does not establish a size problem or an outage. Compare
+the exact run/attempt artifact name with the workflow run's REST artifact list.
+The workflow pins official `actions/deploy-pages` v4.0.0 by commit to use REST
+artifact discovery, with `actions: read` permission. The moving v4 tag uses
+the internal Results service, which has missed successfully uploaded artifacts
+that the REST API can find. Keep the pin until a replacement is verified.
+
+The `punycode` deprecation warning is not an artifact lookup failure.
+Increasing the deployment polling timeout cannot fix a lookup failure because
+no deployment has been created yet. For failures after deployment creation,
+check [GitHub Status](https://www.githubstatus.com/) and repository Pages settings;
+include the run URL in a GitHub Support request if a fresh run still stalls.
 
 Artifact names include the run ID and attempt number so reruns cannot
 accidentally select multiple artifacts with the same name.

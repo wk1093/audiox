@@ -242,9 +242,18 @@ grep -Fq 'artifact_name: github-pages-${{ github.run_id }}-${{ github.run_attemp
 grep -Fq 'uses: actions/deploy-pages@f33f41b675f0ab2dc5a6863c9a170fe83af3571e # v4.0.0' "$PAGES"
 grep -Fq 'actions: read' "$PAGES"
 grep -Fq 'du -sh out/update-pages' "$PAGES"
-grep -Fq 'needs: publish' "$BUILD"
-grep -Fq 'uses: ./.github/workflows/update-site.yml' "$BUILD"
-echo "PASS: Pages uses REST artifact discovery with read permission and a unique artifact per run attempt"
+mirror_job="$(awk '
+    /^  update-mirror:$/ { found = 1; next }
+    found && /^  [[:alnum:]_-]+:$/ { exit }
+    found { print }
+' "$BUILD")"
+grep -Fq 'needs: publish' <<< "$mirror_job"
+grep -Fq 'uses: ./.github/workflows/update-site.yml' <<< "$mirror_job"
+for permission in 'contents: read' 'actions: read' 'pages: write' 'id-token: write'; do
+    grep -Fxq "      $permission" <<< "$mirror_job"
+    grep -Fxq "      $permission" "$PAGES"
+done
+echo "PASS: Pages uses REST discovery and unique artifacts, with matching caller and deploy permissions"
 
 grep -q '^  test:$' "$BUILD"
 grep -Fq 'needs: [prepare, test]' "$BUILD"

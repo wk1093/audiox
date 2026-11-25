@@ -444,6 +444,7 @@ jobs:
     needs: publish
     permissions:
       contents: read
+      actions: read
       pages: write
       id-token: write
     uses: ./.github/workflows/update-site.yml

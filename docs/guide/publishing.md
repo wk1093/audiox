@@ -123,6 +123,9 @@ The workflow pins official `actions/deploy-pages` v4.0.0 by commit to use REST
 artifact discovery, with `actions: read` permission. The moving v4 tag uses
 the internal Results service, which has missed successfully uploaded artifacts
 that the REST API can find. Keep the pin until a replacement is verified.
+The build workflow's `update-mirror` calling job must grant the same permissions
+as the reusable deployment job, including `actions: read`; a reusable workflow
+cannot increase its caller's permissions.
 
 The `punycode` deprecation warning is not an artifact lookup failure.
 Increasing the deployment polling timeout cannot fix a lookup failure because

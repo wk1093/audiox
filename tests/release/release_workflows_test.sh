@@ -247,11 +247,20 @@ mirror_job="$(awk '
     found && /^  [[:alnum:]_-]+:$/ { exit }
     found { print }
 ' "$BUILD")"
+release_job="$(awk '
+    /^  release:$/ { found = 1; next }
+    found && /^  [[:alnum:]_-]+:$/ { exit }
+    found { print }
+' "$RELEASE")"
 grep -Fq 'needs: publish' <<< "$mirror_job"
 grep -Fq 'uses: ./.github/workflows/update-site.yml' <<< "$mirror_job"
+grep -Fq 'uses: ./.github/workflows/c-cpp.yml' <<< "$release_job"
 for permission in 'contents: read' 'actions: read' 'pages: write' 'id-token: write'; do
     grep -Fxq "      $permission" <<< "$mirror_job"
     grep -Fxq "      $permission" "$PAGES"
+done
+for permission in 'contents: write' 'actions: read' 'pages: write' 'id-token: write'; do
+    grep -Fxq "      $permission" <<< "$release_job"
 done
 echo "PASS: Pages uses REST discovery and unique artifacts, with matching caller and deploy permissions"
 

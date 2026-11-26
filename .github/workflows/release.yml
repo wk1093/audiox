@@ -46,6 +46,7 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.publish == 'true'
     permissions:
+      actions: read
       contents: write
       pages: write
       id-token: write

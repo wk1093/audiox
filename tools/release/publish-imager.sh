@@ -31,8 +31,6 @@ fi
 
 DESKTOP_ASSETS=(
     audiox-companion-linux-x86_64.AppImage
-    audiox-companion-windows-x86_64.exe
-    audiox-companion-macos-arm64.tar.gz
 )
 for asset in "${DESKTOP_ASSETS[@]}"; do
     if [[ ! -s "$FILES/$asset" ]]; then
@@ -178,7 +176,7 @@ else
     fi
     mkdir "$WORK/latest"
     gh release download "$RELEASE_TAG" --pattern '*.img.xz' --pattern '*.axu' --pattern '*.sha256' \
-        --pattern '*.AppImage' --pattern '*.exe' --pattern '*.tar.gz' --dir "$WORK/latest"
+        --pattern '*.AppImage' --dir "$WORK/latest"
     gh release upload nightly "$WORK/latest/"* --clobber
     gh release upload nightly "$WORK/os_list.json" --clobber
     REFS="$(gh api "repos/$GH_REPO/git/matching-refs/tags/nightly" \

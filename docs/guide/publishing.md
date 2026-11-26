@@ -5,9 +5,9 @@ to install AudioX and [Development](./development) to build without publishing.
 
 ## Build workflow
 
-CI builds Pi 4 and Pi 5 separately, and builds desktop artifacts for Linux,
-Windows, and macOS. Main-branch and pull-request builds do not publish releases.
-The desktop executable is currently a non-functional scaffold. The nightly check runs daily at
+CI builds Pi 4 and Pi 5 separately, and builds the Linux desktop artifact.
+Windows and macOS desktop support is deferred. Main-branch and pull-request
+builds do not publish releases. The nightly check runs daily at
 08:00 UTC and can also be started from **Actions > Release AudioX > Run
 workflow** on `main`.
 
@@ -36,7 +36,7 @@ Configured build metadata is rejected because the workflow supplies it.
 1. Commit the intended version in the Makefile.
 2. Select `main` and run **Actions > Release AudioX > Run workflow**, or wait
    for the scheduled run.
-3. CI builds both boards and desktop platforms and stages images, checksums,
+3. CI builds both boards and the Linux desktop app and stages images, checksums,
    manifests, AXU archives, and desktop artifacts in a draft release.
 4. After uploads succeed, the workflow publishes the release as the latest
    Stable.
@@ -60,9 +60,7 @@ a newer Nightly. The rolling release includes fixed download names such as
 `audiox-latest-nightly-pi4.img.xz`, `audiox-latest-nightly-pi5.img.xz`, and
 `os_list.json`; its catalog points to versioned assets.
 Stable, versioned Nightly, and rolling Nightly releases also contain the Linux
-x86-64 AppImage, Windows x86-64 executable, macOS Apple Silicon archive, and
-SHA-256 sidecars. The macOS archive is unsigned and has not been tested by the
-project; a Windows installer is planned.
+x86-64 AppImage and its SHA-256 sidecar.
 
 Release notes use commit subjects and group subjects prefixed with `[feat]` or
 `[fix]`. Use clear subjects for user-facing changes; document test-only and

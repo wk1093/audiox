@@ -154,9 +154,7 @@ uploading firmware. See the [companion README](https://github.com/wk1093/audiox/
 Use `systemctl --user status audiox-companion.service` and
 `journalctl --user -u audiox-companion.service` to inspect its status and logs.
 
-Windows releases provide an executable; an installer is not yet available.
-macOS releases provide an unsigned Apple Silicon archive and have not yet been
-tested by the project.
+Windows and macOS companion support is deferred until after 2.0.
 
 ## Security
 

@@ -23,8 +23,6 @@ for board in pi4 pi5; do
 done
 desktop_assets=(
     audiox-companion-linux-x86_64.AppImage
-    audiox-companion-windows-x86_64.exe
-    audiox-companion-macos-arm64.tar.gz
 )
 for asset in "${desktop_assets[@]}"; do
     printf 'desktop fixture %s' "$asset" > "$WORK/package/$asset"
@@ -195,7 +193,11 @@ for asset in "${desktop_assets[@]}"; do
         (cd "$MOCK/assets/$tag" && sha256sum --check "$asset.sha256")
     done
 done
-echo "PASS: desktop artifacts and checksums reach both nightly releases"
+for tag in "$TAG_27" nightly; do
+    [[ ! -e "$MOCK/assets/$tag/audiox-companion-windows-x86_64.exe" ]]
+    [[ ! -e "$MOCK/assets/$tag/audiox-companion-macos-arm64.tar.gz" ]]
+done
+echo "PASS: Linux desktop artifact and checksum reach both nightly releases"
 
 mv "$WORK/package/${desktop_assets[0]}" "$WORK/missing-desktop"
 if CHANNEL=nightly RELEASE_TAG="$TAG_27" \
@@ -282,7 +284,9 @@ for asset in "${desktop_assets[@]}"; do
     cmp "$WORK/stable/$asset" "$MOCK/assets/v2.0.0/$asset"
     (cd "$MOCK/assets/v2.0.0" && sha256sum --check "$asset.sha256")
 done
-echo "PASS: desktop artifacts and checksums are published on stable releases"
+[[ ! -e "$MOCK/assets/v2.0.0/audiox-companion-windows-x86_64.exe" ]]
+[[ ! -e "$MOCK/assets/v2.0.0/audiox-companion-macos-arm64.tar.gz" ]]
+echo "PASS: Linux desktop artifact and checksum are published on stable releases"
 
 GH_REPO="$GH_REPO" bash "$ROOT/tools/release/mirror-updates.sh" "$WORK/pages"
 jq -e --arg nightly_tag "$TAG_28" '.stable.tag == "v2.0.0" and .nightly.tag == $nightly_tag and
